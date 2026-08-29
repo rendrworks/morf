@@ -50,10 +50,12 @@ use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHand
 use smithay_client_toolkit::shell::xdg::window::{
     Window, WindowConfigure, WindowDecorations, WindowHandler,
 };
+use smithay_client_toolkit::shm::slot::{Buffer as ShmBuffer, SlotPool};
+use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{
-    wl_data_device, wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat,
+    wl_data_device, wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_shm,
     wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
@@ -84,6 +86,10 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
 use wayland_protocols_wlr::output_power_management::v1::client::{
     zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
     zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
 
 /// Configuration for a top-anchored shell bar.
@@ -125,6 +131,30 @@ pub struct ScreenInfo {
     pub size: Option<(i32, i32)>,
     /// Integer fallback scale advertised by wl_output.
     pub scale: i32,
+}
+
+/// Pixel encoding returned by a compositor screencopy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScreencopyFormat {
+    Argb8888,
+    Xrgb8888,
+}
+
+/// One completed output capture in row-major shared-memory layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScreencopyFrame {
+    /// Pixel width.
+    pub width: u32,
+    /// Pixel height.
+    pub height: u32,
+    /// Bytes between adjacent rows.
+    pub stride: u32,
+    /// Pixel channel encoding.
+    pub format: ScreencopyFormat,
+    /// Whether rows are ordered bottom-to-top.
+    pub y_invert: bool,
+    /// Captured bytes including stride padding.
+    pub pixels: Vec<u8>,
 }
 
 /// Geometry for a popup anchored to a layer surface.
@@ -258,6 +288,13 @@ pub enum LayerEvent {
     },
     /// The compositor clipboard selection changed.
     Clipboard { text: Option<String> },
+    /// An output capture completed or failed.
+    Screencopy {
+        /// Runtime-local request identifier.
+        request_id: u64,
+        /// Captured pixels or compositor failure.
+        result: Result<ScreencopyFrame, String>,
+    },
     /// A focused text input committed a new input-method context.
     InputMethod(InputMethodState),
     /// An input method committed edits for this client's text input.
@@ -354,6 +391,10 @@ impl LayerClient {
         let output_power_manager = globals
             .bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
+        let shm = Shm::bind(&globals, &qh).ok();
+        let screencopy_manager = globals
+            .bind::<ZwlrScreencopyManagerV1, _, _>(&qh, 1..=3, ())
+            .ok();
         let session_locks = SessionLockState::new(&globals, &qh);
         let (clipboard_tx, clipboard_rx) = mpsc::channel();
         let mut state = LayerState {
@@ -407,6 +448,9 @@ impl LayerClient {
             output_power: Vec::new(),
             output_power_target: None,
             output_power_mode: None,
+            shm,
+            screencopy_manager,
+            screencopies: Vec::new(),
             screens: Vec::new(),
             session_locks,
             session_lock: None,
@@ -549,6 +593,41 @@ impl LayerClient {
             self.state.apply_output_power(&output, mode, &qh);
         }
         true
+    }
+
+    /// Starts an asynchronous capture of the configured or first output.
+    pub fn capture_output(&mut self, request_id: u64, include_cursor: bool) -> bool {
+        let Some(manager) = &self.state.screencopy_manager else {
+            return false;
+        };
+        if self.state.shm.is_none() || self.state.screencopies.len() >= 4 {
+            return false;
+        }
+        let output = self
+            .state
+            .output_power_target
+            .clone()
+            .or_else(|| self.state.outputs.outputs().next());
+        let Some(output) = output else {
+            return false;
+        };
+        let frame =
+            manager.capture_output(i32::from(include_cursor), &output, &self.queue.handle(), ());
+        self.state.screencopies.push(PendingScreencopy {
+            request_id,
+            frame,
+            offer: None,
+            pool: None,
+            buffer: None,
+            format: None,
+            y_invert: false,
+        });
+        true
+    }
+
+    /// Returns whether shared-memory output capture is available.
+    pub fn supports_screencopy(&self) -> bool {
+        self.state.screencopy_manager.is_some() && self.state.shm.is_some()
     }
 
     /// Publishes UTF-8 text to the clipboard after a compositor input serial is available.
@@ -1099,6 +1178,9 @@ struct LayerState {
     output_power: Vec<OutputPowerControl>,
     output_power_target: Option<wl_output::WlOutput>,
     output_power_mode: Option<OutputPowerMode>,
+    shm: Option<Shm>,
+    screencopy_manager: Option<ZwlrScreencopyManagerV1>,
+    screencopies: Vec<PendingScreencopy>,
     screens: Vec<ScreenInfo>,
     session_locks: SessionLockState,
     session_lock: Option<SessionLock>,
@@ -1108,6 +1190,16 @@ struct LayerState {
 struct OutputPowerControl {
     output: wl_output::WlOutput,
     control: ZwlrOutputPowerV1,
+}
+
+struct PendingScreencopy {
+    request_id: u64,
+    frame: ZwlrScreencopyFrameV1,
+    offer: Option<(wl_shm::Format, u32, u32, u32)>,
+    pool: Option<SlotPool>,
+    buffer: Option<ShmBuffer>,
+    format: Option<ScreencopyFormat>,
+    y_invert: bool,
 }
 
 struct LockSurface {
@@ -1182,6 +1274,108 @@ impl LayerState {
             OutputPowerMode::Off => zwlr_output_power_v1::Mode::Off,
             OutputPowerMode::On => zwlr_output_power_v1::Mode::On,
         });
+    }
+
+    fn start_screencopy(&mut self, frame: &ZwlrScreencopyFrameV1) -> Result<(), String> {
+        let pending = self
+            .screencopies
+            .iter_mut()
+            .find(|pending| pending.frame == *frame)
+            .ok_or_else(|| "unknown screencopy frame".to_owned())?;
+        if pending.buffer.is_some() {
+            return Ok(());
+        }
+        let (format, width, height, stride) = pending
+            .offer
+            .ok_or_else(|| "compositor supplied no shared-memory format".to_owned())?;
+        let public_format = match format {
+            wl_shm::Format::Argb8888 => ScreencopyFormat::Argb8888,
+            wl_shm::Format::Xrgb8888 => ScreencopyFormat::Xrgb8888,
+            _ => return Err(format!("unsupported screencopy format {format:?}")),
+        };
+        if width == 0
+            || height == 0
+            || stride
+                < width
+                    .checked_mul(4)
+                    .ok_or_else(|| "screencopy width overflow".to_owned())?
+        {
+            return Err("invalid screencopy dimensions".to_owned());
+        }
+        let byte_len = (height as usize)
+            .checked_mul(stride as usize)
+            .filter(|size| *size <= 64 * 1024 * 1024)
+            .ok_or_else(|| "screencopy buffer exceeds 64 MiB".to_owned())?;
+        let width = i32::try_from(width).map_err(|_| "screencopy width is too large".to_owned())?;
+        let height =
+            i32::try_from(height).map_err(|_| "screencopy height is too large".to_owned())?;
+        let stride =
+            i32::try_from(stride).map_err(|_| "screencopy stride is too large".to_owned())?;
+        let shm = self
+            .shm
+            .as_ref()
+            .ok_or_else(|| "wl_shm is unavailable".to_owned())?;
+        let mut pool = SlotPool::new(byte_len.max(1), shm).map_err(|error| error.to_string())?;
+        let (buffer, _) = pool
+            .create_buffer(width, height, stride, format)
+            .map_err(|error| error.to_string())?;
+        frame.copy(buffer.wl_buffer());
+        pending.pool = Some(pool);
+        pending.buffer = Some(buffer);
+        pending.format = Some(public_format);
+        Ok(())
+    }
+
+    fn finish_screencopy(
+        &mut self,
+        frame: &ZwlrScreencopyFrameV1,
+    ) -> Result<ScreencopyFrame, String> {
+        let index = self
+            .screencopies
+            .iter()
+            .position(|pending| pending.frame == *frame)
+            .ok_or_else(|| "unknown screencopy frame".to_owned())?;
+        let mut pending = self.screencopies.remove(index);
+        let mut pool = pending
+            .pool
+            .take()
+            .ok_or_else(|| "screencopy has no shared-memory pool".to_owned())?;
+        let buffer = pending
+            .buffer
+            .take()
+            .ok_or_else(|| "screencopy has no shared-memory buffer".to_owned())?;
+        let pixels = buffer
+            .canvas(&mut pool)
+            .ok_or_else(|| "screencopy buffer is still active".to_owned())?
+            .to_vec();
+        let (_, width, height, stride) = pending
+            .offer
+            .ok_or_else(|| "screencopy metadata is missing".to_owned())?;
+        Ok(ScreencopyFrame {
+            width,
+            height,
+            stride,
+            format: pending
+                .format
+                .ok_or_else(|| "screencopy format is missing".to_owned())?,
+            y_invert: pending.y_invert,
+            pixels,
+        })
+    }
+
+    fn fail_screencopy(&mut self, frame: &ZwlrScreencopyFrameV1, error: String) {
+        let request_id = self
+            .screencopies
+            .iter()
+            .position(|pending| pending.frame == *frame)
+            .map(|index| self.screencopies.remove(index).request_id);
+        frame.destroy();
+        if let Some(request_id) = request_id {
+            self.events.push_back(LayerEvent::Screencopy {
+                request_id,
+                result: Err(error),
+            });
+        }
     }
 
     fn refresh_idle(&mut self, qh: &QueueHandle<Self>) {
@@ -2125,6 +2319,80 @@ impl Dispatch<ZwlrOutputPowerV1, wl_output::WlOutput> for LayerState {
     }
 }
 
+impl Dispatch<ZwlrScreencopyFrameV1, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
+                let format = match format {
+                    wayland_client::WEnum::Value(format) => format,
+                    wayland_client::WEnum::Unknown(value) => {
+                        state.fail_screencopy(proxy, format!("unknown screencopy format {value}"));
+                        return;
+                    }
+                };
+                if let Some(pending) = state
+                    .screencopies
+                    .iter_mut()
+                    .find(|pending| pending.frame == *proxy)
+                {
+                    pending.offer = Some((format, width, height, stride));
+                }
+                if proxy.version() < 3
+                    && let Err(error) = state.start_screencopy(proxy)
+                {
+                    state.fail_screencopy(proxy, error);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::BufferDone => {
+                if let Err(error) = state.start_screencopy(proxy) {
+                    state.fail_screencopy(proxy, error);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Flags { flags } => {
+                if let wayland_client::WEnum::Value(flags) = flags
+                    && let Some(pending) = state
+                        .screencopies
+                        .iter_mut()
+                        .find(|pending| pending.frame == *proxy)
+                {
+                    pending.y_invert = flags.contains(zwlr_screencopy_frame_v1::Flags::YInvert);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Ready { .. } => {
+                let Some(request_id) = state
+                    .screencopies
+                    .iter()
+                    .find(|pending| pending.frame == *proxy)
+                    .map(|pending| pending.request_id)
+                else {
+                    return;
+                };
+                let result = state.finish_screencopy(proxy);
+                proxy.destroy();
+                state
+                    .events
+                    .push_back(LayerEvent::Screencopy { request_id, result });
+            }
+            zwlr_screencopy_frame_v1::Event::Failed => {
+                state.fail_screencopy(proxy, "compositor rejected screencopy".to_owned());
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<ZwpInputMethodV2, ()> for LayerState {
     fn event(
         state: &mut Self,
@@ -2241,12 +2509,21 @@ impl ProvidesRegistryState for LayerState {
     registry_handlers![OutputState, SeatState];
 }
 
+impl ShmHandler for LayerState {
+    fn shm_state(&mut self) -> &mut Shm {
+        self.shm
+            .as_mut()
+            .expect("wl_shm handler requires bound state")
+    }
+}
+
 delegate_registry!(LayerState);
 smithay_client_toolkit::delegate_dispatch2!(LayerState);
 wayland_client::delegate_noop!(LayerState: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewporter);
 wayland_client::delegate_noop!(LayerState: ignore ExtIdleNotifierV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwlrOutputPowerManagerV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwlrScreencopyManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpInputMethodManagerV2);

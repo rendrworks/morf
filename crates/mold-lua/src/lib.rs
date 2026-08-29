@@ -165,6 +165,32 @@ pub enum TextInputRequest {
     },
 }
 
+/// One compositor output capture delivered to Lua.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Screencopy {
+    /// Pixel width.
+    pub width: u32,
+    /// Pixel height.
+    pub height: u32,
+    /// Bytes between adjacent rows.
+    pub stride: u32,
+    /// Shared-memory pixel format name.
+    pub format: String,
+    /// Whether rows are ordered bottom-to-top.
+    pub y_invert: bool,
+    /// Captured bytes including stride padding.
+    pub pixels: Vec<u8>,
+}
+
+/// Correlated output-capture request queued by Lua.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScreencopyRequest {
+    /// Runtime-local request identifier.
+    pub id: u64,
+    /// Whether the compositor should include the cursor image.
+    pub include_cursor: bool,
+}
+
 impl IpcValue {
     fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
         match self {
@@ -539,6 +565,37 @@ impl Runtime {
             }
         }
         !callbacks.is_empty()
+    }
+
+    /// Takes pending output-capture requests.
+    pub fn take_screencopy_requests(&mut self) -> Vec<ScreencopyRequest> {
+        std::mem::take(&mut self.reactive.borrow_mut().screencopy_requests)
+    }
+
+    /// Dispatches one output capture to its requesting Lua callback.
+    pub fn dispatch_screencopy(
+        &mut self,
+        request_id: u64,
+        result: Result<Screencopy, String>,
+    ) -> bool {
+        let Some(callback) = self
+            .reactive
+            .borrow_mut()
+            .screencopy_callbacks
+            .remove(&request_id)
+        else {
+            return false;
+        };
+        if let Err(message) = self
+            .lua
+            .enter(|ctx| execute_screencopy_handler(ctx, &callback, result, self.limits))
+        {
+            self.reactive
+                .borrow_mut()
+                .logs
+                .push(format!("screencopy callback: {message}"));
+        }
+        true
     }
 
     /// Takes pending virtual keyboard protocol requests.
@@ -1305,6 +1362,9 @@ struct ReactiveState {
     output_power_requests: Vec<bool>,
     clipboard_requests: Vec<String>,
     clipboard_callbacks: Vec<StashedClosure>,
+    screencopy_requests: Vec<ScreencopyRequest>,
+    screencopy_callbacks: HashMap<u64, StashedClosure>,
+    next_screencopy: u64,
     virtual_keyboard_requests: Vec<VirtualKeyboardRequest>,
     input_method_enable_requested: bool,
     input_method_requests: Vec<InputMethodRequest>,
@@ -1354,6 +1414,9 @@ impl ReactiveState {
             output_power_requests: Vec::new(),
             clipboard_requests: Vec::new(),
             clipboard_callbacks: Vec::new(),
+            screencopy_requests: Vec::new(),
+            screencopy_callbacks: HashMap::new(),
+            next_screencopy: 0,
             virtual_keyboard_requests: Vec::new(),
             input_method_enable_requested: false,
             input_method_requests: Vec::new(),
@@ -1788,6 +1851,24 @@ fn install_reactive_api(
         clipboard.set_field(ctx, "set", clipboard_set);
         clipboard.set_field(ctx, "subscribe", clipboard_subscribe);
         mold.set_field(ctx, "clipboard", clipboard);
+        let screencopy_state = Rc::clone(&state);
+        let screencopy_capture = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (include_cursor, callback): (bool, Closure) = stack.consume(ctx)?;
+            let mut state = screencopy_state.borrow_mut();
+            if state.screencopy_callbacks.len() >= 4 {
+                return Err(HostError("screencopy request limit reached".into()).into());
+            }
+            let id = state.next_screencopy;
+            state.next_screencopy = state.next_screencopy.wrapping_add(1);
+            state
+                .screencopy_requests
+                .push(ScreencopyRequest { id, include_cursor });
+            state.screencopy_callbacks.insert(id, ctx.stash(callback));
+            Ok(CallbackReturn::Return)
+        });
+        let screencopy = Table::new(&ctx);
+        screencopy.set_field(ctx, "capture", screencopy_capture);
+        mold.set_field(ctx, "screencopy", screencopy);
         let virtual_key_state = Rc::clone(&state);
         let virtual_key = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (keycode, pressed): (i64, bool) = stack.consume(ctx)?;
@@ -4746,6 +4827,56 @@ fn execute_handler_args(
     }
 }
 
+fn execute_screencopy_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    result: Result<Screencopy, String>,
+    limits: Limits,
+) -> Result<(), String> {
+    let args = match result {
+        Ok(frame) => {
+            let value = Table::new(&ctx);
+            value.set_field(ctx, "width", i64::from(frame.width));
+            value.set_field(ctx, "height", i64::from(frame.height));
+            value.set_field(ctx, "stride", i64::from(frame.stride));
+            value.set_field(ctx, "format", frame.format.as_str());
+            value.set_field(ctx, "y_invert", frame.y_invert);
+            value.set_field(ctx, "pixels", ctx.intern(&frame.pixels));
+            Variadic(vec![LuaValue::Table(value), LuaValue::Nil])
+        }
+        Err(error) => Variadic(vec![
+            LuaValue::Nil,
+            LuaValue::String(ctx.intern(error.as_bytes())),
+        ]),
+    };
+    let executor = Executor::start(ctx, ctx.fetch(closure).into(), args);
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua handler fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            break;
+        }
+    }
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn execute_dbus_handler(
     ctx: Context<'_>,
     closure: &StashedClosure,
@@ -5018,6 +5149,65 @@ mod tests {
         assert_eq!(
             runtime.call_ipc("clipboard.get", &[]).unwrap(),
             [IpcValue::String("none".to_owned())]
+        );
+    }
+
+    #[test]
+    fn screencopy_bridges_bounded_requests_and_pixels() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "screencopy.lua",
+                br#"
+                    local result = mold.signal("capture", "pending")
+                    mold.screencopy.capture(true, function(frame, err)
+                        if err then
+                            result:set(err)
+                        else
+                            result:set(frame.format .. ":" .. frame.width .. ":" ..
+                                #frame.pixels .. ":" .. string.byte(frame.pixels, 1))
+                        end
+                    end)
+                    local second = mold.signal("second", "pending")
+                    mold.screencopy.capture(false, function(_, err) second:set(err) end)
+                    mold.ipc["capture.get"] = function() return result:get() end
+                    mold.ipc["second.get"] = function() return second:get() end
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            runtime.take_screencopy_requests(),
+            [
+                ScreencopyRequest {
+                    id: 0,
+                    include_cursor: true,
+                },
+                ScreencopyRequest {
+                    id: 1,
+                    include_cursor: false,
+                },
+            ]
+        );
+        assert!(runtime.dispatch_screencopy(1, Err("second failed".to_owned())));
+        assert!(runtime.dispatch_screencopy(
+            0,
+            Ok(Screencopy {
+                width: 2,
+                height: 1,
+                stride: 8,
+                format: "argb8888".to_owned(),
+                y_invert: false,
+                pixels: vec![7; 8],
+            })
+        ));
+        assert_eq!(
+            runtime.call_ipc("capture.get", &[]).unwrap(),
+            [IpcValue::String("argb8888:2:8:7".to_owned())]
+        );
+        assert_eq!(
+            runtime.call_ipc("second.get", &[]).unwrap(),
+            [IpcValue::String("second failed".to_owned())]
         );
     }
 

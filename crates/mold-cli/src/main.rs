@@ -12,12 +12,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
-    InputMethodRequest, IpcValue, Limits, Runtime, Screen, TextInputRequest, UiEvent,
-    VirtualKeyboardRequest,
+    InputMethodRequest, IpcValue, Limits, Runtime, Screen, Screencopy as LuaScreencopy,
+    TextInputRequest, UiEvent, VirtualKeyboardRequest,
 };
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
-use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, OutputPowerMode, ScreenInfo};
+use mold_wayland::{
+    BarConfig, InputRect, LayerClient, LayerEvent, OutputPowerMode, ScreenInfo, ScreencopyFormat,
+};
 
 fn usage() -> &'static str {
     "mold - reactive Wayland shell runtime\n\nusage: mold [shell.lua]\n       mold -c <name>\n       mold lock [lock.lua]\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log [--bindings]\n       mold kill\n       mold --help\n       mold --version"
@@ -176,6 +178,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         .begin_session_lock()
         .map_err(|error| error.to_string())?;
     apply_output_power_requests(&mut runtime, &mut client);
+    apply_screencopy_requests(&mut runtime, &mut client);
     apply_virtual_keyboard_requests(&mut runtime, &mut client);
     apply_input_method_requests(&mut runtime, &mut client);
     apply_text_input_requests(&mut runtime, &mut client);
@@ -194,6 +197,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         let mut repaint = runtime.poll_services();
         apply_output_power_requests(&mut runtime, &mut client);
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_screencopy_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
         apply_text_input_requests(&mut runtime, &mut client);
@@ -267,6 +271,9 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 LayerEvent::Clipboard { text } => {
                     repaint |= runtime.dispatch_clipboard(text);
                 }
+                LayerEvent::Screencopy { request_id, result } => {
+                    repaint |= dispatch_screencopy(&mut runtime, request_id, result);
+                }
                 LayerEvent::InputMethod(state) => {
                     repaint |= runtime.dispatch_input_method(
                         state.active,
@@ -310,6 +317,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
             }
         }
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_screencopy_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
         apply_text_input_requests(&mut runtime, &mut client);
@@ -850,6 +858,36 @@ fn apply_clipboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     }
 }
 
+fn apply_screencopy_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    for request in runtime.take_screencopy_requests() {
+        if !client.capture_output(request.id, request.include_cursor) {
+            runtime.dispatch_screencopy(request.id, Err("screencopy is unavailable".to_owned()));
+        }
+    }
+}
+
+fn dispatch_screencopy(
+    runtime: &mut Runtime,
+    request_id: u64,
+    result: Result<mold_wayland::ScreencopyFrame, String>,
+) -> bool {
+    runtime.dispatch_screencopy(
+        request_id,
+        result.map(|frame| LuaScreencopy {
+            width: frame.width,
+            height: frame.height,
+            stride: frame.stride,
+            format: match frame.format {
+                ScreencopyFormat::Argb8888 => "argb8888",
+                ScreencopyFormat::Xrgb8888 => "xrgb8888",
+            }
+            .to_owned(),
+            y_invert: frame.y_invert,
+            pixels: frame.pixels,
+        }),
+    )
+}
+
 fn apply_virtual_keyboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     for request in runtime.take_virtual_keyboard_requests() {
         match request {
@@ -973,6 +1011,9 @@ fn run_surface(
             match event {
                 LayerEvent::Configure { .. } => break 'configured,
                 LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
+                LayerEvent::Screencopy { request_id, result } => {
+                    dispatch_screencopy(&mut runtime, request_id, result);
+                }
                 LayerEvent::Scale(_)
                 | LayerEvent::Idle { .. }
                 | LayerEvent::OutputPower { .. }
@@ -1019,6 +1060,7 @@ fn run_surface(
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let mut layout = paint(&runtime, &mut renderer, &client)?;
     apply_output_power_requests(&mut runtime, &mut client);
+    apply_screencopy_requests(&mut runtime, &mut client);
     apply_virtual_keyboard_requests(&mut runtime, &mut client);
     apply_input_method_requests(&mut runtime, &mut client);
     apply_text_input_requests(&mut runtime, &mut client);
@@ -1052,6 +1094,7 @@ fn run_surface(
         }
         apply_output_power_requests(&mut runtime, &mut client);
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_screencopy_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
         apply_text_input_requests(&mut runtime, &mut client);
@@ -1086,6 +1129,9 @@ fn run_surface(
                 LayerEvent::OutputPower { .. } => {}
                 LayerEvent::Clipboard { text } => {
                     repaint |= runtime.dispatch_clipboard(text);
+                }
+                LayerEvent::Screencopy { request_id, result } => {
+                    repaint |= dispatch_screencopy(&mut runtime, request_id, result);
                 }
                 LayerEvent::InputMethod(state) => {
                     repaint |= runtime.dispatch_input_method(
@@ -1279,6 +1325,7 @@ fn run_surface(
             }
         }
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_screencopy_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
         apply_text_input_requests(&mut runtime, &mut client);
