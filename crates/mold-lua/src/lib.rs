@@ -13,7 +13,10 @@ use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
-use mold_io::{Bus, DbusProxy, DbusValue, Timer as IoTimer};
+use mold_io::{
+    Bus, DbusProxy, DbusValue, FileEvent, FileView, FileWatcher, Process, ProcessEvent, Socket,
+    Timer as IoTimer,
+};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
     AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
@@ -528,6 +531,22 @@ struct DbusToken {
 
 struct PipeWireToken {
     service: PipeWire,
+}
+
+struct ProcessToken {
+    process: RefCell<Process>,
+}
+
+struct FileToken {
+    file: FileView,
+}
+
+struct FileWatcherToken {
+    watcher: FileWatcher,
+}
+
+struct SocketToken {
+    socket: RefCell<Socket>,
 }
 
 struct ListModelToken {
@@ -1174,6 +1193,221 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "transition_parent", transition_parent);
+
+        let process_write = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (process, bytes): (UserRef<ProcessToken>, String) = stack.consume(ctx)?;
+            process
+                .process
+                .borrow_mut()
+                .write(bytes.as_bytes())
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let process_close = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let process: UserRef<ProcessToken> = stack.consume(ctx)?;
+            process.process.borrow_mut().close_stdin();
+            Ok(CallbackReturn::Return)
+        });
+        let process_kill = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let process: UserRef<ProcessToken> = stack.consume(ctx)?;
+            process
+                .process
+                .borrow_mut()
+                .kill()
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let process_next = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let process: UserRef<ProcessToken> = stack.consume(ctx)?;
+            let event = process
+                .process
+                .borrow_mut()
+                .next_event(Duration::ZERO)
+                .map_err(|error| HostError(error.to_string()))?;
+            let Some(event) = event else {
+                stack.replace(ctx, LuaValue::Nil);
+                return Ok(CallbackReturn::Return);
+            };
+            let value = Table::new(&ctx);
+            match event {
+                ProcessEvent::Stdout(bytes) => {
+                    value.set_field(ctx, "kind", "stdout");
+                    value.set_field(ctx, "data", String::from_utf8_lossy(&bytes).as_ref());
+                }
+                ProcessEvent::Stderr(bytes) => {
+                    value.set_field(ctx, "kind", "stderr");
+                    value.set_field(ctx, "data", String::from_utf8_lossy(&bytes).as_ref());
+                }
+                ProcessEvent::Exit(status) => {
+                    value.set_field(ctx, "kind", "exit");
+                    value.set_field(ctx, "success", status.success());
+                    value.set_field(
+                        ctx,
+                        "code",
+                        status
+                            .code()
+                            .map_or(LuaValue::Nil, |code| LuaValue::Integer(code as i64)),
+                    );
+                }
+            }
+            stack.replace(ctx, value);
+            Ok(CallbackReturn::Return)
+        });
+        let process_methods = Table::new(&ctx);
+        process_methods.set_field(ctx, "write", process_write);
+        process_methods.set_field(ctx, "close_stdin", process_close);
+        process_methods.set_field(ctx, "kill", process_kill);
+        process_methods.set_field(ctx, "next", process_next);
+        let process_metatable = Table::new(&ctx);
+        process_metatable.set_field(ctx, "__index", process_methods);
+        let process_metatable = ctx.stash(process_metatable);
+        let process = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (program, args): (String, Table) = stack.consume(ctx)?;
+            let args = table_string_array(ctx, args, 64).map_err(HostError)?;
+            let process =
+                Process::spawn(program, args).map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                ProcessToken {
+                    process: RefCell::new(process),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&process_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "process", process);
+
+        let file_read = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileToken> = stack.consume(ctx)?;
+            let bytes = file
+                .file
+                .read_bounded(1024 * 1024)
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, String::from_utf8_lossy(&bytes).as_ref());
+            Ok(CallbackReturn::Return)
+        });
+        let file_write = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (file, bytes): (UserRef<FileToken>, String) = stack.consume(ctx)?;
+            if bytes.len() > 1024 * 1024 {
+                return Err(HostError("file write exceeds 1 MiB".to_owned()).into());
+            }
+            file.file
+                .write(bytes.as_bytes())
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let watcher_next = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (watcher, timeout_ms): (UserRef<FileWatcherToken>, i64) = stack.consume(ctx)?;
+            let timeout = bounded_timeout(timeout_ms).map_err(HostError)?;
+            let event = watcher.watcher.next_event(timeout);
+            match event {
+                Some(FileEvent::Changed) => stack.replace(ctx, "changed"),
+                Some(FileEvent::Moved) => stack.replace(ctx, "moved"),
+                Some(FileEvent::Deleted) => stack.replace(ctx, "deleted"),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let watcher_methods = Table::new(&ctx);
+        watcher_methods.set_field(ctx, "next", watcher_next);
+        let watcher_metatable = Table::new(&ctx);
+        watcher_metatable.set_field(ctx, "__index", watcher_methods);
+        let watcher_metatable = ctx.stash(watcher_metatable);
+        let file_watch = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let file: UserRef<FileToken> = stack.consume(ctx)?;
+            let watcher = file
+                .file
+                .watch()
+                .map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(&ctx, FileWatcherToken { watcher });
+            userdata.set_metatable(ctx, Some(ctx.fetch(&watcher_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        let file_methods = Table::new(&ctx);
+        file_methods.set_field(ctx, "read", file_read);
+        file_methods.set_field(ctx, "write", file_write);
+        file_methods.set_field(ctx, "watch", file_watch);
+        let file_metatable = Table::new(&ctx);
+        file_metatable.set_field(ctx, "__index", file_methods);
+        let file_metatable = ctx.stash(file_metatable);
+        let file_view = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let path: String = stack.consume(ctx)?;
+            let userdata = UserData::new_static(
+                &ctx,
+                FileToken {
+                    file: FileView::new(path),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&file_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "file", file_view);
+
+        let socket_send = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (socket, bytes): (UserRef<SocketToken>, String) = stack.consume(ctx)?;
+            if bytes.len() > 64 * 1024 {
+                return Err(HostError("socket send exceeds 64 KiB".to_owned()).into());
+            }
+            socket
+                .socket
+                .borrow_mut()
+                .send(bytes.as_bytes())
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let socket_receive = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (socket, maximum, timeout_ms): (UserRef<SocketToken>, i64, i64) =
+                stack.consume(ctx)?;
+            let maximum = usize::try_from(maximum)
+                .ok()
+                .filter(|maximum| (1..=64 * 1024).contains(maximum))
+                .ok_or_else(|| HostError("socket receive limit must be 1..65536".to_owned()))?;
+            let timeout = bounded_timeout(timeout_ms).map_err(HostError)?;
+            let mut bytes = vec![0; maximum];
+            match socket
+                .socket
+                .borrow_mut()
+                .receive_timeout(&mut bytes, timeout)
+            {
+                Ok(read) => {
+                    bytes.truncate(read);
+                    stack.replace(ctx, String::from_utf8_lossy(&bytes).as_ref());
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    stack.replace(ctx, LuaValue::Nil);
+                }
+                Err(error) => return Err(HostError(error.to_string()).into()),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let socket_methods = Table::new(&ctx);
+        socket_methods.set_field(ctx, "send", socket_send);
+        socket_methods.set_field(ctx, "receive", socket_receive);
+        let socket_metatable = Table::new(&ctx);
+        socket_metatable.set_field(ctx, "__index", socket_methods);
+        let socket_metatable = ctx.stash(socket_metatable);
+        let socket = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let path: String = stack.consume(ctx)?;
+            let socket = Socket::connect(path).map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                SocketToken {
+                    socket: RefCell::new(socket),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&socket_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "socket", socket);
 
         let dbus_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, property): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
@@ -2246,6 +2480,41 @@ fn table_string<'gc>(
     }
 }
 
+fn table_string_array<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    maximum: usize,
+) -> Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    for (key, value) in table.iter(ctx) {
+        let LuaValue::Integer(index) = key else {
+            return Err("argument list keys must be integers".to_owned());
+        };
+        let LuaValue::String(value) = value else {
+            return Err("process arguments must be strings".to_owned());
+        };
+        values.push((index, value.display_lossy().to_string()));
+    }
+    if values.len() > maximum {
+        return Err(format!("argument list exceeds {maximum} entries"));
+    }
+    values.sort_by_key(|(index, _)| *index);
+    for (offset, (index, _)) in values.iter().enumerate() {
+        if *index != offset as i64 + 1 {
+            return Err("argument list must be a dense sequence".to_owned());
+        }
+    }
+    Ok(values.into_iter().map(|(_, value)| value).collect())
+}
+
+fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
+    u64::try_from(milliseconds)
+        .ok()
+        .filter(|milliseconds| *milliseconds <= 5_000)
+        .map(Duration::from_millis)
+        .ok_or_else(|| "timeout must be between 0 and 5000 milliseconds".to_owned())
+}
+
 fn parse_easing(value: LuaValue<'_>) -> Result<Easing, String> {
     match value {
         LuaValue::Nil => Ok(Easing::Linear),
@@ -3272,6 +3541,77 @@ mod tests {
         let root = runtime.scene().roots()[0];
 
         assert_eq!(runtime.scene().string_value(root, "text").unwrap(), "1");
+    }
+
+    #[test]
+    fn lua_io_primitives_stream_processes_and_bound_files() {
+        let path = std::env::temp_dir().join(format!("mold-lua-file-{}", std::process::id()));
+        std::fs::write(&path, "old").unwrap();
+        let source = format!(
+            r#"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local output = mold.signal("process.output", "pending")
+                local file = mold.file("{}")
+                assert(file:read() == "old")
+                file:write("new")
+                assert(file:read() == "new")
+                local process = mold.process("sh", {{ "-c", "printf streamed" }})
+                mold.timer(1, function()
+                    local event = process:next()
+                    if event and event.kind == "stdout" then output:set(event.data) end
+                end)
+                ui.Text {{ text = function() return output:get() end }}
+            "#,
+            path.display()
+        );
+        let mut runtime = Runtime::default();
+        runtime.execute("io.lua", source.as_bytes()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let root = runtime.scene().roots()[0];
+        while runtime.scene().string_value(root, "text").unwrap() != "streamed"
+            && std::time::Instant::now() < deadline
+        {
+            runtime.poll_services();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(
+            runtime.scene().string_value(root, "text").unwrap(),
+            "streamed"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn lua_socket_uses_bounded_timeout_reads() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let path = std::env::temp_dir().join(format!("mold-lua-socket-{}", std::process::id()));
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"ping");
+            stream.write_all(b"pong").unwrap();
+        });
+        let source = format!(
+            r#"
+                local mold = require("mold")
+                local socket = mold.socket("{}")
+                socket:send("ping")
+                assert(socket:receive(4, 500) == "pong")
+            "#,
+            path.display()
+        );
+        let mut runtime = Runtime::default();
+
+        runtime.execute("socket.lua", source.as_bytes()).unwrap();
+
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

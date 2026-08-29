@@ -98,6 +98,16 @@ impl Process {
     }
 }
 
+impl Drop for Process {
+    fn drop(&mut self) {
+        self.stdin = None;
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 fn stream_reader<R, F>(mut reader: R, tx: mpsc::Sender<ProcessEvent>, event: F)
 where
     R: Read + Send + 'static,
@@ -202,6 +212,18 @@ impl FileView {
 
     pub fn read(&self) -> io::Result<Vec<u8>> {
         fs::read(&self.path)
+    }
+
+    /// Reads a file only when its current size fits the supplied bound.
+    pub fn read_bounded(&self, maximum: usize) -> io::Result<Vec<u8>> {
+        let length = fs::metadata(&self.path)?.len();
+        if length > maximum as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file exceeds read limit",
+            ));
+        }
+        self.read()
     }
 
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
@@ -326,6 +348,14 @@ impl Socket {
 
     pub fn receive(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         self.0.read(bytes)
+    }
+
+    /// Receives bytes with a temporary read timeout.
+    pub fn receive_timeout(&mut self, bytes: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        self.0.set_read_timeout(Some(timeout))?;
+        let result = self.0.read(bytes);
+        let _ = self.0.set_read_timeout(None);
+        result
     }
 }
 
