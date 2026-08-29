@@ -122,6 +122,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         120,
     )?;
+    backend.render(
+        &list,
+        &[DamageRect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 64,
+        }],
+        120,
+    )?;
     let info = backend.info();
     println!(
         "{} ({:?}, {:04x}:{:04x})",

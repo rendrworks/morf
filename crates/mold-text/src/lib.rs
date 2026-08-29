@@ -1,6 +1,7 @@
 //! Text shaping, measurement, and glyph rasterization for mold.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use cosmic_text::{
     Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
@@ -44,6 +45,8 @@ pub enum RasterContent {
 /// Positioned glyph bitmap ready for atlas upload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RasterGlyph {
+    /// Process-local key identifying the cached raster image.
+    pub cache_key: u64,
     /// Physical left edge relative to the render target.
     pub x: i32,
     /// Physical top edge relative to the render target.
@@ -111,6 +114,9 @@ impl TextSystem {
         physical
             .into_iter()
             .filter_map(|glyph| {
+                let mut hasher = DefaultHasher::new();
+                glyph.cache_key.hash(&mut hasher);
+                let cache_key = hasher.finish();
                 let image = self
                     .glyphs
                     .get_image(&mut self.fonts, glyph.cache_key)
@@ -121,6 +127,7 @@ impl TextSystem {
                     SwashContent::SubpixelMask => RasterContent::Mask,
                 };
                 Some(RasterGlyph {
+                    cache_key,
                     x: glyph.x + image.placement.left,
                     y: glyph.y - image.placement.top,
                     width: image.placement.width,
@@ -352,6 +359,7 @@ mod tests {
         text.measure(node, "mold", "sans-serif", 16.0, TextOptions::default());
 
         let glyphs = text.rasterize(node, (5.0, 7.0), 1.25);
+        let cached = text.rasterize(node, (5.0, 7.0), 1.25);
 
         assert!(!glyphs.is_empty());
         assert!(
@@ -360,6 +368,16 @@ mod tests {
                 .all(|glyph| glyph.width > 0 && glyph.height > 0)
         );
         assert!(glyphs.iter().all(|glyph| !glyph.data.is_empty()));
+        assert_eq!(
+            glyphs
+                .iter()
+                .map(|glyph| glyph.cache_key)
+                .collect::<Vec<_>>(),
+            cached
+                .iter()
+                .map(|glyph| glyph.cache_key)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

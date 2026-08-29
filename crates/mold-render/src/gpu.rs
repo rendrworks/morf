@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
 use std::mem;
@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 use mold_image::ImageCache;
 use mold_layout::{Geometry, Size, TextMeasurer, TextOptions, Transform2D};
 use mold_scene::{Color, Element, NodeHandle};
-use mold_text::{RasterContent, TextSystem};
+use mold_text::{RasterContent, RasterGlyph, TextSystem};
 
 use crate::path::PathCache;
 use crate::{
@@ -58,6 +58,7 @@ pub struct WgpuBackend {
     glyph_pipeline: wgpu::RenderPipeline,
     glyph_layout: wgpu::BindGroupLayout,
     glyph_sampler: wgpu::Sampler,
+    glyph_atlas: GlyphAtlas,
     blur_pipeline: wgpu::RenderPipeline,
     blur_layout: wgpu::BindGroupLayout,
     blur_sampler: wgpu::Sampler,
@@ -175,6 +176,7 @@ impl WgpuBackend {
         let clear_pipeline = create_pipeline(&device, &pipeline_layout, &clear_shader, false);
         let path_pipeline = create_path_pipeline(&device, &viewport_layout);
         let (glyph_pipeline, glyph_layout, glyph_sampler) = create_glyph_pipeline(&device);
+        let glyph_atlas = GlyphAtlas::new(&device, &glyph_layout, &glyph_sampler);
         let (blur_pipeline, blur_layout, blur_sampler) = create_blur_pipeline(&device);
         let instance_capacity = 1;
         let instance_buffer = create_instance_buffer(&device, instance_capacity);
@@ -211,6 +213,7 @@ impl WgpuBackend {
             glyph_pipeline,
             glyph_layout,
             glyph_sampler,
+            glyph_atlas,
             blur_pipeline,
             blur_layout,
             blur_sampler,
@@ -377,16 +380,14 @@ impl RenderBackend for WgpuBackend {
         }
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
-                device: &self.device,
                 queue: &self.queue,
-                layout: &self.glyph_layout,
-                sampler: &self.glyph_sampler,
+                atlas: &mut self.glyph_atlas,
                 target_size: (self.width, self.height),
             },
             &mut self.text,
             list,
             scale_120,
-        );
+        )?;
         let mut texture_batch = create_texture_batch(
             TextureBatchContext {
                 device: &self.device,
@@ -616,7 +617,7 @@ impl RenderBackend for WgpuBackend {
                         && let Some(range) = &batch.command_ranges[command_index]
                     {
                         $pass.set_pipeline(&self.glyph_pipeline);
-                        $pass.set_bind_group(0, &batch.bind_group, &[]);
+                        $pass.set_bind_group(0, &self.glyph_atlas.bind_group, &[]);
                         $pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
                         $pass.draw(0..6, range.clone());
                     }
@@ -1096,8 +1097,277 @@ fn transformed_quad(
 struct GlyphBatch {
     instances: Vec<GlyphInstance>,
     command_ranges: Vec<Option<Range<u32>>>,
-    _texture: wgpu::Texture,
+}
+
+const GLYPH_ATLAS_SIZE: u32 = 2048;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct GlyphKey {
+    id: u64,
+    width: u32,
+    height: u32,
+    color: bool,
+}
+
+impl GlyphKey {
+    fn from_glyph(glyph: &RasterGlyph) -> Self {
+        Self {
+            id: glyph.cache_key,
+            width: glyph.width,
+            height: glyph.height,
+            color: glyph.content == RasterContent::Color,
+        }
+    }
+}
+
+struct GlyphAtlasEntry {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    last_used: u64,
+    pixels: Vec<u8>,
+}
+
+struct PreparedGlyph {
+    glyph: RasterGlyph,
+    color: Color,
+    color_overlay: Color,
+    transform: Transform2D,
+    command_index: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ShelfAllocator {
+    x: u32,
+    y: u32,
+    row_height: u32,
+}
+
+impl ShelfAllocator {
+    fn allocate(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+        let width = width.checked_add(2)?;
+        let height = height.checked_add(2)?;
+        if width > GLYPH_ATLAS_SIZE || height > GLYPH_ATLAS_SIZE {
+            return None;
+        }
+        if self.x + width > GLYPH_ATLAS_SIZE {
+            self.x = 0;
+            self.y = self.y.checked_add(self.row_height)?;
+            self.row_height = 0;
+        }
+        if self.y + height > GLYPH_ATLAS_SIZE {
+            return None;
+        }
+        let placement = (self.x + 1, self.y + 1);
+        self.x += width;
+        self.row_height = self.row_height.max(height);
+        Some(placement)
+    }
+}
+
+struct GlyphAtlas {
+    texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    entries: HashMap<GlyphKey, GlyphAtlasEntry>,
+    allocator: ShelfAllocator,
+    clock: u64,
+}
+
+impl GlyphAtlas {
+    fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mold persistent glyph atlas"),
+            size: wgpu::Extent3d {
+                width: GLYPH_ATLAS_SIZE,
+                height: GLYPH_ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mold persistent glyph atlas bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        Self {
+            texture,
+            bind_group,
+            entries: HashMap::new(),
+            allocator: ShelfAllocator::default(),
+            clock: 0,
+        }
+    }
+
+    fn prepare(&mut self, queue: &wgpu::Queue, glyphs: &[PreparedGlyph]) -> Result<(), GpuError> {
+        self.clock = self.clock.wrapping_add(1);
+        let mut requested = HashSet::new();
+        let mut missing = Vec::new();
+        for prepared in glyphs {
+            let glyph = &prepared.glyph;
+            let key = GlyphKey::from_glyph(glyph);
+            if !requested.insert(key) {
+                continue;
+            }
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.last_used = self.clock;
+            } else {
+                missing.push((key, glyph_pixels(glyph)));
+            }
+        }
+        let mut allocator = self.allocator;
+        let mut placements = Vec::with_capacity(missing.len());
+        for (key, _) in &missing {
+            let Some(placement) = allocator.allocate(key.width, key.height) else {
+                return self.rebuild(queue, glyphs, &requested);
+            };
+            placements.push(placement);
+        }
+        self.allocator = allocator;
+        for ((key, pixels), (x, y)) in missing.into_iter().zip(placements) {
+            let entry = GlyphAtlasEntry {
+                x,
+                y,
+                width: key.width,
+                height: key.height,
+                last_used: self.clock,
+                pixels,
+            };
+            upload_glyph(queue, &self.texture, &entry);
+            self.entries.insert(key, entry);
+        }
+        Ok(())
+    }
+
+    fn rebuild(
+        &mut self,
+        queue: &wgpu::Queue,
+        glyphs: &[PreparedGlyph],
+        requested: &HashSet<GlyphKey>,
+    ) -> Result<(), GpuError> {
+        let old = std::mem::take(&mut self.entries);
+        let mut requested_entries = Vec::new();
+        let mut seen = HashSet::new();
+        for prepared in glyphs {
+            let glyph = &prepared.glyph;
+            let key = GlyphKey::from_glyph(glyph);
+            if !seen.insert(key) {
+                continue;
+            }
+            let pixels = old
+                .get(&key)
+                .map_or_else(|| glyph_pixels(glyph), |entry| entry.pixels.clone());
+            requested_entries.push((key, pixels));
+        }
+        let mut retained: Vec<_> = old
+            .into_iter()
+            .filter(|(key, _)| !requested.contains(key))
+            .collect();
+        retained.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.last_used));
+        self.allocator = ShelfAllocator::default();
+        for (key, pixels) in requested_entries {
+            let Some((x, y)) = self.allocator.allocate(key.width, key.height) else {
+                return Err(GpuError(
+                    "visible glyphs exceed the persistent atlas capacity".to_owned(),
+                ));
+            };
+            let entry = GlyphAtlasEntry {
+                x,
+                y,
+                width: key.width,
+                height: key.height,
+                last_used: self.clock,
+                pixels,
+            };
+            upload_glyph(queue, &self.texture, &entry);
+            self.entries.insert(key, entry);
+        }
+        for (key, mut entry) in retained {
+            let Some((x, y)) = self.allocator.allocate(key.width, key.height) else {
+                continue;
+            };
+            entry.x = x;
+            entry.y = y;
+            upload_glyph(queue, &self.texture, &entry);
+            self.entries.insert(key, entry);
+        }
+        Ok(())
+    }
+}
+
+fn glyph_pixels(glyph: &RasterGlyph) -> Vec<u8> {
+    let pixel_count = glyph.width as usize * glyph.height as usize;
+    let mut pixels = Vec::with_capacity(pixel_count * 4);
+    for index in 0..pixel_count {
+        let pixel = match glyph.content {
+            RasterContent::Mask if glyph.data.len() >= pixel_count * 3 => {
+                let at = index * 3;
+                [
+                    255,
+                    255,
+                    255,
+                    glyph.data[at..at + 3].iter().copied().max().unwrap_or(0),
+                ]
+            }
+            RasterContent::Mask => [255, 255, 255, glyph.data[index]],
+            RasterContent::Color => {
+                let at = index * 4;
+                glyph.data[at..at + 4].try_into().unwrap()
+            }
+        };
+        pixels.extend_from_slice(&pixel);
+    }
+    pixels
+}
+
+fn upload_glyph(queue: &wgpu::Queue, texture: &wgpu::Texture, entry: &GlyphAtlasEntry) {
+    let padded_width = entry.width + 2;
+    let padded_height = entry.height + 2;
+    let mut padded = vec![0; padded_width as usize * padded_height as usize * 4];
+    for row in 0..entry.height as usize {
+        let source = row * entry.width as usize * 4;
+        let destination = ((row + 1) * padded_width as usize + 1) * 4;
+        padded[destination..destination + entry.width as usize * 4]
+            .copy_from_slice(&entry.pixels[source..source + entry.width as usize * 4]);
+    }
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: entry.x - 1,
+                y: entry.y - 1,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &padded,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(padded_width * 4),
+            rows_per_image: Some(padded_height),
+        },
+        wgpu::Extent3d {
+            width: padded_width,
+            height: padded_height,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 fn create_blur_pipeline(
@@ -1360,7 +1630,13 @@ struct TextureTint {
     overlay: Color,
 }
 
-type TextureBatchContext<'a> = GlyphBatchContext<'a>;
+struct TextureBatchContext<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    layout: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+    target_size: (u32, u32),
+}
 
 fn create_texture_batch(
     context: TextureBatchContext<'_>,
@@ -1587,10 +1863,8 @@ fn push_texture_instance(
 }
 
 struct GlyphBatchContext<'a> {
-    device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
-    layout: &'a wgpu::BindGroupLayout,
-    sampler: &'a wgpu::Sampler,
+    atlas: &'a mut GlyphAtlas,
     target_size: (u32, u32),
 }
 
@@ -1599,17 +1873,14 @@ fn create_glyph_batch(
     text_system: &mut TextSystem,
     list: &DrawList,
     scale_120: u32,
-) -> Option<GlyphBatch> {
+) -> Result<Option<GlyphBatch>, GpuError> {
     let GlyphBatchContext {
-        device,
         queue,
-        layout,
-        sampler,
+        atlas,
         target_size: (target_width, target_height),
     } = context;
     let scale = scale_120.max(1) as f32 / 120.0;
     let mut glyphs = Vec::new();
-    let mut command_ranges = vec![None; list.commands.len()];
     for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Text {
             node,
@@ -1647,7 +1918,6 @@ fn create_glyph_batch(
             VerticalAlignment::Center => spare_height / 2.0,
             VerticalAlignment::Bottom => spare_height,
         };
-        let start = glyphs.len() as u32;
         for glyph in text_system.rasterize(
             *node,
             (
@@ -1657,74 +1927,39 @@ fn create_glyph_batch(
             scale,
         ) {
             if glyph.width > 0 && glyph.height > 0 {
-                glyphs.push((glyph, *color, *color_overlay, *transform));
+                glyphs.push(PreparedGlyph {
+                    glyph,
+                    color: *color,
+                    color_overlay: *color_overlay,
+                    transform: *transform,
+                    command_index,
+                });
             }
-        }
-        let end = glyphs.len() as u32;
-        if start != end {
-            command_ranges[command_index] = Some(start..end);
         }
     }
     if glyphs.is_empty() {
-        return None;
+        return Ok(None);
     }
-
-    let widest = glyphs
-        .iter()
-        .map(|(glyph, _, _, _)| glyph.width)
-        .max()
-        .unwrap_or(1);
-    let atlas_width = widest.max(1024).next_power_of_two();
-    let mut placements = Vec::with_capacity(glyphs.len());
-    let (mut x, mut y, mut row_height) = (0_u32, 0_u32, 0_u32);
-    for (glyph, _, _, _) in &glyphs {
-        if x + glyph.width > atlas_width {
-            x = 0;
-            y += row_height;
-            row_height = 0;
-        }
-        placements.push((x, y));
-        x += glyph.width;
-        row_height = row_height.max(glyph.height);
-    }
-    let atlas_height = (y + row_height).max(1).next_power_of_two();
-    let mut pixels = vec![0_u8; atlas_width as usize * atlas_height as usize * 4];
+    atlas.prepare(queue, &glyphs)?;
     let mut instances = Vec::with_capacity(glyphs.len());
-    for ((glyph, color, color_overlay, transform), (atlas_x, atlas_y)) in
-        glyphs.into_iter().zip(placements)
-    {
-        let pixel_count = glyph.width as usize * glyph.height as usize;
-        for index in 0..pixel_count {
-            let source = match glyph.content {
-                RasterContent::Mask if glyph.data.len() >= pixel_count * 3 => {
-                    let at = index * 3;
-                    [
-                        255,
-                        255,
-                        255,
-                        glyph.data[at..at + 3].iter().copied().max().unwrap_or(0),
-                    ]
-                }
-                RasterContent::Mask => [255, 255, 255, glyph.data[index]],
-                RasterContent::Color => {
-                    let at = index * 4;
-                    glyph.data[at..at + 4].try_into().unwrap()
-                }
-            };
-            let source_x = index % glyph.width as usize;
-            let source_y = index / glyph.width as usize;
-            let destination = ((atlas_y as usize + source_y) * atlas_width as usize
-                + atlas_x as usize
-                + source_x)
-                * 4;
-            pixels[destination..destination + 4].copy_from_slice(&source);
-        }
+    let mut command_ranges = vec![None; list.commands.len()];
+    for prepared in glyphs {
+        let glyph = prepared.glyph;
+        let key = GlyphKey::from_glyph(&glyph);
+        let entry = atlas.entries.get(&key).ok_or_else(|| {
+            GpuError("prepared glyph is missing from the persistent atlas".to_owned())
+        })?;
         let tint = match glyph.content {
-            RasterContent::Mask => [color.red, color.green, color.blue, color.alpha],
-            RasterContent::Color => [1.0, 1.0, 1.0, color.alpha],
+            RasterContent::Mask => [
+                prepared.color.red,
+                prepared.color.green,
+                prepared.color.blue,
+                prepared.color.alpha,
+            ],
+            RasterContent::Color => [1.0, 1.0, 1.0, prepared.color.alpha],
         };
         let (origin, axes) = transformed_quad(
-            transform,
+            prepared.transform,
             Geometry {
                 x: f64::from(glyph.x) / f64::from(scale),
                 y: f64::from(glyph.y) / f64::from(scale),
@@ -1734,17 +1969,21 @@ fn create_glyph_batch(
             f64::from(scale),
             (target_width, target_height),
         );
+        let instance = instances.len() as u32;
+        command_ranges[prepared.command_index]
+            .get_or_insert(instance..instance)
+            .end = instance + 1;
         instances.push(GlyphInstance {
             origin,
             axes,
             uv: [
-                atlas_x as f32 / atlas_width as f32,
-                atlas_y as f32 / atlas_height as f32,
-                glyph.width as f32 / atlas_width as f32,
-                glyph.height as f32 / atlas_height as f32,
+                entry.x as f32 / GLYPH_ATLAS_SIZE as f32,
+                entry.y as f32 / GLYPH_ATLAS_SIZE as f32,
+                glyph.width as f32 / GLYPH_ATLAS_SIZE as f32,
+                glyph.height as f32 / GLYPH_ATLAS_SIZE as f32,
             ],
             color: tint,
-            color_overlay: color_array(color_overlay),
+            color_overlay: color_array(prepared.color_overlay),
             mode: [0.0; 4],
             surface: [0.0; 4],
             mask_bounds: [0.0; 4],
@@ -1753,60 +1992,10 @@ fn create_glyph_batch(
             mask_radii: [0.0; 4],
         });
     }
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("mold glyph atlas"),
-        size: wgpu::Extent3d {
-            width: atlas_width,
-            height: atlas_height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(atlas_width * 4),
-            rows_per_image: Some(atlas_height),
-        },
-        wgpu::Extent3d {
-            width: atlas_width,
-            height: atlas_height,
-            depth_or_array_layers: 1,
-        },
-    );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("mold glyph atlas bind group"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    });
-    Some(GlyphBatch {
+    Ok(Some(GlyphBatch {
         instances,
         command_ranges,
-        _texture: texture,
-        bind_group,
-    })
+    }))
 }
 
 fn create_target(
@@ -2226,5 +2415,14 @@ mod tests {
         assert_eq!(inverse_0, [0.5, 0.0, 5.0, 0.0]);
         assert_eq!(inverse_1, [0.0, 0.5, 10.0, 0.0]);
         assert_eq!(radii, [4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn glyph_shelves_reserve_padding_and_wrap_rows() {
+        let mut allocator = ShelfAllocator::default();
+
+        assert_eq!(allocator.allocate(1022, 10), Some((1, 1)));
+        assert_eq!(allocator.allocate(1022, 20), Some((1025, 1)));
+        assert_eq!(allocator.allocate(1, 1), Some((1, 23)));
     }
 }
