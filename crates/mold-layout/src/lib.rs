@@ -95,6 +95,35 @@ impl Layout {
         Ok(None)
     }
 
+    /// Collects enabled MouseArea rectangles for the Wayland input region.
+    pub fn input_geometry(&self, scene: &Scene) -> Result<Vec<Geometry>, LayoutError> {
+        let mut rectangles = Vec::new();
+        for root in scene.roots() {
+            self.collect_input_geometry(scene, root, &mut rectangles)?;
+        }
+        Ok(rectangles)
+    }
+
+    fn collect_input_geometry(
+        &self,
+        scene: &Scene,
+        node: NodeHandle,
+        rectangles: &mut Vec<Geometry>,
+    ) -> Result<(), LayoutError> {
+        if !scene.bool_value(node, "visible")? || !scene.bool_value(node, "enabled")? {
+            return Ok(());
+        }
+        if scene.element(node)? == Element::MouseArea
+            && let Some(geometry) = self.geometry(node)
+        {
+            rectangles.push(geometry);
+        }
+        for child in scene.children(node)? {
+            self.collect_input_geometry(scene, child, rectangles)?;
+        }
+        Ok(())
+    }
+
     fn hit_node(
         &self,
         scene: &Scene,
@@ -488,5 +517,9 @@ mod tests {
         scene.assign(second, "enabled", false).unwrap();
         assert_eq!(layout.hit_test(&scene, 15.0, 9.0).unwrap(), Some(first));
         assert_eq!(layout.hit_test(&scene, 2.0, 2.0).unwrap(), None);
+        assert_eq!(
+            layout.input_geometry(&scene).unwrap(),
+            vec![layout.geometry(first).unwrap()]
+        );
     }
 }

@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mold_layout::{Layout, Size};
 use mold_lua::{Runtime, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
-use mold_wayland::{BarConfig, LayerClient, LayerEvent};
+use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent};
 
 fn usage() -> &'static str {
     "mold - reactive Wayland shell runtime\n\nusage: mold <shell.lua>\n       mold --help\n       mold --version"
@@ -193,6 +193,24 @@ fn paint(
     )
     .map_err(|error| error.to_string())?;
     let (physical_width, physical_height) = client.physical_size();
+    let input = layout
+        .input_geometry(&scene)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|geometry| {
+            let left = geometry.x.floor() as i32;
+            let top = geometry.y.floor() as i32;
+            let right = (geometry.x + geometry.width).ceil() as i32;
+            let bottom = (geometry.y + geometry.height).ceil() as i32;
+            InputRect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            }
+        })
+        .collect::<Vec<_>>();
+    client.set_input_region(Some(&input));
     client.request_frame();
     client
         .surface()

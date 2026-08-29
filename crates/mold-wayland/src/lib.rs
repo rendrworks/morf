@@ -28,7 +28,9 @@ use smithay_client_toolkit::shell::wlr_layer::{
 };
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
+use wayland_client::protocol::{
+    wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -47,6 +49,19 @@ pub struct BarConfig {
     pub height: u32,
     /// Layer-shell exclusive zone in logical pixels.
     pub exclusive_zone: i32,
+}
+
+/// Integer surface-local rectangle used to construct an input region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputRect {
+    /// Left edge in logical pixels.
+    pub x: i32,
+    /// Top edge in logical pixels.
+    pub y: i32,
+    /// Positive width in logical pixels.
+    pub width: i32,
+    /// Positive height in logical pixels.
+    pub height: i32,
 }
 
 impl Default for BarConfig {
@@ -156,6 +171,7 @@ impl LayerClient {
 
         let state = LayerState {
             registry: RegistryState::new(&globals),
+            compositor,
             outputs: OutputState::new(&globals, &qh),
             seats: SeatState::new(&globals, &qh),
             layer,
@@ -278,6 +294,24 @@ impl LayerClient {
     pub fn physical_size(&self) -> (u32, u32) {
         physical_size(self.logical_size(), self.scale_120())
     }
+
+    /// Applies the default, empty, or explicitly rectangular input region.
+    pub fn set_input_region(&self, rectangles: Option<&[InputRect]>) {
+        let surface = self.state.layer.wl_surface();
+        let Some(rectangles) = rectangles else {
+            surface.set_input_region(None);
+            return;
+        };
+        let qh = self.queue.handle();
+        let region = self.state.compositor.wl_compositor().create_region(&qh, ());
+        for rectangle in rectangles {
+            if rectangle.width > 0 && rectangle.height > 0 {
+                region.add(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+            }
+        }
+        surface.set_input_region(Some(&region));
+        region.destroy();
+    }
 }
 
 /// Owned Wayland display and surface handles for graphics APIs.
@@ -304,6 +338,7 @@ impl HasWindowHandle for WaylandWindowTarget {
 
 struct LayerState {
     registry: RegistryState,
+    compositor: CompositorState,
     outputs: OutputState,
     seats: SeatState,
     layer: LayerSurface,
@@ -641,6 +676,7 @@ smithay_client_toolkit::delegate_dispatch2!(LayerState);
 wayland_client::delegate_noop!(LayerState: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewporter);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
+wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
 
 fn physical_size(logical: (u32, u32), scale_120: u32) -> (u32, u32) {
     let scale = scale_120.max(1) as u64;
