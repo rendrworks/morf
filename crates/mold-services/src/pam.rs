@@ -3,6 +3,9 @@ use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fmt;
 use std::mem::size_of;
 use std::ptr;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use libloading::{Library, Symbol};
 
@@ -94,6 +97,18 @@ impl StdError for PamError {}
 /// Synchronous Linux-PAM authentication and account validation.
 pub struct PamAuthenticator;
 
+/// Authentication result produced away from the shell event loop.
+pub struct PamTask {
+    result: mpsc::Receiver<Result<(), PamError>>,
+}
+
+impl PamTask {
+    /// Waits up to the supplied duration for PAM to finish.
+    pub fn wait(&self, timeout: Duration) -> Option<Result<(), PamError>> {
+        self.result.recv_timeout(timeout).ok()
+    }
+}
+
 impl PamAuthenticator {
     /// Authenticates credentials through the named PAM service.
     pub fn authenticate(service: &str, username: &str, password: &str) -> Result<(), PamError> {
@@ -104,6 +119,26 @@ impl PamAuthenticator {
         };
         let library = load_pam()?;
         unsafe { authenticate(&library, &service, &mut credentials) }
+    }
+
+    /// Starts authentication on a dedicated worker thread.
+    pub fn authenticate_async(
+        service: impl Into<String>,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> PamTask {
+        let service = service.into();
+        let username = username.into();
+        let mut password = password.into();
+        let (tx, result) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let outcome = Self::authenticate(&service, &username, &password);
+            for byte in unsafe { password.as_bytes_mut() } {
+                unsafe { ptr::from_mut(byte).write_volatile(0) };
+            }
+            let _ = tx.send(outcome);
+        });
+        PamTask { result }
     }
 }
 
@@ -268,6 +303,16 @@ mod tests {
     fn rejects_embedded_nulls_before_starting_pam() {
         let error = PamAuthenticator::authenticate("mold\0test", "user", "secret").unwrap_err();
         assert_eq!(error.code(), None);
+        assert_eq!(error.to_string(), "service contains a null byte");
+    }
+
+    #[test]
+    fn asynchronous_authentication_returns_without_blocking_caller() {
+        let task = PamAuthenticator::authenticate_async("mold\0test", "user", "secret");
+        let error = task
+            .wait(Duration::from_secs(1))
+            .expect("PAM worker returned")
+            .unwrap_err();
         assert_eq!(error.to_string(), "service contains a null byte");
     }
 }

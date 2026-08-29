@@ -3,5 +3,5 @@
 mod pam;
 mod pipewire;
 
-pub use pam::{PamAuthenticator, PamError};
+pub use pam::{PamAuthenticator, PamError, PamTask};
 pub use pipewire::{PipeWire, PipeWireError, PipeWireNode, PipeWireVolume};
