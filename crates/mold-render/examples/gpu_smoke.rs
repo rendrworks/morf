@@ -1,6 +1,7 @@
 use mold_layout::{Geometry, Transform2D};
 use mold_render::{
-    DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, Layer, RenderBackend, WgpuBackend,
+    DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, Layer, LayerMask, RenderBackend,
+    WgpuBackend,
 };
 use mold_scene::{Color, Element, Scene};
 
@@ -93,6 +94,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             shadow_color: Color::rgba8(0, 0, 0, 160),
             shadow_blur: 8.0,
             shadow_offset: [3.0, 4.0],
+            mask: Some(LayerMask {
+                bounds: Geometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 320.0,
+                    height: 64.0,
+                },
+                transform: Transform2D::IDENTITY,
+                radii: [12.0; 4],
+            }),
             bounds: Geometry {
                 x: 0.0,
                 y: 0.0,

@@ -14,7 +14,7 @@ use mold_text::{RasterContent, TextSystem};
 
 use crate::path::PathCache;
 use crate::{
-    DamageRect, DrawCommand, DrawList, ImageFillMode, RenderBackend, SdfQuadInstance,
+    DamageRect, DrawCommand, DrawList, ImageFillMode, LayerMask, RenderBackend, SdfQuadInstance,
     VerticalAlignment, color_array, physical_damage,
 };
 
@@ -483,10 +483,17 @@ impl RenderBackend for WgpuBackend {
                         1.0,
                     ],
                     mode: [0.0; 4],
+                    surface: [0.0; 4],
+                    mask_bounds: [0.0; 4],
+                    mask_inverse_0: [0.0; 4],
+                    mask_inverse_1: [0.0; 4],
+                    mask_radii: [0.0; 4],
                 });
                 instance
             });
             let instance = texture_batch.instances.len() as u32;
+            let (mask_enabled, mask_bounds, mask_inverse_0, mask_inverse_1, mask_radii) =
+                layer_mask_data(layer.mask);
             let (origin, axes) = transformed_quad(
                 Transform2D::IDENTITY,
                 Geometry {
@@ -504,7 +511,17 @@ impl RenderBackend for WgpuBackend {
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: [1.0, 1.0, 1.0, layer.opacity],
                 color_overlay: [0.0; 4],
-                mode: [1.0, 0.0, 0.0, 0.0],
+                mode: [1.0, mask_enabled, 0.0, 0.0],
+                surface: [
+                    0.0,
+                    0.0,
+                    self.width as f32 / scale as f32,
+                    self.height as f32 / scale as f32,
+                ],
+                mask_bounds,
+                mask_inverse_0,
+                mask_inverse_1,
+                mask_radii,
             });
             layer_targets.push(LayerTarget {
                 _texture: texture,
@@ -1010,6 +1027,40 @@ struct GlyphInstance {
     color: [f32; 4],
     color_overlay: [f32; 4],
     mode: [f32; 4],
+    surface: [f32; 4],
+    mask_bounds: [f32; 4],
+    mask_inverse_0: [f32; 4],
+    mask_inverse_1: [f32; 4],
+    mask_radii: [f32; 4],
+}
+
+fn layer_mask_data(mask: Option<LayerMask>) -> (f32, [f32; 4], [f32; 4], [f32; 4], [f32; 4]) {
+    let Some(mask) = mask else {
+        return (0.0, [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]);
+    };
+    let [a, b, c, d, tx, ty] = mask.transform.matrix;
+    let determinant = a * d - b * c;
+    if determinant.abs() <= f64::EPSILON {
+        return (0.0, [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]);
+    }
+    let inverse_a = d / determinant;
+    let inverse_b = -b / determinant;
+    let inverse_c = -c / determinant;
+    let inverse_d = a / determinant;
+    let inverse_tx = -(inverse_a * tx + inverse_c * ty);
+    let inverse_ty = -(inverse_b * tx + inverse_d * ty);
+    (
+        1.0,
+        [
+            mask.bounds.x as f32,
+            mask.bounds.y as f32,
+            mask.bounds.width as f32,
+            mask.bounds.height as f32,
+        ],
+        [inverse_a as f32, inverse_c as f32, inverse_tx as f32, 0.0],
+        [inverse_b as f32, inverse_d as f32, inverse_ty as f32, 0.0],
+        mask.radii.map(|radius| radius as f32),
+    )
 }
 
 fn transformed_quad(
@@ -1171,7 +1222,12 @@ fn create_glyph_pipeline(
         2 => Float32x4,
         3 => Float32x4,
         4 => Float32x4,
-        5 => Float32x4
+        5 => Float32x4,
+        6 => Float32x4,
+        7 => Float32x4,
+        8 => Float32x4,
+        9 => Float32x4,
+        10 => Float32x4
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<GlyphInstance>() as u64,
@@ -1521,6 +1577,11 @@ fn push_texture_instance(
         color: [1.0, 1.0, 1.0, tint.opacity],
         color_overlay: color_array(tint.overlay),
         mode: [0.0; 4],
+        surface: [0.0; 4],
+        mask_bounds: [0.0; 4],
+        mask_inverse_0: [0.0; 4],
+        mask_inverse_1: [0.0; 4],
+        mask_radii: [0.0; 4],
     });
     batch.images.push(image);
 }
@@ -1685,6 +1746,11 @@ fn create_glyph_batch(
             color: tint,
             color_overlay: color_array(color_overlay),
             mode: [0.0; 4],
+            surface: [0.0; 4],
+            mask_bounds: [0.0; 4],
+            mask_inverse_0: [0.0; 4],
+            mask_inverse_1: [0.0; 4],
+            mask_radii: [0.0; 4],
         });
     }
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -2138,5 +2204,27 @@ mod tests {
         assert_eq!(crop.logical_width, 200);
         assert_eq!(crop.logical_height, 100);
         assert_eq!(crop.uv, [0.25, 0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn layer_mask_data_inverts_the_owner_transform() {
+        let mask = LayerMask {
+            bounds: Geometry {
+                x: 10.0,
+                y: 20.0,
+                width: 40.0,
+                height: 30.0,
+            },
+            transform: Transform2D::around((10.0, 20.0), 2.0, 0.0),
+            radii: [4.0, 5.0, 6.0, 7.0],
+        };
+
+        let (enabled, bounds, inverse_0, inverse_1, radii) = layer_mask_data(Some(mask));
+
+        assert_eq!(enabled, 1.0);
+        assert_eq!(bounds, [10.0, 20.0, 40.0, 30.0]);
+        assert_eq!(inverse_0, [0.5, 0.0, 5.0, 0.0]);
+        assert_eq!(inverse_1, [0.0, 0.5, 10.0, 0.0]);
+        assert_eq!(radii, [4.0, 5.0, 6.0, 7.0]);
     }
 }

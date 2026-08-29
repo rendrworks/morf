@@ -262,8 +262,21 @@ pub struct Layer {
     pub shadow_blur: f32,
     /// Logical shadow displacement.
     pub shadow_offset: [f32; 2],
+    /// Rounded owner geometry used to mask the composited subtree.
+    pub mask: Option<LayerMask>,
     /// Logical bounds affected by this layer.
     pub bounds: Geometry,
+}
+
+/// Rounded geometry applied while compositing an offscreen layer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerMask {
+    /// Owner geometry before its transform.
+    pub bounds: Geometry,
+    /// Composed owner transform.
+    pub transform: Transform2D,
+    /// Corner radii in top-left clockwise order.
+    pub radii: [f64; 4],
 }
 
 impl DrawList {
@@ -624,6 +637,7 @@ fn append_node(
                 layer_config.shadow_offset_x as f32,
                 layer_config.shadow_offset_y as f32,
             ],
+            mask: None,
             bounds: Geometry::default(),
         });
         index
@@ -646,6 +660,15 @@ fn append_node(
         scene.number(node, "scale")?,
         rotation,
     ));
+    if let Some(layer) = layer
+        && rounded_clip
+    {
+        list.layers[layer].mask = Some(LayerMask {
+            bounds,
+            transform,
+            radii: rect_radii(scene, node)?,
+        });
+    }
     let clip = if scene.bool_value(node, "clip")? {
         let bounds = transform.bounds(bounds);
         Some(
@@ -1350,6 +1373,7 @@ mod tests {
         assert_eq!(list.layers[0].shadow_color, Color::rgba8(8, 16, 24, 128));
         assert_eq!(list.layers[0].shadow_blur, 10.0);
         assert_eq!(list.layers[0].shadow_offset, [12.0, 8.0]);
+        assert_eq!(list.layers[0].mask, None);
         assert_eq!(
             list.layers[0].bounds,
             Geometry {
@@ -1363,6 +1387,38 @@ mod tests {
             panic!("rectangle did not emit a quad");
         };
         assert_eq!(blur, 0.0);
+    }
+
+    #[test]
+    fn rounded_clip_emits_a_transformed_layer_mask() {
+        let mut scene = Scene::new();
+        let rect = scene.create(Element::Rect);
+        scene.assign(rect, "x", 10.0).unwrap();
+        scene.assign(rect, "y", 20.0).unwrap();
+        scene.assign(rect, "width", 40.0).unwrap();
+        scene.assign(rect, "height", 30.0).unwrap();
+        scene.assign(rect, "radius", 7.0).unwrap();
+        scene.assign(rect, "clip", true).unwrap();
+        scene.assign(rect, "rotation", 15.0).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            rect,
+            Size {
+                width: 80.0,
+                height: 80.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+        let mask = list.layers[0]
+            .mask
+            .expect("rounded clip did not emit a mask");
+
+        assert_eq!(mask.bounds, layout.geometry(rect).unwrap());
+        assert_eq!(mask.radii, [7.0; 4]);
+        assert_ne!(mask.transform, Transform2D::IDENTITY);
     }
 
     #[test]
