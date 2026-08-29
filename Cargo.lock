@@ -136,6 +136,7 @@ name = "mold-scene"
 version = "0.1.0"
 dependencies = [
  "mold-reactive",
+ "slotmap",
 ]
 
 [[package]]
