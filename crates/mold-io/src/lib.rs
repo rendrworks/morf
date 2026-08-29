@@ -20,7 +20,8 @@ use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use zbus::blocking::{Connection as DbusConnection, Proxy as ZbusProxy};
 use zbus::zvariant::{
-    Array, Dict, DynamicDeserialize, DynamicType, OwnedValue, Structure, StructureBuilder, Value,
+    Array, Dict, DynamicDeserialize, DynamicType, ObjectPath, OwnedValue, Signature, Structure,
+    StructureBuilder, Value,
 };
 
 /// One event emitted by a child process.
@@ -1029,51 +1030,138 @@ fn dbus_argument_value(value: &DbusValue) -> Result<Value<'_>, String> {
 }
 
 fn typed_dbus_value<'a>(signature: &str, value: &'a DbusValue) -> Result<Value<'a>, String> {
+    let signature = Signature::try_from(signature)
+        .map_err(|error| format!("invalid D-Bus signature: {error}"))?;
+    dbus_value_for_signature(&signature, value)
+}
+
+fn dbus_value_for_signature<'a>(
+    signature: &Signature,
+    value: &'a DbusValue,
+) -> Result<Value<'a>, String> {
+    let name = signature.to_string();
     let integer = || match value {
         DbusValue::Integer(value) => Ok(i128::from(*value)),
         DbusValue::Unsigned(value) => Ok(i128::from(*value)),
-        _ => Err(format!("D-Bus `{signature}` value must be an integer")),
+        _ => Err(format!("D-Bus `{name}` value must be an integer")),
     };
-    let range_error = || format!("D-Bus `{signature}` integer is out of range");
+    let range_error = || format!("D-Bus `{name}` integer is out of range");
+    Ok(match signature {
+        Signature::U8 => Value::U8(u8::try_from(integer()?).map_err(|_| range_error())?),
+        Signature::I16 => Value::I16(i16::try_from(integer()?).map_err(|_| range_error())?),
+        Signature::U16 => Value::U16(u16::try_from(integer()?).map_err(|_| range_error())?),
+        Signature::I32 => Value::I32(i32::try_from(integer()?).map_err(|_| range_error())?),
+        Signature::U32 => Value::U32(u32::try_from(integer()?).map_err(|_| range_error())?),
+        Signature::I64 => Value::I64(i64::try_from(integer()?).map_err(|_| range_error())?),
+        Signature::U64 => Value::U64(u64::try_from(integer()?).map_err(|_| range_error())?),
+        Signature::F64 => match value {
+            DbusValue::Number(value) => Value::F64(*value),
+            DbusValue::Integer(value) => Value::F64(*value as f64),
+            DbusValue::Unsigned(value) => Value::F64(*value as f64),
+            _ => return Err("D-Bus `d` value must be numeric".to_owned()),
+        },
+        Signature::Bool => match value {
+            DbusValue::Bool(value) => Value::Bool(*value),
+            _ => return Err("D-Bus `b` value must be boolean".to_owned()),
+        },
+        Signature::Str => match value {
+            DbusValue::String(value) => Value::Str(value.as_str().into()),
+            _ => return Err("D-Bus `s` value must be a string".to_owned()),
+        },
+        Signature::ObjectPath => match value {
+            DbusValue::String(value) => Value::ObjectPath(
+                ObjectPath::try_from(value.as_str()).map_err(|error| error.to_string())?,
+            ),
+            _ => return Err("D-Bus `o` value must be a string".to_owned()),
+        },
+        Signature::Signature => match value {
+            DbusValue::String(value) => Value::Signature(
+                Signature::try_from(value.as_str()).map_err(|error| error.to_string())?,
+            ),
+            _ => return Err("D-Bus `g` value must be a string".to_owned()),
+        },
+        Signature::Variant => Value::Value(Box::new(inferred_dbus_value(value)?)),
+        Signature::Array(child) => {
+            let DbusValue::List(values) = value else {
+                return Err(format!("D-Bus `{name}` value must be a list"));
+            };
+            let mut array = Array::new(child.signature());
+            for value in values {
+                array
+                    .append(dbus_value_for_signature(child.signature(), value)?)
+                    .map_err(|error| error.to_string())?;
+            }
+            Value::Array(array)
+        }
+        Signature::Dict {
+            key: key_signature,
+            value: value_signature,
+        } => {
+            let DbusValue::Map(values) = value else {
+                return Err(format!("D-Bus `{name}` value must be a map"));
+            };
+            let mut dict = Dict::new(key_signature.signature(), value_signature.signature());
+            for (key, value) in values {
+                dict.append(
+                    dbus_map_key(key_signature.signature(), key)?,
+                    dbus_value_for_signature(value_signature.signature(), value)?,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Value::Dict(dict)
+        }
+        Signature::Structure(fields) => {
+            let DbusValue::List(values) = value else {
+                return Err(format!("D-Bus `{name}` value must be a list"));
+            };
+            if values.len() != fields.len() {
+                return Err(format!(
+                    "D-Bus `{name}` needs {} fields, found {}",
+                    fields.len(),
+                    values.len()
+                ));
+            }
+            let mut structure = StructureBuilder::new();
+            for (field, value) in fields.iter().zip(values) {
+                structure = structure.append_field(dbus_value_for_signature(field, value)?);
+            }
+            Value::Structure(structure.build().map_err(|error| error.to_string())?)
+        }
+        Signature::Unit => return Err("D-Bus unit values cannot be arguments".to_owned()),
+        #[cfg(unix)]
+        Signature::Fd => return Err("D-Bus file descriptors cannot come from Lua".to_owned()),
+        #[allow(unreachable_patterns)]
+        _ => return Err(format!("unsupported explicit D-Bus signature `{name}`")),
+    })
+}
+
+fn dbus_map_key<'a>(signature: &Signature, key: &'a str) -> Result<Value<'a>, String> {
     match signature {
-        "y" => Ok(Value::U8(
-            u8::try_from(integer()?).map_err(|_| range_error())?,
+        Signature::Str => Ok(Value::Str(key.into())),
+        Signature::ObjectPath => Ok(Value::ObjectPath(
+            ObjectPath::try_from(key).map_err(|error| error.to_string())?,
         )),
-        "n" => Ok(Value::I16(
-            i16::try_from(integer()?).map_err(|_| range_error())?,
+        Signature::Signature => Ok(Value::Signature(
+            Signature::try_from(key).map_err(|error| error.to_string())?,
         )),
-        "q" => Ok(Value::U16(
-            u16::try_from(integer()?).map_err(|_| range_error())?,
-        )),
-        "i" => Ok(Value::I32(
-            i32::try_from(integer()?).map_err(|_| range_error())?,
-        )),
-        "u" => Ok(Value::U32(
-            u32::try_from(integer()?).map_err(|_| range_error())?,
-        )),
-        "x" => Ok(Value::I64(
-            i64::try_from(integer()?).map_err(|_| range_error())?,
-        )),
-        "t" => Ok(Value::U64(
-            u64::try_from(integer()?).map_err(|_| range_error())?,
-        )),
-        "d" => match value {
-            DbusValue::Number(value) => Ok(Value::F64(*value)),
-            DbusValue::Integer(value) => Ok(Value::F64(*value as f64)),
-            DbusValue::Unsigned(value) => Ok(Value::F64(*value as f64)),
-            _ => Err("D-Bus `d` value must be numeric".to_owned()),
-        },
-        "b" => match value {
-            DbusValue::Bool(value) => Ok(Value::Bool(*value)),
-            _ => Err("D-Bus `b` value must be boolean".to_owned()),
-        },
-        "s" => match value {
-            DbusValue::String(value) => Ok(Value::Str(value.as_str().into())),
-            _ => Err("D-Bus `s` value must be a string".to_owned()),
-        },
         _ => Err(format!(
-            "unsupported explicit D-Bus signature `{signature}`"
+            "D-Bus map keys from Lua cannot use signature `{signature}`"
         )),
+    }
+}
+
+fn inferred_dbus_value(value: &DbusValue) -> Result<Value<'_>, String> {
+    match value {
+        DbusValue::Typed { signature, value } => typed_dbus_value(signature, value),
+        DbusValue::Bool(value) => Ok(Value::Bool(*value)),
+        DbusValue::Integer(value) => Ok(Value::I64(*value)),
+        DbusValue::Unsigned(value) => Ok(Value::U64(*value)),
+        DbusValue::Number(value) => Ok(Value::F64(*value)),
+        DbusValue::String(value) => Ok(Value::Str(value.as_str().into())),
+        DbusValue::Nil => Err("nil cannot be a D-Bus variant".to_owned()),
+        DbusValue::List(_) | DbusValue::Map(_) => {
+            Err("compound D-Bus variants need an explicit signature".to_owned())
+        }
     }
 }
 
@@ -1381,5 +1469,41 @@ mod tests {
         assert!(matches!(&body.fields()[0], Value::Str(value) if value.as_str() == "device"));
         assert!(matches!(body.fields()[1], Value::U32(7)));
         assert!(matches!(body.fields()[2], Value::Bool(true)));
+    }
+
+    #[test]
+    fn explicit_dbus_signatures_build_compound_values() {
+        let array_value = DbusValue::List(vec![
+            DbusValue::String("one".into()),
+            DbusValue::String("two".into()),
+        ]);
+        let array = typed_dbus_value("as", &array_value).unwrap();
+        assert_eq!(array.value_signature().to_string(), "as");
+
+        let map_value = DbusValue::Map(BTreeMap::from([
+            ("enabled".into(), DbusValue::Bool(true)),
+            (
+                "count".into(),
+                DbusValue::Typed {
+                    signature: "u".into(),
+                    value: Box::new(DbusValue::Integer(7)),
+                },
+            ),
+        ]));
+        let map = typed_dbus_value("a{sv}", &map_value).unwrap();
+        assert_eq!(map.value_signature().to_string(), "a{sv}");
+        let decoded = dynamic_value(&map).unwrap();
+        let DbusValue::Map(decoded) = decoded else {
+            panic!("D-Bus dictionary did not decode as a map");
+        };
+        assert_eq!(decoded["enabled"], DbusValue::Bool(true));
+        assert_eq!(decoded["count"], DbusValue::Unsigned(7));
+
+        let structure_value = DbusValue::List(vec![
+            DbusValue::String("name".into()),
+            DbusValue::Integer(-2),
+        ]);
+        let structure = typed_dbus_value("(si)", &structure_value).unwrap();
+        assert_eq!(structure.value_signature().to_string(), "(si)");
     }
 }
