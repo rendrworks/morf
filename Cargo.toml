@@ -36,6 +36,7 @@ wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulk
 xkbcommon = "=0.8.0"
 zbus = "=5.19.0"
 mold-image = { path = "crates/mold-image" }
+mold-desktop = { path = "crates/mold-desktop" }
 mold-io = { path = "crates/mold-io" }
 mold-layout = { path = "crates/mold-layout" }
 mold-lua = { path = "crates/mold-lua" }

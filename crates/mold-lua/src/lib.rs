@@ -14,6 +14,7 @@ use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
+use mold_desktop::{DesktopEntries, DesktopEntry};
 use mold_io::{
     Bus, DbusProxy, DbusSignal, DbusValue, FileDocument, FileEvent, FileView, FileWatcher,
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
@@ -1344,6 +1345,10 @@ struct ElapsedTimerToken {
 }
 
 struct JsonNullToken;
+
+struct DesktopEntriesToken {
+    entries: DesktopEntries,
+}
 
 struct LuaVirtualView {
     model: Rc<RefCell<ListModel>>,
@@ -4014,6 +4019,92 @@ fn install_reactive_api(
         json.set_field(ctx, "object", json_object);
         json.set_field(ctx, "null", json_null);
         mold.set_field(ctx, "json", json);
+        let desktop_applications = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let entries: UserRef<DesktopEntriesToken> = stack.consume(ctx)?;
+            let values = Table::new(&ctx);
+            for (index, entry) in entries.entries.applications().iter().enumerate() {
+                values.set(ctx, index as i64 + 1, desktop_entry_table(ctx, entry))?;
+            }
+            stack.replace(ctx, values);
+            Ok(CallbackReturn::Return)
+        });
+        let desktop_by_id = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (entries, id): (UserRef<DesktopEntriesToken>, String) = stack.consume(ctx)?;
+            match entries.entries.by_id(&id) {
+                Some(entry) => stack.replace(ctx, desktop_entry_table(ctx, entry)),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let desktop_lookup = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (entries, query): (UserRef<DesktopEntriesToken>, String) = stack.consume(ctx)?;
+            match entries.entries.heuristic_lookup(&query) {
+                Some(entry) => stack.replace(ctx, desktop_entry_table(ctx, entry)),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let desktop_launch = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (entries, id): (UserRef<DesktopEntriesToken>, String) = stack.consume(ctx)?;
+            let entry = entries
+                .entries
+                .by_id(&id)
+                .ok_or_else(|| HostError(format!("desktop entry `{id}` was not found")))?;
+            entry
+                .launch()
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let desktop_launch_action = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (entries, id, action): (UserRef<DesktopEntriesToken>, String, String) =
+                stack.consume(ctx)?;
+            let entry = entries
+                .entries
+                .by_id(&id)
+                .ok_or_else(|| HostError(format!("desktop entry `{id}` was not found")))?;
+            let action = entry
+                .actions
+                .iter()
+                .find(|candidate| candidate.id == action)
+                .ok_or_else(|| HostError(format!("desktop action `{action}` was not found")))?;
+            action
+                .launch(&entry.working_directory)
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let desktop_methods = Table::new(&ctx);
+        desktop_methods.set_field(ctx, "applications", desktop_applications);
+        desktop_methods.set_field(ctx, "by_id", desktop_by_id);
+        desktop_methods.set_field(ctx, "heuristic_lookup", desktop_lookup);
+        desktop_methods.set_field(ctx, "launch", desktop_launch);
+        desktop_methods.set_field(ctx, "launch_action", desktop_launch_action);
+        let desktop_metatable = Table::new(&ctx);
+        desktop_metatable.set_field(ctx, "__index", desktop_methods);
+        let desktop_metatable = ctx.stash(desktop_metatable);
+        let desktop_entries = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let paths: LuaValue = stack.consume(ctx)?;
+            let entries = match paths {
+                LuaValue::Nil => DesktopEntries::scan_environment()
+                    .map_err(|error| HostError(error.to_string()))?,
+                LuaValue::Table(paths) => {
+                    let paths = table_string_array(ctx, paths, 256)
+                        .map_err(HostError)?
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect::<Vec<_>>();
+                    DesktopEntries::scan_paths(paths)
+                        .map_err(|error| HostError(error.to_string()))?
+                }
+                _ => {
+                    return Err(HostError("desktop_entries paths must be a table".into()).into());
+                }
+            };
+            let userdata = UserData::new_static(&ctx, DesktopEntriesToken { entries });
+            userdata.set_metatable(ctx, Some(ctx.fetch(&desktop_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "desktop_entries", desktop_entries);
         let core = Table::new(&ctx);
         for name in [
             "env",
@@ -4035,6 +4126,7 @@ fn install_reactive_api(
             "sync_view",
             "flickable",
             "transition_parent",
+            "desktop_entries",
         ] {
             core.set(ctx, name, mold.get_value(ctx, name))
                 .expect("core module accepts native fields");
@@ -5610,6 +5702,41 @@ fn string_table<'gc>(ctx: Context<'gc>, values: impl IntoIterator<Item = String>
     table
 }
 
+fn desktop_entry_table<'gc>(ctx: Context<'gc>, entry: &DesktopEntry) -> Table<'gc> {
+    let value = Table::new(&ctx);
+    value.set_field(ctx, "id", entry.id.as_str());
+    value.set_field(ctx, "name", entry.name.as_str());
+    value.set_field(ctx, "generic_name", entry.generic_name.as_str());
+    value.set_field(ctx, "startup_class", entry.startup_class.as_str());
+    value.set_field(ctx, "no_display", entry.no_display);
+    value.set_field(ctx, "comment", entry.comment.as_str());
+    value.set_field(ctx, "icon", entry.icon.as_str());
+    value.set_field(ctx, "exec", entry.exec.as_str());
+    value.set_field(ctx, "command", string_table(ctx, entry.command.clone()));
+    value.set_field(ctx, "working_directory", entry.working_directory.as_str());
+    value.set_field(ctx, "run_in_terminal", entry.run_in_terminal);
+    value.set_field(
+        ctx,
+        "categories",
+        string_table(ctx, entry.categories.clone()),
+    );
+    value.set_field(ctx, "keywords", string_table(ctx, entry.keywords.clone()));
+    let actions = Table::new(&ctx);
+    for (index, action) in entry.actions.iter().enumerate() {
+        let item = Table::new(&ctx);
+        item.set_field(ctx, "id", action.id.as_str());
+        item.set_field(ctx, "name", action.name.as_str());
+        item.set_field(ctx, "icon", action.icon.as_str());
+        item.set_field(ctx, "exec", action.exec.as_str());
+        item.set_field(ctx, "command", string_table(ctx, action.command.clone()));
+        actions
+            .set(ctx, index as i64 + 1, item)
+            .expect("desktop action table accepts integer keys");
+    }
+    value.set_field(ctx, "actions", actions);
+    value
+}
+
 fn greetd_response<'gc>(ctx: Context<'gc>, response: GreetdResponse) -> Table<'gc> {
     let value = Table::new(&ctx);
     match response {
@@ -6507,6 +6634,39 @@ mod tests {
         runtime
             .execute("process-view.lua", source.as_bytes())
             .unwrap();
+    }
+
+    #[test]
+    fn desktop_entries_scan_and_lookup_native_data() {
+        let directory =
+            std::env::temp_dir().join(format!("mold-lua-desktop-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("browser.desktop"),
+            b"[Desktop Entry]\nType=Application\nName=Browser\nGenericName=Web Browser\nStartupWMClass=browser\nExec=browser --new-window %U\nIcon=browser\nCategories=Network;WebBrowser;\nActions=Private;\n\n[Desktop Action Private]\nName=Private\nExec=browser --private %U\n",
+        )
+        .unwrap();
+        let source = format!(
+            r#"
+                local core = require("mold.core")
+                local entries = core.desktop_entries({{{:?}}})
+                local applications = entries:applications()
+                assert(#applications == 1)
+                assert(applications[1].name == "Browser")
+                assert(applications[1].command[2] == "--new-window")
+                assert(applications[1].categories[2] == "WebBrowser")
+                assert(applications[1].actions[1].id == "Private")
+                assert(entries:by_id("browser").icon == "browser")
+                assert(entries:heuristic_lookup("BROWSER").id == "browser")
+                assert(entries:by_id("missing") == nil)
+            "#,
+            directory.to_string_lossy(),
+        );
+        let mut runtime = Runtime::default();
+        runtime
+            .execute("desktop-entries.lua", source.as_bytes())
+            .unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
