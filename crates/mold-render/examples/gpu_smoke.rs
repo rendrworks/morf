@@ -27,6 +27,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height: 48.0,
                 },
                 transform: Transform2D::around((60.0, 35.0), 1.0, 7.5),
+                clip: Some(Geometry {
+                    x: 4.0,
+                    y: 4.0,
+                    width: 312.0,
+                    height: 56.0,
+                }),
                 color: Color::rgba8(38, 115, 217, 255),
                 gradient: Gradient::Linear {
                     start_color: Color::rgba8(38, 115, 217, 255),
@@ -53,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height: 32.0,
                 },
                 transform: Transform2D::IDENTITY,
+                clip: None,
                 source: image_path.to_string_lossy().into_owned(),
                 icon_theme: None,
                 opacity: 1.0,
@@ -67,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height: 28.0,
                 },
                 transform: Transform2D::IDENTITY,
+                clip: None,
                 path: "M14 0 L28 28 L0 28 Z".to_owned(),
                 fill_color: Color::rgba8(255, 255, 255, 220),
                 stroke_color: Color::rgba8(0, 0, 0, 255),

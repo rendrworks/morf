@@ -23,6 +23,8 @@ pub enum DrawCommand {
         bounds: Geometry,
         /// Composed node and ancestor transform.
         transform: Transform2D,
+        /// Intersected ancestor clip in logical surface coordinates.
+        clip: Option<Geometry>,
         /// Fill colour after node opacity.
         color: Color,
         /// Optional normalized gradient fill.
@@ -54,6 +56,8 @@ pub enum DrawCommand {
         bounds: Geometry,
         /// Composed node and ancestor transform.
         transform: Transform2D,
+        /// Intersected ancestor clip in logical surface coordinates.
+        clip: Option<Geometry>,
         /// UTF-8 text used to locate its shaped buffer.
         text: String,
         /// Font family used by the shaping cache.
@@ -79,6 +83,8 @@ pub enum DrawCommand {
         bounds: Geometry,
         /// Composed node and ancestor transform.
         transform: Transform2D,
+        /// Intersected ancestor clip in logical surface coordinates.
+        clip: Option<Geometry>,
         /// Image path or icon name.
         source: String,
         /// Theme name for an icon command.
@@ -96,6 +102,8 @@ pub enum DrawCommand {
         bounds: Geometry,
         /// Composed node and ancestor transform.
         transform: Transform2D,
+        /// Intersected ancestor clip in logical surface coordinates.
+        clip: Option<Geometry>,
         /// SVG path data in the node coordinate space.
         path: String,
         /// Fill colour after node opacity.
@@ -166,7 +174,7 @@ impl DrawCommand {
     }
 
     fn bounds(&self) -> Geometry {
-        match self {
+        let bounds = match self {
             Self::Quad {
                 bounds,
                 transform,
@@ -204,6 +212,17 @@ impl DrawCommand {
                     height: bounds.height + stroke_width.max(0.0),
                 })
             }
+        };
+        self.clip()
+            .map_or(bounds, |clip| intersect_geometry(bounds, clip))
+    }
+
+    fn clip(&self) -> Option<Geometry> {
+        match self {
+            Self::Quad { clip, .. }
+            | Self::Text { clip, .. }
+            | Self::Texture { clip, .. }
+            | Self::Path { clip, .. } => *clip,
         }
     }
 }
@@ -226,6 +245,7 @@ impl DrawList {
                 root,
                 1.0,
                 Transform2D::IDENTITY,
+                None,
                 &mut list.commands,
             )?;
         }
@@ -507,6 +527,7 @@ fn append_node(
     node: NodeHandle,
     inherited_opacity: f64,
     inherited_transform: Transform2D,
+    inherited_clip: Option<Geometry>,
     commands: &mut Vec<DrawCommand>,
 ) -> Result<(), RenderError> {
     if !scene.bool_value(node, "visible")? {
@@ -524,11 +545,18 @@ fn append_node(
         scene.number(node, "scale")?,
         scene.number(node, "rotation")?,
     ));
+    let clip = if scene.bool_value(node, "clip")? {
+        let bounds = transform.bounds(bounds);
+        Some(inherited_clip.map_or(bounds, |inherited| intersect_geometry(inherited, bounds)))
+    } else {
+        inherited_clip
+    };
     match scene.element(node)? {
         Element::Rect => commands.push(DrawCommand::Quad {
             node,
             bounds,
             transform,
+            clip,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
             gradient: scene_gradient(scene, node, opacity)?,
             radii: rect_radii(scene, node)?,
@@ -545,6 +573,7 @@ fn append_node(
             node,
             bounds,
             transform,
+            clip,
             text: scene.string_value(node, "text")?.to_owned(),
             family: scene.string_value(node, "font_family")?.to_owned(),
             size: scene.number(node, "font_size")?,
@@ -562,6 +591,7 @@ fn append_node(
             node,
             bounds,
             transform,
+            clip,
             source: scene.string_value(node, "source")?.to_owned(),
             icon_theme: None,
             opacity: opacity as f32,
@@ -571,6 +601,7 @@ fn append_node(
             node,
             bounds,
             transform,
+            clip,
             source: scene.string_value(node, "name")?.to_owned(),
             icon_theme: Some(scene.string_value(node, "theme")?.to_owned()),
             opacity: opacity as f32,
@@ -580,6 +611,7 @@ fn append_node(
             node,
             bounds,
             transform,
+            clip,
             path: scene.string_value(node, "path")?.to_owned(),
             fill_color: with_opacity(scene.color_value(node, "fill_color")?, opacity),
             stroke_color: with_opacity(scene.color_value(node, "stroke_color")?, opacity),
@@ -599,9 +631,22 @@ fn append_node(
         | Element::Timer => {}
     }
     for child in scene.children(node)? {
-        append_node(scene, layout, child, opacity, transform, commands)?;
+        append_node(scene, layout, child, opacity, transform, clip, commands)?;
     }
     Ok(())
+}
+
+fn intersect_geometry(left: Geometry, right: Geometry) -> Geometry {
+    let x = left.x.max(right.x);
+    let y = left.y.max(right.y);
+    let right_edge = (left.x + left.width).min(right.x + right.width);
+    let bottom_edge = (left.y + left.height).min(right.y + right.height);
+    Geometry {
+        x,
+        y,
+        width: (right_edge - x).max(0.0),
+        height: (bottom_edge - y).max(0.0),
+    }
 }
 
 fn scene_gradient(scene: &Scene, node: NodeHandle, opacity: f64) -> Result<Gradient, RenderError> {
@@ -961,6 +1006,48 @@ mod tests {
     }
 
     #[test]
+    fn draw_list_intersects_nested_ancestor_clips() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let viewport = scene.create(Element::Item);
+        let child = scene.create(Element::Rect);
+        scene.assign(root, "width", 100.0).unwrap();
+        scene.assign(root, "height", 100.0).unwrap();
+        scene.assign(root, "clip", true).unwrap();
+        scene.assign(viewport, "x", 25.0).unwrap();
+        scene.assign(viewport, "width", 50.0).unwrap();
+        scene.assign(viewport, "height", 100.0).unwrap();
+        scene.assign(viewport, "clip", true).unwrap();
+        scene.assign(child, "x", -25.0).unwrap();
+        scene.assign(child, "width", 100.0).unwrap();
+        scene.assign(child, "height", 100.0).unwrap();
+        scene.reparent(viewport, Some(root)).unwrap();
+        scene.reparent(child, Some(viewport)).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 100.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+        assert_eq!(
+            list.commands[0].clip(),
+            Some(Geometry {
+                x: 25.0,
+                y: 0.0,
+                width: 50.0,
+                height: 100.0,
+            })
+        );
+        assert_eq!(list.commands[0].bounds(), list.commands[0].clip().unwrap());
+    }
+
+    #[test]
     fn text_commands_preserve_wrap_and_alignment() {
         let mut scene = Scene::new();
         let text = scene.create(Element::Text);
@@ -1224,6 +1311,7 @@ mod tests {
                     ..Geometry::default()
                 },
                 transform: Transform2D::IDENTITY,
+                clip: None,
                 color: Color::rgba8(0, 0, 0, 255),
                 gradient: Gradient::None,
                 radii: [0.0; 4],
@@ -1263,6 +1351,7 @@ mod tests {
                 height: 20.0,
             },
             transform: Transform2D::IDENTITY,
+            clip: None,
             color: Color::rgba8(255, 255, 255, 255),
             gradient: Gradient::None,
             radii: [4.0; 4],

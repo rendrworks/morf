@@ -159,6 +159,7 @@ fn quad(
             height,
         },
         transform: Transform2D::IDENTITY,
+        clip: None,
         color,
         gradient: Gradient::None,
         radii: [8.0; 4],

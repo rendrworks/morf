@@ -15,7 +15,7 @@ use mold_text::{RasterContent, TextSystem};
 use crate::path::PathCache;
 use crate::{
     DamageRect, DrawCommand, DrawList, ImageFillMode, RenderBackend, SdfQuadInstance,
-    VerticalAlignment,
+    VerticalAlignment, physical_damage,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -465,6 +465,23 @@ impl RenderBackend for WgpuBackend {
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.draw(0..3, 0..1);
                 for (command_index, quad_instance) in quad_indices.iter().enumerate() {
+                    let command_damage = if let Some(clip) = list.commands[command_index].clip() {
+                        let Some(clip) = physical_damage(clip, scale_120) else {
+                            continue;
+                        };
+                        let Some(clipped) = intersect_damage(*damage, clip) else {
+                            continue;
+                        };
+                        clipped
+                    } else {
+                        *damage
+                    };
+                    let Some((x, y, width, height)) =
+                        clamp_scissor(command_damage, self.width, self.height)
+                    else {
+                        continue;
+                    };
+                    pass.set_scissor_rect(x, y, width, height);
                     if let Some(instance) = *quad_instance {
                         pass.set_pipeline(&self.pipeline);
                         pass.set_bind_group(0, &self.viewport_bind_group, &[]);
@@ -1196,6 +1213,7 @@ fn create_glyph_batch(
             elide,
             horizontal_alignment,
             vertical_alignment,
+            ..
         } = command
         else {
             continue;
@@ -1581,6 +1599,25 @@ fn clamp_scissor(
     (width > 0 && height > 0).then_some((x, y, width, height))
 }
 
+fn intersect_damage(left: DamageRect, right: DamageRect) -> Option<DamageRect> {
+    let x = left.x.max(right.x);
+    let y = left.y.max(right.y);
+    let right_edge = left
+        .x
+        .saturating_add(left.width)
+        .min(right.x.saturating_add(right.width));
+    let bottom_edge = left
+        .y
+        .saturating_add(left.height)
+        .min(right.y.saturating_add(right.height));
+    (right_edge > x && bottom_edge > y).then_some(DamageRect {
+        x,
+        y,
+        width: right_edge - x,
+        height: bottom_edge - y,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1599,6 +1636,32 @@ mod tests {
                 12,
             ),
             Some((8, 9, 2, 3))
+        );
+    }
+
+    #[test]
+    fn damage_and_clip_scissors_are_intersected() {
+        assert_eq!(
+            intersect_damage(
+                DamageRect {
+                    x: 0,
+                    y: 10,
+                    width: 40,
+                    height: 20,
+                },
+                DamageRect {
+                    x: 20,
+                    y: 0,
+                    width: 30,
+                    height: 20,
+                },
+            ),
+            Some(DamageRect {
+                x: 20,
+                y: 10,
+                width: 20,
+                height: 10,
+            })
         );
     }
 
