@@ -349,13 +349,47 @@ struct VirtualListToken {
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
-    sink: Option<PropertySink>,
+    sink: Option<EffectSink>,
 }
 
 #[derive(Clone)]
 struct PropertySink {
     node: NodeHandle,
     property: String,
+}
+
+#[derive(Clone)]
+enum EffectSink {
+    Property(PropertySink),
+    State(NodeHandle),
+}
+
+#[derive(Clone)]
+struct StateDefinition {
+    properties: Vec<(String, StateValue)>,
+    anchors: Option<std::collections::BTreeMap<String, SceneValue>>,
+    parent: Option<NodeHandle>,
+}
+
+#[derive(Clone)]
+enum StateValue {
+    Value(SceneValue),
+    Binding(StashedClosure),
+}
+
+#[derive(Clone)]
+struct StateTransition {
+    from: String,
+    to: String,
+    reversible: bool,
+    behavior: Behavior,
+}
+
+#[derive(Default)]
+struct StateSet {
+    definitions: HashMap<String, StateDefinition>,
+    transitions: Vec<StateTransition>,
+    current: Option<String>,
 }
 
 #[derive(Default)]
@@ -377,6 +411,7 @@ struct ReactiveState {
     clock: SignalId,
     handlers: HashMap<(NodeHandle, UiEvent), StashedClosure>,
     parent_transitions: Vec<ParentTransitionRequest>,
+    states: HashMap<NodeHandle, StateSet>,
 }
 
 impl ReactiveState {
@@ -399,6 +434,7 @@ impl ReactiveState {
             clock,
             handlers: HashMap::new(),
             parent_transitions: Vec::new(),
+            states: HashMap::new(),
         }
     }
 }
@@ -1177,6 +1213,7 @@ fn configure_element<'gc>(
     let entries: Vec<_> = properties.iter(ctx).collect();
     let mut children = Vec::<(i64, NodeHandle)>::new();
     let mut named = Vec::<(String, LuaValue<'gc>)>::new();
+    let mut state_value = None;
     for (key, value) in entries {
         match key {
             LuaValue::Integer(index) => {
@@ -1202,8 +1239,19 @@ fn configure_element<'gc>(
     if let Some((_, behavior)) = named.iter().find(|(name, _)| name == "behavior") {
         configure_behaviors(state, ctx, node, *behavior)?;
     }
+    if let Some((_, states)) = named.iter().find(|(name, _)| name == "states") {
+        let transitions = named
+            .iter()
+            .find(|(name, _)| name == "transitions")
+            .map_or(LuaValue::Nil, |(_, value)| *value);
+        configure_states(state, ctx, node, *states, transitions)?;
+    }
     for (property, value) in named {
-        if property == "behavior" {
+        if matches!(property.as_str(), "behavior" | "states" | "transitions") {
+            continue;
+        }
+        if property == "state" {
+            state_value = Some(value);
             continue;
         }
         if let Some(event) = handler_event(&property) {
@@ -1248,6 +1296,25 @@ fn configure_element<'gc>(
             .reparent(child, Some(node))
             .map_err(|error| error.to_string())?;
     }
+    if let Some(value) = state_value {
+        match value {
+            LuaValue::Function(Function::Closure(closure)) => {
+                register_state_binding(state, ctx, limits, node, closure);
+            }
+            LuaValue::String(name) => {
+                let mut remaining = limits.frame_fuel;
+                apply_state(
+                    state,
+                    ctx,
+                    limits,
+                    &mut remaining,
+                    node,
+                    &name.display_lossy().to_string(),
+                )?;
+            }
+            _ => return Err("state must be a string or binding function".into()),
+        }
+    }
     Ok(())
 }
 
@@ -1261,6 +1328,128 @@ fn handler_event(property: &str) -> Option<UiEvent> {
         "on_key_pressed" => Some(UiEvent::KeyPressed),
         _ => None,
     }
+}
+
+fn configure_states<'gc>(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'gc>,
+    node: NodeHandle,
+    states: LuaValue<'gc>,
+    transitions: LuaValue<'gc>,
+) -> Result<(), String> {
+    let LuaValue::Table(states) = states else {
+        return Err("states must be a name-keyed table".into());
+    };
+    let mut definitions = HashMap::new();
+    for (name, definition) in states.iter(ctx) {
+        let LuaValue::String(name) = name else {
+            return Err("state names must be strings".into());
+        };
+        let LuaValue::Table(definition) = definition else {
+            return Err("each state must be a table".into());
+        };
+        let mut properties = Vec::new();
+        let mut anchors = None;
+        let mut parent = None;
+        for (key, value) in definition.iter(ctx) {
+            let LuaValue::String(key) = key else {
+                return Err("state fields must be strings".into());
+            };
+            match key.display_lossy().to_string().as_str() {
+                "property_changes" => {
+                    let LuaValue::Table(changes) = value else {
+                        return Err("property_changes must be a table".into());
+                    };
+                    for (property, value) in changes.iter(ctx) {
+                        let LuaValue::String(property) = property else {
+                            return Err("property_changes keys must be strings".into());
+                        };
+                        let property = property.display_lossy().to_string();
+                        if !state
+                            .borrow()
+                            .scene
+                            .has_property(node, &property)
+                            .map_err(|error| error.to_string())?
+                        {
+                            return Err(format!("state changes unknown property `{property}`"));
+                        }
+                        let value = match value {
+                            LuaValue::Function(Function::Closure(closure)) => {
+                                StateValue::Binding(ctx.stash(closure))
+                            }
+                            value => StateValue::Value(lua_to_scene(ctx, value, 0)?),
+                        };
+                        properties.push((property, value));
+                    }
+                }
+                "anchors" | "anchor_changes" => {
+                    let SceneValue::Map(value) = lua_to_scene(ctx, value, 0)? else {
+                        return Err("anchor_changes must be a table".into());
+                    };
+                    anchors = Some(value);
+                }
+                "parent" | "parent_change" => {
+                    let LuaValue::UserData(value) = value else {
+                        return Err("parent_change must be a mold node".into());
+                    };
+                    parent = Some(
+                        value
+                            .downcast_static::<NodeToken>()
+                            .map_err(|_| "parent_change must be a mold node".to_owned())?
+                            .handle,
+                    );
+                }
+                field => return Err(format!("unknown state field `{field}`")),
+            }
+        }
+        definitions.insert(
+            name.display_lossy().to_string(),
+            StateDefinition {
+                properties,
+                anchors,
+                parent,
+            },
+        );
+    }
+    let mut parsed_transitions = Vec::new();
+    if let LuaValue::Table(transitions) = transitions {
+        for (_, transition) in transitions.iter(ctx) {
+            let LuaValue::Table(transition) = transition else {
+                return Err("each transition must be a table".into());
+            };
+            let from = table_string(ctx, transition, "from", "*")?;
+            let to = table_string(ctx, transition, "to", "*")?;
+            let reversible = match transition.get_value(ctx, "reversible") {
+                LuaValue::Nil => false,
+                LuaValue::Boolean(value) => value,
+                _ => return Err("transition reversible must be boolean".into()),
+            };
+            let duration = table_number(ctx, transition, "duration", 250.0)?;
+            if duration < 0.0 {
+                return Err("transition duration cannot be negative".into());
+            }
+            parsed_transitions.push(StateTransition {
+                from,
+                to,
+                reversible,
+                behavior: Behavior {
+                    duration: Duration::from_secs_f64(duration / 1_000.0),
+                    easing: parse_easing(transition.get_value(ctx, "easing"))?,
+                },
+            });
+        }
+    } else if !matches!(transitions, LuaValue::Nil) {
+        return Err("transitions must be an array table".into());
+    }
+    state.borrow_mut().states.insert(
+        node,
+        StateSet {
+            definitions,
+            transitions: parsed_transitions,
+            current: None,
+        },
+    );
+    Ok(())
 }
 
 fn configure_behaviors<'gc>(
@@ -1352,6 +1541,19 @@ fn table_number<'gc>(
     }
 }
 
+fn table_string<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+    default: &str,
+) -> Result<String, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(default.to_owned()),
+        LuaValue::String(value) => Ok(value.display_lossy().to_string()),
+        _ => Err(format!("{field} must be a string")),
+    }
+}
+
 fn parse_easing(value: LuaValue<'_>) -> Result<Easing, String> {
     match value {
         LuaValue::Nil => Ok(Easing::Linear),
@@ -1383,7 +1585,7 @@ fn register_property_binding<'gc>(
             token,
             LuaEffect {
                 closure: ctx.stash(closure),
-                sink: Some(PropertySink { node, property }),
+                sink: Some(EffectSink::Property(PropertySink { node, property })),
             },
         );
         state
@@ -1393,6 +1595,135 @@ fn register_property_binding<'gc>(
             .external_effect(name, token);
     }
     let _ = flush_reactive(state, ctx, limits);
+}
+
+fn register_state_binding<'gc>(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'gc>,
+    limits: Limits,
+    node: NodeHandle,
+    closure: Closure<'gc>,
+) {
+    {
+        let mut state = state.borrow_mut();
+        let token = state.next_effect;
+        state.next_effect = state.next_effect.wrapping_add(1);
+        state.effects.insert(
+            token,
+            LuaEffect {
+                closure: ctx.stash(closure),
+                sink: Some(EffectSink::State(node)),
+            },
+        );
+        state
+            .graph
+            .as_mut()
+            .expect("reactive graph unavailable outside evaluation")
+            .external_effect(format!("{node:?}.state"), token);
+    }
+    let _ = flush_reactive(state, ctx, limits);
+}
+
+fn apply_state(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'_>,
+    limits: Limits,
+    frame_remaining: &mut u64,
+    node: NodeHandle,
+    name: &str,
+) -> Result<(), String> {
+    let (definition, old, transition) = {
+        let state = state.borrow();
+        let set = state
+            .states
+            .get(&node)
+            .ok_or_else(|| format!("node has no states for `{name}`"))?;
+        let definition = set
+            .definitions
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("unknown state `{name}`"))?;
+        let old = set.current.clone().unwrap_or_default();
+        let transition = set.transitions.iter().find_map(|transition| {
+            let forward = (transition.from == "*" || transition.from == old)
+                && (transition.to == "*" || transition.to == name);
+            let reverse = transition.reversible
+                && (transition.from == "*" || transition.from == name)
+                && (transition.to == "*" || transition.to == old);
+            (forward || reverse).then_some(transition.behavior)
+        });
+        (definition, old, transition)
+    };
+    let transition = (old != name).then_some(transition).flatten();
+    let mut properties = Vec::new();
+    for (property, value) in definition.properties {
+        let value = match value {
+            StateValue::Value(value) => value,
+            StateValue::Binding(closure) => {
+                execute_effect(ctx, &closure, limits, frame_remaining, true)?
+                    .ok_or_else(|| format!("state property `{property}` returned no value"))?
+                    .to_scene()
+            }
+        };
+        properties.push((property, value));
+    }
+    let mut state = state.borrow_mut();
+    for (property, value) in properties {
+        let animated = transition.is_some()
+            && matches!(value, SceneValue::Number(_) | SceneValue::Color(_))
+            && matches!(
+                state.scene.current(node, &property),
+                Ok(SceneValue::Number(_) | SceneValue::Color(_))
+            );
+        if animated {
+            let from = state
+                .scene
+                .current(node, &property)
+                .map_err(|error| error.to_string())?
+                .clone();
+            state
+                .scene
+                .animate_from(node, &property, from, value, transition.unwrap())
+                .map_err(|error| error.to_string())?;
+        } else {
+            state
+                .scene
+                .assign(node, &property, value)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    if old != name && (definition.parent.is_some() || definition.anchors.is_some()) {
+        let parent = definition.parent.or(state
+            .scene
+            .parent(node)
+            .map_err(|error| error.to_string())?);
+        if let Some(parent) = parent {
+            if old.is_empty() && transition.is_none() {
+                if let Some(anchors) = definition.anchors {
+                    state
+                        .scene
+                        .assign(node, "anchors", SceneValue::Map(anchors))
+                        .map_err(|error| error.to_string())?;
+                }
+                state
+                    .scene
+                    .reparent(node, Some(parent))
+                    .map_err(|error| error.to_string())?;
+            } else {
+                state.parent_transitions.push(ParentTransitionRequest {
+                    node,
+                    parent,
+                    anchors: definition.anchors,
+                    behavior: transition.unwrap_or(Behavior {
+                        duration: Duration::ZERO,
+                        easing: Easing::Linear,
+                    }),
+                });
+            }
+        }
+    }
+    state.states.get_mut(&node).unwrap().current = Some(name.to_owned());
+    Ok(())
 }
 
 fn lua_to_scene<'gc>(
@@ -1531,6 +1862,18 @@ fn evaluate_effect(
         frame_remaining,
         lua_effect.sink.is_some(),
     );
+    let state_result = if let (Ok(Some(value)), Some(EffectSink::State(node))) =
+        (&result, lua_effect.sink.clone())
+    {
+        match value {
+            ScriptValue::String(name) => {
+                apply_state(state, ctx, limits, frame_remaining, node, name)
+            }
+            _ => Err("state binding must return a string".into()),
+        }
+    } else {
+        Ok(())
+    };
     let capture = state.borrow_mut().active.take().unwrap_or_default();
     for signal in capture.reads {
         effect.get(signal).map_err(|error| error.to_string())?;
@@ -1543,12 +1886,16 @@ fn evaluate_effect(
             state.borrow_mut().values.insert(signal, value);
         }
     }
+    state_result?;
     if let (Ok(Some(value)), Some(sink)) = (&result, lua_effect.sink) {
-        state
-            .borrow_mut()
-            .scene
-            .assign(sink.node, &sink.property, value.to_scene())
-            .map_err(|error| error.to_string())?;
+        match sink {
+            EffectSink::Property(sink) => state
+                .borrow_mut()
+                .scene
+                .assign(sink.node, &sink.property, value.to_scene())
+                .map_err(|error| error.to_string())?,
+            EffectSink::State(_) => {}
+        }
     }
     result.map(|_| ())
 }
@@ -2141,5 +2488,93 @@ mod tests {
             transitions[0].anchors.as_ref().unwrap().get("center_in"),
             Some(&SceneValue::Bool(true))
         );
+    }
+
+    #[test]
+    fn lua_named_state_animates_properties_and_queues_reparent() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "states.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local expanded = mold.signal("expanded", false)
+                    local shelf = ui.Item { width = 100, height = 100 }
+                    local page = ui.Item { x = 200, width = 200, height = 100 }
+                    local tile = ui.Rect {
+                      states = {
+                        compact = {
+                          property_changes = { width = 40, height = 40 },
+                          parent_change = shelf,
+                        },
+                        expanded = {
+                          property_changes = { width = 180, height = 80 },
+                          anchor_changes = { center_in = true },
+                          parent_change = page,
+                        },
+                      },
+                      transitions = {
+                        {
+                          from = "compact",
+                          to = "expanded",
+                          reversible = true,
+                          duration = 200,
+                          easing = "linear",
+                        },
+                      },
+                      state = function()
+                        return expanded:get() and "expanded" or "compact"
+                      end,
+                    }
+                    ui.Item { shelf, page }
+                    local ok, err = expanded:set(true)
+                    assert(ok, err)
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+        let tile = runtime.scene().children(children[0]).unwrap()[0];
+
+        assert_eq!(runtime.scene().number(tile, "width").unwrap(), 40.0);
+        assert_eq!(
+            runtime.scene().target(tile, "width").unwrap(),
+            &SceneValue::Number(180.0)
+        );
+        let transitions = runtime.take_parent_transitions();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].parent, children[1]);
+        runtime.tick_animations(Duration::from_millis(100)).unwrap();
+        assert_eq!(runtime.scene().number(tile, "width").unwrap(), 110.0);
+    }
+
+    #[test]
+    fn state_property_bindings_recapture_dependencies() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "state-binding.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local size = mold.signal("size", 40)
+                    ui.Rect {
+                      states = {
+                        active = {
+                          property_changes = {
+                            width = function() return size:get() end,
+                          },
+                        },
+                      },
+                      state = function() return "active" end,
+                    }
+                    local ok, err = size:set(80)
+                    assert(ok, err)
+                "#,
+            )
+            .unwrap();
+        let node = runtime.scene().roots()[0];
+        assert_eq!(runtime.scene().number(node, "width").unwrap(), 80.0);
     }
 }

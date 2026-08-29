@@ -104,7 +104,9 @@ impl Layout {
         if let Some(anchors) = transition.anchors {
             scene.assign(transition.node, "anchors", Value::Map(anchors))?;
         }
-        scene.reparent(transition.node, Some(transition.new_parent))?;
+        if scene.parent(transition.node)? != Some(transition.new_parent) {
+            scene.reparent(transition.node, Some(transition.new_parent))?;
+        }
         let target = Self::compute(scene, transition.root, transition.available, text)?
             .geometry(transition.node)
             .ok_or_else(|| LayoutError::Scene("transition target has no geometry".into()))?;
