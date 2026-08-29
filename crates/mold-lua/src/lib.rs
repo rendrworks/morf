@@ -13,7 +13,7 @@ use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
-use mold_io::{Bus, DbusProxy, DbusValue};
+use mold_io::{Bus, DbusProxy, DbusValue, Timer as IoTimer};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
     AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
@@ -356,6 +356,7 @@ impl Runtime {
     /// Polls native service jobs and runs completed callbacks with bounded fuel.
     pub fn poll_services(&mut self) -> bool {
         let mut ready = Vec::new();
+        let mut timers = Vec::new();
         {
             let mut state = self.reactive.borrow_mut();
             let mut index = 0;
@@ -368,8 +369,19 @@ impl Runtime {
                     index += 1;
                 }
             }
+            let mut index = 0;
+            while index < state.timers.len() {
+                if state.timers[index].timer.tick(Duration::ZERO) {
+                    timers.push(state.timers[index].callback.clone());
+                    if !state.timers[index].repeat {
+                        state.timers.swap_remove(index);
+                        continue;
+                    }
+                }
+                index += 1;
+            }
         }
-        let changed = !ready.is_empty();
+        let changed = !ready.is_empty() || !timers.is_empty();
         for (callback, result) in ready {
             let args = match result {
                 Ok(()) => vec![IpcValue::Boolean(true), IpcValue::Nil],
@@ -386,6 +398,17 @@ impl Runtime {
                     .borrow_mut()
                     .logs
                     .push(format!("PAM callback: {message}"));
+            }
+        }
+        for callback in timers {
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_handler_args(ctx, &callback, &[], self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("timer callback: {message}"));
             }
         }
         changed
@@ -508,6 +531,12 @@ struct PendingPam {
     callback: StashedClosure,
 }
 
+struct PendingTimer {
+    timer: IoTimer,
+    callback: StashedClosure,
+    repeat: bool,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -577,6 +606,7 @@ struct ReactiveState {
     ipc_handlers: HashMap<String, StashedClosure>,
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
+    timers: Vec<PendingTimer>,
 }
 
 impl ReactiveState {
@@ -603,6 +633,7 @@ impl ReactiveState {
             ipc_handlers: HashMap::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
+            timers: Vec::new(),
         }
     }
 }
@@ -743,6 +774,27 @@ fn install_reactive_api(
         );
         clock.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
         mold.set_field(ctx, "clock", clock);
+        let timer_state = Rc::clone(&state);
+        let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
+            if !milliseconds.is_finite() || milliseconds <= 0.0 {
+                return Err(HostError("timer interval must be finite and positive".into()).into());
+            }
+            let repeat = match repeat {
+                LuaValue::Nil => true,
+                LuaValue::Boolean(value) => value,
+                _ => return Err(HostError("timer repeat must be boolean".into()).into()),
+            };
+            let timer = IoTimer::every(Duration::from_secs_f64(milliseconds / 1_000.0))
+                .map_err(|error| HostError(error.to_string()))?;
+            timer_state.borrow_mut().timers.push(PendingTimer {
+                timer,
+                callback: ctx.stash(callback),
+                repeat,
+            });
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "timer", timer);
         let ipc_register = Callback::from_fn(&ctx, {
             let state = Rc::clone(&state);
             move |ctx, _, mut stack| {
@@ -3086,6 +3138,30 @@ mod tests {
             runtime.scene().string_value(root, "text").unwrap(),
             "service contains a null byte"
         );
+    }
+
+    #[test]
+    fn native_timer_callbacks_recompute_lua_bindings() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "timer.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local count = mold.signal("timer.count", 0)
+                    mold.timer(1, function() count:set(count:get() + 1) end, false)
+                    ui.Text { text = function() return "" .. count:get() end }
+                "#,
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !runtime.poll_services() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let root = runtime.scene().roots()[0];
+
+        assert_eq!(runtime.scene().string_value(root, "text").unwrap(), "1");
     }
 
     #[test]
