@@ -411,6 +411,7 @@ pub enum IpcRequest {
     Call { target: String, args: Vec<IpcValue> },
     Verbs,
     Log,
+    Bindings,
     Kill,
 }
 
@@ -645,6 +646,7 @@ fn encode_ipc_request(request: &IpcRequest) -> io::Result<Vec<u8>> {
         }),
         IpcRequest::Verbs => serde_json::json!({ "op": "verbs" }),
         IpcRequest::Log => serde_json::json!({ "op": "log" }),
+        IpcRequest::Bindings => serde_json::json!({ "op": "bindings" }),
         IpcRequest::Kill => serde_json::json!({ "op": "kill" }),
     };
     serde_json::to_vec(&value).map_err(io::Error::other)
@@ -689,6 +691,7 @@ fn decode_ipc_request(bytes: &[u8]) -> io::Result<IpcRequest> {
         }
         "verbs" => Ok(IpcRequest::Verbs),
         "log" => Ok(IpcRequest::Log),
+        "bindings" => Ok(IpcRequest::Bindings),
         "kill" => Ok(IpcRequest::Kill),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1318,7 +1321,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let server = IpcServer::bind(&path, tx).unwrap();
         let responder = thread::spawn(move || {
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let incoming = rx.recv_timeout(Duration::from_secs(1)).unwrap();
                 assert_eq!(incoming.peer.pid, std::process::id());
                 incoming.reply(IpcReply::success(vec![IpcValue::String("ok".into())]));
@@ -1329,7 +1332,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
-        for request in [IpcRequest::Verbs, IpcRequest::Log] {
+        for request in [IpcRequest::Verbs, IpcRequest::Log, IpcRequest::Bindings] {
             let mut bytes = encode_ipc_request(&request).unwrap();
             bytes.push(b'\n');
             stream.write_all(&bytes).unwrap();

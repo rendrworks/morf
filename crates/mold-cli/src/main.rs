@@ -17,7 +17,7 @@ use mold_scene::{Element, NodeHandle};
 use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, ScreenInfo};
 
 fn usage() -> &'static str {
-    "mold - reactive Wayland shell runtime\n\nusage: mold [shell.lua]\n       mold -c <name>\n       mold lock [lock.lua]\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log\n       mold kill\n       mold --help\n       mold --version"
+    "mold - reactive Wayland shell runtime\n\nusage: mold [shell.lua]\n       mold -c <name>\n       mold lock [lock.lua]\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log [--bindings]\n       mold kill\n       mold --help\n       mold --version"
 }
 
 fn run() -> Result<(), String> {
@@ -78,6 +78,7 @@ fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
                 .collect(),
         })),
         ["log"] => Ok(Command::Client(IpcRequest::Log)),
+        ["log", "--bindings"] => Ok(Command::Client(IpcRequest::Bindings)),
         ["kill"] => Ok(Command::Client(IpcRequest::Kill)),
         [] => Ok(Command::Run(config_root()?.join("shell.lua"))),
         [path] => Ok(Command::Run(PathBuf::from(path))),
@@ -126,6 +127,7 @@ enum WorkerCommand {
     },
     Verbs(mpsc::SyncSender<Vec<String>>),
     Logs(mpsc::SyncSender<Vec<String>>),
+    Bindings(mpsc::SyncSender<Vec<String>>),
     Reload {
         path: Arc<PathBuf>,
         source: Arc<[u8]>,
@@ -673,6 +675,20 @@ fn handle_ipc(
             }
             IpcReply::success(logs.into_iter().map(WireValue::String).collect())
         }
+        IpcRequest::Bindings => {
+            let mut bindings = Vec::new();
+            for worker in workers.values() {
+                let (tx, rx) = mpsc::sync_channel(1);
+                if worker.commands.send(WorkerCommand::Bindings(tx)).is_ok()
+                    && let Ok(found) = rx.recv_timeout(Duration::from_secs(1))
+                {
+                    bindings.extend(found);
+                }
+            }
+            bindings.sort();
+            bindings.dedup();
+            IpcReply::success(bindings.into_iter().map(WireValue::String).collect())
+        }
         IpcRequest::Kill => IpcReply::success(Vec::new()),
     }
 }
@@ -710,6 +726,10 @@ fn handle_worker_command(
         }
         WorkerCommand::Logs(reply) => {
             let _ = reply.send(runtime.take_logs());
+            WorkerUpdate::default()
+        }
+        WorkerCommand::Bindings(reply) => {
+            let _ = reply.send(runtime.binding_dependencies());
             WorkerUpdate::default()
         }
         WorkerCommand::Reload {
@@ -1238,6 +1258,12 @@ mod tests {
             panic!("expected lock config path");
         };
         assert_eq!(path, PathBuf::from("secure.lua"));
+
+        let args = ["log", "--bindings"].map(std::ffi::OsString::from);
+        assert!(matches!(
+            parse_command(&args).unwrap(),
+            Command::Client(IpcRequest::Bindings)
+        ));
     }
 
     #[test]

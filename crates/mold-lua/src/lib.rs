@@ -289,6 +289,29 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().logs)
     }
 
+    /// Returns the current Lua effect dependency graph as log lines.
+    pub fn binding_dependencies(&self) -> Vec<String> {
+        self.reactive
+            .borrow()
+            .graph
+            .as_ref()
+            .map(|graph| {
+                graph
+                    .dependencies()
+                    .into_iter()
+                    .map(|entry| {
+                        format!(
+                            "depth {}: {} <- {}",
+                            entry.depth,
+                            entry.effect,
+                            entry.signals.join(", ")
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Borrows the scene produced by executed configuration code.
     pub fn scene(&self) -> Ref<'_, Scene> {
         Ref::map(self.reactive.borrow(), |state| &state.scene)
@@ -4289,6 +4312,28 @@ mod tests {
     }
 
     #[test]
+    fn binding_dependencies_report_lua_effect_reads() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "dependencies.lua",
+                br#"
+                    local mold = require("mold")
+                    local source = mold.signal("source", 1)
+                    assert(mold.effect("source binding", function()
+                        source:get()
+                    end))
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            runtime.binding_dependencies(),
+            ["depth 0: source binding <- source"]
+        );
+    }
+
+    #[test]
     fn lua_binding_loop_names_the_property_chain() {
         let mut runtime = Runtime::new(Limits {
             effect_fuel: 10_000,
@@ -4715,8 +4760,13 @@ mod tests {
         runtime.call_ipc("dynamic.start", &[]).unwrap();
         assert!(runtime.poll_services());
         assert_eq!(runtime.scene().children(loader).unwrap().len(), 1);
-        thread::sleep(Duration::from_millis(5));
-        assert!(runtime.poll_services());
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while runtime.scene().bool_value(timer, "running").unwrap()
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+            runtime.poll_services();
+        }
         assert!(!runtime.scene().bool_value(timer, "running").unwrap());
 
         runtime.call_ipc("dynamic.stop", &[]).unwrap();

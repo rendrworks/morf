@@ -53,6 +53,14 @@ pub struct FlushReport {
     pub errors: Vec<EffectError>,
 }
 
+/// One effect and its currently captured signal dependencies.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DependencyEntry {
+    pub effect: String,
+    pub signals: Vec<String>,
+    pub depth: usize,
+}
+
 /// A graph operation that cannot be recovered within the current batch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GraphError {
@@ -182,6 +190,32 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
             .get(signal)
             .map(|slot| slot.name.as_str())
             .ok_or(GraphError::InvalidSignal)
+    }
+
+    /// Returns a deterministic snapshot of the current dependency graph.
+    pub fn dependencies(&self) -> Vec<DependencyEntry> {
+        let mut entries = self
+            .effects
+            .values()
+            .map(|effect| {
+                let mut signals = effect
+                    .dependencies
+                    .iter()
+                    .filter_map(|signal| self.signals.get(*signal))
+                    .map(|signal| signal.name.clone())
+                    .collect::<Vec<_>>();
+                signals.sort();
+                DependencyEntry {
+                    effect: effect.name.clone(),
+                    signals,
+                    depth: effect.depth,
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            (left.depth, left.effect.as_str()).cmp(&(right.depth, right.effect.as_str()))
+        });
+        entries
     }
 
     /// Writes a signal and queues only effects that currently depend on it.
@@ -572,5 +606,27 @@ mod tests {
 
         assert!(error.to_string().contains("left binding"));
         assert!(error.to_string().contains("right binding"));
+    }
+
+    #[test]
+    fn dependency_snapshot_names_effects_and_signals() {
+        let mut graph = Graph::default();
+        let first = graph.signal("first", 1);
+        let second = graph.signal("second", 2);
+        graph.effect("sum binding", move |ctx| {
+            let _ = ctx.get(first).map_err(|error| error.to_string())?
+                + ctx.get(second).map_err(|error| error.to_string())?;
+            Ok(())
+        });
+        graph.flush().unwrap();
+
+        assert_eq!(
+            graph.dependencies(),
+            vec![DependencyEntry {
+                effect: "sum binding".to_owned(),
+                signals: vec!["first".to_owned(), "second".to_owned()],
+                depth: 0,
+            }]
+        );
     }
 }
