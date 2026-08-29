@@ -22,7 +22,7 @@ use mold_wayland::{
 };
 
 fn usage() -> &'static str {
-    "mold - reactive Wayland shell runtime\n\nusage: mold [shell.lua]\n       mold -c <name>\n       mold lock [lock.lua]\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log [--bindings]\n       mold kill\n       mold --help\n       mold --version"
+    "mold - reactive Wayland shell runtime\n\nusage: mold [--no-plugin | --clean] [shell.lua]\n       mold [--no-plugin | --clean] -c <name>\n       mold lock [lock.lua]\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log [--bindings]\n       mold kill\n       mold --help\n       mold --version"
 }
 
 fn run() -> Result<(), String> {
@@ -30,10 +30,10 @@ fn run() -> Result<(), String> {
     match parse_command(&args)? {
         Command::Help => println!("{}", usage()),
         Command::Version => println!("mold {}", env!("CARGO_PKG_VERSION")),
-        Command::Run(path) => {
+        Command::Run(path, policy) => {
             let source = fs::read(&path)
                 .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-            supervise(path, source)?;
+            supervise(path, source, policy)?;
         }
         Command::Lock(path) => {
             let source = fs::read(&path)
@@ -54,9 +54,24 @@ fn run() -> Result<(), String> {
 enum Command {
     Help,
     Version,
-    Run(PathBuf),
+    Run(PathBuf, LoadPolicy),
     Lock(PathBuf),
     Client(IpcRequest),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoadPolicy {
+    plugins: bool,
+    external_roots: bool,
+}
+
+impl Default for LoadPolicy {
+    fn default() -> Self {
+        Self {
+            plugins: true,
+            external_roots: true,
+        }
+    }
 }
 
 fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
@@ -68,10 +83,27 @@ fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
                 .ok_or_else(|| "arguments must be UTF-8".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    match strings.as_slice() {
+    let (policy, strings) = match strings.as_slice() {
+        ["--no-plugin", rest @ ..] => (
+            LoadPolicy {
+                plugins: false,
+                external_roots: true,
+            },
+            rest,
+        ),
+        ["--clean", rest @ ..] => (
+            LoadPolicy {
+                plugins: false,
+                external_roots: false,
+            },
+            rest,
+        ),
+        strings => (LoadPolicy::default(), strings),
+    };
+    match strings {
         ["-h" | "--help"] => Ok(Command::Help),
         ["-V" | "--version"] => Ok(Command::Version),
-        ["-c", name] => Ok(Command::Run(named_config_path(name)?)),
+        ["-c", name] => Ok(Command::Run(named_config_path(name)?, policy)),
         ["lock"] => Ok(Command::Lock(config_root()?.join("lock.lua"))),
         ["lock", path] => Ok(Command::Lock(PathBuf::from(path))),
         ["ipc", "verbs"] => Ok(Command::Client(IpcRequest::Verbs)),
@@ -85,8 +117,8 @@ fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
         ["log"] => Ok(Command::Client(IpcRequest::Log)),
         ["log", "--bindings"] => Ok(Command::Client(IpcRequest::Bindings)),
         ["kill"] => Ok(Command::Client(IpcRequest::Kill)),
-        [] => Ok(Command::Run(config_root()?.join("shell.lua"))),
-        [path] => Ok(Command::Run(PathBuf::from(path))),
+        [] => Ok(Command::Run(config_root()?.join("shell.lua"), policy)),
+        [path] => Ok(Command::Run(PathBuf::from(path), policy)),
         _ => Err(usage().to_owned()),
     }
 }
@@ -159,7 +191,7 @@ enum WorkerMessage {
 
 fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
     let mut runtime = Runtime::default();
-    execute_config(&mut runtime, path, source)?;
+    execute_config(&mut runtime, path, source, LoadPolicy::default())?;
     if runtime.scene().roots().len() != 1 {
         return Err("lock configuration must create exactly one root item".to_owned());
     }
@@ -400,7 +432,7 @@ fn paint_lock(
     Ok(())
 }
 
-fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
+fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), String> {
     let probe = LayerClient::connect(BarConfig::default()).map_err(|error| error.to_string())?;
     let mut desired = named_screens(probe.screens())?;
     drop(probe);
@@ -410,7 +442,7 @@ fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
     let path = Arc::new(path);
     let mut source: Arc<[u8]> = source.into();
     let (tx, rx) = mpsc::channel();
-    let reload_roots = runtimepath_roots(&path);
+    let reload_roots = runtimepath_roots(&path, policy.external_roots);
     let mut reload_snapshot = lua_snapshot(&reload_roots);
     let reload_tx = tx.clone();
     thread::spawn(move || {
@@ -447,6 +479,7 @@ fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
         &desired,
         Arc::clone(&path),
         Arc::clone(&source),
+        policy,
         &tx,
     );
 
@@ -461,6 +494,7 @@ fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
                     &desired,
                     Arc::clone(&path),
                     Arc::clone(&source),
+                    policy,
                     &tx,
                 );
             }
@@ -527,21 +561,23 @@ fn named_screens(screens: &[ScreenInfo]) -> Result<BTreeMap<String, ScreenInfo>,
         .collect()
 }
 
-fn runtimepath_roots(config: &Path) -> Vec<PathBuf> {
+fn runtimepath_roots(config: &Path, external: bool) -> Vec<PathBuf> {
     let mut roots = config
         .parent()
         .map(Path::to_path_buf)
         .into_iter()
         .collect::<Vec<_>>();
-    roots.extend(
-        env::var_os("MOLD_RUNTIME_PATH")
-            .into_iter()
-            .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>()),
-    );
-    if let Some(data) = env::var_os("XDG_DATA_HOME") {
-        roots.push(PathBuf::from(data).join("mold/site"));
-    } else if let Some(home) = env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join(".local/share/mold/site"));
+    if external {
+        roots.extend(
+            env::var_os("MOLD_RUNTIME_PATH")
+                .into_iter()
+                .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>()),
+        );
+        if let Some(data) = env::var_os("XDG_DATA_HOME") {
+            roots.push(PathBuf::from(data).join("mold/site"));
+        } else if let Some(home) = env::var_os("HOME") {
+            roots.push(PathBuf::from(home).join(".local/share/mold/site"));
+        }
     }
     let mut unique = Vec::new();
     for root in roots {
@@ -552,9 +588,20 @@ fn runtimepath_roots(config: &Path) -> Vec<PathBuf> {
     unique
 }
 
-fn execute_config(runtime: &mut Runtime, path: &Path, source: &[u8]) -> Result<(), String> {
-    let roots = runtimepath_roots(path);
-    for plugin in runtime_scripts(&roots, "plugin") {
+fn execute_config(
+    runtime: &mut Runtime,
+    path: &Path,
+    source: &[u8],
+    policy: LoadPolicy,
+) -> Result<(), String> {
+    let roots = runtimepath_roots(path, policy.external_roots);
+    runtime.set_module_roots(roots.clone());
+    for plugin in policy
+        .plugins
+        .then(|| runtime_scripts(&roots, "plugin"))
+        .into_iter()
+        .flatten()
+    {
         match fs::read(&plugin) {
             Ok(source) => {
                 if let Err(error) = runtime.execute(&plugin.to_string_lossy(), &source) {
@@ -567,7 +614,12 @@ fn execute_config(runtime: &mut Runtime, path: &Path, source: &[u8]) -> Result<(
     runtime
         .execute(&path.to_string_lossy(), source)
         .map_err(|error| error.to_string())?;
-    for after in runtime_scripts(&roots, "after/plugin") {
+    for after in policy
+        .plugins
+        .then(|| runtime_scripts(&roots, "after/plugin"))
+        .into_iter()
+        .flatten()
+    {
         match fs::read(&after) {
             Ok(source) => {
                 if let Err(error) = runtime.execute(&after.to_string_lossy(), &source) {
@@ -647,6 +699,7 @@ fn reconcile_workers(
     desired: &BTreeMap<String, ScreenInfo>,
     path: Arc<PathBuf>,
     source: Arc<[u8]>,
+    policy: LoadPolicy,
     tx: &mpsc::Sender<SupervisorMessage>,
 ) {
     let stale = workers
@@ -672,8 +725,15 @@ fn reconcile_workers(
         let worker_stop = Arc::clone(&stop);
         let (commands, command_rx) = mpsc::channel();
         let join = thread::spawn(move || {
-            if let Err(error) = run_surface(&path, &source, screen, &tx, &worker_stop, &command_rx)
-                && !worker_stop.load(Ordering::Acquire)
+            if let Err(error) = run_surface(
+                &path,
+                &source,
+                screen,
+                policy,
+                &tx,
+                &worker_stop,
+                &command_rx,
+            ) && !worker_stop.load(Ordering::Acquire)
             {
                 let _ = tx.send(SupervisorMessage::Worker(WorkerMessage::Failed {
                     output,
@@ -775,6 +835,7 @@ struct WorkerUpdate {
 fn handle_worker_command(
     runtime: &mut Runtime,
     screen: &Screen,
+    policy: LoadPolicy,
     command: WorkerCommand,
 ) -> WorkerUpdate {
     match command {
@@ -813,7 +874,7 @@ fn handle_worker_command(
         } => {
             let mut candidate = Runtime::for_screen(Limits::default(), screen.clone());
             candidate.restore_reloadable_state(runtime.reloadable_state());
-            let result = execute_config(&mut candidate, &path, &source)
+            let result = execute_config(&mut candidate, &path, &source, policy)
                 .and_then(|()| {
                     (candidate.scene().roots().len() == 1)
                         .then_some(())
@@ -993,6 +1054,7 @@ fn run_surface(
     path: &Path,
     source: &[u8],
     screen: ScreenInfo,
+    policy: LoadPolicy,
     tx: &mpsc::Sender<SupervisorMessage>,
     stop: &AtomicBool,
     commands: &mpsc::Receiver<WorkerCommand>,
@@ -1008,7 +1070,7 @@ fn run_surface(
         scale: screen.scale,
     };
     let mut runtime = Runtime::for_screen(Limits::default(), runtime_screen.clone());
-    execute_config(&mut runtime, path, source)?;
+    execute_config(&mut runtime, path, source, policy)?;
     if runtime.scene().roots().len() != 1 {
         return Err("configuration must create exactly one root item".to_owned());
     }
@@ -1099,7 +1161,7 @@ fn run_surface(
         let next_clock = clock_text();
         let mut repaint = runtime.poll_services();
         while let Ok(command) = commands.try_recv() {
-            let update = handle_worker_command(&mut runtime, &runtime_screen, command);
+            let update = handle_worker_command(&mut runtime, &runtime_screen, policy, command);
             repaint |= update.repaint;
             if update.reset_input {
                 hovered = None;
@@ -1505,10 +1567,25 @@ mod tests {
         );
 
         let args = [std::ffi::OsString::from("custom.lua")];
-        let Command::Run(path) = parse_command(&args).unwrap() else {
+        let Command::Run(path, policy) = parse_command(&args).unwrap() else {
             panic!("expected config path");
         };
         assert_eq!(path, PathBuf::from("custom.lua"));
+        assert_eq!(policy, LoadPolicy::default());
+
+        let args = ["--no-plugin", "custom.lua"].map(std::ffi::OsString::from);
+        let Command::Run(_, policy) = parse_command(&args).unwrap() else {
+            panic!("expected config path");
+        };
+        assert!(!policy.plugins);
+        assert!(policy.external_roots);
+
+        let args = ["--clean", "custom.lua"].map(std::ffi::OsString::from);
+        let Command::Run(_, policy) = parse_command(&args).unwrap() else {
+            panic!("expected config path");
+        };
+        assert!(!policy.plugins);
+        assert!(!policy.external_roots);
 
         let args = ["lock", "secure.lua"].map(std::ffi::OsString::from);
         let Command::Lock(path) = parse_command(&args).unwrap() else {
@@ -1553,7 +1630,7 @@ mod tests {
         let source = b"assert(plugin_value == 40); shell_value = 42; mold.ui.Item {}";
         let mut runtime = Runtime::default();
 
-        execute_config(&mut runtime, &shell, source).unwrap();
+        execute_config(&mut runtime, &shell, source, LoadPolicy::default()).unwrap();
 
         assert_eq!(runtime.scene().roots().len(), 1);
         fs::remove_dir_all(root).unwrap();
@@ -1572,11 +1649,45 @@ mod tests {
             &mut runtime,
             &shell,
             b"assert(plugin_value == 42); mold.ui.Item {}",
+            LoadPolicy::default(),
         )
         .unwrap();
 
         assert_eq!(runtime.scene().roots().len(), 1);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_plugin_policy_skips_discovered_plugins() {
+        let root = std::env::temp_dir().join(format!("mold-no-plugin-{}", std::process::id()));
+        fs::create_dir_all(root.join("plugin")).unwrap();
+        fs::write(root.join("plugin/entry.lua"), b"plugin_loaded = true").unwrap();
+        let shell = root.join("shell.lua");
+        let mut runtime = Runtime::default();
+
+        execute_config(
+            &mut runtime,
+            &shell,
+            b"assert(plugin_loaded == nil); mold.ui.Item {}",
+            LoadPolicy {
+                plugins: false,
+                external_roots: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(runtime.scene().roots().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clean_policy_keeps_only_the_config_root() {
+        let config = PathBuf::from("/tmp/mold-clean/shell.lua");
+
+        assert_eq!(
+            runtimepath_roots(&config, false),
+            [PathBuf::from("/tmp/mold-clean")]
+        );
     }
 
     #[test]
@@ -1620,6 +1731,7 @@ mod tests {
         let update = handle_worker_command(
             &mut runtime,
             &screen,
+            LoadPolicy::default(),
             WorkerCommand::Reload {
                 path: Arc::new(PathBuf::from("shell.lua")),
                 source: Arc::from(&source[..]),
@@ -1658,6 +1770,7 @@ mod tests {
                             height: None,
                             scale: 1,
                         },
+                        LoadPolicy::default(),
                         command,
                     );
                 }

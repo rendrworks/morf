@@ -22,5 +22,9 @@ Run a configuration directly with:
 cargo run --package mold-cli -- shell.lua
 ```
 
+Use `--no-plugin` to load the configuration without auto-sourced plugins. Use
+`--clean` to also exclude external Lua roots; modules beside the selected config
+remain available.
+
 An infinite Lua loop is terminated when its fuel budget is exhausted rather than
 hanging the process.

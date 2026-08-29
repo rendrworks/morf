@@ -377,6 +377,11 @@ impl Runtime {
             .map_err(|error| Error::Runtime(error.to_string()))
     }
 
+    /// Replaces the ordered filesystem roots used for user Lua modules.
+    pub fn set_module_roots(&mut self, roots: Vec<PathBuf>) {
+        *self.module_roots.borrow_mut() = roots;
+    }
+
     /// Drains non-fatal binding diagnostics produced since the previous call.
     pub fn take_logs(&mut self) -> Vec<String> {
         std::mem::take(&mut self.reactive.borrow_mut().logs)
@@ -3212,6 +3217,7 @@ fn install_reactive_api(
 
         let mold = ctx.stash(mold);
         let ui = ctx.stash(ui);
+        let loaded = ctx.stash(loaded);
         ctx.set_global(
             "require",
             Callback::from_fn(&ctx, move |ctx, _, mut stack| {
@@ -3220,10 +3226,30 @@ fn install_reactive_api(
                     "mold" => stack.replace(ctx, ctx.fetch(&mold)),
                     "mold.ui" => stack.replace(ctx, ctx.fetch(&ui)),
                     _ => {
-                        let source = load_runtime_module(&module_roots.borrow(), &name)
-                            .map_err(HostError)?;
-                        let module =
-                            execute_module(ctx, &name, &source, limits).map_err(HostError)?;
+                        let loaded = ctx.fetch(&loaded);
+                        let key = ctx.intern(name.as_bytes());
+                        let cached = loaded.get_value(ctx, key);
+                        if !matches!(cached, LuaValue::Nil) {
+                            stack.replace(ctx, cached);
+                            return Ok(CallbackReturn::Return);
+                        }
+                        loaded.set(ctx, key, true)?;
+                        let source = match load_runtime_module(&module_roots.borrow(), &name) {
+                            Ok(source) => source,
+                            Err(error) => {
+                                loaded.set(ctx, key, LuaValue::Nil)?;
+                                return Err(HostError(error).into());
+                            }
+                        };
+                        let module = match execute_module(ctx, &name, &source, limits) {
+                            Ok(LuaValue::Nil) => LuaValue::Boolean(true),
+                            Ok(module) => module,
+                            Err(error) => {
+                                loaded.set(ctx, key, LuaValue::Nil)?;
+                                return Err(HostError(error).into());
+                            }
+                        };
+                        loaded.set(ctx, key, module)?;
                         stack.replace(ctx, module);
                     }
                 }
@@ -5213,6 +5239,15 @@ mod tests {
     }
 
     #[test]
+    fn config_chunk_results_are_discarded() {
+        let mut runtime = Runtime::default();
+
+        runtime
+            .execute("result.lua", b"return { answer = 42 }")
+            .unwrap();
+    }
+
+    #[test]
     fn engine_modules_are_preloaded_by_rust() {
         let mut runtime = Runtime::default();
         runtime
@@ -5256,6 +5291,35 @@ mod tests {
             .execute(
                 &shell.to_string_lossy(),
                 b"local widget = require('user.widget'); assert(widget.answer == 42)",
+            )
+            .unwrap();
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn require_caches_user_modules_in_package_loaded() {
+        let root = std::env::temp_dir().join(format!("mold-require-{}", std::process::id()));
+        let module = root.join("lua/user/once.lua");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(
+            &module,
+            b"module_runs = (module_runs or 0) + 1; return { runs = module_runs }",
+        )
+        .unwrap();
+        let shell = root.join("shell.lua");
+        let mut runtime = Runtime::default();
+
+        runtime
+            .execute(
+                &shell.to_string_lossy(),
+                br#"
+                    local first = require("user.once")
+                    local second = require("user.once")
+                    assert(first == second)
+                    assert(second.runs == 1)
+                    assert(package.loaded["user.once"] == first)
+                "#,
             )
             .unwrap();
 
