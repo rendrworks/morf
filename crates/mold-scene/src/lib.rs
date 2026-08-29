@@ -8,6 +8,12 @@ use std::time::Duration;
 use mold_reactive::{Graph, GraphError, SignalId};
 use slotmap::{SlotMap, new_key_type};
 
+mod model;
+
+pub use model::{
+    FlickState, ListChange, ListModel, ModelId, ViewItem, ViewTransition, VirtualList,
+};
+
 new_key_type! {
     struct NodeId;
 }
