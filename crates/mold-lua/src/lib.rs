@@ -449,6 +449,28 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().output_power_requests)
     }
 
+    /// Takes pending compositor clipboard publications.
+    pub fn take_clipboard_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.reactive.borrow_mut().clipboard_requests)
+    }
+
+    /// Dispatches a compositor clipboard selection to registered Lua callbacks.
+    pub fn dispatch_clipboard(&mut self, text: Option<String>) -> bool {
+        let callbacks = self.reactive.borrow().clipboard_callbacks.clone();
+        let value = text.map_or(IpcValue::Nil, IpcValue::String);
+        for callback in &callbacks {
+            if let Err(message) = self.lua.enter(|ctx| {
+                execute_handler_args(ctx, callback, std::slice::from_ref(&value), self.limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("clipboard callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
     /// Runs one bounded key handler with keysym and UTF-8 text arguments.
     pub fn dispatch_key_event(
         &mut self,
@@ -1108,6 +1130,8 @@ struct ReactiveState {
     ipc_handlers: HashMap<String, StashedClosure>,
     idle_callbacks: HashMap<u32, Vec<StashedClosure>>,
     output_power_requests: Vec<bool>,
+    clipboard_requests: Vec<String>,
+    clipboard_callbacks: Vec<StashedClosure>,
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
@@ -1145,6 +1169,8 @@ impl ReactiveState {
             ipc_handlers: HashMap::new(),
             idle_callbacks: HashMap::new(),
             output_power_requests: Vec::new(),
+            clipboard_requests: Vec::new(),
+            clipboard_callbacks: Vec::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
@@ -1386,6 +1412,33 @@ fn install_reactive_api(
         let output_power = Table::new(&ctx);
         output_power.set_field(ctx, "set", output_power_set);
         mold.set_field(ctx, "output_power", output_power);
+        let clipboard_set_state = Rc::clone(&state);
+        let clipboard_set = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let text: String = stack.consume(ctx)?;
+            if text.len() > 1_048_576 {
+                return Err(HostError("clipboard text limit reached".into()).into());
+            }
+            let mut state = clipboard_set_state.borrow_mut();
+            if state.clipboard_requests.len() >= 64 {
+                return Err(HostError("clipboard request limit reached".into()).into());
+            }
+            state.clipboard_requests.push(text);
+            Ok(CallbackReturn::Return)
+        });
+        let clipboard_subscribe_state = Rc::clone(&state);
+        let clipboard_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let callback: Closure = stack.consume(ctx)?;
+            let mut state = clipboard_subscribe_state.borrow_mut();
+            if state.clipboard_callbacks.len() >= 64 {
+                return Err(HostError("clipboard callback limit reached".into()).into());
+            }
+            state.clipboard_callbacks.push(ctx.stash(callback));
+            Ok(CallbackReturn::Return)
+        });
+        let clipboard = Table::new(&ctx);
+        clipboard.set_field(ctx, "set", clipboard_set);
+        clipboard.set_field(ctx, "subscribe", clipboard_subscribe);
+        mold.set_field(ctx, "clipboard", clipboard);
         let timer_state = Rc::clone(&state);
         let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
@@ -4379,6 +4432,34 @@ mod tests {
 
         assert_eq!(runtime.take_output_power_requests(), [false, true]);
         assert!(runtime.take_output_power_requests().is_empty());
+    }
+
+    #[test]
+    fn clipboard_bridges_publications_and_selections() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "clipboard.lua",
+                br#"
+                    local current = mold.signal("clipboard", "")
+                    mold.clipboard.subscribe(function(text) current:set(text or "none") end)
+                    mold.clipboard.set("copied")
+                    mold.ipc["clipboard.get"] = function() return current:get() end
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(runtime.take_clipboard_requests(), ["copied"]);
+        assert!(runtime.dispatch_clipboard(Some("pasted".to_owned())));
+        assert_eq!(
+            runtime.call_ipc("clipboard.get", &[]).unwrap(),
+            [IpcValue::String("pasted".to_owned())]
+        );
+        assert!(runtime.dispatch_clipboard(None));
+        assert_eq!(
+            runtime.call_ipc("clipboard.get", &[]).unwrap(),
+            [IpcValue::String("none".to_owned())]
+        );
     }
 
     #[test]

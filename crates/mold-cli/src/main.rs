@@ -187,6 +187,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         let mut repaint = runtime.poll_services();
         apply_output_power_requests(&mut runtime, &mut client);
+        apply_clipboard_requests(&mut runtime, &mut client);
         unlock_pending |= runtime.take_session_unlock_request();
         if locked && unlock_pending {
             client.unlock_session().map_err(|error| error.to_string())?;
@@ -254,6 +255,9 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                     repaint |= runtime.dispatch_idle(timeout_ms, idle);
                 }
                 LayerEvent::OutputPower { .. } => {}
+                LayerEvent::Clipboard { text } => {
+                    repaint |= runtime.dispatch_clipboard(text);
+                }
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
                 | LayerEvent::Configure { .. }
@@ -275,6 +279,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 | LayerEvent::Closed => {}
             }
         }
+        apply_clipboard_requests(&mut runtime, &mut client);
         if repaint {
             for (index, renderer) in renderers.iter_mut().enumerate() {
                 if let Some(renderer) = renderer {
@@ -803,6 +808,15 @@ fn apply_output_power_requests(runtime: &mut Runtime, client: &mut LayerClient) 
     }
 }
 
+fn apply_clipboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    if !client.can_set_clipboard() {
+        return;
+    }
+    for text in runtime.take_clipboard_requests() {
+        client.set_clipboard(text);
+    }
+}
+
 fn stop_workers(workers: BTreeMap<String, Worker>) {
     for worker in workers.values() {
         worker.stop.store(true, Ordering::Release);
@@ -856,6 +870,7 @@ fn run_surface(
                 LayerEvent::Scale(_)
                 | LayerEvent::Idle { .. }
                 | LayerEvent::OutputPower { .. }
+                | LayerEvent::Clipboard { .. }
                 | LayerEvent::Frame { .. }
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave
@@ -925,6 +940,7 @@ fn run_surface(
             }
         }
         apply_output_power_requests(&mut runtime, &mut client);
+        apply_clipboard_requests(&mut runtime, &mut client);
         if next_clock != clock {
             clock = next_clock;
             runtime
@@ -954,6 +970,9 @@ fn run_surface(
                     repaint |= runtime.dispatch_idle(timeout_ms, idle);
                 }
                 LayerEvent::OutputPower { .. } => {}
+                LayerEvent::Clipboard { text } => {
+                    repaint |= runtime.dispatch_clipboard(text);
+                }
                 LayerEvent::PointerMotion { x, y } => {
                     let hit = layout
                         .hit_test(&runtime.scene(), x, y)
@@ -1124,6 +1143,7 @@ fn run_surface(
                 }
             }
         }
+        apply_clipboard_requests(&mut runtime, &mut client);
         if repaint {
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;

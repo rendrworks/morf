@@ -3,8 +3,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
+use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::Duration;
 
 use raw_window_handle::{
@@ -14,6 +18,12 @@ use raw_window_handle::{
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::time::Timespec;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
+use smithay_client_toolkit::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
+use smithay_client_toolkit::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
+use smithay_client_toolkit::data_device_manager::data_source::{
+    CopyPasteSource, DataSourceHandler,
+};
+use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, WritePipe};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
@@ -40,7 +50,8 @@ use smithay_client_toolkit::shell::xdg::window::{
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{
-    wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface, wl_touch,
+    wl_data_device, wl_data_source, wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat,
+    wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::ext::idle_notify::v1::client::{
@@ -194,6 +205,8 @@ pub enum LayerEvent {
         output_id: u32,
         mode: OutputPowerMode,
     },
+    /// The compositor clipboard selection changed.
+    Clipboard { text: Option<String> },
     /// The compositor output set changed.
     Screens(Vec<ScreenInfo>),
     /// The compositor positioned and sized the popup.
@@ -273,10 +286,12 @@ impl LayerClient {
             .ok();
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
         let idle_notifier = globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok();
+        let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
         let output_power_manager = globals
             .bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
         let session_locks = SessionLockState::new(&globals, &qh);
+        let (clipboard_tx, clipboard_rx) = mpsc::channel();
         let mut state = LayerState {
             registry: RegistryState::new(&globals),
             compositor,
@@ -302,6 +317,15 @@ impl LayerClient {
             idle_notifier,
             idle_notifications: Vec::new(),
             idle_timeouts: Vec::new(),
+            data_device_manager,
+            data_devices: Vec::new(),
+            clipboard_source: None,
+            clipboard_text: String::new(),
+            clipboard_tx,
+            clipboard_rx,
+            clipboard_reads: Arc::new(AtomicUsize::new(0)),
+            clipboard_writes: Arc::new(AtomicUsize::new(0)),
+            latest_input_serial: None,
             output_power_manager,
             output_power: Vec::new(),
             output_power_target: None,
@@ -315,6 +339,7 @@ impl LayerClient {
         queue
             .roundtrip(&mut state)
             .map_err(|error| WaylandError(format!("could not read Wayland outputs: {error}")))?;
+        state.refresh_data_devices(&qh);
         if let Some(config) = config {
             let output = match config.output.as_deref() {
                 Some(name) => Some(
@@ -449,8 +474,42 @@ impl LayerClient {
         true
     }
 
+    /// Publishes UTF-8 text to the clipboard after a compositor input serial is available.
+    pub fn set_clipboard(&mut self, text: impl Into<String>) -> bool {
+        let Some(manager) = &self.state.data_device_manager else {
+            return false;
+        };
+        let Some(device) = self.state.data_devices.first() else {
+            return false;
+        };
+        let Some(serial) = self.state.latest_input_serial else {
+            return false;
+        };
+        let source = manager.create_copy_paste_source(
+            &self.queue.handle(),
+            ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"],
+        );
+        source.set_selection(device, serial);
+        self.state.clipboard_text = text.into();
+        self.state.clipboard_source = Some(source);
+        true
+    }
+
+    /// Returns whether clipboard publication has a data device and a current input serial.
+    pub fn can_set_clipboard(&self) -> bool {
+        self.supports_clipboard() && self.state.latest_input_serial.is_some()
+    }
+
+    /// Returns whether the compositor exposes a clipboard data device.
+    pub fn supports_clipboard(&self) -> bool {
+        self.state.data_device_manager.is_some() && !self.state.data_devices.is_empty()
+    }
+
     /// Removes the next queued surface event.
     pub fn next_event(&mut self) -> Option<LayerEvent> {
+        while let Ok(text) = self.state.clipboard_rx.try_recv() {
+            self.state.events.push_back(LayerEvent::Clipboard { text });
+        }
         self.state.events.pop_front()
     }
 
@@ -774,6 +833,15 @@ struct LayerState {
     idle_notifier: Option<ExtIdleNotifierV1>,
     idle_notifications: Vec<ExtIdleNotificationV1>,
     idle_timeouts: Vec<u32>,
+    data_device_manager: Option<DataDeviceManagerState>,
+    data_devices: Vec<DataDevice>,
+    clipboard_source: Option<CopyPasteSource>,
+    clipboard_text: String,
+    clipboard_tx: mpsc::Sender<Option<String>>,
+    clipboard_rx: mpsc::Receiver<Option<String>>,
+    clipboard_reads: Arc<AtomicUsize>,
+    clipboard_writes: Arc<AtomicUsize>,
+    latest_input_serial: Option<u32>,
     output_power_manager: Option<ZwlrOutputPowerManagerV1>,
     output_power: Vec<OutputPowerControl>,
     output_power_target: Option<wl_output::WlOutput>,
@@ -797,6 +865,21 @@ struct LockSurface {
 }
 
 impl LayerState {
+    fn refresh_data_devices(&mut self, qh: &QueueHandle<Self>) {
+        let Some(manager) = &self.data_device_manager else {
+            return;
+        };
+        for seat in self.seats.seats() {
+            if self
+                .data_devices
+                .iter()
+                .all(|device| device.data().seat() != &seat)
+            {
+                self.data_devices.push(manager.get_data_device(qh, &seat));
+            }
+        }
+    }
+
     fn apply_output_power(
         &mut self,
         output: &wl_output::WlOutput,
@@ -1167,6 +1250,7 @@ impl SeatHandler for LayerState {
         qh: &QueueHandle<Self>,
         _seat: wl_seat::WlSeat,
     ) {
+        self.refresh_data_devices(qh);
         self.refresh_idle(qh);
     }
 
@@ -1217,8 +1301,10 @@ impl SeatHandler for LayerState {
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
+        seat: wl_seat::WlSeat,
     ) {
+        self.data_devices
+            .retain(|device| device.data().seat() != &seat);
     }
 }
 
@@ -1246,7 +1332,8 @@ impl PointerHandler for LayerState {
                 PointerEventKind::Leave { .. } => {
                     self.events.push_back(LayerEvent::PointerLeave);
                 }
-                PointerEventKind::Press { button, .. } => {
+                PointerEventKind::Press { button, serial, .. } => {
+                    self.latest_input_serial = Some(serial);
                     self.events.push_back(LayerEvent::PointerButton {
                         button,
                         pressed: true,
@@ -1274,7 +1361,7 @@ impl TouchHandler for LayerState {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
         _touch: &wl_touch::WlTouch,
-        _serial: u32,
+        serial: u32,
         _time: u32,
         surface: wl_surface::WlSurface,
         id: i32,
@@ -1287,6 +1374,7 @@ impl TouchHandler for LayerState {
         {
             return;
         }
+        self.latest_input_serial = Some(serial);
         self.touch_points.insert(id, position);
         self.events.push_back(LayerEvent::TouchDown {
             id,
@@ -1388,9 +1476,10 @@ impl KeyboardHandler for LayerState {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _serial: u32,
+        serial: u32,
         event: KeyEvent,
     ) {
+        self.latest_input_serial = Some(serial);
         self.push_key(event, true, false);
     }
 
@@ -1421,17 +1510,213 @@ impl KeyboardHandler for LayerState {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _serial: u32,
+        serial: u32,
         modifiers: Modifiers,
         _raw: RawModifiers,
         _layout: u32,
     ) {
+        self.latest_input_serial = Some(serial);
         self.events.push_back(LayerEvent::Modifiers {
             control: modifiers.ctrl,
             alt: modifiers.alt,
             shift: modifiers.shift,
             logo: modifiers.logo,
         });
+    }
+}
+
+impl DataDeviceHandler for LayerState {
+    fn enter(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _data_device: &wl_data_device::WlDataDevice,
+        _x: f64,
+        _y: f64,
+        _surface: &wl_surface::WlSurface,
+    ) {
+    }
+
+    fn leave(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _data_device: &wl_data_device::WlDataDevice,
+    ) {
+    }
+
+    fn motion(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _data_device: &wl_data_device::WlDataDevice,
+        _x: f64,
+        _y: f64,
+    ) {
+    }
+
+    fn selection(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        data_device: &wl_data_device::WlDataDevice,
+    ) {
+        let Some(offer) = self
+            .data_devices
+            .iter()
+            .find(|device| device.inner() == data_device)
+            .and_then(|device| device.data().selection_offer())
+        else {
+            self.events.push_back(LayerEvent::Clipboard { text: None });
+            return;
+        };
+        let mime = offer.with_mime_types(|types| {
+            ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"]
+                .into_iter()
+                .find(|preferred| types.iter().any(|mime| mime == preferred))
+                .map(str::to_owned)
+        });
+        let Some(mime) = mime else {
+            self.events.push_back(LayerEvent::Clipboard { text: None });
+            return;
+        };
+        let Ok(pipe) = offer.receive(mime) else {
+            self.events.push_back(LayerEvent::Clipboard { text: None });
+            return;
+        };
+        if self
+            .clipboard_reads
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                (active < 8).then_some(active + 1)
+            })
+            .is_err()
+        {
+            return;
+        }
+        let tx = self.clipboard_tx.clone();
+        let active = Arc::clone(&self.clipboard_reads);
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let text = pipe
+                .take(1_048_577)
+                .read_to_end(&mut bytes)
+                .ok()
+                .filter(|_| bytes.len() <= 1_048_576)
+                .and_then(|_| String::from_utf8(bytes).ok());
+            let _ = tx.send(text);
+            active.fetch_sub(1, Ordering::Relaxed);
+        });
+    }
+
+    fn drop_performed(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _data_device: &wl_data_device::WlDataDevice,
+    ) {
+    }
+}
+
+impl DataOfferHandler for LayerState {
+    fn source_actions(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _offer: &mut DragOffer,
+        _actions: wayland_client::protocol::wl_data_device_manager::DndAction,
+    ) {
+    }
+
+    fn selected_action(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _offer: &mut DragOffer,
+        _actions: wayland_client::protocol::wl_data_device_manager::DndAction,
+    ) {
+    }
+}
+
+impl DataSourceHandler for LayerState {
+    fn accept_mime(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _source: &wl_data_source::WlDataSource,
+        _mime: Option<String>,
+    ) {
+    }
+
+    fn send_request(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        source: &wl_data_source::WlDataSource,
+        _mime: String,
+        mut pipe: WritePipe,
+    ) {
+        let Some(text) = self
+            .clipboard_source
+            .as_ref()
+            .filter(|current| current.inner() == source)
+            .map(|_| self.clipboard_text.clone())
+        else {
+            return;
+        };
+        if self
+            .clipboard_writes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                (active < 8).then_some(active + 1)
+            })
+            .is_err()
+        {
+            return;
+        }
+        let active = Arc::clone(&self.clipboard_writes);
+        thread::spawn(move || {
+            let _ = pipe.write_all(text.as_bytes());
+            active.fetch_sub(1, Ordering::Relaxed);
+        });
+    }
+
+    fn cancelled(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        source: &wl_data_source::WlDataSource,
+    ) {
+        if self
+            .clipboard_source
+            .as_ref()
+            .is_some_and(|current| current.inner() == source)
+        {
+            self.clipboard_source = None;
+        }
+    }
+
+    fn dnd_dropped(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _source: &wl_data_source::WlDataSource,
+    ) {
+    }
+
+    fn dnd_finished(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _source: &wl_data_source::WlDataSource,
+    ) {
+    }
+
+    fn action(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _source: &wl_data_source::WlDataSource,
+        _action: wayland_client::protocol::wl_data_device_manager::DndAction,
+    ) {
     }
 }
 
