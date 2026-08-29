@@ -1,7 +1,7 @@
 //! Sandboxed execution of mold configuration code.
 
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
 use std::fs;
@@ -1272,6 +1272,10 @@ struct LuaVirtualView {
     view: VirtualList,
     delegate: StashedClosure,
     active: HashMap<ModelId, NodeHandle>,
+    reusable: HashMap<ModelId, NodeHandle>,
+    reuse_order: VecDeque<ModelId>,
+    reuse_limit: usize,
+    pool_root: Option<NodeHandle>,
     column_extent: f64,
 }
 
@@ -3825,6 +3829,7 @@ fn view_constructor<'gc>(
                 (range, cell_height, offset, columns, cell_width)
             }
         };
+        let reuse_limit = range.len().max(1) * 2;
         let mut active = HashMap::new();
         for index in range {
             let (id, item) = model
@@ -3860,6 +3865,10 @@ fn view_constructor<'gc>(
                     view,
                     delegate,
                     active,
+                    reusable: HashMap::new(),
+                    reuse_order: VecDeque::new(),
+                    reuse_limit,
+                    pool_root: None,
                     column_extent,
                 },
             );
@@ -3978,6 +3987,23 @@ fn reconcile_lua_view(
             _ => None,
         })
         .collect::<HashSet<_>>();
+    let invalidated = changes
+        .iter()
+        .filter_map(|change| match change {
+            ListChange::Removed { id, .. } | ListChange::Updated { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for id in &invalidated {
+        if let Some(node) = view.reusable.remove(id) {
+            state
+                .borrow_mut()
+                .scene
+                .remove(node)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    view.reuse_order.retain(|id| !invalidated.contains(id));
     let model = view.model.borrow();
     let transitions = view.view.sync(&model, &changes);
     let visible = view
@@ -3991,14 +4017,24 @@ fn reconcile_lua_view(
         .collect::<Vec<_>>();
     drop(model);
     let visible_ids = visible.iter().map(|(id, _, _)| *id).collect::<HashSet<_>>();
-    let mut created = Vec::new();
+    let mut prepared = Vec::new();
     for (id, index, item) in &visible {
         if !view.active.contains_key(id) || updated.contains(id) {
+            if let Some(node) = view.reusable.remove(id) {
+                view.reuse_order.retain(|candidate| candidate != id);
+                prepared.push((*id, *index, node, false));
+                continue;
+            }
             match execute_delegate(ctx, &view.delegate, item, *index, limits) {
-                Ok(node) => created.push((*id, *index, node)),
+                Ok(node) => prepared.push((*id, *index, node, true)),
                 Err(error) => {
-                    for (_, _, node) in created {
-                        let _ = state.borrow_mut().scene.remove(node);
+                    for (id, _, node, created) in prepared {
+                        if created {
+                            let _ = state.borrow_mut().scene.remove(node);
+                        } else {
+                            view.reusable.insert(id, node);
+                            view.reuse_order.push_back(id);
+                        }
                     }
                     return Err(error);
                 }
@@ -4012,14 +4048,54 @@ fn reconcile_lua_view(
         .map(|(id, node)| (*id, *node))
         .collect::<Vec<_>>();
     for (id, node) in removed {
+        view.active.remove(&id);
+        if invalidated.contains(&id) {
+            state
+                .borrow_mut()
+                .scene
+                .remove(node)
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+        let pool_root = match view.pool_root {
+            Some(node) => node,
+            None => {
+                let pool = create_node(state, Element::Item);
+                state
+                    .borrow_mut()
+                    .scene
+                    .assign(pool, "visible", false)
+                    .map_err(|error| error.to_string())?;
+                state
+                    .borrow_mut()
+                    .scene
+                    .reparent(pool, Some(parent))
+                    .map_err(|error| error.to_string())?;
+                view.pool_root = Some(pool);
+                pool
+            }
+        };
         state
             .borrow_mut()
             .scene
-            .remove(node)
+            .reparent(node, Some(pool_root))
             .map_err(|error| error.to_string())?;
-        view.active.remove(&id);
+        view.reusable.insert(id, node);
+        view.reuse_order.push_back(id);
     }
-    for (id, index, node) in created {
+    while view.reusable.len() > view.reuse_limit {
+        let Some(id) = view.reuse_order.pop_front() else {
+            break;
+        };
+        if let Some(node) = view.reusable.remove(&id) {
+            state
+                .borrow_mut()
+                .scene
+                .remove(node)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    for (id, index, node, _) in prepared {
         position_view_child(
             &mut state.borrow_mut().scene,
             node,
@@ -6674,6 +6750,7 @@ mod tests {
                     local items = {}
                     for index = 1, 500 do items[index] = "app" .. index end
                     local model = mold.list_model(items)
+                    local delegate_runs = 0
                     local view = ui.ListView {
                         model = model,
                         height = 400,
@@ -6681,12 +6758,15 @@ mod tests {
                         overscan = 1,
                         content_y = 4000,
                         delegate = function(item, index)
+                            delegate_runs = delegate_runs + 1
                             return ui.Text { text = item, width = 100, height = 40 }
                         end,
                     }
                     model:set(100, "changed")
                     mold.sync_view(view, 4000)
                     mold.sync_view(view, 8000)
+                    mold.sync_view(view, 4000)
+                    assert(delegate_runs == 27)
                 "#,
             )
             .unwrap();
@@ -6694,9 +6774,9 @@ mod tests {
         let root = scene.roots()[0];
         let children = scene.children(root).unwrap();
 
-        assert_eq!(children.len(), 13);
-        assert_eq!(scene.string_value(children[0], "text").unwrap(), "app200");
-        assert_eq!(scene.number(children[0], "y").unwrap(), -40.0);
+        assert_eq!(children.len(), 14);
+        assert_eq!(scene.string_value(children[1], "text").unwrap(), "changed");
+        assert_eq!(scene.number(children[1], "y").unwrap(), -40.0);
         assert!(scene.bool_value(root, "clip").unwrap());
     }
 
