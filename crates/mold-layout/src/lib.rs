@@ -244,7 +244,11 @@ impl Layout {
                 scene.number(node, "column_spacing")?,
                 scene.number(node, "row_spacing")?,
             ),
-            Element::Item | Element::Rect | Element::MouseArea | Element::Flickable => {
+            Element::Item
+            | Element::Rect
+            | Element::Shape
+            | Element::MouseArea
+            | Element::Flickable => {
                 let mut bounds = Size::default();
                 for (child, size) in children.iter().zip(child_sizes) {
                     bounds.width = bounds.width.max(scene.number(*child, "x")? + size.width);

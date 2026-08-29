@@ -8,6 +8,7 @@ use mold_layout::{Geometry, Layout};
 use mold_scene::{Color, Element, NodeHandle, Scene, SceneError};
 
 mod gpu;
+mod path;
 
 pub use gpu::{GpuError, GpuInfo, WgpuBackend};
 
@@ -69,12 +70,32 @@ pub enum DrawCommand {
         /// Effective node opacity.
         opacity: f32,
     },
+    /// Filled and optionally stroked SVG path.
+    Path {
+        /// Source scene node.
+        node: NodeHandle,
+        /// Logical surface bounds.
+        bounds: Geometry,
+        /// SVG path data in the node coordinate space.
+        path: String,
+        /// Fill colour after node opacity.
+        fill_color: Color,
+        /// Stroke colour after node opacity.
+        stroke_color: Color,
+        /// Logical stroke width.
+        stroke_width: f64,
+        /// True for even-odd fill, false for nonzero fill.
+        even_odd: bool,
+    },
 }
 
 impl DrawCommand {
     fn node(&self) -> NodeHandle {
         match self {
-            Self::Quad { node, .. } | Self::Text { node, .. } | Self::Texture { node, .. } => *node,
+            Self::Quad { node, .. }
+            | Self::Text { node, .. }
+            | Self::Texture { node, .. }
+            | Self::Path { node, .. } => *node,
         }
     }
 
@@ -97,6 +118,19 @@ impl DrawCommand {
                 *shadow_offset_y,
             ),
             Self::Text { bounds, .. } | Self::Texture { bounds, .. } => *bounds,
+            Self::Path {
+                bounds,
+                stroke_width,
+                ..
+            } => {
+                let half_stroke = stroke_width.max(0.0) / 2.0;
+                Geometry {
+                    x: bounds.x - half_stroke,
+                    y: bounds.y - half_stroke,
+                    width: bounds.width + stroke_width.max(0.0),
+                    height: bounds.height + stroke_width.max(0.0),
+                }
+            }
         }
     }
 }
@@ -408,6 +442,15 @@ fn append_node(
             icon_theme: Some(scene.string_value(node, "theme")?.to_owned()),
             opacity: opacity as f32,
         }),
+        Element::Shape => commands.push(DrawCommand::Path {
+            node,
+            bounds,
+            path: scene.string_value(node, "path")?.to_owned(),
+            fill_color: with_opacity(scene.color_value(node, "fill_color")?, opacity),
+            stroke_color: with_opacity(scene.color_value(node, "stroke_color")?, opacity),
+            stroke_width: scene.number(node, "stroke_width")?.max(0.0),
+            even_odd: scene.string_value(node, "fill_rule")? == "even_odd",
+        }),
         Element::Item
         | Element::MouseArea
         | Element::Row
@@ -626,6 +669,34 @@ mod tests {
             &list.commands[1],
             DrawCommand::Texture { source, icon_theme: Some(theme), .. }
                 if source == "network-wireless" && theme == "Adwaita"
+        ));
+    }
+
+    #[test]
+    fn shapes_emit_path_commands() {
+        let mut scene = Scene::new();
+        let shape = scene.create(Element::Shape);
+        scene.assign(shape, "path", "M0 0 L16 0 L8 16 Z").unwrap();
+        scene.assign(shape, "width", 16.0).unwrap();
+        scene.assign(shape, "height", 16.0).unwrap();
+        scene.assign(shape, "stroke_width", 2.0).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            shape,
+            Size {
+                width: 16.0,
+                height: 16.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+
+        assert!(matches!(
+            &list.commands[0],
+            DrawCommand::Path { path, stroke_width, .. }
+                if path == "M0 0 L16 0 L8 16 Z" && *stroke_width == 2.0
         ));
     }
 

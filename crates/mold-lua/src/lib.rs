@@ -1646,6 +1646,7 @@ fn install_reactive_api(
             ("Text", Element::Text),
             ("Image", Element::Image),
             ("Icon", Element::Icon),
+            ("Shape", Element::Shape),
             ("MouseArea", Element::MouseArea),
             ("Row", Element::Row),
             ("Column", Element::Column),
@@ -3526,7 +3527,7 @@ mod tests {
     }
 
     #[test]
-    fn lua_constructs_image_and_icon_elements() {
+    fn lua_constructs_image_icon_and_shape_elements() {
         let mut runtime = Runtime::default();
         runtime
             .execute(
@@ -3536,6 +3537,11 @@ mod tests {
                     ui.Item {
                         ui.Image { source = "/tmp/picture.png", width = 64, height = 32 },
                         ui.Icon { name = "battery", theme = "hicolor", width = 24, height = 24 },
+                        ui.Shape {
+                          path = "M0 0 L16 0 L8 16 Z",
+                          fill_color = "white",
+                          stroke_width = 1,
+                        },
                     }
                 "#,
             )
@@ -3548,6 +3554,10 @@ mod tests {
             Element::Image
         );
         assert_eq!(runtime.scene().element(children[1]).unwrap(), Element::Icon);
+        assert_eq!(
+            runtime.scene().element(children[2]).unwrap(),
+            Element::Shape
+        );
     }
 
     #[test]

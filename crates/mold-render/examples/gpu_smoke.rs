@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene = Scene::new();
     let node = scene.create(Element::Rect);
     let image = scene.create(Element::Image);
+    let shape = scene.create(Element::Shape);
     let list = DrawList {
         commands: vec![
             DrawCommand::Quad {
@@ -45,6 +46,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 source: image_path.to_string_lossy().into_owned(),
                 icon_theme: None,
                 opacity: 1.0,
+            },
+            DrawCommand::Path {
+                node: shape,
+                bounds: Geometry {
+                    x: 24.0,
+                    y: 18.0,
+                    width: 28.0,
+                    height: 28.0,
+                },
+                path: "M14 0 L28 28 L0 28 Z".to_owned(),
+                fill_color: Color::rgba8(255, 255, 255, 220),
+                stroke_color: Color::rgba8(0, 0, 0, 255),
+                stroke_width: 1.0,
+                even_odd: false,
             },
         ],
     };

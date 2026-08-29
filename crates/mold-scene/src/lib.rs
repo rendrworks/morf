@@ -35,6 +35,8 @@ pub enum Element {
     Image,
     /// XDG icon-theme image primitive.
     Icon,
+    /// Tessellated SVG path primitive.
+    Shape,
     /// Pointer and focus event target with no visual output.
     MouseArea,
     /// Sequential horizontal positioner.
@@ -61,6 +63,7 @@ impl Element {
             Self::Text => "Text",
             Self::Image => "Image",
             Self::Icon => "Icon",
+            Self::Shape => "Shape",
             Self::MouseArea => "MouseArea",
             Self::Row => "Row",
             Self::Column => "Column",
@@ -1106,7 +1109,8 @@ fn property_class(property: &str) -> PropertyClass {
         "x" | "y" | "scale" | "rotation" | "opacity" | "transition_x" | "transition_y" => {
             PropertyClass::Transform
         }
-        "color" | "radius" | "border_width" | "border_color" => PropertyClass::Paint,
+        "color" | "radius" | "border_width" | "border_color" | "path" | "fill_color"
+        | "stroke_color" | "stroke_width" => PropertyClass::Paint,
         _ => PropertyClass::Layout,
     }
 }
@@ -1196,6 +1200,15 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 string("theme", "hicolor"),
                 number("source_width", 0.0),
                 number("source_height", 0.0),
+            ]);
+        }
+        Element::Shape => {
+            properties.extend([
+                string("path", ""),
+                color("fill_color", Color::rgba8(255, 255, 255, 255)),
+                color("stroke_color", Color::rgba8(0, 0, 0, 0)),
+                number("stroke_width", 0.0),
+                string("fill_rule", "nonzero"),
             ]);
         }
         Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {

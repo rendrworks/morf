@@ -11,6 +11,7 @@ use mold_image::ImageCache;
 use mold_layout::TextMeasurer;
 use mold_text::{RasterContent, TextSystem};
 
+use crate::path::PathCache;
 use crate::{DamageRect, DrawCommand, DrawList, RenderBackend, SdfQuadInstance};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -57,6 +58,12 @@ pub struct WgpuBackend {
     glyph_capacity: usize,
     texture_buffer: wgpu::Buffer,
     texture_capacity: usize,
+    path_pipeline: wgpu::RenderPipeline,
+    path_vertex_buffer: wgpu::Buffer,
+    path_vertex_capacity: usize,
+    path_index_buffer: wgpu::Buffer,
+    path_index_capacity: usize,
+    paths: PathCache,
     images: ImageCache,
     image_textures: HashMap<TextureKey, TextureImage>,
     text: TextSystem,
@@ -159,6 +166,7 @@ impl WgpuBackend {
         });
         let pipeline = create_pipeline(&device, &pipeline_layout, &shader, true);
         let clear_pipeline = create_pipeline(&device, &pipeline_layout, &clear_shader, false);
+        let path_pipeline = create_path_pipeline(&device, &viewport_layout);
         let (glyph_pipeline, glyph_layout, glyph_sampler) = create_glyph_pipeline(&device);
         let instance_capacity = 1;
         let instance_buffer = create_instance_buffer(&device, instance_capacity);
@@ -170,6 +178,14 @@ impl WgpuBackend {
             texture_capacity,
             "mold texture instances",
         );
+        let path_vertex_capacity = 1;
+        let path_vertex_buffer = create_vertex_buffer_for::<PathVertex>(
+            &device,
+            path_vertex_capacity,
+            "mold path vertices",
+        );
+        let path_index_capacity = 1;
+        let path_index_buffer = create_index_buffer(&device, path_index_capacity);
         let (texture, view) = create_target(&device, width, height);
         let surface = surface
             .map(|surface| create_surface_state(&device, &adapter, surface, &view, width, height))
@@ -191,6 +207,12 @@ impl WgpuBackend {
             glyph_capacity,
             texture_buffer,
             texture_capacity,
+            path_pipeline,
+            path_vertex_buffer,
+            path_vertex_capacity,
+            path_index_buffer,
+            path_index_capacity,
+            paths: PathCache::default(),
             images: ImageCache::default(),
             image_textures: HashMap::new(),
             text: TextSystem::new(),
@@ -271,6 +293,21 @@ impl WgpuBackend {
             "mold texture instances",
         );
     }
+
+    fn ensure_paths(&mut self, vertices: usize, indices: usize) {
+        if vertices > self.path_vertex_capacity {
+            self.path_vertex_capacity = vertices.next_power_of_two();
+            self.path_vertex_buffer = create_vertex_buffer_for::<PathVertex>(
+                &self.device,
+                self.path_vertex_capacity,
+                "mold path vertices",
+            );
+        }
+        if indices > self.path_index_capacity {
+            self.path_index_capacity = indices.next_power_of_two();
+            self.path_index_buffer = create_index_buffer(&self.device, self.path_index_capacity);
+        }
+    }
 }
 
 impl RenderBackend for WgpuBackend {
@@ -315,12 +352,18 @@ impl RenderBackend for WgpuBackend {
             list,
             scale_120,
         );
+        let path_batch = create_path_batch(&mut self.paths, list, scale_120)
+            .map_err(|error| GpuError(format!("could not prepare path draw: {error}")))?;
         self.ensure_instances(instances.len().max(1));
         self.ensure_textures(texture_batch.instances.len().max(1));
         self.ensure_glyphs(
             glyph_batch
                 .as_ref()
                 .map_or(1, |batch| batch.instances.len().max(1)),
+        );
+        self.ensure_paths(
+            path_batch.vertices.len().max(1),
+            path_batch.indices.len().max(1),
         );
         if !instances.is_empty() {
             self.queue
@@ -338,6 +381,18 @@ impl RenderBackend for WgpuBackend {
                 &self.texture_buffer,
                 0,
                 bytemuck::cast_slice(&texture_batch.instances),
+            );
+        }
+        if !path_batch.vertices.is_empty() {
+            self.queue.write_buffer(
+                &self.path_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&path_batch.vertices),
+            );
+            self.queue.write_buffer(
+                &self.path_index_buffer,
+                0,
+                bytemuck::cast_slice(&path_batch.indices),
             );
         }
         let mut encoder = self
@@ -389,6 +444,16 @@ impl RenderBackend for WgpuBackend {
                         pass.set_bind_group(0, &batch.bind_group, &[]);
                         pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
                         pass.draw(0..6, range.clone());
+                    }
+                    for range in &path_batch.command_ranges[command_index] {
+                        pass.set_pipeline(&self.path_pipeline);
+                        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                        pass.set_vertex_buffer(0, self.path_vertex_buffer.slice(..));
+                        pass.set_index_buffer(
+                            self.path_index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        pass.draw_indexed(range.clone(), 0, 0..1);
                     }
                 }
             }
@@ -483,6 +548,144 @@ fn create_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+struct PathVertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
+#[derive(Default)]
+struct PathBatch {
+    vertices: Vec<PathVertex>,
+    indices: Vec<u32>,
+    command_ranges: Vec<Vec<Range<u32>>>,
+}
+
+fn create_path_pipeline(
+    device: &wgpu::Device,
+    viewport_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("mold path pipeline layout"),
+        bind_group_layouts: &[Some(viewport_layout)],
+        immediate_size: 0,
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("mold path shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("path.wgsl").into()),
+    });
+    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
+    let buffers = [Some(wgpu::VertexBufferLayout {
+        array_stride: mem::size_of::<PathVertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &attributes,
+    })];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("mold path pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &buffers,
+            compilation_options: Default::default(),
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: FORMAT,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_path_batch(
+    cache: &mut PathCache,
+    list: &DrawList,
+    scale_120: u32,
+) -> Result<PathBatch, String> {
+    let mut batch = PathBatch {
+        command_ranges: vec![Vec::new(); list.commands.len()],
+        ..PathBatch::default()
+    };
+    let scale = scale_120.max(1) as f32 / 120.0;
+    for (command_index, command) in list.commands.iter().enumerate() {
+        let DrawCommand::Path {
+            bounds,
+            path,
+            fill_color,
+            stroke_color,
+            stroke_width,
+            even_odd,
+            ..
+        } = command
+        else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let mesh = cache
+            .tessellate(path, *stroke_width, *even_odd, scale_120)?
+            .clone();
+        append_path_mesh(
+            &mut batch,
+            command_index,
+            &mesh.fill,
+            *bounds,
+            *fill_color,
+            scale,
+        );
+        append_path_mesh(
+            &mut batch,
+            command_index,
+            &mesh.stroke,
+            *bounds,
+            *stroke_color,
+            scale,
+        );
+    }
+    Ok(batch)
+}
+
+fn append_path_mesh(
+    batch: &mut PathBatch,
+    command_index: usize,
+    mesh: &crate::path::Mesh,
+    bounds: mold_layout::Geometry,
+    color: mold_scene::Color,
+    scale: f32,
+) {
+    if mesh.indices.is_empty() || color.alpha <= 0.0 {
+        return;
+    }
+    let vertex_offset = batch.vertices.len() as u32;
+    let index_start = batch.indices.len() as u32;
+    batch
+        .vertices
+        .extend(mesh.vertices.iter().map(|position| PathVertex {
+            position: [
+                (bounds.x as f32 + position[0]) * scale,
+                (bounds.y as f32 + position[1]) * scale,
+            ],
+            color: [color.red, color.green, color.blue, color.alpha],
+        }));
+    batch
+        .indices
+        .extend(mesh.indices.iter().map(|index| index + vertex_offset));
+    let index_end = batch.indices.len() as u32;
+    batch.command_ranges[command_index].push(index_start..index_end);
 }
 
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -595,6 +798,28 @@ fn create_instance_buffer_for<T>(
         label: Some(label),
         size: (capacity * mem::size_of::<T>()) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_vertex_buffer_for<T>(
+    device: &wgpu::Device,
+    capacity: usize,
+    label: &'static str,
+) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: (capacity * mem::size_of::<T>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_index_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("mold path indices"),
+        size: (capacity * mem::size_of::<u32>()) as u64,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
