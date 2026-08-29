@@ -10,6 +10,7 @@ repository = "https://github.com/rendrworks/mold"
 
 [workspace.dependencies]
 luna = { git = "https://github.com/onix-os/luna", rev = "e8b7e98ec977c8973ce1a182d935d0ca1f06f465" }
+slotmap = "1.0"
 mold-image = { path = "crates/mold-image" }
 mold-io = { path = "crates/mold-io" }
 mold-layout = { path = "crates/mold-layout" }
