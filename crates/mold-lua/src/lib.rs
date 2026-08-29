@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
-    StashedClosure, Table, UserData, UserRef, Value as LuaValue,
+    StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
 use mold_io::{Bus, DbusProxy, DbusValue};
 use mold_reactive::{EffectContext, Graph, SignalId};
@@ -98,6 +98,42 @@ pub struct ParentTransitionRequest {
     pub parent: NodeHandle,
     pub anchors: Option<std::collections::BTreeMap<String, SceneValue>>,
     pub behavior: Behavior,
+}
+
+/// Primitive value accepted by the bounded IPC surface.
+#[derive(Clone, Debug, PartialEq)]
+pub enum IpcValue {
+    Nil,
+    Boolean(bool),
+    Integer(i64),
+    Number(f64),
+    String(String),
+}
+
+impl IpcValue {
+    fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
+        match self {
+            Self::Nil => LuaValue::Nil,
+            Self::Boolean(value) => LuaValue::Boolean(*value),
+            Self::Integer(value) => LuaValue::Integer(*value),
+            Self::Number(value) => LuaValue::Number(*value),
+            Self::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+        }
+    }
+
+    fn from_lua(value: LuaValue<'_>) -> Result<Self, String> {
+        match value {
+            LuaValue::Nil => Ok(Self::Nil),
+            LuaValue::Boolean(value) => Ok(Self::Boolean(value)),
+            LuaValue::Integer(value) => Ok(Self::Integer(value)),
+            LuaValue::Number(value) if value.is_finite() => Ok(Self::Number(value)),
+            LuaValue::String(value) => Ok(Self::String(value.display_lossy().to_string())),
+            value => Err(format!(
+                "IPC values must be nil, boolean, number, or string, found {}",
+                value.type_name()
+            )),
+        }
+    }
 }
 
 /// Event name accepted by Lua element handlers.
@@ -271,6 +307,33 @@ impl Runtime {
         }
         true
     }
+
+    /// Returns registered IPC verb names in lexical order.
+    pub fn ipc_verbs(&self) -> Vec<String> {
+        let mut verbs = self
+            .reactive
+            .borrow()
+            .ipc_handlers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        verbs.sort();
+        verbs
+    }
+
+    /// Calls one registered IPC handler with bounded primitive arguments.
+    pub fn call_ipc(&mut self, verb: &str, args: &[IpcValue]) -> Result<Vec<IpcValue>, Error> {
+        let handler = self
+            .reactive
+            .borrow()
+            .ipc_handlers
+            .get(verb)
+            .cloned()
+            .ok_or_else(|| Error::Runtime(format!("unknown IPC verb `{verb}`")))?;
+        self.lua
+            .enter(|ctx| execute_ipc_handler(ctx, &handler, args, self.limits))
+            .map_err(Error::Runtime)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -412,6 +475,7 @@ struct ReactiveState {
     handlers: HashMap<(NodeHandle, UiEvent), StashedClosure>,
     parent_transitions: Vec<ParentTransitionRequest>,
     states: HashMap<NodeHandle, StateSet>,
+    ipc_handlers: HashMap<String, StashedClosure>,
 }
 
 impl ReactiveState {
@@ -435,6 +499,7 @@ impl ReactiveState {
             handlers: HashMap::new(),
             parent_transitions: Vec::new(),
             states: HashMap::new(),
+            ipc_handlers: HashMap::new(),
         }
     }
 }
@@ -574,6 +639,35 @@ fn install_reactive_api(
         );
         clock.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
         mold.set_field(ctx, "clock", clock);
+        let ipc_register = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (_table, name, value): (Table, String, LuaValue) = stack.consume(ctx)?;
+                match value {
+                    LuaValue::Function(Function::Closure(closure)) => {
+                        state
+                            .borrow_mut()
+                            .ipc_handlers
+                            .insert(name, ctx.stash(closure));
+                    }
+                    LuaValue::Nil => {
+                        state.borrow_mut().ipc_handlers.remove(&name);
+                    }
+                    _ => {
+                        return Err(HostError(
+                            "mold.ipc values must be functions or nil".to_owned(),
+                        )
+                        .into());
+                    }
+                }
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let ipc_metatable = Table::new(&ctx);
+        ipc_metatable.set_field(ctx, "__newindex", ipc_register);
+        let ipc = Table::new(&ctx);
+        ipc.set_metatable(ctx, Some(ipc_metatable));
+        mold.set_field(ctx, "ipc", ipc);
         let screens = Table::new(&ctx);
         if let Some(screen) = screen {
             let value = Table::new(&ctx);
@@ -1981,6 +2075,46 @@ fn execute_handler(
     }
 }
 
+fn execute_ipc_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    args: &[IpcValue],
+    limits: Limits,
+) -> Result<Vec<IpcValue>, String> {
+    let args = Variadic(
+        args.iter()
+            .map(|value| value.to_lua(ctx))
+            .collect::<Vec<_>>(),
+    );
+    let executor = Executor::start(ctx, ctx.fetch(closure).into(), args);
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua IPC handler fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            break;
+        }
+    }
+    let values = match executor.take_result::<Variadic<Vec<LuaValue>>>(ctx) {
+        Ok(Ok(values)) => values,
+        Ok(Err(error)) => return Err(error.to_string()),
+        Err(error) => return Err(error.to_string()),
+    };
+    values.into_iter().map(IpcValue::from_lua).collect()
+}
+
 impl Default for Runtime {
     fn default() -> Self {
         Self::new(Limits::default())
@@ -1997,6 +2131,54 @@ mod tests {
         runtime
             .execute("test.lua", b"local answer = 40 + 2")
             .unwrap();
+    }
+
+    #[test]
+    fn ipc_registry_calls_named_bounded_handlers() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "ipc.lua",
+                br#"
+                    mold.ipc["launcher.toggle"] = function(name, count)
+                        return "hello " .. name, count + 1, true
+                    end
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(runtime.ipc_verbs(), ["launcher.toggle"]);
+        assert_eq!(
+            runtime
+                .call_ipc(
+                    "launcher.toggle",
+                    &[IpcValue::String("mold".into()), IpcValue::Integer(2)],
+                )
+                .unwrap(),
+            [
+                IpcValue::String("hello mold".into()),
+                IpcValue::Integer(3),
+                IpcValue::Boolean(true),
+            ]
+        );
+        assert!(runtime.call_ipc("missing", &[]).is_err());
+    }
+
+    #[test]
+    fn ipc_handlers_are_fuel_bounded() {
+        let mut runtime = Runtime::new(Limits {
+            effect_fuel: 256,
+            ..Limits::default()
+        });
+        runtime
+            .execute(
+                "ipc-fuel.lua",
+                b"mold.ipc.loop = function() while true do end end",
+            )
+            .unwrap();
+
+        let error = runtime.call_ipc("loop", &[]).unwrap_err().to_string();
+        assert!(error.contains("IPC handler fuel exhausted"), "{error}");
     }
 
     #[test]
