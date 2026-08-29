@@ -639,6 +639,63 @@ impl Scene {
         Ok(())
     }
 
+    /// Starts a finite animation from an explicit current value.
+    pub fn animate_from(
+        &mut self,
+        node: NodeHandle,
+        property: &str,
+        from: impl Into<Value>,
+        to: impl Into<Value>,
+        behavior: Behavior,
+    ) -> Result<(), SceneError> {
+        let id = self.live(node)?;
+        let element = self.nodes[id].element;
+        let (name, slot) = self.nodes[id]
+            .properties
+            .get_key_value(property)
+            .map(|(name, slot)| (*name, *slot))
+            .ok_or_else(|| SceneError::UnknownProperty {
+                element: element.name(),
+                property: property.to_owned(),
+            })?;
+        let from = coerce(element, property, slot.kind, from.into())?;
+        let to = coerce(element, property, slot.kind, to.into())?;
+        if !interpolatable(&from, &to) {
+            return Err(SceneError::InvalidPropertyType {
+                element: element.name(),
+                property: property.to_owned(),
+                expected: "interpolatable values",
+            });
+        }
+        let key = PropertyKey {
+            node: id,
+            property: name,
+        };
+        self.physics.remove(&key);
+        self.properties.batch(|graph| {
+            graph.write(slot.current, from.clone())?;
+            graph.write(slot.target, to.clone())?;
+            Ok(())
+        })?;
+        if behavior.duration == Duration::ZERO {
+            self.properties.write(slot.current, to)?;
+            self.animations.remove(&key);
+        } else {
+            self.animations.insert(
+                key,
+                Animation {
+                    from,
+                    to,
+                    initial_velocity: Velocity::Number(0.0),
+                    preserve_velocity: false,
+                    elapsed: Duration::ZERO,
+                    behavior,
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// Installs or removes physics-driven motion on a numeric property.
     pub fn set_physics(
         &mut self,
@@ -1025,7 +1082,9 @@ fn interpolate_hermite(
 
 fn property_class(property: &str) -> PropertyClass {
     match property {
-        "x" | "y" | "scale" | "rotation" | "opacity" => PropertyClass::Transform,
+        "x" | "y" | "scale" | "rotation" | "opacity" | "transition_x" | "transition_y" => {
+            PropertyClass::Transform
+        }
         "color" | "radius" | "border_width" | "border_color" => PropertyClass::Paint,
         _ => PropertyClass::Layout,
     }
@@ -1064,6 +1123,8 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         boolean("clip", false),
         number("rotation", 0.0),
         number("scale", 1.0),
+        number("transition_x", 0.0),
+        number("transition_y", 0.0),
         boolean("enabled", true),
     ];
     match element {

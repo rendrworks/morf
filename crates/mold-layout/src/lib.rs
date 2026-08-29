@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
 use std::fmt;
 
-use mold_scene::{Element, NodeHandle, Scene, SceneError, Value};
+use mold_scene::{Behavior, Element, NodeHandle, Scene, SceneError, Value};
 
 /// Logical dimensions in surface coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -48,6 +48,16 @@ pub struct Layout {
     implicit: HashMap<NodeHandle, Size>,
 }
 
+/// Inputs for an animated parent and anchor change.
+pub struct ReparentTransition {
+    pub root: NodeHandle,
+    pub node: NodeHandle,
+    pub new_parent: NodeHandle,
+    pub anchors: Option<BTreeMap<String, Value>>,
+    pub available: Size,
+    pub behavior: Behavior,
+}
+
 impl Layout {
     /// Resolves the layout rooted at `root` into the supplied surface area.
     pub fn compute(
@@ -78,6 +88,41 @@ impl Layout {
     /// Returns the bottom-up implicit size for a node.
     pub fn implicit_size(&self, node: NodeHandle) -> Option<Size> {
         self.implicit.get(&node).copied()
+    }
+
+    /// Reparents a node and animates its resolved position through a shared coordinate space.
+    pub fn transition_reparent(
+        scene: &mut Scene,
+        text: &mut impl TextMeasurer,
+        transition: ReparentTransition,
+    ) -> Result<Self, LayoutError> {
+        let before = Self::compute(scene, transition.root, transition.available, text)?
+            .geometry(transition.node)
+            .ok_or_else(|| LayoutError::Scene("transition node has no geometry".into()))?;
+        scene.assign(transition.node, "transition_x", 0.0)?;
+        scene.assign(transition.node, "transition_y", 0.0)?;
+        if let Some(anchors) = transition.anchors {
+            scene.assign(transition.node, "anchors", Value::Map(anchors))?;
+        }
+        scene.reparent(transition.node, Some(transition.new_parent))?;
+        let target = Self::compute(scene, transition.root, transition.available, text)?
+            .geometry(transition.node)
+            .ok_or_else(|| LayoutError::Scene("transition target has no geometry".into()))?;
+        scene.animate_from(
+            transition.node,
+            "transition_x",
+            before.x - target.x,
+            0.0,
+            transition.behavior,
+        )?;
+        scene.animate_from(
+            transition.node,
+            "transition_y",
+            before.y - target.y,
+            0.0,
+            transition.behavior,
+        )?;
+        Self::compute(scene, transition.root, transition.available, text)
     }
 
     /// Returns the topmost enabled MouseArea containing a surface-local point.
@@ -247,6 +292,8 @@ impl Layout {
             }
             geometry.x += parent_geometry.x;
             geometry.y += parent_geometry.y;
+            geometry.x += scene.number(child, "transition_x")?;
+            geometry.y += scene.number(child, "transition_y")?;
             self.geometry.insert(child, geometry);
             self.resolve_children(scene, child)?;
         }
@@ -521,5 +568,61 @@ mod tests {
             layout.input_geometry(&scene).unwrap(),
             vec![layout.geometry(first).unwrap()]
         );
+    }
+
+    #[test]
+    fn reparent_transition_preserves_position_then_flies_to_target() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let left = scene.create(Element::Item);
+        let right = scene.create(Element::Item);
+        let tile = scene.create(Element::Rect);
+        scene.assign(left, "x", 10.0).unwrap();
+        scene.assign(left, "width", 100.0).unwrap();
+        scene.assign(left, "height", 100.0).unwrap();
+        scene.assign(right, "x", 200.0).unwrap();
+        scene.assign(right, "width", 100.0).unwrap();
+        scene.assign(right, "height", 100.0).unwrap();
+        scene.assign(tile, "x", 5.0).unwrap();
+        scene.assign(tile, "width", 20.0).unwrap();
+        scene.assign(tile, "height", 20.0).unwrap();
+        scene.reparent(left, Some(root)).unwrap();
+        scene.reparent(right, Some(root)).unwrap();
+        scene.reparent(tile, Some(left)).unwrap();
+        let available = Size {
+            width: 400.0,
+            height: 200.0,
+        };
+        let behavior = Behavior {
+            duration: std::time::Duration::from_millis(200),
+            easing: mold_scene::Easing::Linear,
+        };
+
+        let initial = Layout::transition_reparent(
+            &mut scene,
+            &mut FixedText,
+            ReparentTransition {
+                root,
+                node: tile,
+                new_parent: right,
+                anchors: None,
+                available,
+                behavior,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(scene.parent(tile).unwrap(), Some(right));
+        assert_eq!(initial.geometry(tile).unwrap().x, 15.0);
+        scene
+            .tick_animations(std::time::Duration::from_millis(100))
+            .unwrap();
+        let halfway = Layout::compute(&scene, root, available, &mut FixedText).unwrap();
+        assert_eq!(halfway.geometry(tile).unwrap().x, 110.0);
+        scene
+            .tick_animations(std::time::Duration::from_millis(100))
+            .unwrap();
+        let finished = Layout::compute(&scene, root, available, &mut FixedText).unwrap();
+        assert_eq!(finished.geometry(tile).unwrap().x, 205.0);
     }
 }
