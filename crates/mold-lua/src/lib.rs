@@ -23,8 +23,8 @@ use mold_scene::{
     NodeHandle, Physics, Scene, Value as SceneValue, ViewTransition, VirtualList,
 };
 use mold_services::{
-    AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire, UdevEvent,
-    UdevMonitor, XkbKeymap,
+    AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire,
+    StatusNotifierAddress, StatusNotifierHost, UdevEvent, UdevMonitor, XkbKeymap,
 };
 
 /// Execution limits applied independently to each loaded chunk.
@@ -858,6 +858,7 @@ impl Runtime {
         let mut timers = Vec::new();
         let mut dbus_signals = Vec::new();
         let mut udev_events = Vec::new();
+        let mut status_updates = Vec::new();
         let mut loaders = Vec::new();
         let mut service_changed = false;
         {
@@ -993,6 +994,19 @@ impl Runtime {
                     .into_iter()
                     .map(|error| format!("udev: {error}")),
             );
+            let mut status_errors = Vec::new();
+            for subscription in &mut state.status_notifiers {
+                match subscription.host.poll_changed() {
+                    Ok(Some(items)) => status_updates.push((subscription.callback.clone(), items)),
+                    Ok(None) => {}
+                    Err(error) => status_errors.push(error.to_string()),
+                }
+            }
+            state.logs.extend(
+                status_errors
+                    .into_iter()
+                    .map(|error| format!("status notifier: {error}")),
+            );
         }
         for (node, factory) in loaders {
             let result = self
@@ -1018,7 +1032,8 @@ impl Runtime {
             || !ready.is_empty()
             || !timers.is_empty()
             || !dbus_signals.is_empty()
-            || !udev_events.is_empty();
+            || !udev_events.is_empty()
+            || !status_updates.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;
@@ -1080,6 +1095,16 @@ impl Runtime {
                     .borrow_mut()
                     .logs
                     .push(format!("udev callback: {message}"));
+            }
+        }
+        for (callback, items) in status_updates {
+            if let Err(message) = self.lua.enter(|ctx| {
+                execute_dbus_handler(ctx, &callback, status_notifier_value(items), self.limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("status notifier callback: {message}"));
             }
         }
         changed
@@ -1285,6 +1310,11 @@ struct PendingUdev {
     callback: StashedClosure,
 }
 
+struct PendingStatusNotifier {
+    host: StatusNotifierHost,
+    callback: StashedClosure,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -1380,6 +1410,7 @@ struct ReactiveState {
     loaded_loaders: HashSet<NodeHandle>,
     dbus_signals: Vec<PendingDbusSignal>,
     udev_monitors: Vec<PendingUdev>,
+    status_notifiers: Vec<PendingStatusNotifier>,
     session_unlock_requested: bool,
 }
 
@@ -1432,6 +1463,7 @@ impl ReactiveState {
             loaded_loaders: HashSet::new(),
             dbus_signals: Vec::new(),
             udev_monitors: Vec::new(),
+            status_notifiers: Vec::new(),
             session_unlock_requested: false,
         }
     }
@@ -2945,6 +2977,25 @@ fn install_reactive_api(
         let udev = Table::new(&ctx);
         udev.set_field(ctx, "subscribe", udev_subscribe);
         mold.set_field(ctx, "udev", udev);
+
+        let status_notifier_state = Rc::clone(&state);
+        let status_notifier_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let callback: Closure = stack.consume(ctx)?;
+            let host =
+                StatusNotifierHost::connect().map_err(|error| HostError(error.to_string()))?;
+            let mut state = status_notifier_state.borrow_mut();
+            if state.status_notifiers.len() >= 4 {
+                return Err(HostError("status notifier subscription limit reached".into()).into());
+            }
+            state.status_notifiers.push(PendingStatusNotifier {
+                host,
+                callback: ctx.stash(callback),
+            });
+            Ok(CallbackReturn::Return)
+        });
+        let status_notifier = Table::new(&ctx);
+        status_notifier.set_field(ctx, "subscribe", status_notifier_subscribe);
+        mold.set_field(ctx, "status_notifier", status_notifier);
 
         let greetd_create = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (greetd, username): (UserRef<GreetdToken>, String) = stack.consume(ctx)?;
@@ -4992,6 +5043,20 @@ fn udev_event_value(event: UdevEvent) -> DbusValue {
         ),
         ("properties".to_owned(), DbusValue::Map(properties)),
     ]))
+}
+
+fn status_notifier_value(items: Vec<StatusNotifierAddress>) -> DbusValue {
+    DbusValue::List(
+        items
+            .into_iter()
+            .map(|item| {
+                DbusValue::Map(BTreeMap::from([
+                    ("service".to_owned(), DbusValue::String(item.service)),
+                    ("path".to_owned(), DbusValue::String(item.path)),
+                ]))
+            })
+            .collect(),
+    )
 }
 
 fn execute_ipc_handler(

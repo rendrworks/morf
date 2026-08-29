@@ -25,6 +25,7 @@ return {
     Mpris = require("patin.services.mpris"),
     Network = require("patin.services.network"),
     Oxin = require("patin.services.oxin"),
+    StatusNotifier = require("patin.services.status_notifier"),
     UPower = require("patin.services.upower"),
     Volume = require("patin.services.volume"),
   },

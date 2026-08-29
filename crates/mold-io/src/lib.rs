@@ -883,6 +883,14 @@ impl DbusProxy {
         })
     }
 
+    /// Returns the connection's unique bus name.
+    pub fn unique_name(&self) -> Option<String> {
+        self.proxy
+            .connection()
+            .unique_name()
+            .map(ToString::to_string)
+    }
+
     /// Calls one method and deserializes its reply body.
     pub fn call<B, R>(&self, method: &str, body: &B) -> zbus::Result<R>
     where
