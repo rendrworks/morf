@@ -269,6 +269,7 @@ name = "mold-render"
 version = "0.1.0"
 dependencies = [
  "mold-image",
+ "mold-layout",
  "mold-scene",
  "mold-text",
 ]

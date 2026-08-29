@@ -656,6 +656,26 @@ impl Scene {
         }
     }
 
+    /// Reads a boolean current property.
+    pub fn bool_value(&self, node: NodeHandle, property: &str) -> Result<bool, SceneError> {
+        match self.current(node, property)? {
+            Value::Bool(value) => Ok(*value),
+            _ => Err(SceneError::Reactive(format!(
+                "property `{property}` is not boolean"
+            ))),
+        }
+    }
+
+    /// Reads a color current property.
+    pub fn color_value(&self, node: NodeHandle, property: &str) -> Result<Color, SceneError> {
+        match self.current(node, property)? {
+            Value::Color(value) => Ok(*value),
+            _ => Err(SceneError::Reactive(format!(
+                "property `{property}` is not a color"
+            ))),
+        }
+    }
+
     fn live(&self, node: NodeHandle) -> Result<NodeId, SceneError> {
         self.nodes
             .contains_key(node.0)

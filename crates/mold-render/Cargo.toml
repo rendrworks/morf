@@ -8,5 +8,6 @@ repository.workspace = true
 
 [dependencies]
 mold-image.workspace = true
+mold-layout.workspace = true
 mold-scene.workspace = true
 mold-text.workspace = true
