@@ -1676,15 +1676,14 @@ fn install_reactive_api(
             "Flickable",
             element_constructor(ctx, Rc::clone(&state), limits, Element::Flickable),
         );
-        ui.set_field(
+        let component = execute_module(
             ctx,
-            "component",
-            Callback::from_fn(&ctx, |ctx, _, mut stack| {
-                let factory: Closure = stack.consume(ctx)?;
-                stack.replace(ctx, factory);
-                Ok(CallbackReturn::Return)
-            }),
-        );
+            "mold.component",
+            include_bytes!("../../../runtime/lua/mold/component.lua"),
+            limits,
+        )
+        .expect("engine component module must load");
+        ui.set_field(ctx, "component", component);
         for kind in ["spring", "smoothed"] {
             ui.set_field(
                 ctx,
@@ -3846,6 +3845,71 @@ mod tests {
                 .string_value(rect_children[0], "text")
                 .unwrap(),
             "Clicks 1"
+        );
+    }
+
+    #[test]
+    fn declared_components_validate_properties_and_default_slots() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "declared-component.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local count = mold.signal("component.count", 0)
+                    local Label = ui.component {
+                      name = "Label",
+                      properties = {
+                        text = { type = "string", default = "empty" },
+                        content = { type = "table", default = {} },
+                      },
+                      signals = { "activated" },
+                      default_slot = "content",
+                      build = function(self)
+                        return ui.Item {
+                          ui.Text { text = self:binding("text") },
+                          table.unpack(self.content),
+                          ui.MouseArea { on_clicked = function() self:emit("activated") end },
+                        }
+                      end,
+                    }
+                    Label {
+                      text = function() return "Count " .. count:get() end,
+                      on_activated = function() count:set(count:get() + 1) end,
+                      ui.Rect { width = 4, height = 4 },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+
+        assert_eq!(runtime.scene().element(children[1]).unwrap(), Element::Rect);
+        assert!(runtime.dispatch_ui_event(children[2], UiEvent::Clicked));
+        assert_eq!(
+            runtime.scene().string_value(children[0], "text").unwrap(),
+            "Count 1"
+        );
+
+        let error = runtime
+            .execute(
+                "bad-component.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local Typed = ui.component {
+                      name = "Typed",
+                      properties = { count = { type = "number", default = 0 } },
+                      build = function() return ui.Item {} end,
+                    }
+                    Typed { count = "wrong" }
+                "#,
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Typed property `count` expects number")
         );
     }
 
