@@ -195,6 +195,14 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "io-smoke",
+  desc = "exchange bytes through a Unix-domain socket",
+  run = function()
+    sh.cargo("run", "--package", "mold-io", "--example", "socket_smoke")
+  end,
+}
+
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function()
                sh.cargo("test", "--workspace", "--all-targets", "--all-features")

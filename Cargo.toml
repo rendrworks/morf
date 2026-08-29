@@ -15,7 +15,7 @@ jiff = "=0.2.35"
 luna = { git = "https://github.com/onix-os/luna", rev = "e8b7e98ec977c8973ce1a182d935d0ca1f06f465" }
 pollster = "1.0"
 raw-window-handle = "0.6"
-rustix = { version = "1.1", features = ["event"] }
+rustix = { version = "1.1", features = ["event", "fs"] }
 slotmap = "1.0"
 smithay-client-toolkit = "=0.21.1"
 wayland-backend = { version = "=0.3.17", features = ["client_system", "rwh_06"] }

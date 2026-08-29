@@ -735,6 +735,9 @@ version = "0.1.0"
 [[package]]
 name = "mold-io"
 version = "0.1.0"
+dependencies = [
+ "rustix",
+]
 
 [[package]]
 name = "mold-layout"
