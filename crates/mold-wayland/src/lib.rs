@@ -65,6 +65,10 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    zwp_text_input_v3::{self, ZwpTextInputV3},
+};
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
@@ -171,6 +175,27 @@ pub struct InputMethodState {
     pub serial: u32,
 }
 
+/// Atomically committed text-input-v3 edit batch.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TextInputState {
+    /// Whether this client's surface has text-input focus.
+    pub focused: bool,
+    /// Current preedit string when changed in this batch.
+    pub preedit: Option<String>,
+    /// Preedit cursor start in bytes when supplied.
+    pub preedit_begin: i32,
+    /// Preedit cursor end in bytes when supplied.
+    pub preedit_end: i32,
+    /// UTF-8 text committed by the input method.
+    pub commit: Option<String>,
+    /// Bytes to delete before the cursor.
+    pub delete_before: u32,
+    /// Bytes to delete after the cursor.
+    pub delete_after: u32,
+    /// Serial supplied by the compositor done event.
+    pub serial: u32,
+}
+
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
@@ -235,6 +260,8 @@ pub enum LayerEvent {
     Clipboard { text: Option<String> },
     /// A focused text input committed a new input-method context.
     InputMethod(InputMethodState),
+    /// An input method committed edits for this client's text input.
+    TextInput(TextInputState),
     /// The compositor output set changed.
     Screens(Vec<ScreenInfo>),
     /// The compositor positioned and sized the popup.
@@ -321,6 +348,9 @@ impl LayerClient {
         let input_method_manager = globals
             .bind::<ZwpInputMethodManagerV2, _, _>(&qh, 1..=1, ())
             .ok();
+        let text_input_manager = globals
+            .bind::<ZwpTextInputManagerV3, _, _>(&qh, 1..=2, ())
+            .ok();
         let output_power_manager = globals
             .bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
@@ -369,6 +399,10 @@ impl LayerClient {
             input_method: None,
             input_method_pending: InputMethodState::default(),
             input_method_state: InputMethodState::default(),
+            text_input_manager,
+            text_input: None,
+            text_input_requested: false,
+            text_input_pending: TextInputState::default(),
             output_power_manager,
             output_power: Vec::new(),
             output_power_target: None,
@@ -641,6 +675,74 @@ impl LayerClient {
         input_method.delete_surrounding_text(before, after);
         input_method.commit(self.state.input_method_state.serial);
         true
+    }
+
+    /// Creates and requests text-input-v3 for the current seat.
+    pub fn enable_text_input(&mut self) -> bool {
+        self.state.text_input_requested = true;
+        if self.state.text_input.is_some() {
+            return true;
+        }
+        let Some(manager) = &self.state.text_input_manager else {
+            return false;
+        };
+        let Some(seat) = self.state.seats.seats().next() else {
+            return false;
+        };
+        self.state.text_input = Some(manager.get_text_input(&seat, &self.queue.handle(), ()));
+        true
+    }
+
+    /// Disables text-input-v3 for the focused surface.
+    pub fn disable_text_input(&mut self) -> bool {
+        self.state.text_input_requested = false;
+        let Some(text_input) = &self.state.text_input else {
+            return false;
+        };
+        text_input.disable();
+        text_input.commit();
+        true
+    }
+
+    /// Sends surrounding UTF-8 text and byte offsets.
+    pub fn set_text_input_surrounding(&self, text: &str, cursor: i32, anchor: i32) -> bool {
+        let Some(text_input) = &self.state.text_input else {
+            return false;
+        };
+        text_input.set_surrounding_text(text.to_owned(), cursor, anchor);
+        text_input.commit();
+        true
+    }
+
+    /// Sends raw content hint flags and purpose values.
+    pub fn set_text_input_content_type(&self, hints: u32, purpose: u32) -> bool {
+        let Some(text_input) = &self.state.text_input else {
+            return false;
+        };
+        let Some(hints) = zwp_text_input_v3::ContentHint::from_bits(hints) else {
+            return false;
+        };
+        let Ok(purpose) = zwp_text_input_v3::ContentPurpose::try_from(purpose) else {
+            return false;
+        };
+        text_input.set_content_type(hints, purpose);
+        text_input.commit();
+        true
+    }
+
+    /// Sends the surface-local cursor rectangle.
+    pub fn set_text_input_cursor_rect(&self, rect: InputRect) -> bool {
+        let Some(text_input) = &self.state.text_input else {
+            return false;
+        };
+        text_input.set_cursor_rectangle(rect.x, rect.y, rect.width, rect.height);
+        text_input.commit();
+        true
+    }
+
+    /// Returns whether text-input-v3 is available for the current seat.
+    pub fn supports_text_input(&self) -> bool {
+        self.state.text_input_manager.is_some() && self.state.seats.seats().next().is_some()
     }
 
     /// Removes the next queued surface event.
@@ -989,6 +1091,10 @@ struct LayerState {
     input_method: Option<ZwpInputMethodV2>,
     input_method_pending: InputMethodState,
     input_method_state: InputMethodState,
+    text_input_manager: Option<ZwpTextInputManagerV3>,
+    text_input: Option<ZwpTextInputV3>,
+    text_input_requested: bool,
+    text_input_pending: TextInputState,
     output_power_manager: Option<ZwlrOutputPowerManagerV1>,
     output_power: Vec<OutputPowerControl>,
     output_power_target: Option<wl_output::WlOutput>,
@@ -2070,6 +2176,63 @@ impl Dispatch<ZwpInputMethodV2, ()> for LayerState {
     }
 }
 
+impl Dispatch<ZwpTextInputV3, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_text_input_v3::Event::Enter { .. } => {
+                state.text_input_pending.focused = true;
+                if state.text_input_requested {
+                    proxy.enable();
+                    proxy.commit();
+                }
+            }
+            zwp_text_input_v3::Event::Leave { .. } => {
+                state.text_input_pending = TextInputState::default();
+                state
+                    .events
+                    .push_back(LayerEvent::TextInput(state.text_input_pending.clone()));
+            }
+            zwp_text_input_v3::Event::PreeditString {
+                text,
+                cursor_begin,
+                cursor_end,
+            } => {
+                state.text_input_pending.preedit = text;
+                state.text_input_pending.preedit_begin = cursor_begin;
+                state.text_input_pending.preedit_end = cursor_end;
+            }
+            zwp_text_input_v3::Event::CommitString { text } => {
+                state.text_input_pending.commit = text;
+            }
+            zwp_text_input_v3::Event::DeleteSurroundingText {
+                before_length,
+                after_length,
+            } => {
+                state.text_input_pending.delete_before = before_length;
+                state.text_input_pending.delete_after = after_length;
+            }
+            zwp_text_input_v3::Event::Done { serial } => {
+                state.text_input_pending.serial = serial;
+                state
+                    .events
+                    .push_back(LayerEvent::TextInput(state.text_input_pending.clone()));
+                state.text_input_pending.preedit = None;
+                state.text_input_pending.commit = None;
+                state.text_input_pending.delete_before = 0;
+                state.text_input_pending.delete_after = 0;
+            }
+            _ => {}
+        }
+    }
+}
+
 impl ProvidesRegistryState for LayerState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry
@@ -2087,6 +2250,7 @@ wayland_client::delegate_noop!(LayerState: ignore ZwlrOutputPowerManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpInputMethodManagerV2);
+wayland_client::delegate_noop!(LayerState: ignore ZwpTextInputManagerV3);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
 

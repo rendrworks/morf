@@ -12,7 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
-    InputMethodRequest, IpcValue, Limits, Runtime, Screen, UiEvent, VirtualKeyboardRequest,
+    InputMethodRequest, IpcValue, Limits, Runtime, Screen, TextInputRequest, UiEvent,
+    VirtualKeyboardRequest,
 };
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
@@ -177,6 +178,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
     apply_output_power_requests(&mut runtime, &mut client);
     apply_virtual_keyboard_requests(&mut runtime, &mut client);
     apply_input_method_requests(&mut runtime, &mut client);
+    apply_text_input_requests(&mut runtime, &mut client);
     let mut renderers: Vec<Option<RenderEngine<WgpuBackend>>> = Vec::new();
     let mut last_frame = None;
     let mut locked = false;
@@ -194,6 +196,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         apply_clipboard_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
+        apply_text_input_requests(&mut runtime, &mut client);
         unlock_pending |= runtime.take_session_unlock_request();
         if locked && unlock_pending {
             client.unlock_session().map_err(|error| error.to_string())?;
@@ -273,6 +276,18 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                         state.serial,
                     );
                 }
+                LayerEvent::TextInput(state) => {
+                    repaint |= runtime.dispatch_text_input(
+                        state.focused,
+                        state.preedit,
+                        state.preedit_begin,
+                        state.preedit_end,
+                        state.commit,
+                        state.delete_before,
+                        state.delete_after,
+                        state.serial,
+                    );
+                }
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
                 | LayerEvent::Configure { .. }
@@ -297,6 +312,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         apply_clipboard_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
+        apply_text_input_requests(&mut runtime, &mut client);
         if repaint {
             for (index, renderer) in renderers.iter_mut().enumerate() {
                 if let Some(renderer) = renderer {
@@ -871,6 +887,42 @@ fn apply_input_method_requests(runtime: &mut Runtime, client: &mut LayerClient) 
     }
 }
 
+fn apply_text_input_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    if runtime.take_text_input_enable_request() {
+        client.enable_text_input();
+    }
+    for request in runtime.take_text_input_requests() {
+        match request {
+            TextInputRequest::Disable => {
+                client.disable_text_input();
+            }
+            TextInputRequest::Surrounding {
+                text,
+                cursor,
+                anchor,
+            } => {
+                client.set_text_input_surrounding(&text, cursor, anchor);
+            }
+            TextInputRequest::ContentType { hints, purpose } => {
+                client.set_text_input_content_type(hints, purpose);
+            }
+            TextInputRequest::CursorRect {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                client.set_text_input_cursor_rect(InputRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            }
+        }
+    }
+}
+
 fn stop_workers(workers: BTreeMap<String, Worker>) {
     for worker in workers.values() {
         worker.stop.store(true, Ordering::Release);
@@ -926,6 +978,7 @@ fn run_surface(
                 | LayerEvent::OutputPower { .. }
                 | LayerEvent::Clipboard { .. }
                 | LayerEvent::InputMethod(_)
+                | LayerEvent::TextInput(_)
                 | LayerEvent::Frame { .. }
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave
@@ -968,6 +1021,7 @@ fn run_surface(
     apply_output_power_requests(&mut runtime, &mut client);
     apply_virtual_keyboard_requests(&mut runtime, &mut client);
     apply_input_method_requests(&mut runtime, &mut client);
+    apply_text_input_requests(&mut runtime, &mut client);
 
     let mut last_frame = None;
     let mut hovered = None;
@@ -1000,6 +1054,7 @@ fn run_surface(
         apply_clipboard_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
+        apply_text_input_requests(&mut runtime, &mut client);
         if next_clock != clock {
             clock = next_clock;
             runtime
@@ -1038,6 +1093,18 @@ fn run_surface(
                         state.surrounding_text,
                         state.cursor,
                         state.anchor,
+                        state.serial,
+                    );
+                }
+                LayerEvent::TextInput(state) => {
+                    repaint |= runtime.dispatch_text_input(
+                        state.focused,
+                        state.preedit,
+                        state.preedit_begin,
+                        state.preedit_end,
+                        state.commit,
+                        state.delete_before,
+                        state.delete_after,
                         state.serial,
                     );
                 }
@@ -1214,6 +1281,7 @@ fn run_surface(
         apply_clipboard_requests(&mut runtime, &mut client);
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
+        apply_text_input_requests(&mut runtime, &mut client);
         if repaint {
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;

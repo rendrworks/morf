@@ -144,6 +144,27 @@ pub enum InputMethodRequest {
     Delete { before: u32, after: u32 },
 }
 
+/// Deferred text-input-v3 state request produced by Lua.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TextInputRequest {
+    Disable,
+    Surrounding {
+        text: String,
+        cursor: i32,
+        anchor: i32,
+    },
+    ContentType {
+        hints: u32,
+        purpose: u32,
+    },
+    CursorRect {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+}
+
 impl IpcValue {
     fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
         match self {
@@ -537,6 +558,54 @@ impl Runtime {
                     .borrow_mut()
                     .logs
                     .push(format!("input method callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
+    /// Takes whether Lua requested text-input-v3 creation.
+    pub fn take_text_input_enable_request(&mut self) -> bool {
+        std::mem::take(&mut self.reactive.borrow_mut().text_input_enable_requested)
+    }
+
+    /// Takes pending text-input-v3 state requests.
+    pub fn take_text_input_requests(&mut self) -> Vec<TextInputRequest> {
+        std::mem::take(&mut self.reactive.borrow_mut().text_input_requests)
+    }
+
+    /// Dispatches one atomically committed text-input edit batch to Lua.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_text_input(
+        &mut self,
+        focused: bool,
+        preedit: Option<String>,
+        preedit_begin: i32,
+        preedit_end: i32,
+        commit: Option<String>,
+        delete_before: u32,
+        delete_after: u32,
+        serial: u32,
+    ) -> bool {
+        let callbacks = self.reactive.borrow().text_input_callbacks.clone();
+        let args = [
+            IpcValue::Boolean(focused),
+            preedit.map_or(IpcValue::Nil, IpcValue::String),
+            IpcValue::Integer(i64::from(preedit_begin)),
+            IpcValue::Integer(i64::from(preedit_end)),
+            commit.map_or(IpcValue::Nil, IpcValue::String),
+            IpcValue::Integer(i64::from(delete_before)),
+            IpcValue::Integer(i64::from(delete_after)),
+            IpcValue::Integer(i64::from(serial)),
+        ];
+        for callback in &callbacks {
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("text input callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -1207,6 +1276,9 @@ struct ReactiveState {
     input_method_enable_requested: bool,
     input_method_requests: Vec<InputMethodRequest>,
     input_method_callbacks: Vec<StashedClosure>,
+    text_input_enable_requested: bool,
+    text_input_requests: Vec<TextInputRequest>,
+    text_input_callbacks: Vec<StashedClosure>,
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
@@ -1250,6 +1322,9 @@ impl ReactiveState {
             input_method_enable_requested: false,
             input_method_requests: Vec::new(),
             input_method_callbacks: Vec::new(),
+            text_input_enable_requested: false,
+            text_input_requests: Vec::new(),
+            text_input_callbacks: Vec::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
@@ -1624,6 +1699,92 @@ fn install_reactive_api(
         input_method.set_field(ctx, "preedit", input_method_preedit);
         input_method.set_field(ctx, "delete", input_method_delete);
         mold.set_field(ctx, "input_method", input_method);
+        let text_input_subscribe_state = Rc::clone(&state);
+        let text_input_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let callback: Closure = stack.consume(ctx)?;
+            let mut state = text_input_subscribe_state.borrow_mut();
+            if state.text_input_callbacks.len() >= 64 {
+                return Err(HostError("text input callback limit reached".into()).into());
+            }
+            state.text_input_callbacks.push(ctx.stash(callback));
+            state.text_input_enable_requested = true;
+            Ok(CallbackReturn::Return)
+        });
+        let text_input_disable_state = Rc::clone(&state);
+        let text_input_disable = Callback::from_fn(&ctx, move |_, _, _| {
+            let mut state = text_input_disable_state.borrow_mut();
+            if state.text_input_requests.len() >= 256 {
+                return Err(HostError("text input request limit reached".into()).into());
+            }
+            state.text_input_requests.push(TextInputRequest::Disable);
+            Ok(CallbackReturn::Return)
+        });
+        let text_input_surrounding_state = Rc::clone(&state);
+        let text_input_surrounding = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (text, cursor, anchor): (String, i64, i64) = stack.consume(ctx)?;
+            if text.len() > 4_000 {
+                return Err(HostError("text input text limit reached".into()).into());
+            }
+            let cursor = i32::try_from(cursor)
+                .map_err(|_| HostError("text input cursor must fit i32".into()))?;
+            let anchor = i32::try_from(anchor)
+                .map_err(|_| HostError("text input anchor must fit i32".into()))?;
+            let mut state = text_input_surrounding_state.borrow_mut();
+            if state.text_input_requests.len() >= 256 {
+                return Err(HostError("text input request limit reached".into()).into());
+            }
+            state
+                .text_input_requests
+                .push(TextInputRequest::Surrounding {
+                    text,
+                    cursor,
+                    anchor,
+                });
+            Ok(CallbackReturn::Return)
+        });
+        let text_input_content_state = Rc::clone(&state);
+        let text_input_content = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (hints, purpose): (i64, i64) = stack.consume(ctx)?;
+            let hints = u32::try_from(hints)
+                .map_err(|_| HostError("text input hints must fit u32".into()))?;
+            let purpose = u32::try_from(purpose)
+                .map_err(|_| HostError("text input purpose must fit u32".into()))?;
+            let mut state = text_input_content_state.borrow_mut();
+            if state.text_input_requests.len() >= 256 {
+                return Err(HostError("text input request limit reached".into()).into());
+            }
+            state
+                .text_input_requests
+                .push(TextInputRequest::ContentType { hints, purpose });
+            Ok(CallbackReturn::Return)
+        });
+        let text_input_rect_state = Rc::clone(&state);
+        let text_input_rect = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let values: (i64, i64, i64, i64) = stack.consume(ctx)?;
+            let request = TextInputRequest::CursorRect {
+                x: i32::try_from(values.0)
+                    .map_err(|_| HostError("cursor x must fit i32".into()))?,
+                y: i32::try_from(values.1)
+                    .map_err(|_| HostError("cursor y must fit i32".into()))?,
+                width: i32::try_from(values.2)
+                    .map_err(|_| HostError("cursor width must fit i32".into()))?,
+                height: i32::try_from(values.3)
+                    .map_err(|_| HostError("cursor height must fit i32".into()))?,
+            };
+            let mut state = text_input_rect_state.borrow_mut();
+            if state.text_input_requests.len() >= 256 {
+                return Err(HostError("text input request limit reached".into()).into());
+            }
+            state.text_input_requests.push(request);
+            Ok(CallbackReturn::Return)
+        });
+        let text_input = Table::new(&ctx);
+        text_input.set_field(ctx, "subscribe", text_input_subscribe);
+        text_input.set_field(ctx, "disable", text_input_disable);
+        text_input.set_field(ctx, "surrounding", text_input_surrounding);
+        text_input.set_field(ctx, "content_type", text_input_content);
+        text_input.set_field(ctx, "cursor_rect", text_input_rect);
+        mold.set_field(ctx, "text_input", text_input);
         let timer_state = Rc::clone(&state);
         let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
@@ -4719,6 +4880,34 @@ mod tests {
         assert_eq!(
             runtime.call_ipc("input.active", &[]).unwrap(),
             [IpcValue::Boolean(true)]
+        );
+    }
+
+    #[test]
+    fn text_input_bridges_state_and_edit_batches() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "text-input.lua",
+                br#"
+                    local committed = mold.signal("text.committed", "")
+                    mold.text_input.subscribe(function(_, _, _, _, text)
+                        if text then committed:set(text) end
+                    end)
+                    mold.text_input.surrounding("draft", 5, 5)
+                    mold.text_input.content_type(3, 0)
+                    mold.text_input.cursor_rect(10, 20, 2, 18)
+                    mold.ipc["text.get"] = function() return committed:get() end
+                "#,
+            )
+            .unwrap();
+
+        assert!(runtime.take_text_input_enable_request());
+        assert_eq!(runtime.take_text_input_requests().len(), 3);
+        assert!(runtime.dispatch_text_input(true, None, 0, 0, Some("done".to_owned()), 0, 0, 1,));
+        assert_eq!(
+            runtime.call_ipc("text.get", &[]).unwrap(),
+            [IpcValue::String("done".to_owned())]
         );
     }
 
