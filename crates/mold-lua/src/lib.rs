@@ -75,6 +75,36 @@ pub struct Runtime {
     reactive: Rc<RefCell<ReactiveState>>,
 }
 
+/// Event name accepted by Lua element handlers.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum UiEvent {
+    /// Pointer entered the target.
+    PointerEntered,
+    /// Pointer left the target.
+    PointerExited,
+    /// Pointer button was pressed on the target.
+    Pressed,
+    /// Pointer button was released after pressing the target.
+    Released,
+    /// Pointer press and release completed on the same target.
+    Clicked,
+    /// A key was pressed while the target held focus.
+    KeyPressed,
+}
+
+impl UiEvent {
+    fn property(self) -> &'static str {
+        match self {
+            Self::PointerEntered => "on_entered",
+            Self::PointerExited => "on_exited",
+            Self::Pressed => "on_pressed",
+            Self::Released => "on_released",
+            Self::Clicked => "on_clicked",
+            Self::KeyPressed => "on_key_pressed",
+        }
+    }
+}
+
 impl Runtime {
     /// Creates a sandboxed runtime with the supplied limits.
     pub fn new(limits: Limits) -> Self {
@@ -178,6 +208,25 @@ impl Runtime {
     pub fn effect_runs(&self) -> u64 {
         self.reactive.borrow().effect_runs
     }
+
+    /// Runs one bounded Lua UI handler and retains failures as runtime logs.
+    pub fn dispatch_ui_event(&mut self, node: NodeHandle, event: UiEvent) -> bool {
+        let handler = self.reactive.borrow().handlers.get(&(node, event)).cloned();
+        let Some(handler) = handler else {
+            return false;
+        };
+        let result = self
+            .lua
+            .enter(|ctx| execute_handler(ctx, &handler, self.limits));
+        if let Err(message) = result {
+            self.reactive.borrow_mut().logs.push(format!(
+                "{:?}.{}: {message}",
+                node,
+                event.property()
+            ));
+        }
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -264,6 +313,7 @@ struct ReactiveState {
     scene: Scene,
     effect_runs: u64,
     clock: SignalId,
+    handlers: HashMap<(NodeHandle, UiEvent), StashedClosure>,
 }
 
 impl ReactiveState {
@@ -284,6 +334,7 @@ impl ReactiveState {
             scene: Scene::new(),
             effect_runs: 0,
             clock,
+            handlers: HashMap::new(),
         }
     }
 }
@@ -424,6 +475,7 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
             ("Item", Element::Item),
             ("Rect", Element::Rect),
             ("Text", Element::Text),
+            ("MouseArea", Element::MouseArea),
             ("Row", Element::Row),
             ("Column", Element::Column),
         ] {
@@ -433,6 +485,15 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
                 element_constructor(ctx, Rc::clone(&state), limits, element),
             );
         }
+        ui.set_field(
+            ctx,
+            "component",
+            Callback::from_fn(&ctx, |ctx, _, mut stack| {
+                let factory: Closure = stack.consume(ctx)?;
+                stack.replace(ctx, factory);
+                Ok(CallbackReturn::Return)
+            }),
+        );
         mold.set_field(ctx, "ui", ui);
         ctx.set_global("mold", mold);
 
@@ -445,6 +506,16 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
                 match name.as_str() {
                     "mold" => stack.replace(ctx, ctx.fetch(&mold)),
                     "mold.ui" => stack.replace(ctx, ctx.fetch(&ui)),
+                    "patin.widgets.button" => {
+                        let module = execute_module(
+                            ctx,
+                            "patin.widgets.button",
+                            include_bytes!("../../../runtime/lua/patin/widgets/button.lua"),
+                            limits,
+                        )
+                        .map_err(HostError)?;
+                        stack.replace(ctx, module);
+                    }
                     _ => {
                         return Err(HostError(format!("module `{name}` is not available")).into());
                     }
@@ -453,6 +524,40 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
             }),
         );
     });
+}
+
+fn execute_module<'gc>(
+    ctx: Context<'gc>,
+    name: &str,
+    source: &[u8],
+    limits: Limits,
+) -> Result<LuaValue<'gc>, String> {
+    let closure = Closure::load(ctx, Some(name), source).map_err(|error| error.to_string())?;
+    let executor = Executor::start(ctx, closure.into(), ());
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua module fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            return match executor.take_result::<LuaValue>(ctx) {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+        }
+    }
 }
 
 fn element_constructor<'gc>(
@@ -509,6 +614,16 @@ fn configure_element<'gc>(
         if property == "behavior" {
             continue;
         }
+        if let Some(event) = handler_event(&property) {
+            let LuaValue::Function(Function::Closure(closure)) = value else {
+                return Err(format!("{property} must be a function"));
+            };
+            state
+                .borrow_mut()
+                .handlers
+                .insert((node, event), ctx.stash(closure));
+            continue;
+        }
         if let LuaValue::Function(Function::Closure(closure)) = value {
             if !state
                 .borrow()
@@ -542,6 +657,18 @@ fn configure_element<'gc>(
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn handler_event(property: &str) -> Option<UiEvent> {
+    match property {
+        "on_entered" => Some(UiEvent::PointerEntered),
+        "on_exited" => Some(UiEvent::PointerExited),
+        "on_pressed" => Some(UiEvent::Pressed),
+        "on_released" => Some(UiEvent::Released),
+        "on_clicked" => Some(UiEvent::Clicked),
+        "on_key_pressed" => Some(UiEvent::KeyPressed),
+        _ => None,
+    }
 }
 
 fn configure_behaviors<'gc>(
@@ -830,6 +957,39 @@ fn execute_effect(
     }
 }
 
+fn execute_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    limits: Limits,
+) -> Result<(), String> {
+    let executor = Executor::start(ctx, ctx.fetch(closure).into(), ());
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua handler fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            break;
+        }
+    }
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 impl Default for Runtime {
     fn default() -> Self {
         Self::new(Limits::default())
@@ -1015,6 +1175,96 @@ mod tests {
         assert_eq!(
             runtime.scene().string_value(node, "text").unwrap(),
             "12:34:56"
+        );
+    }
+
+    #[test]
+    fn component_mouse_area_emits_clicked() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "button.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local count = mold.signal("count", 0)
+                    local Button = ui.component(function(props)
+                        return ui.MouseArea {
+                            width = 80,
+                            height = 24,
+                            on_clicked = props.on_clicked,
+                        }
+                    end)
+                    ui.Item {
+                        ui.Text { text = function() return "" .. count:get() end },
+                        Button { on_clicked = function() count:set(count:get() + 1) end },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+
+        assert!(runtime.dispatch_ui_event(children[1], UiEvent::Clicked));
+
+        assert_eq!(
+            runtime.scene().string_value(children[0], "text").unwrap(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn handler_fuel_failure_is_nonfatal() {
+        let mut runtime = Runtime::new(Limits {
+            effect_fuel: 1_000,
+            slice_fuel: 64,
+            ..Limits::default()
+        });
+        runtime
+            .execute(
+                "handler.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    ui.MouseArea { on_clicked = function() while true do end end }
+                "#,
+            )
+            .unwrap();
+        let node = runtime.scene().roots()[0];
+
+        assert!(runtime.dispatch_ui_event(node, UiEvent::Clicked));
+        assert!(runtime.take_logs()[0].contains("handler fuel exhausted"));
+        assert!(runtime.scene().contains(node));
+    }
+
+    #[test]
+    fn pure_lua_button_accepts_binding_and_emits_clicked() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "patin-button.lua",
+                br#"
+                    local mold = require("mold")
+                    local Button = require("patin.widgets.button")
+                    local count = mold.signal("count", 0)
+                    Button {
+                        text = function() return "Clicks " .. count:get() end,
+                        on_clicked = function() count:set(count:get() + 1) end,
+                    }
+                "#,
+            )
+            .unwrap();
+        let button = runtime.scene().roots()[0];
+        let children = runtime.scene().children(button).unwrap();
+        let rect_children = runtime.scene().children(children[0]).unwrap();
+
+        assert!(runtime.dispatch_ui_event(children[1], UiEvent::Clicked));
+
+        assert_eq!(
+            runtime
+                .scene()
+                .string_value(rect_children[0], "text")
+                .unwrap(),
+            "Clicks 1"
         );
     }
 

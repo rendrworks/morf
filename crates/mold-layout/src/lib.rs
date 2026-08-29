@@ -80,6 +80,49 @@ impl Layout {
         self.implicit.get(&node).copied()
     }
 
+    /// Returns the topmost enabled MouseArea containing a surface-local point.
+    pub fn hit_test(
+        &self,
+        scene: &Scene,
+        x: f64,
+        y: f64,
+    ) -> Result<Option<NodeHandle>, LayoutError> {
+        for root in scene.roots().into_iter().rev() {
+            if let Some(node) = self.hit_node(scene, root, x, y)? {
+                return Ok(Some(node));
+            }
+        }
+        Ok(None)
+    }
+
+    fn hit_node(
+        &self,
+        scene: &Scene,
+        node: NodeHandle,
+        x: f64,
+        y: f64,
+    ) -> Result<Option<NodeHandle>, LayoutError> {
+        if !scene.bool_value(node, "visible")? || !scene.bool_value(node, "enabled")? {
+            return Ok(None);
+        }
+        let Some(geometry) = self.geometry(node) else {
+            return Ok(None);
+        };
+        if x < geometry.x
+            || y < geometry.y
+            || x >= geometry.x + geometry.width
+            || y >= geometry.y + geometry.height
+        {
+            return Ok(None);
+        }
+        for child in scene.children(node)?.into_iter().rev() {
+            if let Some(hit) = self.hit_node(scene, child, x, y)? {
+                return Ok(Some(hit));
+            }
+        }
+        Ok((scene.element(node)? == Element::MouseArea).then_some(node))
+    }
+
     fn measure_implicit(
         &mut self,
         scene: &Scene,
@@ -115,7 +158,7 @@ impl Layout {
                     .fold(0.0, f64::max),
                 height: sum_with_spacing(&child_sizes, scene.number(node, "spacing")?, false),
             },
-            Element::Item | Element::Rect => {
+            Element::Item | Element::Rect | Element::MouseArea => {
                 let mut bounds = Size::default();
                 for (child, size) in children.iter().zip(child_sizes) {
                     bounds.width = bounds.width.max(scene.number(*child, "x")? + size.width);
@@ -173,6 +216,8 @@ impl Layout {
                 }
                 _ => {}
             }
+            geometry.x += parent_geometry.x;
+            geometry.y += parent_geometry.y;
             self.geometry.insert(child, geometry);
             self.resolve_children(scene, child)?;
         }
@@ -406,5 +451,42 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error, LayoutError::AxisConflict { axis: "horizontal" });
+    }
+
+    #[test]
+    fn hit_test_uses_absolute_geometry_and_paint_order() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let parent = scene.create(Element::Item);
+        scene.assign(parent, "x", 10.0).unwrap();
+        scene.assign(parent, "y", 5.0).unwrap();
+        scene.assign(parent, "width", 40.0).unwrap();
+        scene.assign(parent, "height", 20.0).unwrap();
+        scene.reparent(parent, Some(root)).unwrap();
+        let first = scene.create(Element::MouseArea);
+        let second = scene.create(Element::MouseArea);
+        for area in [first, second] {
+            scene.assign(area, "x", 3.0).unwrap();
+            scene.assign(area, "y", 2.0).unwrap();
+            scene.assign(area, "width", 20.0).unwrap();
+            scene.assign(area, "height", 10.0).unwrap();
+            scene.reparent(area, Some(parent)).unwrap();
+        }
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 40.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(layout.geometry(second).unwrap().x, 13.0);
+        assert_eq!(layout.hit_test(&scene, 15.0, 9.0).unwrap(), Some(second));
+        scene.assign(second, "enabled", false).unwrap();
+        assert_eq!(layout.hit_test(&scene, 15.0, 9.0).unwrap(), Some(first));
+        assert_eq!(layout.hit_test(&scene, 2.0, 2.0).unwrap(), None);
     }
 }

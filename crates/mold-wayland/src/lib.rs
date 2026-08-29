@@ -16,6 +16,11 @@ use rustix::time::Timespec;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+};
+use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -23,7 +28,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
 };
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_output, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -55,7 +60,7 @@ impl Default for BarConfig {
 }
 
 /// Event produced by the layer-surface connection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LayerEvent {
     /// The compositor selected a logical surface size.
     Configure { width: u32, height: u32 },
@@ -63,6 +68,31 @@ pub enum LayerEvent {
     Scale(u32),
     /// The compositor permits the next animation and paint tick.
     Frame { time_ms: u32 },
+    /// The pointer moved over or entered the surface.
+    PointerMotion { x: f64, y: f64 },
+    /// The pointer left the surface.
+    PointerLeave,
+    /// A pointer button changed state.
+    PointerButton {
+        button: u32,
+        pressed: bool,
+        x: f64,
+        y: f64,
+    },
+    /// A keyboard key changed state.
+    Key {
+        keysym: u32,
+        text: Option<String>,
+        pressed: bool,
+        repeat: bool,
+    },
+    /// Keyboard modifier state changed.
+    Modifiers {
+        control: bool,
+        alt: bool,
+        shift: bool,
+        logo: bool,
+    },
     /// The compositor closed the layer surface.
     Closed,
 }
@@ -108,7 +138,7 @@ impl LayerClient {
             None,
         );
         layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
         layer.set_size(0, config.height);
         layer.set_exclusive_zone(config.exclusive_zone);
 
@@ -127,6 +157,7 @@ impl LayerClient {
         let state = LayerState {
             registry: RegistryState::new(&globals),
             outputs: OutputState::new(&globals, &qh),
+            seats: SeatState::new(&globals, &qh),
             layer,
             _fractional_manager: fractional_manager,
             fractional_scale,
@@ -136,6 +167,8 @@ impl LayerClient {
             height: config.height.max(1),
             scale_120: 120,
             events: VecDeque::new(),
+            pointer: None,
+            keyboard: None,
         };
         Ok(Self {
             connection,
@@ -272,6 +305,7 @@ impl HasWindowHandle for WaylandWindowTarget {
 struct LayerState {
     registry: RegistryState,
     outputs: OutputState,
+    seats: SeatState,
     layer: LayerSurface,
     _fractional_manager: Option<WpFractionalScaleManagerV1>,
     fractional_scale: Option<WpFractionalScaleV1>,
@@ -281,6 +315,8 @@ struct LayerState {
     height: u32,
     scale_120: u32,
     events: VecDeque<LayerEvent>,
+    pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
 }
 
 impl CompositorHandler for LayerState {
@@ -392,6 +428,190 @@ impl OutputHandler for LayerState {
     }
 }
 
+impl SeatHandler for LayerState {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seats
+    }
+
+    fn new_seat(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+    ) {
+    }
+
+    fn new_capability(
+        &mut self,
+        _connection: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            self.pointer = self.seats.get_pointer(qh, &seat).ok();
+        }
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            self.keyboard = self.seats.get_keyboard(qh, &seat, None).ok();
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer
+            && let Some(pointer) = self.pointer.take()
+        {
+            pointer.release();
+        }
+        if capability == Capability::Keyboard
+            && let Some(keyboard) = self.keyboard.take()
+        {
+            keyboard.release();
+        }
+    }
+
+    fn remove_seat(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+    ) {
+    }
+}
+
+impl PointerHandler for LayerState {
+    fn pointer_frame(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            if &event.surface != self.layer.wl_surface() {
+                continue;
+            }
+            let (x, y) = event.position;
+            match event.kind {
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    self.events.push_back(LayerEvent::PointerMotion { x, y })
+                }
+                PointerEventKind::Leave { .. } => {
+                    self.events.push_back(LayerEvent::PointerLeave);
+                }
+                PointerEventKind::Press { button, .. } => {
+                    self.events.push_back(LayerEvent::PointerButton {
+                        button,
+                        pressed: true,
+                        x,
+                        y,
+                    });
+                }
+                PointerEventKind::Release { button, .. } => {
+                    self.events.push_back(LayerEvent::PointerButton {
+                        button,
+                        pressed: false,
+                        x,
+                        y,
+                    });
+                }
+                PointerEventKind::Axis { .. } => {}
+            }
+        }
+    }
+}
+
+impl KeyboardHandler for LayerState {
+    fn enter(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw: &[u32],
+        _keysyms: &[Keysym],
+    ) {
+    }
+
+    fn leave(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {
+    }
+
+    fn press_key(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        self.push_key(event, true, false);
+    }
+
+    fn repeat_key(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        self.push_key(event, true, true);
+    }
+
+    fn release_key(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        self.push_key(event, false, false);
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        modifiers: Modifiers,
+        _raw: RawModifiers,
+        _layout: u32,
+    ) {
+        self.events.push_back(LayerEvent::Modifiers {
+            control: modifiers.ctrl,
+            alt: modifiers.alt,
+            shift: modifiers.shift,
+            logo: modifiers.logo,
+        });
+    }
+}
+
+impl LayerState {
+    fn push_key(&mut self, event: KeyEvent, pressed: bool, repeat: bool) {
+        self.events.push_back(LayerEvent::Key {
+            keysym: event.keysym.raw(),
+            text: event.utf8,
+            pressed,
+            repeat,
+        });
+    }
+}
+
 impl Dispatch<WpFractionalScaleV1, ()> for LayerState {
     fn event(
         state: &mut Self,
@@ -413,7 +633,7 @@ impl ProvidesRegistryState for LayerState {
         &mut self.registry
     }
 
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
 }
 
 delegate_registry!(LayerState);

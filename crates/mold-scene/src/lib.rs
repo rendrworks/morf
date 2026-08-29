@@ -25,6 +25,8 @@ pub enum Element {
     Rect,
     /// Shaped text primitive.
     Text,
+    /// Pointer and focus event target with no visual output.
+    MouseArea,
     /// Sequential horizontal positioner.
     Row,
     /// Sequential vertical positioner.
@@ -37,6 +39,7 @@ impl Element {
             Self::Item => "Item",
             Self::Rect => "Rect",
             Self::Text => "Text",
+            Self::MouseArea => "MouseArea",
             Self::Row => "Row",
             Self::Column => "Column",
         }
@@ -873,7 +876,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         boolean("enabled", true),
     ];
     match element {
-        Element::Item => {}
+        Element::Item | Element::MouseArea => {}
         Element::Rect => {
             properties.extend([
                 color("color", Color::rgba8(255, 255, 255, 255)),

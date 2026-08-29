@@ -306,7 +306,7 @@ fn append_node(
             size: scene.number(node, "font_size")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
         }),
-        Element::Item | Element::Row | Element::Column => {}
+        Element::Item | Element::MouseArea | Element::Row | Element::Column => {}
     }
     for child in scene.children(node)? {
         append_node(scene, layout, child, opacity, commands)?;

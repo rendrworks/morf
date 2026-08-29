@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mold_layout::{Layout, Size};
-use mold_lua::Runtime;
+use mold_lua::{Runtime, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_wayland::{BarConfig, LayerClient, LayerEvent};
 
@@ -51,7 +51,13 @@ fn run() -> Result<(), String> {
             match event {
                 LayerEvent::Configure { .. } => break 'configured,
                 LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
-                LayerEvent::Scale(_) | LayerEvent::Frame { .. } => {}
+                LayerEvent::Scale(_)
+                | LayerEvent::Frame { .. }
+                | LayerEvent::PointerMotion { .. }
+                | LayerEvent::PointerLeave
+                | LayerEvent::PointerButton { .. }
+                | LayerEvent::Key { .. }
+                | LayerEvent::Modifiers { .. } => {}
             }
         }
     }
@@ -67,9 +73,12 @@ fn run() -> Result<(), String> {
     runtime
         .update_clock(&clock)
         .map_err(|error| error.to_string())?;
-    paint(&runtime, &mut renderer, &client)?;
+    let mut layout = paint(&runtime, &mut renderer, &client)?;
 
     let mut last_frame = None;
+    let mut hovered = None;
+    let mut pressed = None;
+    let mut focused = None;
     loop {
         client
             .dispatch_timeout(until_next_second())
@@ -101,10 +110,66 @@ fn run() -> Result<(), String> {
                     repaint |= frame.active || !frame.changes.is_empty();
                 }
                 LayerEvent::Closed => return Ok(()),
+                LayerEvent::PointerMotion { x, y } => {
+                    let hit = layout
+                        .hit_test(&runtime.scene(), x, y)
+                        .map_err(|error| error.to_string())?;
+                    if hit != hovered {
+                        if let Some(node) = hovered {
+                            repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerExited);
+                        }
+                        if let Some(node) = hit {
+                            repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerEntered);
+                        }
+                        hovered = hit;
+                    }
+                }
+                LayerEvent::PointerLeave => {
+                    if let Some(node) = hovered.take() {
+                        repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerExited);
+                    }
+                }
+                LayerEvent::PointerButton {
+                    pressed: true,
+                    x,
+                    y,
+                    ..
+                } => {
+                    let hit = layout
+                        .hit_test(&runtime.scene(), x, y)
+                        .map_err(|error| error.to_string())?;
+                    pressed = hit;
+                    focused = hit;
+                    if let Some(node) = hit {
+                        repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
+                    }
+                }
+                LayerEvent::PointerButton {
+                    pressed: false,
+                    x,
+                    y,
+                    ..
+                } => {
+                    let hit = layout
+                        .hit_test(&runtime.scene(), x, y)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(node) = pressed.take() {
+                        repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
+                        if hit == Some(node) {
+                            repaint |= runtime.dispatch_ui_event(node, UiEvent::Clicked);
+                        }
+                    }
+                }
+                LayerEvent::Key { pressed: true, .. } => {
+                    if let Some(node) = focused {
+                        repaint |= runtime.dispatch_ui_event(node, UiEvent::KeyPressed);
+                    }
+                }
+                LayerEvent::Key { pressed: false, .. } | LayerEvent::Modifiers { .. } => {}
             }
         }
         if repaint {
-            paint(&runtime, &mut renderer, &client)?;
+            layout = paint(&runtime, &mut renderer, &client)?;
         }
     }
 }
@@ -113,7 +178,7 @@ fn paint(
     runtime: &Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &LayerClient,
-) -> Result<(), String> {
+) -> Result<Layout, String> {
     let scene = runtime.scene();
     let root = scene.roots()[0];
     let (width, height) = client.logical_size();
@@ -138,7 +203,7 @@ fn paint(
     if damage.is_empty() {
         client.commit();
     }
-    Ok(())
+    Ok(layout)
 }
 
 fn clock_text() -> String {
