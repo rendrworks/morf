@@ -1,9 +1,16 @@
 //! Sandboxed execution of mold configuration code.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
+use std::rc::Rc;
 
-use luna::{Closure, Executor, ExecutorMode, Fuel, Lua};
+use luna::{
+    Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Lua, StashedClosure,
+    Table, UserData, UserRef, Value as LuaValue,
+};
+use mold_reactive::{EffectContext, Graph, SignalId};
 
 /// Execution limits applied independently to each loaded chunk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,6 +21,10 @@ pub struct Limits {
     pub memory: usize,
     /// VM fuel granted before the host regains control.
     pub slice_fuel: i32,
+    /// Maximum VM fuel granted to one reactive Lua effect.
+    pub effect_fuel: u64,
+    /// Maximum VM fuel granted to all effects in one recompute pass.
+    pub frame_fuel: u64,
 }
 
 impl Default for Limits {
@@ -22,6 +33,8 @@ impl Default for Limits {
             fuel: 10_000_000,
             memory: 64 * 1024 * 1024,
             slice_fuel: 4_096,
+            effect_fuel: 100_000,
+            frame_fuel: 1_000_000,
         }
     }
 }
@@ -55,6 +68,7 @@ impl StdError for Error {}
 pub struct Runtime {
     lua: Lua,
     limits: Limits,
+    reactive: Rc<RefCell<ReactiveState>>,
 }
 
 impl Runtime {
@@ -62,7 +76,13 @@ impl Runtime {
     pub fn new(limits: Limits) -> Self {
         let mut lua = Lua::core();
         lua.set_memory_limit(Some(limits.memory));
-        Self { lua, limits }
+        let reactive = Rc::new(RefCell::new(ReactiveState::new()));
+        install_reactive_api(&mut lua, Rc::clone(&reactive), limits);
+        Self {
+            lua,
+            limits,
+            reactive,
+        }
     }
 
     /// Compiles and executes a Lua chunk.
@@ -111,6 +131,343 @@ impl Runtime {
             .execute::<()>(&executor)
             .map_err(|error| Error::Runtime(error.to_string()))
     }
+
+    /// Drains non-fatal binding diagnostics produced since the previous call.
+    pub fn take_logs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.reactive.borrow_mut().logs)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ScriptValue {
+    Nil,
+    Boolean(bool),
+    Integer(i64),
+    Number(f64),
+    String(String),
+}
+
+impl ScriptValue {
+    fn from_lua(value: LuaValue<'_>) -> Result<Self, String> {
+        match value {
+            LuaValue::Nil => Ok(Self::Nil),
+            LuaValue::Boolean(value) => Ok(Self::Boolean(value)),
+            LuaValue::Integer(value) => Ok(Self::Integer(value)),
+            LuaValue::Number(value) if value.is_finite() => Ok(Self::Number(value)),
+            LuaValue::String(value) => Ok(Self::String(value.display_lossy().to_string())),
+            value => Err(format!(
+                "reactive signals do not support {} values yet",
+                value.type_name()
+            )),
+        }
+    }
+
+    fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
+        match self {
+            Self::Nil => LuaValue::Nil,
+            Self::Boolean(value) => LuaValue::Boolean(*value),
+            Self::Integer(value) => LuaValue::Integer(*value),
+            Self::Number(value) => LuaValue::Number(*value),
+            Self::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SignalToken {
+    id: SignalId,
+}
+
+#[derive(Default)]
+struct Capture {
+    reads: HashSet<SignalId>,
+    writes: Vec<(SignalId, ScriptValue)>,
+}
+
+struct ReactiveState {
+    graph: Option<Graph<ScriptValue>>,
+    values: HashMap<SignalId, ScriptValue>,
+    signals: Vec<SignalId>,
+    effects: HashMap<u64, StashedClosure>,
+    next_effect: u64,
+    active: Option<Capture>,
+    logs: Vec<String>,
+}
+
+impl ReactiveState {
+    fn new() -> Self {
+        Self {
+            graph: Some(Graph::default()),
+            values: HashMap::new(),
+            signals: Vec::new(),
+            effects: HashMap::new(),
+            next_effect: 0,
+            active: None,
+            logs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HostError(String);
+
+impl fmt::Display for HostError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl StdError for HostError {}
+
+fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits: Limits) {
+    lua.enter(|ctx| {
+        let get = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let signal: UserRef<SignalToken> = stack.consume(ctx)?;
+                let mut state = state.borrow_mut();
+                let value = if let Some(active) = &mut state.active {
+                    active.reads.insert(signal.id);
+                    active
+                        .writes
+                        .iter()
+                        .rev()
+                        .find(|(id, _)| *id == signal.id)
+                        .map(|(_, value)| value.clone())
+                        .or_else(|| state.values.get(&signal.id).cloned())
+                } else {
+                    state.values.get(&signal.id).cloned()
+                }
+                .ok_or_else(|| HostError("stale reactive signal".to_owned()))?;
+                stack.replace(ctx, value.to_lua(ctx));
+                Ok(CallbackReturn::Return)
+            }
+        });
+
+        let set = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (signal, value): (UserRef<SignalToken>, LuaValue) = stack.consume(ctx)?;
+                let value = ScriptValue::from_lua(value).map_err(HostError)?;
+                {
+                    let mut state = state.borrow_mut();
+                    if let Some(active) = &mut state.active {
+                        active.writes.push((signal.id, value));
+                        stack.replace(ctx, true);
+                        return Ok(CallbackReturn::Return);
+                    }
+                    let graph = state
+                        .graph
+                        .as_mut()
+                        .ok_or_else(|| HostError("reactive graph is already running".to_owned()))?;
+                    graph
+                        .write(signal.id, value.clone())
+                        .map_err(|error| HostError(error.to_string()))?;
+                    state.values.insert(signal.id, value);
+                }
+                replace_status(ctx, &mut stack, flush_reactive(&state, ctx, limits));
+                Ok(CallbackReturn::Return)
+            }
+        });
+
+        let methods = Table::new(&ctx);
+        methods.set_field(ctx, "get", get);
+        methods.set_field(ctx, "set", set);
+        let signal_metatable = Table::new(&ctx);
+        signal_metatable.set_field(ctx, "__index", methods);
+        let signal_metatable = ctx.stash(signal_metatable);
+
+        let signal = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            let signal_metatable = signal_metatable.clone();
+            move |ctx, _, mut stack| {
+                let (name, value): (String, LuaValue) = stack.consume(ctx)?;
+                let value = ScriptValue::from_lua(value).map_err(HostError)?;
+                let id = {
+                    let mut state = state.borrow_mut();
+                    let id = state
+                        .graph
+                        .as_mut()
+                        .ok_or_else(|| HostError("reactive graph is already running".to_owned()))?
+                        .signal(name, value.clone());
+                    state.values.insert(id, value);
+                    state.signals.push(id);
+                    id
+                };
+                let userdata = UserData::new_static(&ctx, SignalToken { id });
+                userdata.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
+
+        let effect = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (name, closure): (String, Closure) = stack.consume(ctx)?;
+                {
+                    let mut state = state.borrow_mut();
+                    let token = state.next_effect;
+                    state.next_effect = state.next_effect.wrapping_add(1);
+                    state.effects.insert(token, ctx.stash(closure));
+                    state
+                        .graph
+                        .as_mut()
+                        .ok_or_else(|| HostError("reactive graph is already running".to_owned()))?
+                        .external_effect(name, token);
+                }
+                replace_status(ctx, &mut stack, flush_reactive(&state, ctx, limits));
+                Ok(CallbackReturn::Return)
+            }
+        });
+
+        let mold = Table::new(&ctx);
+        mold.set_field(ctx, "signal", signal);
+        mold.set_field(ctx, "effect", effect);
+        ctx.set_global("mold", mold);
+
+        let mold = ctx.stash(mold);
+        ctx.set_global(
+            "require",
+            Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+                let name: String = stack.consume(ctx)?;
+                if name != "mold" {
+                    return Err(HostError(format!("module `{name}` is not available")).into());
+                }
+                stack.replace(ctx, ctx.fetch(&mold));
+                Ok(CallbackReturn::Return)
+            }),
+        );
+    });
+}
+
+fn replace_status<'gc>(
+    ctx: Context<'gc>,
+    stack: &mut luna::Stack<'gc, '_>,
+    result: Result<(), String>,
+) {
+    match result {
+        Ok(()) => stack.replace(ctx, (true, LuaValue::Nil)),
+        Err(message) => stack.replace(ctx, (false, message)),
+    }
+}
+
+fn flush_reactive(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'_>,
+    limits: Limits,
+) -> Result<(), String> {
+    let mut graph = state
+        .borrow_mut()
+        .graph
+        .take()
+        .ok_or_else(|| "reactive graph is already running".to_owned())?;
+    let mut remaining = limits.frame_fuel;
+    let result = graph.flush_external(|token, effect| {
+        evaluate_effect(state, ctx, limits, &mut remaining, token, effect)
+    });
+
+    let mut state = state.borrow_mut();
+    for signal in state.signals.clone() {
+        if let Ok(value) = graph.read(signal) {
+            state.values.insert(signal, value.clone());
+        }
+    }
+    state.graph = Some(graph);
+
+    match result {
+        Ok(report) if report.errors.is_empty() => Ok(()),
+        Ok(report) => {
+            let message = report
+                .errors
+                .into_iter()
+                .map(|error| format!("{}: {}", error.effect, error.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            state.logs.push(message.clone());
+            Err(message)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            state.logs.push(message.clone());
+            Err(message)
+        }
+    }
+}
+
+fn evaluate_effect(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'_>,
+    limits: Limits,
+    frame_remaining: &mut u64,
+    token: u64,
+    effect: &mut EffectContext<'_, ScriptValue>,
+) -> Result<(), String> {
+    let closure = {
+        let mut state = state.borrow_mut();
+        if state.active.is_some() {
+            return Err("reactive effects cannot run recursively".to_owned());
+        }
+        state.active = Some(Capture::default());
+        state
+            .effects
+            .get(&token)
+            .cloned()
+            .ok_or_else(|| format!("missing Lua closure for effect {token}"))?
+    };
+    let result = execute_effect(ctx, &closure, limits, frame_remaining);
+    let capture = state.borrow_mut().active.take().unwrap_or_default();
+    for signal in capture.reads {
+        effect.get(signal).map_err(|error| error.to_string())?;
+    }
+    if result.is_ok() {
+        for (signal, value) in capture.writes {
+            effect
+                .set(signal, value.clone())
+                .map_err(|error| error.to_string())?;
+            state.borrow_mut().values.insert(signal, value);
+        }
+    }
+    result
+}
+
+fn execute_effect(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    limits: Limits,
+    frame_remaining: &mut u64,
+) -> Result<(), String> {
+    let budget = limits.effect_fuel.min(*frame_remaining);
+    if budget == 0 {
+        return Err("Lua frame fuel exhausted".to_owned());
+    }
+    let executor = Executor::start(ctx, ctx.fetch(closure).into(), ());
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            *frame_remaining = frame_remaining.saturating_sub(budget);
+            return Err(format!(
+                "Lua effect fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            let spent = budget - remaining;
+            *frame_remaining = frame_remaining.saturating_sub(spent);
+            return match executor.take_result::<()>(ctx) {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+        }
+    }
 }
 
 impl Default for Runtime {
@@ -151,5 +508,90 @@ mod tests {
             .execute("loop.lua", b"while true do end")
             .unwrap_err();
         assert_eq!(error, Error::FuelExhausted { budget: 2_000 });
+    }
+
+    #[test]
+    fn lua_signal_change_reruns_exactly_one_effect() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "reactive.lua",
+                br#"
+                    local mold = require("mold")
+                    local source = mold.signal("source", 1)
+                    local other = mold.signal("other", 2)
+                    local source_runs = 0
+                    local other_runs = 0
+                    assert(mold.effect("source effect", function()
+                        source:get()
+                        source_runs = source_runs + 1
+                    end))
+                    assert(mold.effect("other effect", function()
+                        other:get()
+                        other_runs = other_runs + 1
+                    end))
+                    source_runs = 0
+                    other_runs = 0
+                    local ok, err = source:set(7)
+                    assert(ok, err)
+                    assert(source_runs == 1)
+                    assert(other_runs == 0)
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn lua_binding_loop_names_the_property_chain() {
+        let mut runtime = Runtime::new(Limits {
+            effect_fuel: 10_000,
+            frame_fuel: 100_000,
+            ..Limits::default()
+        });
+        runtime
+            .execute(
+                "loop.lua",
+                br#"
+                    local mold = require("mold")
+                    local left = mold.signal("left", 0)
+                    local right = mold.signal("right", 0)
+                    assert(mold.effect("left binding", function()
+                        left:set(right:get() + 1)
+                    end))
+                    local ok, err = mold.effect("right binding", function()
+                        right:set(left:get() + 1)
+                    end)
+                    assert(not ok, "loop unexpectedly succeeded")
+                    assert(string.find(err, "left binding", 1, true), err)
+                    assert(string.find(err, "right binding", 1, true), err)
+                    assert(string.find(err, "left", 1, true), err)
+                    assert(string.find(err, "right", 1, true), err)
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn runaway_lua_effect_exhausts_its_own_fuel() {
+        let mut runtime = Runtime::new(Limits {
+            effect_fuel: 1_000,
+            frame_fuel: 10_000,
+            slice_fuel: 64,
+            ..Limits::default()
+        });
+        runtime
+            .execute(
+                "effect-fuel.lua",
+                br#"
+                    local mold = require("mold")
+                    local ok, err = mold.effect("runaway", function()
+                        while true do end
+                    end)
+                    assert(not ok)
+                    assert(string.find(err, "effect fuel exhausted", 1, true))
+                "#,
+            )
+            .unwrap();
+        assert!(runtime.take_logs()[0].contains("runaway"));
     }
 }

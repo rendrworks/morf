@@ -253,6 +253,7 @@ name = "mold-lua"
 version = "0.1.0"
 dependencies = [
  "luna",
+ "mold-reactive",
 ]
 
 [[package]]

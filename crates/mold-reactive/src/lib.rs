@@ -24,10 +24,15 @@ struct Signal<T> {
 
 struct Effect<T> {
     name: String,
-    callback: Option<Box<EffectFn<T>>>,
+    callback: EffectCallback<T>,
     dependencies: HashSet<SignalId>,
     depth: usize,
     dirty: bool,
+}
+
+enum EffectCallback<T> {
+    Internal(Option<Box<EffectFn<T>>>),
+    External(u64),
 }
 
 /// Non-fatal failures reported while draining a batch.
@@ -145,7 +150,18 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
     {
         self.effects.insert(Effect {
             name: name.into(),
-            callback: Some(Box::new(callback)),
+            callback: EffectCallback::Internal(Some(Box::new(callback))),
+            dependencies: HashSet::new(),
+            depth: 0,
+            dirty: true,
+        })
+    }
+
+    /// Registers an externally evaluated effect identified by an opaque token.
+    pub fn external_effect(&mut self, name: impl Into<String>, token: u64) -> EffectId {
+        self.effects.insert(Effect {
+            name: name.into(),
+            callback: EffectCallback::External(token),
             dependencies: HashSet::new(),
             depth: 0,
             dirty: true,
@@ -198,6 +214,14 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
 
     /// Drains all dirty effects in dependency depth order.
     pub fn flush(&mut self) -> Result<FlushReport, GraphError> {
+        self.flush_external(|token, _| Err(format!("no evaluator for external effect {token}")))
+    }
+
+    /// Drains dirty effects while delegating externally registered evaluations.
+    pub fn flush_external<F>(&mut self, mut evaluate: F) -> Result<FlushReport, GraphError>
+    where
+        F: for<'a> FnMut(u64, &mut EffectContext<'a, T>) -> Result<(), String>,
+    {
         let mut report = FlushReport::default();
         let mut runs = HashMap::<EffectId, usize>::new();
         let mut trace = VecDeque::<String>::new();
@@ -229,7 +253,7 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
             }
 
             report.runs += 1;
-            match self.run_effect(effect, &mut originals) {
+            match self.run_effect(effect, &mut originals, &mut evaluate) {
                 Ok(writes) => trace.extend(writes),
                 Err(message) => report.errors.push(EffectError {
                     effect: name,
@@ -256,6 +280,7 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
         &mut self,
         effect: EffectId,
         originals: &mut HashMap<SignalId, (T, Option<EffectId>)>,
+        evaluate: &mut impl for<'a> FnMut(u64, &mut EffectContext<'a, T>) -> Result<(), String>,
     ) -> Result<Vec<String>, String> {
         let old_dependencies = {
             let slot = self
@@ -271,20 +296,36 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
             }
         }
 
-        let mut callback = self.effects[effect]
-            .callback
-            .take()
-            .ok_or_else(|| "effect is already running".to_owned())?;
+        enum Invocation<T> {
+            Internal(Box<EffectFn<T>>),
+            External(u64),
+        }
+        let invocation = match &mut self.effects[effect].callback {
+            EffectCallback::Internal(callback) => Invocation::Internal(
+                callback
+                    .take()
+                    .ok_or_else(|| "effect is already running".to_owned())?,
+            ),
+            EffectCallback::External(token) => Invocation::External(*token),
+        };
         let mut context = EffectContext {
             graph: self,
             effect,
             dependencies: HashSet::new(),
             writes: Vec::new(),
         };
-        let result = callback(&mut context);
+        let (result, callback) = match invocation {
+            Invocation::Internal(mut callback) => {
+                let result = callback(&mut context);
+                (result, Some(callback))
+            }
+            Invocation::External(token) => (evaluate(token, &mut context), None),
+        };
         let dependencies = context.dependencies;
         let writes = context.writes;
-        context.graph.effects[effect].callback = Some(callback);
+        if let Some(callback) = callback {
+            context.graph.effects[effect].callback = EffectCallback::Internal(Some(callback));
+        }
 
         let dependencies = if result.is_ok() || !dependencies.is_empty() {
             dependencies
@@ -507,5 +548,29 @@ mod tests {
         assert!(message.contains("right"));
         assert_eq!(*graph.read(left).unwrap(), 0);
         assert_eq!(*graph.read(right).unwrap(), 0);
+    }
+
+    #[test]
+    fn externally_evaluated_effects_participate_in_loop_detection() {
+        let mut graph = Graph::new(4);
+        let left = graph.signal("left", 0);
+        let right = graph.signal("right", 0);
+        graph.external_effect("left binding", 1);
+        graph.external_effect("right binding", 2);
+
+        let error = graph
+            .flush_external(|token, ctx| {
+                if token == 1 {
+                    let value = ctx.get(right).map_err(|error| error.to_string())?;
+                    ctx.set(left, value + 1).map_err(|error| error.to_string())
+                } else {
+                    let value = ctx.get(left).map_err(|error| error.to_string())?;
+                    ctx.set(right, value + 1).map_err(|error| error.to_string())
+                }
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("left binding"));
+        assert!(error.to_string().contains("right binding"));
     }
 }

@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 luna.workspace = true
+mold-reactive.workspace = true
