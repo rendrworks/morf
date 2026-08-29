@@ -1,0 +1,9 @@
+[package]
+name = "mold-reactive"
+description = "Reactive signal graph for mold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

@@ -1,0 +1,14 @@
+[package]
+name = "mold-cli"
+description = "Command-line interface for mold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "mold"
+path = "src/main.rs"
+
+[dependencies]
+mold-lua.workspace = true

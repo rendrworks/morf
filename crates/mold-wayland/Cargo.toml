@@ -1,0 +1,12 @@
+[package]
+name = "mold-wayland"
+description = "Wayland surfaces and input for mold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mold-layout.workspace = true
+mold-render.workspace = true
+mold-scene.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "mold-services"
+description = "Native system services for mold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

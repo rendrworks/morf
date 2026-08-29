@@ -1,0 +1,12 @@
+[package]
+name = "mold-render"
+description = "GPU renderer for mold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mold-image.workspace = true
+mold-scene.workspace = true
+mold-text.workspace = true

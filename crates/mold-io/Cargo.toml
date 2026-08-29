@@ -1,0 +1,9 @@
+[package]
+name = "mold-io"
+description = "I/O primitives for mold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

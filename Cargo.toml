@@ -1,16 +1,28 @@
-[package]
-name = "mold"
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "mold"
 license = "MIT"
-readme = "README.md"
-publish = false
+repository = "https://github.com/rendrworks/mold"
 
-[lib]
-path = "src/lib.rs"
+[workspace.dependencies]
+luna = { git = "https://github.com/onix-os/luna", rev = "e8b7e98ec977c8973ce1a182d935d0ca1f06f465" }
+mold-image = { path = "crates/mold-image" }
+mold-io = { path = "crates/mold-io" }
+mold-layout = { path = "crates/mold-layout" }
+mold-lua = { path = "crates/mold-lua" }
+mold-reactive = { path = "crates/mold-reactive" }
+mold-render = { path = "crates/mold-render" }
+mold-scene = { path = "crates/mold-scene" }
+mold-services = { path = "crates/mold-services" }
+mold-text = { path = "crates/mold-text" }
+mold-wayland = { path = "crates/mold-wayland" }
 
-[dependencies]
-
-[dev-dependencies]
-
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
