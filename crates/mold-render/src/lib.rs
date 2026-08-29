@@ -254,6 +254,8 @@ pub struct Layer {
     pub parent: Option<usize>,
     /// Opacity applied once while compositing the complete subtree.
     pub opacity: f32,
+    /// Logical dual-kawase blur radius.
+    pub blur: f32,
     /// Logical bounds affected by this layer.
     pub bounds: Geometry,
 }
@@ -586,11 +588,18 @@ fn append_node(
     }
     let node_opacity = scene.number(node, "opacity")?.clamp(0.0, 1.0);
     let rotation = scene.number(node, "rotation")?;
+    let (explicit_layer, configured_blur) = layer_config(scene, node)?;
+    let rect_blur = if scene.element(node)? == Element::Rect {
+        scene.number(node, "blur")?.max(0.0)
+    } else {
+        0.0
+    };
+    let layer_blur = configured_blur.max(rect_blur);
     let rounded_clip = scene.bool_value(node, "clip")?
         && scene.element(node)? == Element::Rect
         && rect_radii(scene, node)?.iter().any(|radius| *radius > 0.0);
     let creates_layer =
-        layer_enabled(scene, node)? || node_opacity < 1.0 || rotation != 0.0 || rounded_clip;
+        explicit_layer || node_opacity < 1.0 || rotation != 0.0 || rounded_clip || layer_blur > 0.0;
     let layer = creates_layer.then(|| {
         let index = list.layers.len();
         list.layers.push(Layer {
@@ -598,6 +607,7 @@ fn append_node(
             commands: list.commands.len()..list.commands.len(),
             parent: inherited.layer,
             opacity: node_opacity as f32,
+            blur: layer_blur as f32,
             bounds: Geometry::default(),
         });
         index
@@ -642,7 +652,7 @@ fn append_node(
             radii: rect_radii(scene, node)?,
             border_width: scene.number(node, "border_width")?,
             border_color: with_opacity(scene.color_value(node, "border_color")?, opacity),
-            blur: scene.number(node, "blur")?.max(0.0),
+            blur: if layer_blur > 0.0 { 0.0 } else { rect_blur },
             shadow_color: with_opacity(scene.color_value(node, "shadow_color")?, opacity),
             shadow_blur: scene.number(node, "shadow_blur")?.max(0.0),
             shadow_spread: scene.number(node, "shadow_spread")?,
@@ -738,25 +748,38 @@ fn append_node(
         let start = list.layers[layer].commands.start;
         let end = list.commands.len();
         list.layers[layer].commands.end = end;
-        list.layers[layer].bounds =
+        let bounds =
             command_union(&list.commands[start..end]).unwrap_or_else(|| transform.bounds(bounds));
+        list.layers[layer].bounds = expand_geometry(bounds, layer_blur * 2.0);
     }
     Ok(())
 }
 
-fn layer_enabled(scene: &Scene, node: NodeHandle) -> Result<bool, RenderError> {
+fn layer_config(scene: &Scene, node: NodeHandle) -> Result<(bool, f64), RenderError> {
     let Value::Map(layer) = scene.current(node, "layer")? else {
         return Err(RenderError::Scene(
             "layer must be a property map".to_owned(),
         ));
     };
-    match layer.get("enabled") {
-        None => Ok(false),
-        Some(Value::Bool(enabled)) => Ok(*enabled),
-        Some(_) => Err(RenderError::Scene(
-            "layer.enabled must be a boolean".to_owned(),
-        )),
-    }
+    let enabled = match layer.get("enabled") {
+        None => false,
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(_) => {
+            return Err(RenderError::Scene(
+                "layer.enabled must be a boolean".to_owned(),
+            ));
+        }
+    };
+    let blur = match layer.get("blur") {
+        None => 0.0,
+        Some(Value::Number(blur)) if blur.is_finite() && *blur >= 0.0 => *blur,
+        Some(_) => {
+            return Err(RenderError::Scene(
+                "layer.blur must be a non-negative finite number".to_owned(),
+            ));
+        }
+    };
+    Ok((enabled, blur))
 }
 
 fn command_union(commands: &[DrawCommand]) -> Option<Geometry> {
@@ -776,6 +799,15 @@ fn union_geometry(left: Geometry, right: Geometry) -> Geometry {
         y,
         width: right_edge - x,
         height: bottom - y,
+    }
+}
+
+fn expand_geometry(bounds: Geometry, amount: f64) -> Geometry {
+    Geometry {
+        x: bounds.x - amount,
+        y: bounds.y - amount,
+        width: bounds.width + amount * 2.0,
+        height: bounds.height + amount * 2.0,
     }
 }
 
@@ -1199,9 +1231,11 @@ mod tests {
         assert_eq!(list.layers[0].commands, 0..1);
         assert_eq!(list.layers[0].parent, None);
         assert_eq!(list.layers[0].opacity, 0.5);
+        assert_eq!(list.layers[0].blur, 0.0);
         assert_eq!(list.layers[1].commands, 0..1);
         assert_eq!(list.layers[1].parent, Some(0));
         assert_eq!(list.layers[1].opacity, 0.25);
+        assert_eq!(list.layers[1].blur, 0.0);
         let DrawCommand::Quad { color, .. } = list.commands[0] else {
             panic!("child did not emit a quad");
         };
@@ -1216,7 +1250,10 @@ mod tests {
             .assign(
                 rect,
                 "layer",
-                Value::Map(BTreeMap::from([("enabled".to_owned(), Value::Bool(true))])),
+                Value::Map(BTreeMap::from([
+                    ("enabled".to_owned(), Value::Bool(true)),
+                    ("blur".to_owned(), Value::Number(8.0)),
+                ])),
             )
             .unwrap();
         scene.assign(rect, "width", 20.0).unwrap();
@@ -1237,6 +1274,20 @@ mod tests {
         assert_eq!(list.layers.len(), 1);
         assert_eq!(list.layers[0].commands, 0..1);
         assert_eq!(list.layers[0].opacity, 1.0);
+        assert_eq!(list.layers[0].blur, 8.0);
+        assert_eq!(
+            list.layers[0].bounds,
+            Geometry {
+                x: -16.0,
+                y: -16.0,
+                width: 52.0,
+                height: 42.0,
+            }
+        );
+        let DrawCommand::Quad { blur, .. } = list.commands[0] else {
+            panic!("rectangle did not emit a quad");
+        };
+        assert_eq!(blur, 0.0);
     }
 
     #[test]
@@ -1411,6 +1462,7 @@ mod tests {
         );
         assert_eq!(list.layers.len(), 1);
         assert_eq!(list.layers[0].opacity, 0.5);
+        assert_eq!(list.layers[0].blur, 0.0);
         let instance = SdfQuadInstance::from_command(&list.commands[0], 120).unwrap();
         assert_eq!(instance.gradient_data[0], 1.0);
         assert_eq!(instance.gradient_points, [0.0, 0.0, 1.0, 1.0]);

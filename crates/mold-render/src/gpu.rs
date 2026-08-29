@@ -58,6 +58,9 @@ pub struct WgpuBackend {
     glyph_pipeline: wgpu::RenderPipeline,
     glyph_layout: wgpu::BindGroupLayout,
     glyph_sampler: wgpu::Sampler,
+    blur_pipeline: wgpu::RenderPipeline,
+    blur_layout: wgpu::BindGroupLayout,
+    blur_sampler: wgpu::Sampler,
     glyph_buffer: wgpu::Buffer,
     glyph_capacity: usize,
     texture_buffer: wgpu::Buffer,
@@ -172,6 +175,7 @@ impl WgpuBackend {
         let clear_pipeline = create_pipeline(&device, &pipeline_layout, &clear_shader, false);
         let path_pipeline = create_path_pipeline(&device, &viewport_layout);
         let (glyph_pipeline, glyph_layout, glyph_sampler) = create_glyph_pipeline(&device);
+        let (blur_pipeline, blur_layout, blur_sampler) = create_blur_pipeline(&device);
         let instance_capacity = 1;
         let instance_buffer = create_instance_buffer(&device, instance_capacity);
         let glyph_capacity = 1;
@@ -207,6 +211,9 @@ impl WgpuBackend {
             glyph_pipeline,
             glyph_layout,
             glyph_sampler,
+            blur_pipeline,
+            blur_layout,
+            blur_sampler,
             glyph_buffer,
             glyph_capacity,
             texture_buffer,
@@ -397,13 +404,25 @@ impl RenderBackend for WgpuBackend {
         let mut layer_targets = Vec::with_capacity(list.layers.len());
         for layer in &list.layers {
             let (texture, view) = create_target(&self.device, self.width, self.height);
+            let blur = (layer.blur > 0.0).then(|| {
+                create_blur_chain(
+                    &self.device,
+                    &self.blur_layout,
+                    &self.blur_sampler,
+                    &view,
+                    self.width,
+                    self.height,
+                    (layer.blur * scale as f32 / 4.0).max(0.5),
+                )
+            });
+            let composite_view = blur.as_ref().map_or(&view, |chain| &chain.views[3]);
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("mold layer bind group"),
                 layout: &self.glyph_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
+                        resource: wgpu::BindingResource::TextureView(composite_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -436,6 +455,7 @@ impl RenderBackend for WgpuBackend {
                 view,
                 bind_group,
                 instance,
+                blur,
             });
         }
         let path_batch = create_path_batch(&mut self.paths, list, scale_120)
@@ -568,32 +588,54 @@ impl RenderBackend for WgpuBackend {
         };
         for layer_index in (0..list.layers.len()).rev() {
             let layer = &list.layers[layer_index];
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("mold subtree layer"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &layer_targets[layer_index].view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            let mut command_index = layer.commands.start;
-            while command_index < layer.commands.end {
-                if let Some(child) = child_layers
-                    .get(&(Some(layer_index), command_index))
-                    .copied()
-                {
-                    draw_layer!(pass, child, full_damage);
-                    command_index = list.layers[child].commands.end.max(command_index + 1);
-                } else {
-                    if command_layers[command_index] == Some(layer_index) {
-                        draw_command!(pass, command_index, full_damage);
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("mold subtree layer"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &layer_targets[layer_index].view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                let mut command_index = layer.commands.start;
+                while command_index < layer.commands.end {
+                    if let Some(child) = child_layers
+                        .get(&(Some(layer_index), command_index))
+                        .copied()
+                    {
+                        draw_layer!(pass, child, full_damage);
+                        command_index = list.layers[child].commands.end.max(command_index + 1);
+                    } else {
+                        if command_layers[command_index] == Some(layer_index) {
+                            draw_command!(pass, command_index, full_damage);
+                        }
+                        command_index += 1;
                     }
-                    command_index += 1;
+                }
+            }
+            if let Some(blur) = &layer_targets[layer_index].blur {
+                for (pass_index, blur_pass) in blur.passes.iter().enumerate() {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("mold dual-kawase pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &blur.views[pass_index],
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                    pass.set_pipeline(&self.blur_pipeline);
+                    pass.set_bind_group(0, &blur_pass.bind_group, &[]);
+                    pass.draw(0..3, 0..1);
                 }
             }
         }
@@ -937,6 +979,83 @@ struct GlyphBatch {
     bind_group: wgpu::BindGroup,
 }
 
+fn create_blur_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("mold blur layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("mold blur sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("mold blur pipeline layout"),
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("mold dual-kawase shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("blur.wgsl").into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("mold dual-kawase pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, layout, sampler)
+}
+
 fn create_glyph_pipeline(
     device: &wgpu::Device,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
@@ -1067,6 +1186,18 @@ struct LayerTarget {
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     instance: u32,
+    blur: Option<BlurChain>,
+}
+
+struct BlurChain {
+    _textures: Vec<wgpu::Texture>,
+    views: Vec<wgpu::TextureView>,
+    passes: Vec<BlurPass>,
+}
+
+struct BlurPass {
+    _params: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1562,6 +1693,90 @@ fn create_target(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+fn create_blur_chain(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    source: &wgpu::TextureView,
+    width: u32,
+    height: u32,
+    offset: f32,
+) -> BlurChain {
+    let half = ((width / 2).max(1), (height / 2).max(1));
+    let quarter = ((width / 4).max(1), (height / 4).max(1));
+    let sizes = [half, quarter, half, (width.max(1), height.max(1))];
+    let mut textures = Vec::with_capacity(4);
+    let mut views = Vec::with_capacity(4);
+    for (target_width, target_height) in sizes {
+        let (texture, view) = create_target(device, target_width, target_height);
+        textures.push(texture);
+        views.push(view);
+    }
+    let sources = [source, &views[0], &views[1], &views[2]];
+    let source_sizes = [(width.max(1), height.max(1)), half, quarter, half];
+    let mut passes = Vec::with_capacity(4);
+    for index in 0..4 {
+        passes.push(create_blur_pass(
+            device,
+            layout,
+            sampler,
+            sources[index],
+            source_sizes[index],
+            offset,
+            if index < 2 { 0.0 } else { 1.0 },
+        ));
+    }
+    BlurChain {
+        _textures: textures,
+        views,
+        passes,
+    }
+}
+
+fn create_blur_pass(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    source: &wgpu::TextureView,
+    source_size: (u32, u32),
+    offset: f32,
+    mode: f32,
+) -> BlurPass {
+    let params = [
+        1.0 / source_size.0.max(1) as f32,
+        1.0 / source_size.1.max(1) as f32,
+        offset,
+        mode,
+    ];
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("mold blur parameters"),
+        contents: bytemuck::cast_slice(&params),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("mold blur bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(source),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer.as_entire_binding(),
+            },
+        ],
+    });
+    BlurPass {
+        _params: buffer,
+        bind_group,
+    }
 }
 
 struct SurfaceState {

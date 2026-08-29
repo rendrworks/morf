@@ -89,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands: 0..3,
             parent: None,
             opacity: 0.8,
+            blur: 6.0,
             bounds: Geometry {
                 x: 0.0,
                 y: 0.0,
