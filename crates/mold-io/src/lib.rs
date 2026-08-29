@@ -40,6 +40,15 @@ pub struct Process {
     exit_reported: bool,
 }
 
+/// Native process launch settings without shell interpretation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProcessConfig {
+    pub command: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    pub clear_environment: bool,
+    pub working_directory: Option<PathBuf>,
+}
+
 impl Process {
     /// Spawns a child without invoking a shell.
     pub fn spawn<I, S>(program: impl AsRef<std::ffi::OsStr>, args: I) -> io::Result<Self>
@@ -47,8 +56,32 @@ impl Process {
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
     {
-        let mut child = Command::new(program)
-            .args(args)
+        let mut command = Command::new(program);
+        command.args(args);
+        Self::spawn_command(&mut command)
+    }
+
+    pub fn spawn_config(config: &ProcessConfig) -> io::Result<Self> {
+        let (program, args) = config.command.split_first().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "process command cannot be empty",
+            )
+        })?;
+        let mut command = Command::new(program);
+        command.args(args);
+        if config.clear_environment {
+            command.env_clear();
+        }
+        command.envs(&config.environment);
+        if let Some(directory) = &config.working_directory {
+            command.current_dir(directory);
+        }
+        Self::spawn_command(&mut command)
+    }
+
+    fn spawn_command(command: &mut Command) -> io::Result<Self> {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -78,6 +111,25 @@ impl Process {
     /// Closes the child's standard input.
     pub fn close_stdin(&mut self) {
         self.stdin = None;
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn signal(&self, signal: i32) -> io::Result<()> {
+        if !(1..=64).contains(&signal) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "signal must be 1..64",
+            ));
+        }
+        let result = unsafe { libc::kill(self.child.id() as i32, signal) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
     }
 
     /// Waits up to the supplied duration for output or process exit.
@@ -1573,6 +1625,37 @@ mod tests {
         assert!(status.success());
         assert_eq!(stdout, b"out");
         assert_eq!(stderr, b"err");
+    }
+
+    #[test]
+    fn process_config_applies_directory_and_environment() {
+        let directory = std::env::temp_dir();
+        let config = ProcessConfig {
+            command: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf '%s:%s' \"$PWD\" \"$MOLD_PROCESS_TEST\"".into(),
+            ],
+            environment: BTreeMap::from([("MOLD_PROCESS_TEST".into(), "ok".into())]),
+            clear_environment: false,
+            working_directory: Some(directory.clone()),
+        };
+        let mut process = Process::spawn_config(&config).unwrap();
+        let mut stdout = Vec::new();
+        loop {
+            match process.next_event(Duration::from_secs(1)).unwrap() {
+                Some(ProcessEvent::Stdout(bytes)) => stdout.extend(bytes),
+                Some(ProcessEvent::Exit(status)) => {
+                    assert!(status.success());
+                    break;
+                }
+                Some(ProcessEvent::Stderr(_)) | None => {}
+            }
+        }
+        assert_eq!(
+            String::from_utf8(stdout).unwrap(),
+            format!("{}:ok", directory.display())
+        );
     }
 
     #[test]
