@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 use std::mem;
@@ -5,6 +6,7 @@ use std::mem;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
+use mold_image::ImageCache;
 use mold_layout::TextMeasurer;
 use mold_text::{RasterContent, TextSystem};
 
@@ -52,6 +54,10 @@ pub struct WgpuBackend {
     glyph_sampler: wgpu::Sampler,
     glyph_buffer: wgpu::Buffer,
     glyph_capacity: usize,
+    texture_buffer: wgpu::Buffer,
+    texture_capacity: usize,
+    images: ImageCache,
+    image_textures: HashMap<TextureKey, TextureImage>,
     text: TextSystem,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -157,6 +163,12 @@ impl WgpuBackend {
         let instance_buffer = create_instance_buffer(&device, instance_capacity);
         let glyph_capacity = 1;
         let glyph_buffer = create_glyph_buffer(&device, glyph_capacity);
+        let texture_capacity = 1;
+        let texture_buffer = create_instance_buffer_for::<GlyphInstance>(
+            &device,
+            texture_capacity,
+            "mold texture instances",
+        );
         let (texture, view) = create_target(&device, width, height);
         let surface = surface
             .map(|surface| create_surface_state(&device, &adapter, surface, &view, width, height))
@@ -176,6 +188,10 @@ impl WgpuBackend {
             glyph_sampler,
             glyph_buffer,
             glyph_capacity,
+            texture_buffer,
+            texture_capacity,
+            images: ImageCache::default(),
+            image_textures: HashMap::new(),
             text: TextSystem::new(),
             texture,
             view,
@@ -242,6 +258,18 @@ impl WgpuBackend {
         self.glyph_capacity = required.next_power_of_two();
         self.glyph_buffer = create_glyph_buffer(&self.device, self.glyph_capacity);
     }
+
+    fn ensure_textures(&mut self, required: usize) {
+        if required <= self.texture_capacity {
+            return;
+        }
+        self.texture_capacity = required.next_power_of_two();
+        self.texture_buffer = create_instance_buffer_for::<GlyphInstance>(
+            &self.device,
+            self.texture_capacity,
+            "mold texture instances",
+        );
+    }
 }
 
 impl RenderBackend for WgpuBackend {
@@ -270,7 +298,21 @@ impl RenderBackend for WgpuBackend {
             list,
             scale_120,
         );
+        let texture_batch = create_texture_batch(
+            TextureBatchContext {
+                device: &self.device,
+                queue: &self.queue,
+                layout: &self.glyph_layout,
+                sampler: &self.glyph_sampler,
+                target_size: (self.width, self.height),
+            },
+            &mut self.images,
+            &mut self.image_textures,
+            list,
+            scale_120,
+        );
         self.ensure_instances(instances.len().max(1));
+        self.ensure_textures(texture_batch.instances.len().max(1));
         self.ensure_glyphs(
             glyph_batch
                 .as_ref()
@@ -285,6 +327,13 @@ impl RenderBackend for WgpuBackend {
                 &self.glyph_buffer,
                 0,
                 bytemuck::cast_slice(&batch.instances),
+            );
+        }
+        if !texture_batch.instances.is_empty() {
+            self.queue.write_buffer(
+                &self.texture_buffer,
+                0,
+                bytemuck::cast_slice(&texture_batch.instances),
             );
         }
         let mut encoder = self
@@ -319,6 +368,14 @@ impl RenderBackend for WgpuBackend {
                     pass.set_pipeline(&self.pipeline);
                     pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
                     pass.draw(0..6, 0..instances.len() as u32);
+                }
+                if !texture_batch.instances.is_empty() {
+                    pass.set_pipeline(&self.glyph_pipeline);
+                    pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
+                    for (index, image) in texture_batch.images.iter().enumerate() {
+                        pass.set_bind_group(0, &image.bind_group, &[]);
+                        pass.draw(0..6, index as u32..index as u32 + 1);
+                    }
                 }
                 if let Some(batch) = &glyph_batch {
                     pass.set_pipeline(&self.glyph_pipeline);
@@ -517,12 +574,185 @@ fn create_glyph_pipeline(
 }
 
 fn create_glyph_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    create_instance_buffer_for::<GlyphInstance>(device, capacity, "mold glyph instances")
+}
+
+fn create_instance_buffer_for<T>(
+    device: &wgpu::Device,
+    capacity: usize,
+    label: &'static str,
+) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("mold glyph instances"),
-        size: (capacity * mem::size_of::<GlyphInstance>()) as u64,
+        label: Some(label),
+        size: (capacity * mem::size_of::<T>()) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+#[derive(Clone)]
+struct TextureImage {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct TextureKey {
+    source: String,
+    theme: Option<String>,
+    width: u32,
+    height: u32,
+    scale_120: u32,
+}
+
+#[derive(Default)]
+struct TextureBatch {
+    instances: Vec<GlyphInstance>,
+    images: Vec<TextureImage>,
+}
+
+type TextureBatchContext<'a> = GlyphBatchContext<'a>;
+
+fn create_texture_batch(
+    context: TextureBatchContext<'_>,
+    cache: &mut ImageCache,
+    textures: &mut HashMap<TextureKey, TextureImage>,
+    list: &DrawList,
+    scale_120: u32,
+) -> TextureBatch {
+    let mut batch = TextureBatch::default();
+    let scale = scale_120.max(1) as f64 / 120.0;
+    for command in &list.commands {
+        let DrawCommand::Texture {
+            bounds,
+            source,
+            icon_theme,
+            opacity,
+            ..
+        } = command
+        else {
+            continue;
+        };
+        if source.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
+            continue;
+        }
+        let logical_width = bounds.width.ceil().max(1.0) as u32;
+        let logical_height = bounds.height.ceil().max(1.0) as u32;
+        let key = TextureKey {
+            source: source.clone(),
+            theme: icon_theme.clone(),
+            width: logical_width,
+            height: logical_height,
+            scale_120,
+        };
+        if let Some(image) = textures.get(&key) {
+            push_texture_instance(
+                &mut batch,
+                image.clone(),
+                *bounds,
+                *opacity,
+                context.target_size,
+                scale,
+            );
+            continue;
+        }
+        let loaded = match icon_theme {
+            Some(theme) => {
+                cache.load_icon(source, theme, logical_width.max(logical_height), scale_120)
+            }
+            None => cache.load(source, logical_width, logical_height, scale_120),
+        };
+        let Ok(image) = loaded else {
+            continue;
+        };
+        let texture = context.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mold image texture"),
+            size: wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        context.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(image.width * 4),
+                rows_per_image: Some(image.height),
+            },
+            wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = context
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mold image bind group"),
+                layout: context.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(context.sampler),
+                    },
+                ],
+            });
+        let (target_width, target_height) = context.target_size;
+        let texture_image = TextureImage {
+            _texture: texture,
+            bind_group,
+        };
+        textures.insert(key, texture_image.clone());
+        push_texture_instance(
+            &mut batch,
+            texture_image,
+            *bounds,
+            *opacity,
+            (target_width, target_height),
+            scale,
+        );
+    }
+    batch
+}
+
+fn push_texture_instance(
+    batch: &mut TextureBatch,
+    image: TextureImage,
+    bounds: mold_layout::Geometry,
+    opacity: f32,
+    target_size: (u32, u32),
+    scale: f64,
+) {
+    let (target_width, target_height) = target_size;
+    batch.instances.push(GlyphInstance {
+        bounds: [
+            (bounds.x * scale) as f32 / target_width as f32 * 2.0 - 1.0,
+            1.0 - (bounds.y * scale) as f32 / target_height as f32 * 2.0,
+            (bounds.width * scale) as f32 / target_width as f32 * 2.0,
+            -(bounds.height * scale) as f32 / target_height as f32 * 2.0,
+        ],
+        uv: [0.0, 0.0, 1.0, 1.0],
+        color: [1.0, 1.0, 1.0, opacity],
+    });
+    batch.images.push(image);
 }
 
 struct GlyphBatchContext<'a> {

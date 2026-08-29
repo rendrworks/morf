@@ -1295,6 +1295,8 @@ fn install_reactive_api(
             ("Item", Element::Item),
             ("Rect", Element::Rect),
             ("Text", Element::Text),
+            ("Image", Element::Image),
+            ("Icon", Element::Icon),
             ("MouseArea", Element::MouseArea),
             ("Row", Element::Row),
             ("Column", Element::Column),
@@ -3019,6 +3021,31 @@ mod tests {
             &SceneValue::String("12:01".to_owned())
         );
         assert_eq!(scene.number(children[1], "width").unwrap(), 20.0);
+    }
+
+    #[test]
+    fn lua_constructs_image_and_icon_elements() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "images.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    ui.Item {
+                        ui.Image { source = "/tmp/picture.png", width = 64, height = 32 },
+                        ui.Icon { name = "battery", theme = "hicolor", width = 24, height = 24 },
+                    }
+                "#,
+            )
+            .unwrap();
+
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+        assert_eq!(
+            runtime.scene().element(children[0]).unwrap(),
+            Element::Image
+        );
+        assert_eq!(runtime.scene().element(children[1]).unwrap(), Element::Icon);
     }
 
     #[test]

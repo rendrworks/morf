@@ -56,12 +56,25 @@ pub enum DrawCommand {
         /// Glyph colour after node opacity.
         color: Color,
     },
+    /// Rasterized image or theme icon.
+    Texture {
+        /// Source scene node.
+        node: NodeHandle,
+        /// Logical surface bounds.
+        bounds: Geometry,
+        /// Image path or icon name.
+        source: String,
+        /// Theme name for an icon command.
+        icon_theme: Option<String>,
+        /// Effective node opacity.
+        opacity: f32,
+    },
 }
 
 impl DrawCommand {
     fn node(&self) -> NodeHandle {
         match self {
-            Self::Quad { node, .. } | Self::Text { node, .. } => *node,
+            Self::Quad { node, .. } | Self::Text { node, .. } | Self::Texture { node, .. } => *node,
         }
     }
 
@@ -83,7 +96,7 @@ impl DrawCommand {
                 *shadow_offset_x,
                 *shadow_offset_y,
             ),
-            Self::Text { bounds, .. } => *bounds,
+            Self::Text { bounds, .. } | Self::Texture { bounds, .. } => *bounds,
         }
     }
 }
@@ -381,6 +394,20 @@ fn append_node(
             size: scene.number(node, "font_size")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
         }),
+        Element::Image => commands.push(DrawCommand::Texture {
+            node,
+            bounds,
+            source: scene.string_value(node, "source")?.to_owned(),
+            icon_theme: None,
+            opacity: opacity as f32,
+        }),
+        Element::Icon => commands.push(DrawCommand::Texture {
+            node,
+            bounds,
+            source: scene.string_value(node, "name")?.to_owned(),
+            icon_theme: Some(scene.string_value(node, "theme")?.to_owned()),
+            opacity: opacity as f32,
+        }),
         Element::Item
         | Element::MouseArea
         | Element::Row
@@ -558,6 +585,48 @@ mod tests {
 
         assert_eq!(list.commands[0].node(), first);
         assert_eq!(list.commands[1].node(), second);
+    }
+
+    #[test]
+    fn images_and_icons_emit_texture_commands() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let image = scene.create(Element::Image);
+        let icon = scene.create(Element::Icon);
+        scene
+            .assign(image, "source", "/tmp/wallpaper.webp")
+            .unwrap();
+        scene.assign(image, "width", 40.0).unwrap();
+        scene.assign(image, "height", 20.0).unwrap();
+        scene.assign(icon, "name", "network-wireless").unwrap();
+        scene.assign(icon, "theme", "Adwaita").unwrap();
+        scene.assign(icon, "width", 16.0).unwrap();
+        scene.assign(icon, "height", 16.0).unwrap();
+        scene.reparent(image, Some(root)).unwrap();
+        scene.reparent(icon, Some(root)).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 100.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+
+        assert!(matches!(
+            &list.commands[0],
+            DrawCommand::Texture { source, icon_theme: None, .. }
+                if source == "/tmp/wallpaper.webp"
+        ));
+        assert!(matches!(
+            &list.commands[1],
+            DrawCommand::Texture { source, icon_theme: Some(theme), .. }
+                if source == "network-wireless" && theme == "Adwaita"
+        ));
     }
 
     #[test]

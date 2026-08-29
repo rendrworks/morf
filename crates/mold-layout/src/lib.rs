@@ -220,6 +220,10 @@ impl Layout {
                 scene.number(node, "font_size")?,
                 positive(scene.number(node, "width")?),
             ),
+            Element::Image | Element::Icon => Size {
+                width: scene.number(node, "source_width")?,
+                height: scene.number(node, "source_height")?,
+            },
             Element::Row | Element::RowLayout => Size {
                 width: sum_with_spacing(&child_sizes, scene.number(node, "spacing")?, true),
                 height: child_sizes

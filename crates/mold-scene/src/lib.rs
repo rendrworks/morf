@@ -31,6 +31,10 @@ pub enum Element {
     Rect,
     /// Shaped text primitive.
     Text,
+    /// Raster or SVG image primitive.
+    Image,
+    /// XDG icon-theme image primitive.
+    Icon,
     /// Pointer and focus event target with no visual output.
     MouseArea,
     /// Sequential horizontal positioner.
@@ -55,6 +59,8 @@ impl Element {
             Self::Item => "Item",
             Self::Rect => "Rect",
             Self::Text => "Text",
+            Self::Image => "Image",
+            Self::Icon => "Icon",
             Self::MouseArea => "MouseArea",
             Self::Row => "Row",
             Self::Column => "Column",
@@ -1174,6 +1180,22 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("font_size", 16.0),
                 string("font_family", "sans-serif"),
                 boolean("wrap", false),
+            ]);
+        }
+        Element::Image => {
+            properties.extend([
+                string("source", ""),
+                string("fill_mode", "stretch"),
+                number("source_width", 0.0),
+                number("source_height", 0.0),
+            ]);
+        }
+        Element::Icon => {
+            properties.extend([
+                string("name", ""),
+                string("theme", "hicolor"),
+                number("source_width", 0.0),
+                number("source_height", 0.0),
             ]);
         }
         Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
