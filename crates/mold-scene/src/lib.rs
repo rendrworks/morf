@@ -501,6 +501,23 @@ impl Scene {
             .contains_key(property))
     }
 
+    /// Reports whether a property currently advances on animation ticks.
+    pub fn is_animating(&self, node: NodeHandle, property: &str) -> Result<bool, SceneError> {
+        let id = self.live(node)?;
+        let (name, _) = self.nodes[id]
+            .properties
+            .get_key_value(property)
+            .ok_or_else(|| SceneError::UnknownProperty {
+                element: self.nodes[id].element.name(),
+                property: property.to_owned(),
+            })?;
+        let key = PropertyKey {
+            node: id,
+            property: name,
+        };
+        Ok(self.animations.contains_key(&key) || self.physics.contains_key(&key))
+    }
+
     /// Appends a node to a new parent while preserving the child's identity.
     pub fn reparent(
         &mut self,

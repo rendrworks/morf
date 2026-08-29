@@ -93,6 +93,11 @@ pub struct EffectContext<'a, T> {
 }
 
 impl<T: Clone + PartialEq + 'static> EffectContext<'_, T> {
+    /// Allocates a signal while an external effect captures dependencies.
+    pub fn signal(&mut self, name: impl Into<String>, value: T) -> SignalId {
+        self.graph.signal(name, value)
+    }
+
     /// Reads a value and captures the dependency edge.
     pub fn get(&mut self, signal: SignalId) -> Result<T, GraphError> {
         if let Some((_, value)) = self.writes.iter().rev().find(|(id, _)| *id == signal) {

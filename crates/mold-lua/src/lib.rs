@@ -356,27 +356,39 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().logs)
     }
 
-    /// Returns the current Lua effect dependency graph as log lines.
+    /// Returns bindings that currently read frame-varying scene properties.
     pub fn binding_dependencies(&self) -> Vec<String> {
-        self.reactive
-            .borrow()
-            .graph
-            .as_ref()
-            .map(|graph| {
-                graph
-                    .dependencies()
+        let state = self.reactive.borrow();
+        let Some(graph) = state.graph.as_ref() else {
+            return Vec::new();
+        };
+        graph
+            .dependencies()
+            .into_iter()
+            .filter_map(|entry| {
+                let mut animated = entry
+                    .signals
                     .into_iter()
-                    .map(|entry| {
-                        format!(
-                            "depth {}: {} <- {}",
-                            entry.depth,
-                            entry.effect,
-                            entry.signals.join(", ")
-                        )
+                    .filter(|signal| {
+                        state
+                            .current_property_names
+                            .get(signal)
+                            .is_some_and(|(node, property)| {
+                                state.scene.is_animating(*node, property).unwrap_or(false)
+                            })
                     })
-                    .collect()
+                    .collect::<Vec<_>>();
+                animated.sort();
+                (!animated.is_empty()).then(|| {
+                    format!(
+                        "depth {}: {} <- {} (1 evaluation/frame)",
+                        entry.depth,
+                        entry.effect,
+                        animated.join(", ")
+                    )
+                })
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// Captures values explicitly marked for transfer to a replacement runtime.
@@ -417,13 +429,25 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().parent_transitions)
     }
 
-    /// Advances the pure-Rust animation driver.
+    /// Advances animations and recomputes bindings that read current values.
     pub fn tick_animations(&mut self, delta: Duration) -> Result<AnimationFrame, Error> {
-        self.reactive
+        let frame = self
+            .reactive
             .borrow_mut()
             .scene
             .tick_animations(delta)
-            .map_err(|error| Error::Runtime(error.to_string()))
+            .map_err(|error| Error::Runtime(error.to_string()))?;
+        {
+            let mut state = self.reactive.borrow_mut();
+            for change in &frame.changes {
+                bump_property_signal(&mut state, change.node, change.property, false)
+                    .map_err(Error::Runtime)?;
+            }
+        }
+        self.lua
+            .enter(|ctx| flush_reactive(&self.reactive, ctx, self.limits))
+            .map_err(Error::Runtime)?;
+        Ok(frame)
     }
 
     /// Updates the clock service signal and recomputes dependent Lua bindings.
@@ -874,7 +898,12 @@ impl Runtime {
                     timers.push(state.timers[index].callback.clone());
                     if !state.timers[index].repeat {
                         if let Some(node) = state.timers[index].node {
-                            let _ = state.scene.assign(node, "running", false);
+                            let _ = assign_scene_property(
+                                &mut state,
+                                node,
+                                "running",
+                                SceneValue::Bool(false),
+                            );
                         }
                         state.timers.swap_remove(index);
                         continue;
@@ -1248,6 +1277,7 @@ struct StateSet {
 #[derive(Default)]
 struct Capture {
     reads: HashSet<SignalId>,
+    property_reads: HashSet<(NodeHandle, String, bool)>,
     writes: Vec<(SignalId, ScriptValue)>,
 }
 
@@ -1255,6 +1285,9 @@ struct ReactiveState {
     graph: Option<Graph<ScriptValue>>,
     values: HashMap<SignalId, ScriptValue>,
     signals: Vec<SignalId>,
+    property_signals: HashMap<(NodeHandle, String, bool), SignalId>,
+    current_property_names: HashMap<String, (NodeHandle, String)>,
+    property_revision: i64,
     reload_seed: HashMap<String, ScriptValue>,
     reloadable: HashMap<String, SignalId>,
     effects: HashMap<u64, LuaEffect>,
@@ -1301,6 +1334,9 @@ impl ReactiveState {
             graph: Some(graph),
             values,
             signals: vec![clock],
+            property_signals: HashMap::new(),
+            current_property_names: HashMap::new(),
+            property_revision: 0,
             reload_seed: HashMap::new(),
             reloadable: HashMap::new(),
             effects: HashMap::new(),
@@ -1336,6 +1372,165 @@ impl ReactiveState {
             session_unlock_requested: false,
         }
     }
+}
+
+fn create_node(state: &Rc<RefCell<ReactiveState>>, element: Element) -> NodeHandle {
+    state.borrow_mut().scene.create(element)
+}
+
+fn bump_property_signal(
+    state: &mut ReactiveState,
+    node: NodeHandle,
+    property: &str,
+    target: bool,
+) -> Result<(), String> {
+    let Some(signal) = state
+        .property_signals
+        .get(&(node, property.to_owned(), target))
+        .copied()
+    else {
+        return Ok(());
+    };
+    state.property_revision = state.property_revision.wrapping_add(1);
+    let value = ScriptValue::Integer(state.property_revision);
+    if let Some(active) = &mut state.active {
+        active.writes.push((signal, value.clone()));
+    } else {
+        state
+            .graph
+            .as_mut()
+            .ok_or_else(|| "reactive graph is already running".to_owned())?
+            .write(signal, value.clone())
+            .map_err(|error| error.to_string())?;
+    }
+    state.values.insert(signal, value);
+    Ok(())
+}
+
+fn assign_scene_property(
+    state: &mut ReactiveState,
+    node: NodeHandle,
+    property: &str,
+    value: SceneValue,
+) -> Result<(), String> {
+    let old_current = state
+        .scene
+        .current(node, property)
+        .map_err(|error| error.to_string())?
+        .clone();
+    let old_target = state
+        .scene
+        .target(node, property)
+        .map_err(|error| error.to_string())?
+        .clone();
+    state
+        .scene
+        .assign(node, property, value)
+        .map_err(|error| error.to_string())?;
+    let current_changed = state
+        .scene
+        .current(node, property)
+        .map_err(|error| error.to_string())?
+        != &old_current;
+    let target_changed = state
+        .scene
+        .target(node, property)
+        .map_err(|error| error.to_string())?
+        != &old_target;
+    if current_changed {
+        bump_property_signal(state, node, property, false)?;
+    }
+    if target_changed {
+        bump_property_signal(state, node, property, true)?;
+    }
+    Ok(())
+}
+
+fn animate_scene_property(
+    state: &mut ReactiveState,
+    node: NodeHandle,
+    property: &str,
+    from: SceneValue,
+    to: SceneValue,
+    behavior: Behavior,
+) -> Result<(), String> {
+    let old_current = state
+        .scene
+        .current(node, property)
+        .map_err(|error| error.to_string())?
+        .clone();
+    let old_target = state
+        .scene
+        .target(node, property)
+        .map_err(|error| error.to_string())?
+        .clone();
+    state
+        .scene
+        .animate_from(node, property, from, to, behavior)
+        .map_err(|error| error.to_string())?;
+    if state
+        .scene
+        .current(node, property)
+        .map_err(|error| error.to_string())?
+        != &old_current
+    {
+        bump_property_signal(state, node, property, false)?;
+    }
+    if state
+        .scene
+        .target(node, property)
+        .map_err(|error| error.to_string())?
+        != &old_target
+    {
+        bump_property_signal(state, node, property, true)?;
+    }
+    Ok(())
+}
+
+fn node_userdata<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    handle: NodeHandle,
+) -> UserData<'gc> {
+    let index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (node, key): (UserRef<NodeToken>, String) = stack.consume(ctx)?;
+        let (property, target) = key
+            .strip_suffix("_target")
+            .map_or((key.as_str(), false), |property| (property, true));
+        let value = {
+            let mut state = state.borrow_mut();
+            if !state
+                .scene
+                .has_property(node.handle, property)
+                .map_err(|error| HostError(error.to_string()))?
+            {
+                return Err(HostError(format!("unknown node property `{key}`")).into());
+            }
+            let property_key = (node.handle, property.to_owned(), target);
+            let signal = state.property_signals.get(&property_key).copied();
+            if let Some(active) = &mut state.active {
+                if let Some(signal) = signal {
+                    active.reads.insert(signal);
+                } else {
+                    active.property_reads.insert(property_key);
+                }
+            }
+            if target {
+                state.scene.target(node.handle, property)
+            } else {
+                state.scene.current(node.handle, property)
+            }
+            .map_err(|error| HostError(error.to_string()))?
+            .clone()
+        };
+        stack.replace(ctx, scene_to_lua(ctx, &value).map_err(HostError)?);
+        Ok(CallbackReturn::Return)
+    });
+    let metatable = Table::new(&ctx);
+    metatable.set_field(ctx, "__index", index);
+    let userdata = UserData::new_static(&ctx, NodeToken { handle });
+    userdata.set_metatable(ctx, Some(metatable));
+    userdata
 }
 
 #[derive(Debug)]
@@ -3221,9 +3416,9 @@ fn element_constructor<'gc>(
 ) -> Callback<'gc> {
     Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let properties: Table = stack.consume(ctx)?;
-        let node = state.borrow_mut().scene.create(element);
+        let node = create_node(&state, element);
         configure_element(&state, ctx, limits, node, properties).map_err(HostError)?;
-        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
         Ok(CallbackReturn::Return)
     })
 }
@@ -3248,7 +3443,7 @@ fn loader_constructor<'gc>(
                 clean.set(ctx, key, value)?;
             }
         }
-        let node = state.borrow_mut().scene.create(Element::Loader);
+        let node = create_node(&state, Element::Loader);
         configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
         if let Some(source) = source.clone() {
             state.borrow_mut().loader_factories.insert(node, source);
@@ -3268,7 +3463,7 @@ fn loader_constructor<'gc>(
                 .map_err(|error| HostError(error.to_string()))?;
             state.borrow_mut().loaded_loaders.insert(node);
         }
-        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
         Ok(CallbackReturn::Return)
     })
 }
@@ -3293,7 +3488,7 @@ fn timer_constructor<'gc>(
                 clean.set(ctx, key, value)?;
             }
         }
-        let node = state.borrow_mut().scene.create(Element::Timer);
+        let node = create_node(&state, Element::Timer);
         configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
         let (interval, repeat, running) = {
             let state = state.borrow();
@@ -3331,7 +3526,7 @@ fn timer_constructor<'gc>(
         } else if let Some(callback) = callback {
             state.borrow_mut().timer_callbacks.insert(node, callback);
         }
-        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
         Ok(CallbackReturn::Return)
     })
 }
@@ -3381,7 +3576,7 @@ fn view_constructor<'gc>(
         if virtualized {
             clean.set_field(ctx, "clip", true);
         }
-        let node = state.borrow_mut().scene.create(Element::Item);
+        let node = create_node(&state, Element::Item);
         configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
         let model_handle = Rc::clone(&model.model);
         let model = model_handle.borrow();
@@ -3476,7 +3671,7 @@ fn view_constructor<'gc>(
                 },
             );
         }
-        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
         Ok(CallbackReturn::Return)
     })
 }
@@ -3742,11 +3937,7 @@ fn configure_element<'gc>(
             register_property_binding(state, ctx, limits, node, property, closure);
         } else {
             let value = lua_to_scene(ctx, value, 0)?;
-            state
-                .borrow_mut()
-                .scene
-                .assign(node, &property, value)
-                .map_err(|error| error.to_string())?;
+            assign_scene_property(&mut state.borrow_mut(), node, &property, value)?;
         }
     }
     children.sort_by_key(|(index, _)| *index);
@@ -4227,15 +4418,16 @@ fn apply_state(
                 .current(node, &property)
                 .map_err(|error| error.to_string())?
                 .clone();
-            state
-                .scene
-                .animate_from(node, &property, from, value, transition.unwrap())
-                .map_err(|error| error.to_string())?;
+            animate_scene_property(
+                &mut state,
+                node,
+                &property,
+                from,
+                value,
+                transition.unwrap(),
+            )?;
         } else {
-            state
-                .scene
-                .assign(node, &property, value)
-                .map_err(|error| error.to_string())?;
+            assign_scene_property(&mut state, node, &property, value)?;
         }
     }
     if old != name && (definition.parent.is_some() || definition.anchors.is_some()) {
@@ -4246,10 +4438,7 @@ fn apply_state(
         if let Some(parent) = parent {
             if old.is_empty() && transition.is_none() {
                 if let Some(anchors) = definition.anchors {
-                    state
-                        .scene
-                        .assign(node, "anchors", SceneValue::Map(anchors))
-                        .map_err(|error| error.to_string())?;
+                    assign_scene_property(&mut state, node, "anchors", SceneValue::Map(anchors))?;
                 }
                 state
                     .scene
@@ -4420,7 +4609,41 @@ fn evaluate_effect(
     } else {
         Ok(())
     };
+    let state_result = state_result.and_then(|()| {
+        if let (Ok(Some(value)), Some(sink)) = (&result, lua_effect.sink) {
+            match sink {
+                EffectSink::Property(sink) => assign_scene_property(
+                    &mut state.borrow_mut(),
+                    sink.node,
+                    &sink.property,
+                    value.to_scene(),
+                ),
+                EffectSink::State(_) => Ok(()),
+            }
+        } else {
+            Ok(())
+        }
+    });
     let capture = state.borrow_mut().active.take().unwrap_or_default();
+    for (node, property, target) in capture.property_reads {
+        let key = (node, property.clone(), target);
+        let signal = if let Some(signal) = state.borrow().property_signals.get(&key).copied() {
+            signal
+        } else {
+            let name = format!("{node:?}.{property}{}", if target { "_target" } else { "" });
+            let value = ScriptValue::Integer(state.borrow().property_revision);
+            let signal = effect.signal(name.clone(), value.clone());
+            let mut state = state.borrow_mut();
+            state.property_signals.insert(key, signal);
+            if !target {
+                state.current_property_names.insert(name, (node, property));
+            }
+            state.values.insert(signal, value);
+            state.signals.push(signal);
+            signal
+        };
+        effect.get(signal).map_err(|error| error.to_string())?;
+    }
     for signal in capture.reads {
         effect.get(signal).map_err(|error| error.to_string())?;
     }
@@ -4433,16 +4656,6 @@ fn evaluate_effect(
         }
     }
     state_result?;
-    if let (Ok(Some(value)), Some(sink)) = (&result, lua_effect.sink) {
-        match sink {
-            EffectSink::Property(sink) => state
-                .borrow_mut()
-                .scene
-                .assign(sink.node, &sink.property, value.to_scene())
-                .map_err(|error| error.to_string())?,
-            EffectSink::State(_) => {}
-        }
-    }
     result.map(|_| ())
 }
 
@@ -5169,7 +5382,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_dependencies_report_lua_effect_reads() {
+    fn binding_dependencies_ignore_settled_signals() {
         let mut runtime = Runtime::default();
         runtime
             .execute(
@@ -5184,10 +5397,44 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(
-            runtime.binding_dependencies(),
-            ["depth 0: source binding <- source"]
-        );
+        assert!(runtime.binding_dependencies().is_empty());
+    }
+
+    #[test]
+    fn binding_dependencies_flag_animated_property_reads() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "animated-dependency.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local width = mold.signal("width", 0)
+                    local source = ui.Rect {
+                        behavior = {
+                            width = { duration = 200, easing = "linear" },
+                        },
+                        width = function() return width:get() end,
+                    }
+                    ui.Item {
+                        height = function() return source.width end,
+                        x = function() return source.width_target end,
+                    }
+                    local ok, err = width:set(100)
+                    assert(ok, err)
+                "#,
+            )
+            .unwrap();
+
+        let diagnostics = runtime.binding_dependencies();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains(".height <- "));
+        assert!(diagnostics[0].contains(".width (1 evaluation/frame)"));
+        let runs = runtime.effect_runs();
+
+        runtime.tick_animations(Duration::from_millis(100)).unwrap();
+
+        assert_eq!(runtime.effect_runs(), runs + 1);
     }
 
     #[test]
