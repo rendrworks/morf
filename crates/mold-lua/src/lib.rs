@@ -14,7 +14,8 @@ use luna::{
 use mold_io::{Bus, DbusProxy, DbusValue};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
-    AnimationFrame, Behavior, Easing, Element, NodeHandle, Physics, Scene, Value as SceneValue,
+    AnimationFrame, Behavior, Easing, Element, ListModel, NodeHandle, Physics, Scene,
+    Value as SceneValue, ViewTransition, VirtualList,
 };
 use mold_services::PipeWire;
 
@@ -317,6 +318,15 @@ struct PipeWireToken {
     service: PipeWire,
 }
 
+struct ListModelToken {
+    model: Rc<RefCell<ListModel>>,
+}
+
+struct VirtualListToken {
+    model: Rc<RefCell<ListModel>>,
+    view: RefCell<VirtualList>,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -539,6 +549,166 @@ fn install_reactive_api(
         )
         .expect("embedded variants module is valid");
         mold.set_field(ctx, "variants", variants);
+
+        let model_len = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let model: UserRef<ListModelToken> = stack.consume(ctx)?;
+            stack.replace(ctx, model.model.borrow().len() as i64);
+            Ok(CallbackReturn::Return)
+        });
+        let model_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (model, index): (UserRef<ListModelToken>, i64) = stack.consume(ctx)?;
+            let index = lua_index(index)?;
+            let model = model.model.borrow();
+            let value = model
+                .get(index)
+                .map(|(_, value)| scene_to_lua(ctx, value))
+                .transpose()
+                .map_err(HostError)?
+                .unwrap_or(LuaValue::Nil);
+            stack.replace(ctx, value);
+            Ok(CallbackReturn::Return)
+        });
+        let model_insert = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (model, index, value): (UserRef<ListModelToken>, i64, LuaValue) =
+                stack.consume(ctx)?;
+            let index = lua_insert_index(index, model.model.borrow().len())?;
+            let value = lua_to_scene(ctx, value, 0).map_err(HostError)?;
+            if model.model.borrow_mut().insert(index, value).is_none() {
+                return Err(HostError("list-model insert index is out of range".into()).into());
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let model_remove = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (model, index): (UserRef<ListModelToken>, i64) = stack.consume(ctx)?;
+            let index = lua_index(index)?;
+            let value = model
+                .model
+                .borrow_mut()
+                .remove(index)
+                .map(|value| scene_to_lua(ctx, &value))
+                .transpose()
+                .map_err(HostError)?
+                .unwrap_or(LuaValue::Nil);
+            stack.replace(ctx, value);
+            Ok(CallbackReturn::Return)
+        });
+        let model_move = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (model, from, to): (UserRef<ListModelToken>, i64, i64) = stack.consume(ctx)?;
+            let from = lua_index(from)?;
+            let to = lua_index(to)?;
+            if !model.model.borrow_mut().move_item(from, to) {
+                return Err(HostError("list-model move index is out of range".into()).into());
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let model_set = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (model, index, value): (UserRef<ListModelToken>, i64, LuaValue) =
+                stack.consume(ctx)?;
+            let index = lua_index(index)?;
+            let value = lua_to_scene(ctx, value, 0).map_err(HostError)?;
+            if !model.model.borrow_mut().set(index, value) {
+                return Err(HostError("list-model update index is out of range".into()).into());
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let model_methods = Table::new(&ctx);
+        model_methods.set_field(ctx, "len", model_len);
+        model_methods.set_field(ctx, "get", model_get);
+        model_methods.set_field(ctx, "insert", model_insert);
+        model_methods.set_field(ctx, "remove", model_remove);
+        model_methods.set_field(ctx, "move", model_move);
+        model_methods.set_field(ctx, "set", model_set);
+        let model_metatable = Table::new(&ctx);
+        model_metatable.set_field(ctx, "__index", model_methods);
+        let model_metatable = ctx.stash(model_metatable);
+        let list_model = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let items: Table = stack.consume(ctx)?;
+            let value = lua_to_scene(ctx, LuaValue::Table(items), 0).map_err(HostError)?;
+            let SceneValue::List(values) = value else {
+                return Err(HostError("list-model needs an array table".into()).into());
+            };
+            let userdata = UserData::new_static(
+                &ctx,
+                ListModelToken {
+                    model: Rc::new(RefCell::new(ListModel::new(values))),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&model_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "list_model", list_model);
+
+        let virtual_visible = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let view: UserRef<VirtualListToken> = stack.consume(ctx)?;
+            let model = view.model.borrow();
+            let range = view.view.borrow().visible_range(model.len());
+            let items = Table::new(&ctx);
+            for (position, index) in range.enumerate() {
+                let value = Table::new(&ctx);
+                value.set_field(ctx, "index", index as i64 + 1);
+                if let Some((_, item)) = model.get(index) {
+                    value.set_field(ctx, "item", scene_to_lua(ctx, item).map_err(HostError)?);
+                }
+                items
+                    .set(ctx, position as i64 + 1, value)
+                    .expect("virtual-list table accepts integer keys");
+            }
+            stack.replace(ctx, items);
+            Ok(CallbackReturn::Return)
+        });
+        let virtual_offset = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (view, offset): (UserRef<VirtualListToken>, f64) = stack.consume(ctx)?;
+            view.view.borrow_mut().set_offset(offset);
+            Ok(CallbackReturn::Return)
+        });
+        let virtual_sync = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let view: UserRef<VirtualListToken> = stack.consume(ctx)?;
+            let changes = view.model.borrow_mut().take_changes();
+            let transitions = view.view.borrow_mut().sync(&view.model.borrow(), &changes);
+            let result = Table::new(&ctx);
+            for (index, transition) in transitions.into_iter().enumerate() {
+                result
+                    .set(
+                        ctx,
+                        index as i64 + 1,
+                        view_transition_to_lua(ctx, transition),
+                    )
+                    .expect("view-transition table accepts integer keys");
+            }
+            stack.replace(ctx, result);
+            Ok(CallbackReturn::Return)
+        });
+        let virtual_methods = Table::new(&ctx);
+        virtual_methods.set_field(ctx, "visible", virtual_visible);
+        virtual_methods.set_field(ctx, "set_offset", virtual_offset);
+        virtual_methods.set_field(ctx, "sync", virtual_sync);
+        let virtual_metatable = Table::new(&ctx);
+        virtual_metatable.set_field(ctx, "__index", virtual_methods);
+        let virtual_metatable = ctx.stash(virtual_metatable);
+        let virtual_list = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (model, item_extent, viewport_extent, overscan): (
+                UserRef<ListModelToken>,
+                f64,
+                f64,
+                i64,
+            ) = stack.consume(ctx)?;
+            let overscan = usize::try_from(overscan)
+                .map_err(|_| HostError("virtual-list overscan cannot be negative".into()))?;
+            let view = VirtualList::new(item_extent, viewport_extent, overscan)
+                .ok_or_else(|| HostError("invalid virtual-list dimensions".into()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                VirtualListToken {
+                    model: Rc::clone(&model.model),
+                    view: RefCell::new(view),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&virtual_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "virtual_list", virtual_list);
 
         let dbus_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, property): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
@@ -805,6 +975,92 @@ fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> LuaValue<'_> {
         DbusValue::Number(value) => LuaValue::Number(value),
         DbusValue::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
     }
+}
+
+fn lua_index(index: i64) -> Result<usize, HostError> {
+    let index = index
+        .checked_sub(1)
+        .ok_or_else(|| HostError("list-model indexes start at one".into()))?;
+    usize::try_from(index).map_err(|_| HostError("list-model index is out of range".into()))
+}
+
+fn lua_insert_index(index: i64, length: usize) -> Result<usize, HostError> {
+    if index == length as i64 + 1 {
+        Ok(length)
+    } else {
+        lua_index(index)
+    }
+}
+
+fn scene_to_lua<'gc>(ctx: Context<'gc>, value: &SceneValue) -> Result<LuaValue<'gc>, String> {
+    Ok(match value {
+        SceneValue::Nil => LuaValue::Nil,
+        SceneValue::Bool(value) => LuaValue::Boolean(*value),
+        SceneValue::Number(value) => LuaValue::Number(*value),
+        SceneValue::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+        SceneValue::Color(color) => {
+            let table = Table::new(&ctx);
+            table.set_field(ctx, "r", color.red as f64);
+            table.set_field(ctx, "g", color.green as f64);
+            table.set_field(ctx, "b", color.blue as f64);
+            table.set_field(ctx, "a", color.alpha as f64);
+            LuaValue::Table(table)
+        }
+        SceneValue::List(values) => {
+            let table = Table::new(&ctx);
+            for (index, value) in values.iter().enumerate() {
+                table
+                    .set(ctx, index as i64 + 1, scene_to_lua(ctx, value)?)
+                    .map_err(|error| error.to_string())?;
+            }
+            LuaValue::Table(table)
+        }
+        SceneValue::Map(values) => {
+            let table = Table::new(&ctx);
+            for (key, value) in values {
+                table
+                    .set(ctx, ctx.intern(key.as_bytes()), scene_to_lua(ctx, value)?)
+                    .map_err(|error| error.to_string())?;
+            }
+            LuaValue::Table(table)
+        }
+    })
+}
+
+fn view_transition_to_lua(ctx: Context<'_>, transition: ViewTransition) -> Table<'_> {
+    let table = Table::new(&ctx);
+    let (kind, item, from, targets) = match transition {
+        ViewTransition::Populate(item) => ("populate", item, None, Vec::new()),
+        ViewTransition::Add(item) => ("add", item, None, Vec::new()),
+        ViewTransition::Remove(item) => ("remove", item, None, Vec::new()),
+        ViewTransition::Move {
+            item,
+            from,
+            target_indexes,
+        } => ("move", item, Some(from), target_indexes),
+        ViewTransition::Displaced {
+            item,
+            from,
+            target_indexes,
+        } => ("displaced", item, Some(from), target_indexes),
+    };
+    table.set_field(ctx, "kind", kind);
+    table.set_field(ctx, "id", item.id.raw() as i64);
+    table.set_field(ctx, "index", item.index as i64 + 1);
+    table.set_field(ctx, "destination", item.destination);
+    table.set_field(
+        ctx,
+        "from",
+        from.map_or(LuaValue::Nil, |index| LuaValue::Integer(index as i64 + 1)),
+    );
+    let target_indexes = Table::new(&ctx);
+    for (index, target) in targets.into_iter().enumerate() {
+        target_indexes
+            .set(ctx, index as i64 + 1, target as i64 + 1)
+            .expect("target-index table accepts integer keys");
+    }
+    table.set_field(ctx, "target_indexes", target_indexes);
+    table
 }
 
 fn execute_module<'gc>(
@@ -1762,5 +2018,37 @@ mod tests {
         assert!(runtime.scene().number(node, "x").unwrap() < 100.0);
         assert_eq!(runtime.effect_runs(), runs);
         assert!(frame.active);
+    }
+
+    #[test]
+    fn lua_list_model_virtualizes_five_hundred_items() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "list.lua",
+                br#"
+                    local mold = require("mold")
+                    local items = {}
+                    for index = 1, 500 do items[index] = { name = "app" .. index } end
+                    local model = mold.list_model(items)
+                    local view = mold.virtual_list(model, 40, 400, 1)
+                    local initial = view:sync()
+                    assert(#initial == 12)
+                    assert(initial[1].kind == "populate")
+                    assert(#view:visible() == 12)
+                    model:move(3, 8)
+                    local changes = view:sync()
+                    local moved = false
+                    local displaced = false
+                    for _, change in ipairs(changes) do
+                      moved = moved or change.kind == "move"
+                      displaced = displaced or change.kind == "displaced"
+                    end
+                    assert(moved and displaced)
+                    view:set_offset(4000)
+                    assert(view:visible()[1].index == 100)
+                "#,
+            )
+            .unwrap();
     }
 }

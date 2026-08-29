@@ -8,6 +8,13 @@ use crate::Value;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ModelId(u64);
 
+impl ModelId {
+    /// Returns the process-local numeric identity.
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// One mutation emitted by a list model.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ListChange {
