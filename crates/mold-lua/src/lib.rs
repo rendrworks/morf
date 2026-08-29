@@ -14,8 +14,8 @@ use luna::{
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
 use mold_io::{
-    Bus, DbusProxy, DbusValue, FileEvent, FileView, FileWatcher, Process, ProcessEvent, Socket,
-    Timer as IoTimer,
+    Bus, DbusProxy, DbusSignal, DbusValue, FileEvent, FileView, FileWatcher, Process, ProcessEvent,
+    Socket, Timer as IoTimer,
 };
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
@@ -376,6 +376,7 @@ impl Runtime {
     pub fn poll_services(&mut self) -> bool {
         let mut ready = Vec::new();
         let mut timers = Vec::new();
+        let mut dbus_signals = Vec::new();
         {
             let mut state = self.reactive.borrow_mut();
             let mut index = 0;
@@ -399,8 +400,13 @@ impl Runtime {
                 }
                 index += 1;
             }
+            for subscription in &state.dbus_signals {
+                while let Some(value) = subscription.signal.next_value(Duration::ZERO) {
+                    dbus_signals.push((subscription.callback.clone(), value));
+                }
+            }
         }
-        let changed = !ready.is_empty() || !timers.is_empty();
+        let changed = !ready.is_empty() || !timers.is_empty() || !dbus_signals.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;
@@ -431,6 +437,27 @@ impl Runtime {
                     .borrow_mut()
                     .logs
                     .push(format!("timer callback: {message}"));
+            }
+        }
+        for (callback, value) in dbus_signals {
+            let value = match value {
+                Ok(value) => value,
+                Err(message) => {
+                    self.reactive
+                        .borrow_mut()
+                        .logs
+                        .push(format!("D-Bus signal: {message}"));
+                    continue;
+                }
+            };
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_dbus_handler(ctx, &callback, value, self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("D-Bus callback: {message}"));
             }
         }
         changed
@@ -581,6 +608,11 @@ struct PendingTimer {
     repeat: bool,
 }
 
+struct PendingDbusSignal {
+    signal: DbusSignal,
+    callback: StashedClosure,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -651,6 +683,7 @@ struct ReactiveState {
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
+    dbus_signals: Vec<PendingDbusSignal>,
     session_unlock_requested: bool,
 }
 
@@ -679,6 +712,7 @@ impl ReactiveState {
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
+            dbus_signals: Vec::new(),
             session_unlock_requested: false,
         }
     }
@@ -1412,13 +1446,13 @@ fn install_reactive_api(
         let dbus_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, property): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
             let value = proxy.proxy.get_value(&property).map_err(HostError)?;
-            stack.replace(ctx, dbus_value_to_lua(ctx, value));
+            stack.replace(ctx, dbus_value_to_lua(ctx, value).map_err(HostError)?);
             Ok(CallbackReturn::Return)
         });
         let dbus_call = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, method): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
             let value = proxy.proxy.call_value(&method).map_err(HostError)?;
-            stack.replace(ctx, dbus_value_to_lua(ctx, value));
+            stack.replace(ctx, dbus_value_to_lua(ctx, value).map_err(HostError)?);
             Ok(CallbackReturn::Return)
         });
         let dbus_call_with = Callback::from_fn(&ctx, |ctx, _, mut stack| {
@@ -1429,7 +1463,7 @@ fn install_reactive_api(
                 .proxy
                 .call_value_with(&method, &argument)
                 .map_err(HostError)?;
-            stack.replace(ctx, dbus_value_to_lua(ctx, value));
+            stack.replace(ctx, dbus_value_to_lua(ctx, value).map_err(HostError)?);
             Ok(CallbackReturn::Return)
         });
         let dbus_set = Callback::from_fn(&ctx, |ctx, _, mut stack| {
@@ -1440,6 +1474,23 @@ fn install_reactive_api(
                 .proxy
                 .set_value(&property, &value)
                 .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let dbus_signal_state = Rc::clone(&state);
+        let dbus_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (proxy, signal, callback): (UserRef<DbusToken>, String, Closure) =
+                stack.consume(ctx)?;
+            let signal = proxy
+                .proxy
+                .subscribe(signal)
+                .map_err(|error| HostError(error.to_string()))?;
+            dbus_signal_state
+                .borrow_mut()
+                .dbus_signals
+                .push(PendingDbusSignal {
+                    signal,
+                    callback: ctx.stash(callback),
+                });
             Ok(CallbackReturn::Return)
         });
         let dbus_introspect = Callback::from_fn(&ctx, |ctx, _, mut stack| {
@@ -1456,6 +1507,7 @@ fn install_reactive_api(
         dbus_methods.set_field(ctx, "call", dbus_call);
         dbus_methods.set_field(ctx, "call_with", dbus_call_with);
         dbus_methods.set_field(ctx, "set", dbus_set);
+        dbus_methods.set_field(ctx, "subscribe", dbus_subscribe);
         dbus_methods.set_field(ctx, "introspect", dbus_introspect);
         let dbus_metatable = Table::new(&ctx);
         dbus_metatable.set_field(ctx, "__index", dbus_methods);
@@ -1783,8 +1835,8 @@ fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String>
     Err(format!("module `{name}` is not available"))
 }
 
-fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> LuaValue<'_> {
-    match value {
+fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> Result<LuaValue<'_>, String> {
+    Ok(match value {
         DbusValue::Nil => LuaValue::Nil,
         DbusValue::Bool(value) => LuaValue::Boolean(value),
         DbusValue::Integer(value) => LuaValue::Integer(value),
@@ -1792,7 +1844,29 @@ fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> LuaValue<'_> {
         DbusValue::Unsigned(value) => LuaValue::Number(value as f64),
         DbusValue::Number(value) => LuaValue::Number(value),
         DbusValue::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
-    }
+        DbusValue::List(values) => {
+            let table = Table::new(&ctx);
+            for (index, value) in values.into_iter().enumerate() {
+                table
+                    .set(ctx, index as i64 + 1, dbus_value_to_lua(ctx, value)?)
+                    .map_err(|error| error.to_string())?;
+            }
+            LuaValue::Table(table)
+        }
+        DbusValue::Map(values) => {
+            let table = Table::new(&ctx);
+            for (key, value) in values {
+                table
+                    .set(
+                        ctx,
+                        ctx.intern(key.as_bytes()),
+                        dbus_value_to_lua(ctx, value)?,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            LuaValue::Table(table)
+        }
+    })
 }
 
 fn lua_to_dbus(value: LuaValue<'_>) -> Result<DbusValue, String> {
@@ -2956,6 +3030,41 @@ fn execute_handler_args(
             .collect::<Vec<_>>(),
     );
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), args);
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua handler fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            break;
+        }
+    }
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn execute_dbus_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    value: DbusValue,
+    limits: Limits,
+) -> Result<(), String> {
+    let argument = dbus_value_to_lua(ctx, value)?;
+    let executor = Executor::start(ctx, ctx.fetch(closure).into(), Variadic(vec![argument]));
     let budget = limits.effect_fuel;
     let mut remaining = budget;
     loop {

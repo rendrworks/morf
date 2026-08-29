@@ -1,5 +1,6 @@
 //! Bounded process, file, socket, and timer primitives for mold.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem::MaybeUninit;
@@ -18,7 +19,7 @@ use rustix::io::Errno;
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use zbus::blocking::{Connection as DbusConnection, Proxy as ZbusProxy};
-use zbus::zvariant::{DynamicDeserialize, DynamicType, OwnedValue, Value};
+use zbus::zvariant::{Array, Dict, DynamicDeserialize, DynamicType, OwnedValue, Structure, Value};
 
 /// One event emitted by a child process.
 #[derive(Debug)]
@@ -814,7 +815,7 @@ pub struct DbusProxy {
     interface: String,
 }
 
-/// Scalar value transferable through the Lua D-Bus facade.
+/// Bounded value transferable through the Lua D-Bus facade.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DbusValue {
     Nil,
@@ -823,6 +824,8 @@ pub enum DbusValue {
     Unsigned(u64),
     Number(f64),
     String(String),
+    List(Vec<DbusValue>),
+    Map(BTreeMap<String, DbusValue>),
 }
 
 impl DbusProxy {
@@ -886,7 +889,7 @@ impl DbusProxy {
         Ok(self.proxy.introspect()?)
     }
 
-    /// Reads one scalar property for an interpreter-facing facade.
+    /// Reads one property for an interpreter-facing facade.
     pub fn get_value(&self, property: &str) -> Result<DbusValue, String> {
         let value: OwnedValue = self
             .proxy
@@ -895,7 +898,7 @@ impl DbusProxy {
         basic_value(&value)
     }
 
-    /// Calls a no-argument method returning one scalar value.
+    /// Calls a no-argument method returning a supported value.
     pub fn call_value(&self, method: &str) -> Result<DbusValue, String> {
         let message = self
             .proxy
@@ -904,7 +907,7 @@ impl DbusProxy {
         decode_message_value(&message)
     }
 
-    /// Calls a one-argument method returning one scalar value.
+    /// Calls a one-scalar-argument method returning a supported value.
     pub fn call_value_with(&self, method: &str, value: &DbusValue) -> Result<DbusValue, String> {
         let message = match value {
             DbusValue::Nil => self.proxy.call_method(method, &()),
@@ -913,6 +916,9 @@ impl DbusProxy {
             DbusValue::Unsigned(value) => self.proxy.call_method(method, &(*value,)),
             DbusValue::Number(value) => self.proxy.call_method(method, &(*value,)),
             DbusValue::String(value) => self.proxy.call_method(method, &(value.as_str(),)),
+            DbusValue::List(_) | DbusValue::Map(_) => {
+                return Err("compound D-Bus method arguments are not supported".to_owned());
+            }
         }
         .map_err(|error| error.to_string())?;
         decode_message_value(&message)
@@ -927,6 +933,9 @@ impl DbusProxy {
             DbusValue::Unsigned(value) => self.set_property(property, *value),
             DbusValue::Number(value) => self.set_property(property, *value),
             DbusValue::String(value) => self.set_property(property, value.as_str()),
+            DbusValue::List(_) | DbusValue::Map(_) => {
+                return Err("compound D-Bus properties are not supported".to_owned());
+            }
         };
         result.map_err(|error| error.to_string())
     }
@@ -995,7 +1004,68 @@ fn decode_message_value(message: &zbus::Message) -> Result<DbusValue, String> {
     if let Ok(value) = body.deserialize::<String>() {
         return Ok(DbusValue::String(value));
     }
-    Err("D-Bus reply is not a supported scalar".to_owned())
+    if let Ok(value) = body.deserialize::<Structure<'_>>() {
+        return structure_value(&value);
+    }
+    if let Ok(value) = body.deserialize::<Array<'_>>() {
+        return array_value(&value);
+    }
+    Err("D-Bus reply type is not supported".to_owned())
+}
+
+fn dynamic_value(value: &Value<'_>) -> Result<DbusValue, String> {
+    Ok(match value {
+        Value::U8(value) => DbusValue::Unsigned(u64::from(*value)),
+        Value::Bool(value) => DbusValue::Bool(*value),
+        Value::I16(value) => DbusValue::Integer(i64::from(*value)),
+        Value::U16(value) => DbusValue::Unsigned(u64::from(*value)),
+        Value::I32(value) => DbusValue::Integer(i64::from(*value)),
+        Value::U32(value) => DbusValue::Unsigned(u64::from(*value)),
+        Value::I64(value) => DbusValue::Integer(*value),
+        Value::U64(value) => DbusValue::Unsigned(*value),
+        Value::F64(value) => DbusValue::Number(*value),
+        Value::Str(value) => DbusValue::String(value.to_string()),
+        Value::Signature(value) => DbusValue::String(value.to_string()),
+        Value::ObjectPath(value) => DbusValue::String(value.to_string()),
+        Value::Value(value) => dynamic_value(value)?,
+        Value::Array(value) => array_value(value)?,
+        Value::Dict(value) => dict_value(value)?,
+        Value::Structure(value) => structure_value(value)?,
+        #[cfg(unix)]
+        Value::Fd(_) => return Err("D-Bus file descriptors cannot cross into Lua".to_owned()),
+        #[allow(unreachable_patterns)]
+        _ => return Err("D-Bus value is not supported".to_owned()),
+    })
+}
+
+fn structure_value(value: &Structure<'_>) -> Result<DbusValue, String> {
+    value
+        .fields()
+        .iter()
+        .map(dynamic_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map(DbusValue::List)
+}
+
+fn array_value(value: &Array<'_>) -> Result<DbusValue, String> {
+    value
+        .inner()
+        .iter()
+        .map(dynamic_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map(DbusValue::List)
+}
+
+fn dict_value(value: &Dict<'_, '_>) -> Result<DbusValue, String> {
+    let mut map = BTreeMap::new();
+    for (key, value) in value.iter() {
+        let key = match dynamic_value(key)? {
+            DbusValue::String(key) => key,
+            _ => return Err("D-Bus dictionary keys must be strings".to_owned()),
+        };
+        map.insert(key, dynamic_value(value)?);
+    }
+    Ok(DbusValue::Map(map))
 }
 
 /// Blocking receiver for a filtered D-Bus signal stream.
@@ -1009,6 +1079,12 @@ impl DbusSignal {
     /// Waits for the next signal message.
     pub fn next(&self, timeout: Duration) -> Option<zbus::Message> {
         self.events.recv_timeout(timeout).ok()
+    }
+
+    /// Waits for and decodes the next scalar signal body.
+    pub fn next_value(&self, timeout: Duration) -> Option<Result<DbusValue, String>> {
+        self.next(timeout)
+            .map(|message| decode_message_value(&message))
     }
 }
 
@@ -1024,6 +1100,12 @@ impl Drop for DbusSignal {
 }
 
 fn basic_value(value: &OwnedValue) -> Result<DbusValue, String> {
+    if matches!(
+        &**value,
+        Value::Array(_) | Value::Dict(_) | Value::Structure(_) | Value::Value(_)
+    ) {
+        return dynamic_value(value);
+    }
     if let Ok(value) = bool::try_from(value) {
         return Ok(DbusValue::Bool(value));
     }
