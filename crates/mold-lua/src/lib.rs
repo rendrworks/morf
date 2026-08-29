@@ -412,7 +412,7 @@ impl Runtime {
                 animated.sort();
                 (!animated.is_empty()).then(|| {
                     format!(
-                        "depth {}: {} <- {} (1 evaluation/frame)",
+                        "depth {}: {} <- {} (current animation values do not trigger Lua; use the target accessor)",
                         entry.depth,
                         entry.effect,
                         animated.join(", ")
@@ -460,25 +460,13 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().parent_transitions)
     }
 
-    /// Advances animations and recomputes bindings that read current values.
+    /// Advances animations entirely in Rust.
     pub fn tick_animations(&mut self, delta: Duration) -> Result<AnimationFrame, Error> {
-        let frame = self
-            .reactive
+        self.reactive
             .borrow_mut()
             .scene
             .tick_animations(delta)
-            .map_err(|error| Error::Runtime(error.to_string()))?;
-        {
-            let mut state = self.reactive.borrow_mut();
-            for change in &frame.changes {
-                bump_property_signal(&mut state, change.node, change.property, false)
-                    .map_err(Error::Runtime)?;
-            }
-        }
-        self.lua
-            .enter(|ctx| flush_reactive(&self.reactive, ctx, self.limits))
-            .map_err(Error::Runtime)?;
-        Ok(frame)
+            .map_err(|error| Error::Runtime(error.to_string()))
     }
 
     /// Updates the clock service signal and recomputes dependent Lua bindings.
@@ -5840,12 +5828,15 @@ mod tests {
         let diagnostics = runtime.binding_dependencies();
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].contains(".height <- "));
-        assert!(diagnostics[0].contains(".width (1 evaluation/frame)"));
+        assert!(diagnostics[0].contains("current animation values do not trigger Lua"));
         let runs = runtime.effect_runs();
 
         runtime.tick_animations(Duration::from_millis(100)).unwrap();
 
-        assert_eq!(runtime.effect_runs(), runs + 1);
+        assert_eq!(runtime.effect_runs(), runs);
+        let item = runtime.scene().roots()[1];
+        assert_eq!(runtime.scene().number(item, "height").unwrap(), 0.0);
+        assert_eq!(runtime.scene().number(item, "x").unwrap(), 100.0);
     }
 
     #[test]
