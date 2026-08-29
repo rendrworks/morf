@@ -169,6 +169,7 @@ pub struct VirtualList {
     viewport_extent: f64,
     offset: f64,
     overscan: usize,
+    columns: usize,
     active: HashMap<ModelId, usize>,
     initialized: bool,
 }
@@ -185,9 +186,25 @@ impl VirtualList {
                 viewport_extent,
                 offset: 0.0,
                 overscan,
+                columns: 1,
                 active: HashMap::new(),
                 initialized: false,
             })
+    }
+
+    /// Creates a fixed-cell grid virtualizer with a vertical row extent.
+    pub fn new_grid(
+        row_extent: f64,
+        viewport_extent: f64,
+        overscan: usize,
+        columns: usize,
+    ) -> Option<Self> {
+        let mut view = Self::new(row_extent, viewport_extent, overscan)?;
+        if columns == 0 {
+            return None;
+        }
+        view.columns = columns;
+        Some(view)
     }
 
     /// Sets the scroll offset, clamped to the model's content range on sync.
@@ -202,13 +219,21 @@ impl VirtualList {
         self.item_extent
     }
 
+    /// Returns the number of delegates placed in each row.
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
     /// Returns indexes requiring live delegates.
     pub fn visible_range(&self, item_count: usize) -> Range<usize> {
-        let maximum = (item_count as f64 * self.item_extent - self.viewport_extent).max(0.0);
+        let rows = item_count.div_ceil(self.columns);
+        let maximum = (rows as f64 * self.item_extent - self.viewport_extent).max(0.0);
         let offset = self.offset.min(maximum);
-        let first = (offset / self.item_extent).floor() as usize;
-        let count = (self.viewport_extent / self.item_extent).ceil() as usize + 1;
-        first.saturating_sub(self.overscan)..(first + count + self.overscan).min(item_count)
+        let first_row = (offset / self.item_extent).floor() as usize;
+        let row_count = (self.viewport_extent / self.item_extent).ceil() as usize + 1;
+        let start_row = first_row.saturating_sub(self.overscan);
+        let end_row = (first_row + row_count + self.overscan).min(rows);
+        start_row.saturating_mul(self.columns)..end_row.saturating_mul(self.columns).min(item_count)
     }
 
     /// Reconciles visible delegates and returns their transition metadata.
@@ -254,7 +279,7 @@ impl VirtualList {
                 transitions.push(ViewTransition::Remove(ViewItem {
                     id: *id,
                     index: *from,
-                    destination: *from as f64 * self.item_extent,
+                    destination: (*from / self.columns) as f64 * self.item_extent,
                 }));
             }
         }
@@ -262,7 +287,7 @@ impl VirtualList {
             let item = ViewItem {
                 id: *id,
                 index: *index,
-                destination: *index as f64 * self.item_extent,
+                destination: (*index / self.columns) as f64 * self.item_extent,
             };
             match self.active.get(id) {
                 None if !self.initialized => transitions.push(ViewTransition::Populate(item)),
@@ -350,6 +375,18 @@ mod tests {
                 .iter()
                 .all(|transition| matches!(transition, ViewTransition::Populate(_)))
         );
+    }
+
+    #[test]
+    fn virtual_grid_materializes_complete_visible_rows() {
+        let model = ListModel::new((0..500).map(|index| Value::Number(index as f64)));
+        let mut view = VirtualList::new_grid(50.0, 200.0, 1, 4).unwrap();
+        view.set_offset(75.0);
+        let transitions = view.sync(&model, &[]);
+
+        assert_eq!(view.visible_range(model.len()), 0..28);
+        assert_eq!(transitions.len(), 28);
+        assert_eq!(view.columns(), 4);
     }
 
     #[test]

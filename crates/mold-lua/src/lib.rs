@@ -694,6 +694,14 @@ struct LuaVirtualView {
     view: VirtualList,
     delegate: StashedClosure,
     active: HashMap<ModelId, NodeHandle>,
+    column_extent: f64,
+}
+
+#[derive(Clone, Copy)]
+enum ViewKind {
+    Repeater,
+    List,
+    Grid,
 }
 
 struct FlickToken {
@@ -1768,12 +1776,17 @@ fn install_reactive_api(
         ui.set_field(
             ctx,
             "Repeater",
-            view_constructor(ctx, Rc::clone(&state), limits, false),
+            view_constructor(ctx, Rc::clone(&state), limits, ViewKind::Repeater),
         );
         ui.set_field(
             ctx,
             "ListView",
-            view_constructor(ctx, Rc::clone(&state), limits, true),
+            view_constructor(ctx, Rc::clone(&state), limits, ViewKind::List),
+        );
+        ui.set_field(
+            ctx,
+            "GridView",
+            view_constructor(ctx, Rc::clone(&state), limits, ViewKind::Grid),
         );
         ui.set_field(
             ctx,
@@ -2123,9 +2136,10 @@ fn view_constructor<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     limits: Limits,
-    virtualized: bool,
+    kind: ViewKind,
 ) -> Callback<'gc> {
     Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let virtualized = !matches!(kind, ViewKind::Repeater);
         let properties: Table = stack.consume(ctx)?;
         let model = match properties.get_value(ctx, "model") {
             LuaValue::UserData(model) => model
@@ -2144,7 +2158,14 @@ fn view_constructor<'gc>(
                 LuaValue::String(name)
                     if matches!(
                         name.display_lossy().to_string().as_str(),
-                        "model" | "delegate" | "item_extent" | "overscan" | "content_y"
+                        "model"
+                            | "delegate"
+                            | "item_extent"
+                            | "overscan"
+                            | "content_y"
+                            | "cell_width"
+                            | "cell_height"
+                            | "columns"
                     )
             );
             if !special {
@@ -2161,23 +2182,56 @@ fn view_constructor<'gc>(
         let model_handle = Rc::clone(&model.model);
         let model = model_handle.borrow();
         let mut configured_view = None;
-        let (range, item_extent, offset) = if virtualized {
-            let item_extent =
-                table_number(ctx, properties, "item_extent", 1.0).map_err(HostError)?;
-            let height = table_number(ctx, properties, "height", 0.0).map_err(HostError)?;
-            let offset = table_number(ctx, properties, "content_y", 0.0).map_err(HostError)?;
-            let overscan = table_number(ctx, properties, "overscan", 1.0).map_err(HostError)?;
-            if item_extent <= 0.0 || height < 0.0 || offset < 0.0 || overscan < 0.0 {
-                return Err(HostError("invalid ListView dimensions".to_owned()).into());
+        let (range, item_extent, offset, columns, column_extent) = match kind {
+            ViewKind::Repeater => (0..model.len(), 0.0, 0.0, 1, 0.0),
+            ViewKind::List => {
+                let item_extent =
+                    table_number(ctx, properties, "item_extent", 1.0).map_err(HostError)?;
+                let height = table_number(ctx, properties, "height", 0.0).map_err(HostError)?;
+                let offset = table_number(ctx, properties, "content_y", 0.0).map_err(HostError)?;
+                let overscan = table_number(ctx, properties, "overscan", 1.0).map_err(HostError)?;
+                if item_extent <= 0.0 || height < 0.0 || offset < 0.0 || overscan < 0.0 {
+                    return Err(HostError("invalid ListView dimensions".to_owned()).into());
+                }
+                let mut view = VirtualList::new(item_extent, height, overscan as usize)
+                    .ok_or_else(|| HostError("invalid ListView dimensions".to_owned()))?;
+                view.set_offset(offset);
+                let range = view.visible_range(model.len());
+                configured_view = Some(view);
+                (range, item_extent, offset, 1, 0.0)
             }
-            let mut view = VirtualList::new(item_extent, height, overscan as usize)
-                .ok_or_else(|| HostError("invalid ListView dimensions".to_owned()))?;
-            view.set_offset(offset);
-            let range = view.visible_range(model.len());
-            configured_view = Some(view);
-            (range, item_extent, offset)
-        } else {
-            (0..model.len(), 0.0, 0.0)
+            ViewKind::Grid => {
+                let cell_width =
+                    table_number(ctx, properties, "cell_width", 1.0).map_err(HostError)?;
+                let cell_height =
+                    table_number(ctx, properties, "cell_height", 1.0).map_err(HostError)?;
+                let width = table_number(ctx, properties, "width", 0.0).map_err(HostError)?;
+                let height = table_number(ctx, properties, "height", 0.0).map_err(HostError)?;
+                let offset = table_number(ctx, properties, "content_y", 0.0).map_err(HostError)?;
+                let overscan = table_number(ctx, properties, "overscan", 1.0).map_err(HostError)?;
+                let default_columns = (width / cell_width).floor().max(1.0);
+                let columns =
+                    table_number(ctx, properties, "columns", default_columns).map_err(HostError)?;
+                if cell_width <= 0.0
+                    || cell_height <= 0.0
+                    || width < 0.0
+                    || height < 0.0
+                    || offset < 0.0
+                    || overscan < 0.0
+                    || columns < 1.0
+                    || columns.fract() != 0.0
+                {
+                    return Err(HostError("invalid GridView dimensions".to_owned()).into());
+                }
+                let columns = columns as usize;
+                let mut view =
+                    VirtualList::new_grid(cell_height, height, overscan as usize, columns)
+                        .ok_or_else(|| HostError("invalid GridView dimensions".to_owned()))?;
+                view.set_offset(offset);
+                let range = view.visible_range(model.len());
+                configured_view = Some(view);
+                (range, cell_height, offset, columns, cell_width)
+            }
         };
         let mut active = HashMap::new();
         for index in range {
@@ -2186,11 +2240,16 @@ fn view_constructor<'gc>(
                 .expect("view range contains live model indexes");
             let child = execute_delegate(ctx, &delegate, item, index, limits).map_err(HostError)?;
             if virtualized {
-                state
-                    .borrow_mut()
-                    .scene
-                    .assign(child, "y", index as f64 * item_extent - offset)
-                    .map_err(|error| HostError(error.to_string()))?;
+                position_view_child(
+                    &mut state.borrow_mut().scene,
+                    child,
+                    index,
+                    item_extent,
+                    offset,
+                    columns,
+                    column_extent,
+                )
+                .map_err(HostError)?;
             }
             state
                 .borrow_mut()
@@ -2209,6 +2268,7 @@ fn view_constructor<'gc>(
                     view,
                     delegate,
                     active,
+                    column_extent,
                 },
             );
         }
@@ -2254,6 +2314,23 @@ fn execute_delegate(
         Ok(Err(error)) => Err(error.to_string()),
         Err(error) => Err(error.to_string()),
     }
+}
+
+fn position_view_child(
+    scene: &mut Scene,
+    node: NodeHandle,
+    index: usize,
+    row_extent: f64,
+    offset: f64,
+    columns: usize,
+    column_extent: f64,
+) -> Result<(), String> {
+    scene
+        .assign(node, "x", (index % columns) as f64 * column_extent)
+        .map_err(|error| error.to_string())?;
+    scene
+        .assign(node, "y", (index / columns) as f64 * row_extent - offset)
+        .map_err(|error| error.to_string())
 }
 
 fn reconcile_lua_view(
@@ -2318,11 +2395,15 @@ fn reconcile_lua_view(
         view.active.remove(&id);
     }
     for (id, index, node) in created {
-        state
-            .borrow_mut()
-            .scene
-            .assign(node, "y", index as f64 * view.view.item_extent() - offset)
-            .map_err(|error| error.to_string())?;
+        position_view_child(
+            &mut state.borrow_mut().scene,
+            node,
+            index,
+            view.view.item_extent(),
+            offset,
+            view.view.columns(),
+            view.column_extent,
+        )?;
         state
             .borrow_mut()
             .scene
@@ -2332,11 +2413,15 @@ fn reconcile_lua_view(
     }
     for (id, index, _) in visible {
         if let Some(node) = view.active.get(&id) {
-            state
-                .borrow_mut()
-                .scene
-                .assign(*node, "y", index as f64 * view.view.item_extent() - offset)
-                .map_err(|error| error.to_string())?;
+            position_view_child(
+                &mut state.borrow_mut().scene,
+                *node,
+                index,
+                view.view.item_extent(),
+                offset,
+                view.view.columns(),
+                view.column_extent,
+            )?;
         }
     }
     Ok(transitions)
@@ -4258,6 +4343,44 @@ mod tests {
         assert_eq!(children.len(), 13);
         assert_eq!(scene.string_value(children[0], "text").unwrap(), "app200");
         assert_eq!(scene.number(children[0], "y").unwrap(), -40.0);
+        assert!(scene.bool_value(root, "clip").unwrap());
+    }
+
+    #[test]
+    fn grid_view_virtualizes_complete_rows_in_rust() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "grid-view.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local items = {}
+                    for index = 1, 500 do items[index] = "tile" .. index end
+                    ui.GridView {
+                      model = mold.list_model(items),
+                      width = 400,
+                      height = 200,
+                      cell_width = 100,
+                      cell_height = 50,
+                      columns = 4,
+                      overscan = 1,
+                      content_y = 75,
+                      delegate = function(item)
+                        return ui.Text { text = item, width = 100, height = 50 }
+                      end,
+                    }
+                "#,
+            )
+            .unwrap();
+        let scene = runtime.scene();
+        let root = scene.roots()[0];
+        let children = scene.children(root).unwrap();
+
+        assert_eq!(children.len(), 28);
+        assert_eq!(scene.string_value(children[5], "text").unwrap(), "tile6");
+        assert_eq!(scene.number(children[5], "x").unwrap(), 100.0);
+        assert_eq!(scene.number(children[5], "y").unwrap(), -25.0);
         assert!(scene.bool_value(root, "clip").unwrap());
     }
 
