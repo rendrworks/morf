@@ -1271,12 +1271,17 @@ struct LuaVirtualView {
     model: Rc<RefCell<ListModel>>,
     view: VirtualList,
     delegate: StashedClosure,
-    active: HashMap<ModelId, NodeHandle>,
-    reusable: HashMap<ModelId, NodeHandle>,
+    active: HashMap<ModelId, DelegateInstance>,
+    reusable: HashMap<ModelId, DelegateInstance>,
     reuse_order: VecDeque<ModelId>,
     reuse_limit: usize,
     pool_root: Option<NodeHandle>,
     column_extent: f64,
+}
+
+struct DelegateInstance {
+    node: NodeHandle,
+    updater: Option<StashedClosure>,
 }
 
 #[derive(Clone, Copy)]
@@ -1591,13 +1596,14 @@ fn node_userdata<'gc>(
     state: Rc<RefCell<ReactiveState>>,
     handle: NodeHandle,
 ) -> UserData<'gc> {
+    let read_state = Rc::clone(&state);
     let index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (node, key): (UserRef<NodeToken>, String) = stack.consume(ctx)?;
         let (property, target) = key
             .strip_suffix("_target")
             .map_or((key.as_str(), false), |property| (property, true));
         let value = {
-            let mut state = state.borrow_mut();
+            let mut state = read_state.borrow_mut();
             if !state
                 .scene
                 .has_property(node.handle, property)
@@ -1625,8 +1631,16 @@ fn node_userdata<'gc>(
         stack.replace(ctx, scene_to_lua(ctx, &value).map_err(HostError)?);
         Ok(CallbackReturn::Return)
     });
+    let new_index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (node, property, value): (UserRef<NodeToken>, String, LuaValue) = stack.consume(ctx)?;
+        let value = lua_to_scene(ctx, value, 0).map_err(HostError)?;
+        assign_scene_property(&mut state.borrow_mut(), node.handle, &property, value)
+            .map_err(HostError)?;
+        Ok(CallbackReturn::Return)
+    });
     let metatable = Table::new(&ctx);
     metatable.set_field(ctx, "__index", index);
+    metatable.set_field(ctx, "__newindex", new_index);
     let userdata = UserData::new_static(&ctx, NodeToken { handle });
     userdata.set_metatable(ctx, Some(metatable));
     userdata
@@ -3839,7 +3853,7 @@ fn view_constructor<'gc>(
             if virtualized {
                 position_view_child(
                     &mut state.borrow_mut().scene,
-                    child,
+                    child.node,
                     index,
                     item_extent,
                     offset,
@@ -3851,7 +3865,7 @@ fn view_constructor<'gc>(
             state
                 .borrow_mut()
                 .scene
-                .reparent(child, Some(node))
+                .reparent(child.node, Some(node))
                 .map_err(|error| HostError(error.to_string()))?;
             active.insert(id, child);
         }
@@ -3884,7 +3898,7 @@ fn execute_delegate(
     item: &SceneValue,
     index: usize,
     limits: Limits,
-) -> Result<NodeHandle, String> {
+) -> Result<DelegateInstance, String> {
     let args = Variadic(vec![
         scene_to_lua(ctx, item)?,
         LuaValue::Integer(index as i64 + 1),
@@ -3910,8 +3924,62 @@ fn execute_delegate(
             break;
         }
     }
-    match executor.take_result::<UserRef<NodeToken>>(ctx) {
-        Ok(Ok(node)) => Ok(node.handle),
+    let values = match executor.take_result::<Variadic<Vec<LuaValue>>>(ctx) {
+        Ok(Ok(values)) => values,
+        Ok(Err(error)) => return Err(error.to_string()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let Some(LuaValue::UserData(node)) = values.first().copied() else {
+        return Err("view delegate must return a mold node".to_owned());
+    };
+    let node = node
+        .downcast_static::<NodeToken>()
+        .map_err(|_| "view delegate must return a mold node".to_owned())?;
+    let updater = match values.get(1).copied().unwrap_or(LuaValue::Nil) {
+        LuaValue::Nil => None,
+        LuaValue::Function(Function::Closure(updater)) => Some(ctx.stash(updater)),
+        _ => return Err("view delegate updater must be a function".to_owned()),
+    };
+    Ok(DelegateInstance {
+        node: node.handle,
+        updater,
+    })
+}
+
+fn execute_delegate_updater(
+    ctx: Context<'_>,
+    updater: &StashedClosure,
+    item: &SceneValue,
+    index: usize,
+    limits: Limits,
+) -> Result<(), String> {
+    let args = Variadic(vec![
+        scene_to_lua(ctx, item)?,
+        LuaValue::Integer(index as i64 + 1),
+    ]);
+    let executor = Executor::start(ctx, ctx.fetch(updater).into(), args);
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua delegate updater fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            break;
+        }
+    }
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error.to_string()),
         Err(error) => Err(error.to_string()),
     }
@@ -3995,11 +4063,11 @@ fn reconcile_lua_view(
         })
         .collect::<HashSet<_>>();
     for id in &invalidated {
-        if let Some(node) = view.reusable.remove(id) {
+        if let Some(instance) = view.reusable.remove(id) {
             state
                 .borrow_mut()
                 .scene
-                .remove(node)
+                .remove(instance.node)
                 .map_err(|error| error.to_string())?;
         }
     }
@@ -4020,21 +4088,46 @@ fn reconcile_lua_view(
     let mut prepared = Vec::new();
     for (id, index, item) in &visible {
         if !view.active.contains_key(id) || updated.contains(id) {
-            if let Some(node) = view.reusable.remove(id) {
+            if let Some(instance) = view.reusable.remove(id) {
                 view.reuse_order.retain(|candidate| candidate != id);
-                prepared.push((*id, *index, node, false));
+                prepared.push((*id, *index, instance));
+                continue;
+            }
+            let reusable_id = view.reuse_order.iter().copied().find(|candidate| {
+                view.reusable
+                    .get(candidate)
+                    .is_some_and(|instance| instance.updater.is_some())
+            });
+            if let Some(reusable_id) = reusable_id {
+                view.reuse_order
+                    .retain(|candidate| *candidate != reusable_id);
+                let instance = view
+                    .reusable
+                    .remove(&reusable_id)
+                    .expect("reuse order contains a live delegate");
+                let update = execute_delegate_updater(
+                    ctx,
+                    instance.updater.as_ref().expect("updater was checked"),
+                    item,
+                    *index,
+                    limits,
+                )
+                .and_then(|()| flush_reactive(state, ctx, limits));
+                if let Err(error) = update {
+                    let _ = state.borrow_mut().scene.remove(instance.node);
+                    for (_, _, prepared) in prepared {
+                        let _ = state.borrow_mut().scene.remove(prepared.node);
+                    }
+                    return Err(error);
+                }
+                prepared.push((*id, *index, instance));
                 continue;
             }
             match execute_delegate(ctx, &view.delegate, item, *index, limits) {
-                Ok(node) => prepared.push((*id, *index, node, true)),
+                Ok(instance) => prepared.push((*id, *index, instance)),
                 Err(error) => {
-                    for (id, _, node, created) in prepared {
-                        if created {
-                            let _ = state.borrow_mut().scene.remove(node);
-                        } else {
-                            view.reusable.insert(id, node);
-                            view.reuse_order.push_back(id);
-                        }
+                    for (_, _, prepared) in prepared {
+                        let _ = state.borrow_mut().scene.remove(prepared.node);
                     }
                     return Err(error);
                 }
@@ -4045,15 +4138,15 @@ fn reconcile_lua_view(
         .active
         .iter()
         .filter(|(id, _)| !visible_ids.contains(id) || updated.contains(id))
-        .map(|(id, node)| (*id, *node))
+        .map(|(id, _)| *id)
         .collect::<Vec<_>>();
-    for (id, node) in removed {
-        view.active.remove(&id);
+    for id in removed {
+        let instance = view.active.remove(&id).expect("removed delegate is active");
         if invalidated.contains(&id) {
             state
                 .borrow_mut()
                 .scene
-                .remove(node)
+                .remove(instance.node)
                 .map_err(|error| error.to_string())?;
             continue;
         }
@@ -4078,27 +4171,27 @@ fn reconcile_lua_view(
         state
             .borrow_mut()
             .scene
-            .reparent(node, Some(pool_root))
+            .reparent(instance.node, Some(pool_root))
             .map_err(|error| error.to_string())?;
-        view.reusable.insert(id, node);
+        view.reusable.insert(id, instance);
         view.reuse_order.push_back(id);
     }
     while view.reusable.len() > view.reuse_limit {
         let Some(id) = view.reuse_order.pop_front() else {
             break;
         };
-        if let Some(node) = view.reusable.remove(&id) {
+        if let Some(instance) = view.reusable.remove(&id) {
             state
                 .borrow_mut()
                 .scene
-                .remove(node)
+                .remove(instance.node)
                 .map_err(|error| error.to_string())?;
         }
     }
-    for (id, index, node, _) in prepared {
+    for (id, index, instance) in prepared {
         position_view_child(
             &mut state.borrow_mut().scene,
-            node,
+            instance.node,
             index,
             view.view.item_extent(),
             offset,
@@ -4108,15 +4201,15 @@ fn reconcile_lua_view(
         state
             .borrow_mut()
             .scene
-            .reparent(node, Some(parent))
+            .reparent(instance.node, Some(parent))
             .map_err(|error| error.to_string())?;
-        view.active.insert(id, node);
+        view.active.insert(id, instance);
     }
     for (id, index, _) in visible {
-        if let Some(node) = view.active.get(&id) {
+        if let Some(instance) = view.active.get(&id) {
             position_view_child(
                 &mut state.borrow_mut().scene,
-                *node,
+                instance.node,
                 index,
                 view.view.item_extent(),
                 offset,
@@ -6751,6 +6844,7 @@ mod tests {
                     for index = 1, 500 do items[index] = "app" .. index end
                     local model = mold.list_model(items)
                     local delegate_runs = 0
+                    local updater_runs = 0
                     local view = ui.ListView {
                         model = model,
                         height = 400,
@@ -6759,14 +6853,20 @@ mod tests {
                         content_y = 4000,
                         delegate = function(item, index)
                             delegate_runs = delegate_runs + 1
-                            return ui.Text { text = item, width = 100, height = 40 }
+                            local node = ui.Text { text = item, width = 100, height = 40 }
+                            return node, function(next_item)
+                                updater_runs = updater_runs + 1
+                                node.text = next_item
+                            end
                         end,
                     }
                     model:set(100, "changed")
                     mold.sync_view(view, 4000)
                     mold.sync_view(view, 8000)
                     mold.sync_view(view, 4000)
+                    mold.sync_view(view, 12000)
                     assert(delegate_runs == 27)
+                    assert(updater_runs == 13)
                 "#,
             )
             .unwrap();
@@ -6775,7 +6875,7 @@ mod tests {
         let children = scene.children(root).unwrap();
 
         assert_eq!(children.len(), 14);
-        assert_eq!(scene.string_value(children[1], "text").unwrap(), "changed");
+        assert_eq!(scene.string_value(children[1], "text").unwrap(), "app300");
         assert_eq!(scene.number(children[1], "y").unwrap(), -40.0);
         assert!(scene.bool_value(root, "clip").unwrap());
     }

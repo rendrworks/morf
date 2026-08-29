@@ -28,7 +28,16 @@ return ui.component(function(props)
       model = model,
       delegate = function(item)
         local text = type(item) == "table" and (item.name or item.title) or item
-        return ListItem { text = text or "Application", width = 320 }
+        local label
+        local node = ListItem {
+          text = text or "Application",
+          width = 320,
+          label_ref = function(value) label = value end,
+        }
+        return node, function(next_item)
+          label.text = type(next_item) == "table" and (next_item.name or next_item.title)
+            or next_item or "Application"
+        end
       end,
     },
   }

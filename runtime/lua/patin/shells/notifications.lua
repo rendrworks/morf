@@ -13,13 +13,21 @@ return ui.component(function(props)
     model = model,
     delegate = function(item)
       local text = type(item) == "table" and (item.summary or item.title) or item
-      return Card {
+      local label = ui.Text {
+        x = theme.spacing.md,
+        y = theme.spacing.md,
+        text = text or "Notification",
+        color = theme.colors.text,
+      }
+      local node = Card {
         width = props.width or 340,
         height = 96,
-        children = {
-          ui.Text { x = theme.spacing.md, y = theme.spacing.md, text = text or "Notification", color = theme.colors.text },
-        },
+        children = { label },
       }
+      return node, function(next_item)
+        label.text = type(next_item) == "table" and (next_item.summary or next_item.title)
+          or next_item or "Notification"
+      end
     end,
   }
 end)
