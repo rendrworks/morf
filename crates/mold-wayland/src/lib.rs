@@ -26,6 +26,12 @@ use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
     LayerSurfaceConfigure,
 };
+use smithay_client_toolkit::shell::xdg::XdgPositioner;
+use smithay_client_toolkit::shell::xdg::XdgShell;
+use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
+use smithay_client_toolkit::shell::xdg::window::{
+    Window, WindowConfigure, WindowDecorations, WindowHandler,
+};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{
@@ -39,6 +45,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
+use wayland_protocols::xdg::shell::client::xdg_positioner;
 
 /// Configuration for a top-anchored shell bar.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +86,30 @@ pub struct ScreenInfo {
     pub size: Option<(i32, i32)>,
     /// Integer fallback scale advertised by wl_output.
     pub scale: i32,
+}
+
+/// Geometry for a popup anchored to a layer surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PopupConfig {
+    /// Parent-surface rectangle used as the popup anchor.
+    pub anchor: InputRect,
+    /// Requested popup width in logical pixels.
+    pub width: u32,
+    /// Requested popup height in logical pixels.
+    pub height: u32,
+}
+
+/// Geometry and identity for an xdg toplevel surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FloatingConfig {
+    /// Initial logical width.
+    pub width: u32,
+    /// Initial logical height.
+    pub height: u32,
+    /// Compositor-visible title.
+    pub title: String,
+    /// Desktop application identifier.
+    pub app_id: String,
 }
 
 impl Default for BarConfig {
@@ -128,6 +159,18 @@ pub enum LayerEvent {
     },
     /// The compositor output set changed.
     Screens(Vec<ScreenInfo>),
+    /// The compositor positioned and sized the popup.
+    PopupConfigure { width: u32, height: u32 },
+    /// The compositor permits the next popup paint tick.
+    PopupFrame { time_ms: u32 },
+    /// The compositor dismissed the popup.
+    PopupDone,
+    /// The compositor configured the floating window.
+    FloatingConfigure { width: u32, height: u32 },
+    /// The compositor permits the next floating-window paint tick.
+    FloatingFrame { time_ms: u32 },
+    /// The compositor requested that the floating window close.
+    FloatingClose,
     /// The compositor closed the layer surface.
     Closed,
 }
@@ -163,6 +206,8 @@ impl LayerClient {
             .map_err(|error| WaylandError(format!("wl_compositor is unavailable: {error}")))?;
         let layer_shell = LayerShell::bind(&globals, &qh)
             .map_err(|error| WaylandError(format!("layer shell is unavailable: {error}")))?;
+        let xdg_shell = XdgShell::bind(&globals, &qh)
+            .map_err(|error| WaylandError(format!("xdg shell is unavailable: {error}")))?;
         let fractional_manager = globals
             .bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
@@ -172,7 +217,11 @@ impl LayerClient {
             compositor,
             outputs: OutputState::new(&globals, &qh),
             seats: SeatState::new(&globals, &qh),
+            xdg_shell,
             layer: None,
+            popup: None,
+            floating: None,
+            floating_size: (1, 1),
             _fractional_manager: fractional_manager,
             fractional_scale: None,
             _viewporter: viewporter,
@@ -362,6 +411,117 @@ impl LayerClient {
         surface.set_input_region(Some(&region));
         region.destroy();
     }
+
+    /// Creates an xdg popup anchored below a parent-surface rectangle.
+    pub fn open_popup(&mut self, config: PopupConfig) -> Result<(), WaylandError> {
+        self.close_popup();
+        let qh = self.queue.handle();
+        let positioner = XdgPositioner::new(&self.state.xdg_shell)
+            .map_err(|error| WaylandError(format!("could not create popup positioner: {error}")))?;
+        positioner.set_size(config.width.max(1) as i32, config.height.max(1) as i32);
+        positioner.set_anchor_rect(
+            config.anchor.x,
+            config.anchor.y,
+            config.anchor.width.max(1),
+            config.anchor.height.max(1),
+        );
+        positioner.set_anchor(xdg_positioner::Anchor::BottomLeft);
+        positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+        positioner.set_constraint_adjustment(
+            xdg_positioner::ConstraintAdjustment::SlideX
+                | xdg_positioner::ConstraintAdjustment::SlideY
+                | xdg_positioner::ConstraintAdjustment::FlipX
+                | xdg_positioner::ConstraintAdjustment::FlipY,
+        );
+        let surface = self.state.compositor.create_surface(&qh);
+        surface.set_buffer_scale(1);
+        let popup = Popup::from_surface(None, &positioner, &qh, surface, &self.state.xdg_shell)
+            .map_err(|error| WaylandError(format!("could not create popup: {error}")))?;
+        self.state.layer().get_popup(popup.xdg_popup());
+        popup.wl_surface().commit();
+        self.state.popup = Some(popup);
+        self.connection
+            .flush()
+            .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
+    }
+
+    /// Destroys the current popup when present.
+    pub fn close_popup(&mut self) {
+        self.state.popup = None;
+    }
+
+    /// Returns the popup surface used to attach buffers.
+    pub fn popup_surface(&self) -> Option<&wl_surface::WlSurface> {
+        self.state.popup.as_ref().map(Popup::wl_surface)
+    }
+
+    /// Requests a compositor callback for the next popup frame.
+    pub fn request_popup_frame(&self) {
+        let Some(surface) = self.popup_surface() else {
+            return;
+        };
+        let qh = self.queue.handle();
+        surface.frame(&qh, FrameCallbackData(surface.clone()));
+    }
+
+    /// Returns an owned raw-window target for the current popup.
+    pub fn popup_window_target(&self) -> Option<WaylandWindowTarget> {
+        self.state.popup.as_ref().map(|popup| WaylandWindowTarget {
+            backend: self.connection.backend(),
+            surface: popup.wl_surface().clone(),
+        })
+    }
+
+    /// Creates an undecorated xdg toplevel surface.
+    pub fn open_floating(&mut self, config: FloatingConfig) -> Result<(), WaylandError> {
+        self.close_floating();
+        let qh = self.queue.handle();
+        let surface = self.state.compositor.create_surface(&qh);
+        surface.set_buffer_scale(1);
+        let window = self
+            .state
+            .xdg_shell
+            .create_window(surface, WindowDecorations::None, &qh);
+        window.set_title(config.title);
+        window.set_app_id(config.app_id);
+        window.set_min_size(Some((1, 1)));
+        self.state.floating_size = (config.width.max(1), config.height.max(1));
+        window.wl_surface().commit();
+        self.state.floating = Some(window);
+        self.connection
+            .flush()
+            .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
+    }
+
+    /// Destroys the current floating window when present.
+    pub fn close_floating(&mut self) {
+        self.state.floating = None;
+    }
+
+    /// Returns the floating-window surface used to attach buffers.
+    pub fn floating_surface(&self) -> Option<&wl_surface::WlSurface> {
+        self.state.floating.as_ref().map(Window::wl_surface)
+    }
+
+    /// Requests a compositor callback for the next floating-window frame.
+    pub fn request_floating_frame(&self) {
+        let Some(surface) = self.floating_surface() else {
+            return;
+        };
+        let qh = self.queue.handle();
+        surface.frame(&qh, FrameCallbackData(surface.clone()));
+    }
+
+    /// Returns an owned raw-window target for the current floating window.
+    pub fn floating_window_target(&self) -> Option<WaylandWindowTarget> {
+        self.state
+            .floating
+            .as_ref()
+            .map(|window| WaylandWindowTarget {
+                backend: self.connection.backend(),
+                surface: window.wl_surface().clone(),
+            })
+    }
 }
 
 /// Owned Wayland display and surface handles for graphics APIs.
@@ -391,7 +551,11 @@ struct LayerState {
     compositor: CompositorState,
     outputs: OutputState,
     seats: SeatState,
+    xdg_shell: XdgShell,
     layer: Option<LayerSurface>,
+    popup: Option<Popup>,
+    floating: Option<Window>,
+    floating_size: (u32, u32),
     _fractional_manager: Option<WpFractionalScaleManagerV1>,
     fractional_scale: Option<WpFractionalScaleV1>,
     _viewporter: Option<WpViewporter>,
@@ -441,6 +605,20 @@ impl CompositorHandler for LayerState {
             .is_some_and(|layer| surface == layer.wl_surface())
         {
             self.events.push_back(LayerEvent::Frame { time_ms: time });
+        } else if self
+            .popup
+            .as_ref()
+            .is_some_and(|popup| surface == popup.wl_surface())
+        {
+            self.events
+                .push_back(LayerEvent::PopupFrame { time_ms: time });
+        } else if self
+            .floating
+            .as_ref()
+            .is_some_and(|window| surface == window.wl_surface())
+        {
+            self.events
+                .push_back(LayerEvent::FloatingFrame { time_ms: time });
         }
     }
 
@@ -518,6 +696,59 @@ impl OutputHandler for LayerState {
         _output: wl_output::WlOutput,
     ) {
         self.refresh_screens();
+    }
+}
+
+impl PopupHandler for LayerState {
+    fn configure(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _popup: &Popup,
+        config: PopupConfigure,
+    ) {
+        self.events.push_back(LayerEvent::PopupConfigure {
+            width: config.width.max(1) as u32,
+            height: config.height.max(1) as u32,
+        });
+    }
+
+    fn done(&mut self, _connection: &Connection, _qh: &QueueHandle<Self>, _popup: &Popup) {
+        self.popup = None;
+        self.events.push_back(LayerEvent::PopupDone);
+    }
+}
+
+impl WindowHandler for LayerState {
+    fn request_close(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _window: &Window,
+    ) {
+        self.floating = None;
+        self.events.push_back(LayerEvent::FloatingClose);
+    }
+
+    fn configure(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _window: &Window,
+        configure: WindowConfigure,
+        _serial: u32,
+    ) {
+        let width = configure
+            .new_size
+            .0
+            .map_or(self.floating_size.0, NonZeroU32::get);
+        let height = configure
+            .new_size
+            .1
+            .map_or(self.floating_size.1, NonZeroU32::get);
+        self.floating_size = (width, height);
+        self.events
+            .push_back(LayerEvent::FloatingConfigure { width, height });
     }
 }
 

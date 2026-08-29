@@ -58,7 +58,13 @@ fn run() -> Result<(), String> {
                 | LayerEvent::PointerButton { .. }
                 | LayerEvent::Key { .. }
                 | LayerEvent::Modifiers { .. }
-                | LayerEvent::Screens(_) => {}
+                | LayerEvent::Screens(_)
+                | LayerEvent::PopupConfigure { .. }
+                | LayerEvent::PopupFrame { .. }
+                | LayerEvent::PopupDone
+                | LayerEvent::FloatingConfigure { .. }
+                | LayerEvent::FloatingFrame { .. }
+                | LayerEvent::FloatingClose => {}
             }
         }
     }
@@ -168,7 +174,13 @@ fn run() -> Result<(), String> {
                 }
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
-                | LayerEvent::Screens(_) => {}
+                | LayerEvent::Screens(_)
+                | LayerEvent::PopupConfigure { .. }
+                | LayerEvent::PopupFrame { .. }
+                | LayerEvent::PopupDone
+                | LayerEvent::FloatingConfigure { .. }
+                | LayerEvent::FloatingFrame { .. }
+                | LayerEvent::FloatingClose => {}
             }
         }
         if repaint {

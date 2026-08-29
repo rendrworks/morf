@@ -181,6 +181,20 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "popup-smoke",
+  desc = "present an xdg popup anchored to a layer-surface click",
+  run = function()
+    sh.cargo("build", "--package", "mold-wayland", "--example", "popup_smoke")
+    local command = { "target/debug/examples/popup_smoke" }
+    local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
+    if wrapper.ok then
+      command = { (wrapper.out or ""):match("[^\n]+"), command[1] }
+    end
+    assert(oslo.run(command).ok, "popup smoke failed")
+  end,
+}
+
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function()
                sh.cargo("test", "--workspace", "--all-targets", "--all-features")
