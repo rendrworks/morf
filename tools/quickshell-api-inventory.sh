@@ -7,7 +7,8 @@ src=$root/src
 test -d "$src"
 printf 'reference\t%s\n' "$(git -C "$root" rev-parse HEAD)"
 
-find "$src" -type f \( -name '*.hpp' -o -name '*.h' \) -print |
+find "$src/core" "$src/io" "$src/widgets" "$src/window" "$src/windowmanager" \
+  -type f \( -name '*.hpp' -o -name '*.h' \) -print |
   LC_ALL=C sort |
   while IFS= read -r file; do
     awk '
