@@ -5258,6 +5258,27 @@ mod tests {
     }
 
     #[test]
+    fn settings_are_assigned_and_nested_values_stay_nested() {
+        let mut runtime = Runtime::default();
+
+        runtime
+            .execute(
+                "settings.lua",
+                br#"
+                    local mold = require("mold")
+                    assert(mold.user_render == nil)
+                    mold.user_render = {
+                      scale_policy = "fractional",
+                      damage = { enabled = true },
+                    }
+                    assert(mold.user_render.scale_policy == "fractional")
+                    assert(mold.user_render.damage.enabled == true)
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
     fn engine_modules_are_preloaded_by_rust() {
         let mut runtime = Runtime::default();
         runtime
@@ -5382,6 +5403,34 @@ mod tests {
 
         let error = runtime.call_ipc("loop", &[]).unwrap_err().to_string();
         assert!(error.contains("IPC handler fuel exhausted"), "{error}");
+    }
+
+    #[test]
+    fn list_handlers_preserve_order_and_isolate_failures() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "handlers.lua",
+                br#"
+                    local calls = ""
+                    mold.idle.subscribe(1000, function()
+                      calls = calls .. "a"
+                      error("broken")
+                    end)
+                    mold.idle.subscribe(1000, function()
+                      calls = calls .. "b"
+                    end)
+                    mold.ipc["calls"] = function() return calls end
+                "#,
+            )
+            .unwrap();
+
+        assert!(runtime.dispatch_idle(1000, true));
+        assert_eq!(
+            runtime.call_ipc("calls", &[]).unwrap(),
+            [IpcValue::String("ab".into())]
+        );
+        assert!(runtime.take_logs()[0].contains("broken"));
     }
 
     #[test]
