@@ -24,7 +24,7 @@ use mold_scene::{
 };
 use mold_services::{
     AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire, UdevEvent,
-    UdevMonitor,
+    UdevMonitor, XkbKeymap,
 };
 
 /// Execution limits applied independently to each loaded chunk.
@@ -3046,6 +3046,27 @@ fn install_reactive_api(
         pam.set_field(ctx, "authenticate_unlock", pam_authenticate_unlock);
         mold.set_field(ctx, "pam", pam);
 
+        let xkb_compile = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let rules = table_string(ctx, options, "rules", "").map_err(HostError)?;
+            let model = table_string(ctx, options, "model", "pc105").map_err(HostError)?;
+            let layout = table_string(ctx, options, "layout", "us").map_err(HostError)?;
+            let variant = table_string(ctx, options, "variant", "").map_err(HostError)?;
+            let xkb_options = match options.get_value(ctx, "options") {
+                LuaValue::Nil => None,
+                LuaValue::String(value) => Some(value.display_lossy().to_string()),
+                _ => return Err(HostError("XKB options must be a string".into()).into()),
+            };
+            let keymap =
+                XkbKeymap::compile(&rules, &model, &layout, &variant, xkb_options.as_deref())
+                    .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, xkb_keymap_to_lua(ctx, &keymap));
+            Ok(CallbackReturn::Return)
+        });
+        let xkb = Table::new(&ctx);
+        xkb.set_field(ctx, "compile", xkb_compile);
+        mold.set_field(ctx, "xkb", xkb);
+
         let ui = Table::new(&ctx);
         for (name, element) in [
             ("Item", Element::Item),
@@ -3417,6 +3438,46 @@ fn scene_to_lua<'gc>(ctx: Context<'gc>, value: &SceneValue) -> Result<LuaValue<'
             LuaValue::Table(table)
         }
     })
+}
+
+fn xkb_keymap_to_lua<'gc>(ctx: Context<'gc>, keymap: &XkbKeymap) -> Table<'gc> {
+    let result = Table::new(&ctx);
+    result.set_field(ctx, "source", keymap.source.as_str());
+    let keys = Table::new(&ctx);
+    for (key_index, key) in keymap.keys.iter().enumerate() {
+        let value = Table::new(&ctx);
+        value.set_field(ctx, "keycode", i64::from(key.keycode));
+        value.set_field(ctx, "evdev_code", i64::from(key.evdev_code));
+        value.set_field(ctx, "name", key.name.as_str());
+        value.set_field(ctx, "repeats", key.repeats);
+        let layouts = Table::new(&ctx);
+        for (layout_index, layout) in key.layouts.iter().enumerate() {
+            let levels = Table::new(&ctx);
+            for (level_index, level) in layout.iter().enumerate() {
+                let symbols = Table::new(&ctx);
+                for (symbol_index, symbol) in level.iter().enumerate() {
+                    let item = Table::new(&ctx);
+                    item.set_field(ctx, "keysym", i64::from(symbol.keysym));
+                    item.set_field(ctx, "name", symbol.name.as_str());
+                    item.set_field(ctx, "text", symbol.text.as_str());
+                    symbols
+                        .set(ctx, symbol_index as i64 + 1, item)
+                        .expect("XKB symbol table accepts integer keys");
+                }
+                levels
+                    .set(ctx, level_index as i64 + 1, symbols)
+                    .expect("XKB level table accepts integer keys");
+            }
+            layouts
+                .set(ctx, layout_index as i64 + 1, levels)
+                .expect("XKB layout table accepts integer keys");
+        }
+        value.set_field(ctx, "layouts", layouts);
+        keys.set(ctx, key_index as i64 + 1, value)
+            .expect("XKB key table accepts integer keys");
+    }
+    result.set_field(ctx, "keys", keys);
+    result
 }
 
 fn view_transition_to_lua(ctx: Context<'_>, transition: ViewTransition) -> Table<'_> {
@@ -5244,6 +5305,30 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn xkb_facade_builds_osk_layout_tables() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "xkb.lua",
+                br#"
+                    local keymap = mold.xkb.compile { layout = "us" }
+                    assert(string.find(keymap.source, "xkb_keymap", 1, true))
+                    local found = false
+                    for _, key in ipairs(keymap.keys) do
+                        if key.name == "AC01" then
+                            assert(key.evdev_code == 30)
+                            assert(key.layouts[1][1][1].text == "a")
+                            assert(key.layouts[1][2][1].text == "A")
+                            found = true
+                        end
+                    end
+                    assert(found)
+                "#,
+            )
+            .unwrap();
     }
 
     #[test]

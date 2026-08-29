@@ -1263,6 +1263,7 @@ dependencies = [
  "libc",
  "libloading",
  "serde_json",
+ "xkbcommon",
 ]
 
 [[package]]

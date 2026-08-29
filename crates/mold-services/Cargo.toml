@@ -10,3 +10,4 @@ repository.workspace = true
 libc.workspace = true
 libloading.workspace = true
 serde_json.workspace = true
+xkbcommon.workspace = true
