@@ -77,6 +77,8 @@ pub enum DrawCommand {
         icon_theme: Option<String>,
         /// Effective node opacity.
         opacity: f32,
+        /// Aspect-ratio policy inside the resolved bounds.
+        fill_mode: ImageFillMode,
     },
     /// Filled and optionally stroked SVG path.
     Path {
@@ -95,6 +97,15 @@ pub enum DrawCommand {
         /// True for even-odd fill, false for nonzero fill.
         even_odd: bool,
     },
+}
+
+/// Image placement policy inside resolved node bounds.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ImageFillMode {
+    #[default]
+    Stretch,
+    PreserveAspectFit,
+    PreserveAspectCrop,
 }
 
 /// Vertical positioning for shaped text inside its node bounds.
@@ -502,6 +513,7 @@ fn append_node(
             source: scene.string_value(node, "source")?.to_owned(),
             icon_theme: None,
             opacity: opacity as f32,
+            fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
         }),
         Element::Icon => commands.push(DrawCommand::Texture {
             node,
@@ -509,6 +521,7 @@ fn append_node(
             source: scene.string_value(node, "name")?.to_owned(),
             icon_theme: Some(scene.string_value(node, "theme")?.to_owned()),
             opacity: opacity as f32,
+            fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
         }),
         Element::Shape => commands.push(DrawCommand::Path {
             node,
@@ -621,6 +634,17 @@ fn vertical_alignment(value: &str) -> Result<VerticalAlignment, RenderError> {
         "bottom" => Ok(VerticalAlignment::Bottom),
         _ => Err(RenderError::Scene(format!(
             "unknown Text vertical alignment `{value}`"
+        ))),
+    }
+}
+
+fn image_fill_mode(value: &str) -> Result<ImageFillMode, RenderError> {
+    match value {
+        "stretch" => Ok(ImageFillMode::Stretch),
+        "preserve_aspect_fit" => Ok(ImageFillMode::PreserveAspectFit),
+        "preserve_aspect_crop" => Ok(ImageFillMode::PreserveAspectCrop),
+        _ => Err(RenderError::Scene(format!(
+            "unknown image fill mode `{value}`"
         ))),
     }
 }
@@ -942,6 +966,9 @@ mod tests {
             .unwrap();
         scene.assign(image, "width", 40.0).unwrap();
         scene.assign(image, "height", 20.0).unwrap();
+        scene
+            .assign(image, "fill_mode", "preserve_aspect_fit")
+            .unwrap();
         scene.assign(icon, "name", "network-wireless").unwrap();
         scene.assign(icon, "theme", "Adwaita").unwrap();
         scene.assign(icon, "width", 16.0).unwrap();
@@ -963,8 +990,12 @@ mod tests {
 
         assert!(matches!(
             &list.commands[0],
-            DrawCommand::Texture { source, icon_theme: None, .. }
-                if source == "/tmp/wallpaper.webp"
+            DrawCommand::Texture {
+                source,
+                icon_theme: None,
+                fill_mode: ImageFillMode::PreserveAspectFit,
+                ..
+            } if source == "/tmp/wallpaper.webp"
         ));
         assert!(matches!(
             &list.commands[1],

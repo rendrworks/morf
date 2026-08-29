@@ -113,6 +113,19 @@ impl ImageCache {
         logical_size: u32,
         scale_120: u32,
     ) -> Result<Arc<ImageData>, ImageError> {
+        self.load_icon_sized(name, theme, logical_size, logical_size, scale_120)
+    }
+
+    /// Resolves and loads an icon into a logical rectangle.
+    pub fn load_icon_sized(
+        &mut self,
+        name: &str,
+        theme: &str,
+        logical_width: u32,
+        logical_height: u32,
+        scale_120: u32,
+    ) -> Result<Arc<ImageData>, ImageError> {
+        let logical_size = logical_width.max(logical_height);
         let physical = physical_size(logical_size, scale_120)?;
         let key = (name.to_owned(), theme.to_owned(), physical, scale_120);
         let path = if let Some(path) = self.icons.get(&key) {
@@ -122,7 +135,7 @@ impl ImageCache {
             self.icons.insert(key, path.clone());
             path
         };
-        self.load(path, logical_size, logical_size, scale_120)
+        self.load(path, logical_width, logical_height, scale_120)
     }
 
     /// Returns a source's unscaled pixel dimensions.

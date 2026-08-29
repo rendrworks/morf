@@ -1,5 +1,7 @@
 use mold_layout::Geometry;
-use mold_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
+use mold_render::{
+    DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, RenderBackend, WgpuBackend,
+};
 use mold_scene::{Color, Element, Scene};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,6 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 source: image_path.to_string_lossy().into_owned(),
                 icon_theme: None,
                 opacity: 1.0,
+                fill_mode: ImageFillMode::PreserveAspectFit,
             },
             DrawCommand::Path {
                 node: shape,

@@ -1236,6 +1236,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
             properties.extend([
                 string("name", ""),
                 string("theme", "hicolor"),
+                string("fill_mode", "stretch"),
                 number("source_width", 0.0),
                 number("source_height", 0.0),
             ]);

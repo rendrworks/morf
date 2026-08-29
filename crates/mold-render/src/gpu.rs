@@ -8,12 +8,15 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
 use mold_image::ImageCache;
-use mold_layout::{Size, TextMeasurer, TextOptions};
+use mold_layout::{Geometry, Size, TextMeasurer, TextOptions};
 use mold_scene::{Element, NodeHandle};
 use mold_text::{RasterContent, TextSystem};
 
 use crate::path::PathCache;
-use crate::{DamageRect, DrawCommand, DrawList, RenderBackend, SdfQuadInstance, VerticalAlignment};
+use crate::{
+    DamageRect, DrawCommand, DrawList, ImageFillMode, RenderBackend, SdfQuadInstance,
+    VerticalAlignment,
+};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -888,6 +891,14 @@ struct TextureBatch {
     command_instances: Vec<Option<u32>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TexturePlacement {
+    bounds: Geometry,
+    logical_width: u32,
+    logical_height: u32,
+    uv: [f32; 4],
+}
+
 type TextureBatchContext<'a> = GlyphBatchContext<'a>;
 
 fn create_texture_batch(
@@ -908,6 +919,7 @@ fn create_texture_batch(
             source,
             icon_theme,
             opacity,
+            fill_mode,
             ..
         } = command
         else {
@@ -916,8 +928,15 @@ fn create_texture_batch(
         if source.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             continue;
         }
-        let logical_width = bounds.width.ceil().max(1.0) as u32;
-        let logical_height = bounds.height.ceil().max(1.0) as u32;
+        let preferred = bounds.width.max(bounds.height).ceil().max(1.0) as u32;
+        let intrinsic = match icon_theme {
+            Some(theme) => cache.icon_intrinsic_size(source, theme, preferred).ok(),
+            None => cache.intrinsic_size(source).ok(),
+        }
+        .unwrap_or((bounds.width.ceil() as u32, bounds.height.ceil() as u32));
+        let placement = texture_placement(*bounds, intrinsic, *fill_mode);
+        let logical_width = placement.logical_width;
+        let logical_height = placement.logical_height;
         let key = TextureKey {
             source: source.clone(),
             theme: icon_theme.clone(),
@@ -930,7 +949,7 @@ fn create_texture_batch(
                 &mut batch,
                 command_index,
                 image.clone(),
-                *bounds,
+                placement,
                 *opacity,
                 context.target_size,
                 scale,
@@ -939,7 +958,7 @@ fn create_texture_batch(
         }
         let loaded = match icon_theme {
             Some(theme) => {
-                cache.load_icon(source, theme, logical_width.max(logical_height), scale_120)
+                cache.load_icon_sized(source, theme, logical_width, logical_height, scale_120)
             }
             None => cache.load(source, logical_width, logical_height, scale_120),
         };
@@ -1006,7 +1025,7 @@ fn create_texture_batch(
             &mut batch,
             command_index,
             texture_image,
-            *bounds,
+            placement,
             *opacity,
             (target_width, target_height),
             scale,
@@ -1015,16 +1034,68 @@ fn create_texture_batch(
     batch
 }
 
+fn texture_placement(
+    bounds: Geometry,
+    intrinsic: (u32, u32),
+    fill_mode: ImageFillMode,
+) -> TexturePlacement {
+    let source_width = f64::from(intrinsic.0.max(1));
+    let source_height = f64::from(intrinsic.1.max(1));
+    match fill_mode {
+        ImageFillMode::Stretch => TexturePlacement {
+            bounds,
+            logical_width: bounds.width.ceil().max(1.0) as u32,
+            logical_height: bounds.height.ceil().max(1.0) as u32,
+            uv: [0.0, 0.0, 1.0, 1.0],
+        },
+        ImageFillMode::PreserveAspectFit => {
+            let scale = (bounds.width / source_width).min(bounds.height / source_height);
+            let width = source_width * scale;
+            let height = source_height * scale;
+            TexturePlacement {
+                bounds: Geometry {
+                    x: bounds.x + (bounds.width - width) / 2.0,
+                    y: bounds.y + (bounds.height - height) / 2.0,
+                    width,
+                    height,
+                },
+                logical_width: width.ceil().max(1.0) as u32,
+                logical_height: height.ceil().max(1.0) as u32,
+                uv: [0.0, 0.0, 1.0, 1.0],
+            }
+        }
+        ImageFillMode::PreserveAspectCrop => {
+            let scale = (bounds.width / source_width).max(bounds.height / source_height);
+            let width = source_width * scale;
+            let height = source_height * scale;
+            let uv_width = (bounds.width / width) as f32;
+            let uv_height = (bounds.height / height) as f32;
+            TexturePlacement {
+                bounds,
+                logical_width: width.ceil().max(1.0) as u32,
+                logical_height: height.ceil().max(1.0) as u32,
+                uv: [
+                    (1.0 - uv_width) / 2.0,
+                    (1.0 - uv_height) / 2.0,
+                    uv_width,
+                    uv_height,
+                ],
+            }
+        }
+    }
+}
+
 fn push_texture_instance(
     batch: &mut TextureBatch,
     command_index: usize,
     image: TextureImage,
-    bounds: mold_layout::Geometry,
+    placement: TexturePlacement,
     opacity: f32,
     target_size: (u32, u32),
     scale: f64,
 ) {
     let (target_width, target_height) = target_size;
+    let bounds = placement.bounds;
     batch.command_instances[command_index] = Some(batch.instances.len() as u32);
     batch.instances.push(GlyphInstance {
         bounds: [
@@ -1033,7 +1104,7 @@ fn push_texture_instance(
             (bounds.width * scale) as f32 / target_width as f32 * 2.0,
             -(bounds.height * scale) as f32 / target_height as f32 * 2.0,
         ],
-        uv: [0.0, 0.0, 1.0, 1.0],
+        uv: placement.uv,
         color: [1.0, 1.0, 1.0, opacity],
     });
     batch.images.push(image);
@@ -1470,5 +1541,32 @@ mod tests {
             ),
             Some((8, 9, 2, 3))
         );
+    }
+
+    #[test]
+    fn texture_fit_and_crop_preserve_aspect_ratio() {
+        let bounds = Geometry {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let fit = texture_placement(bounds, (200, 100), ImageFillMode::PreserveAspectFit);
+        assert_eq!(
+            fit.bounds,
+            Geometry {
+                x: 10.0,
+                y: 45.0,
+                width: 100.0,
+                height: 50.0
+            }
+        );
+        assert_eq!(fit.uv, [0.0, 0.0, 1.0, 1.0]);
+
+        let crop = texture_placement(bounds, (200, 100), ImageFillMode::PreserveAspectCrop);
+        assert_eq!(crop.bounds, bounds);
+        assert_eq!(crop.logical_width, 200);
+        assert_eq!(crop.logical_height, 100);
+        assert_eq!(crop.uv, [0.25, 0.0, 0.5, 1.0]);
     }
 }
