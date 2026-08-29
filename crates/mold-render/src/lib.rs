@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
+use std::ops::Range;
 
 use mold_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D};
-use mold_scene::{Color, Element, NodeHandle, Scene, SceneError};
+use mold_scene::{Color, Element, NodeHandle, Scene, SceneError, Value};
 
 mod gpu;
 mod path;
@@ -238,6 +239,23 @@ impl DrawCommand {
 pub struct DrawList {
     /// Back-to-front paint operations.
     pub commands: Vec<DrawCommand>,
+    /// Nested offscreen subtree layers.
+    pub layers: Vec<Layer>,
+}
+
+/// One subtree rendered into an offscreen target before composition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layer {
+    /// Scene node that owns the layer.
+    pub node: NodeHandle,
+    /// Contiguous command range contained by the subtree.
+    pub commands: Range<usize>,
+    /// Containing layer, if nested.
+    pub parent: Option<usize>,
+    /// Opacity applied once while compositing the complete subtree.
+    pub opacity: f32,
+    /// Logical bounds affected by this layer.
+    pub bounds: Geometry,
 }
 
 impl DrawList {
@@ -254,8 +272,9 @@ impl DrawList {
                     transform: Transform2D::IDENTITY,
                     clip: None,
                     overlay: Color::rgba8(0, 0, 0, 0),
+                    layer: None,
                 },
-                &mut list.commands,
+                &mut list,
             )?;
         }
         Ok(list)
@@ -294,6 +313,18 @@ impl DamageTracker {
                     .filter_map(|command| physical_damage(command.bounds(), scale_120))
                     .collect(),
             );
+        }
+        if self.previous.layers != next.layers {
+            let damage = self
+                .previous
+                .commands
+                .iter()
+                .chain(&next.commands)
+                .filter_map(|command| physical_damage(command.bounds(), scale_120))
+                .collect();
+            self.previous = next.clone();
+            self.scale_120 = scale_120;
+            return merge_damage(damage);
         }
         let previous: HashMap<_, _> = self
             .previous
@@ -540,6 +571,7 @@ struct PaintContext {
     transform: Transform2D,
     clip: Option<Geometry>,
     overlay: Color,
+    layer: Option<usize>,
 }
 
 fn append_node(
@@ -547,12 +579,34 @@ fn append_node(
     layout: &Layout,
     node: NodeHandle,
     inherited: PaintContext,
-    commands: &mut Vec<DrawCommand>,
+    list: &mut DrawList,
 ) -> Result<(), RenderError> {
     if !scene.bool_value(node, "visible")? {
         return Ok(());
     }
-    let opacity = inherited.opacity * scene.number(node, "opacity")?.clamp(0.0, 1.0);
+    let node_opacity = scene.number(node, "opacity")?.clamp(0.0, 1.0);
+    let rotation = scene.number(node, "rotation")?;
+    let rounded_clip = scene.bool_value(node, "clip")?
+        && scene.element(node)? == Element::Rect
+        && rect_radii(scene, node)?.iter().any(|radius| *radius > 0.0);
+    let creates_layer =
+        layer_enabled(scene, node)? || node_opacity < 1.0 || rotation != 0.0 || rounded_clip;
+    let layer = creates_layer.then(|| {
+        let index = list.layers.len();
+        list.layers.push(Layer {
+            node,
+            commands: list.commands.len()..list.commands.len(),
+            parent: inherited.layer,
+            opacity: node_opacity as f32,
+            bounds: Geometry::default(),
+        });
+        index
+    });
+    let opacity = if creates_layer {
+        inherited.opacity
+    } else {
+        inherited.opacity * node_opacity
+    };
     let color_overlay =
         compose_overlay(inherited.overlay, scene.color_value(node, "color_overlay")?);
     let Some(bounds) = layout.geometry(node) else {
@@ -564,7 +618,7 @@ fn append_node(
             bounds.y + bounds.height / 2.0,
         ),
         scene.number(node, "scale")?,
-        scene.number(node, "rotation")?,
+        rotation,
     ));
     let clip = if scene.bool_value(node, "clip")? {
         let bounds = transform.bounds(bounds);
@@ -577,7 +631,7 @@ fn append_node(
         inherited.clip
     };
     match scene.element(node)? {
-        Element::Rect => commands.push(DrawCommand::Quad {
+        Element::Rect => list.commands.push(DrawCommand::Quad {
             node,
             bounds,
             transform,
@@ -595,7 +649,7 @@ fn append_node(
             shadow_offset_x: scene.number(node, "shadow_offset_x")?,
             shadow_offset_y: scene.number(node, "shadow_offset_y")?,
         }),
-        Element::Text => commands.push(DrawCommand::Text {
+        Element::Text => list.commands.push(DrawCommand::Text {
             node,
             bounds,
             transform,
@@ -614,7 +668,7 @@ fn append_node(
                 scene.string_value(node, "vertical_alignment")?,
             )?,
         }),
-        Element::Image => commands.push(DrawCommand::Texture {
+        Element::Image => list.commands.push(DrawCommand::Texture {
             node,
             bounds,
             transform,
@@ -625,7 +679,7 @@ fn append_node(
             color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
         }),
-        Element::Icon => commands.push(DrawCommand::Texture {
+        Element::Icon => list.commands.push(DrawCommand::Texture {
             node,
             bounds,
             transform,
@@ -636,7 +690,7 @@ fn append_node(
             color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
         }),
-        Element::Shape => commands.push(DrawCommand::Path {
+        Element::Shape => list.commands.push(DrawCommand::Path {
             node,
             bounds,
             transform,
@@ -675,11 +729,54 @@ fn append_node(
                 transform,
                 clip,
                 overlay: color_overlay,
+                layer: layer.or(inherited.layer),
             },
-            commands,
+            list,
         )?;
     }
+    if let Some(layer) = layer {
+        let start = list.layers[layer].commands.start;
+        let end = list.commands.len();
+        list.layers[layer].commands.end = end;
+        list.layers[layer].bounds =
+            command_union(&list.commands[start..end]).unwrap_or_else(|| transform.bounds(bounds));
+    }
     Ok(())
+}
+
+fn layer_enabled(scene: &Scene, node: NodeHandle) -> Result<bool, RenderError> {
+    let Value::Map(layer) = scene.current(node, "layer")? else {
+        return Err(RenderError::Scene(
+            "layer must be a property map".to_owned(),
+        ));
+    };
+    match layer.get("enabled") {
+        None => Ok(false),
+        Some(Value::Bool(enabled)) => Ok(*enabled),
+        Some(_) => Err(RenderError::Scene(
+            "layer.enabled must be a boolean".to_owned(),
+        )),
+    }
+}
+
+fn command_union(commands: &[DrawCommand]) -> Option<Geometry> {
+    commands
+        .iter()
+        .map(DrawCommand::bounds)
+        .reduce(union_geometry)
+}
+
+fn union_geometry(left: Geometry, right: Geometry) -> Geometry {
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    let right_edge = (left.x + left.width).max(right.x + right.width);
+    let bottom = (left.y + left.height).max(right.y + right.height);
+    Geometry {
+        x,
+        y,
+        width: right_edge - x,
+        height: bottom - y,
+    }
 }
 
 fn compose_overlay(under: Color, over: Color) -> Color {
@@ -968,6 +1065,7 @@ fn union(left: DamageRect, right: DamageRect) -> DamageRect {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::convert::Infallible;
 
     use mold_layout::{Size, TextMeasurer};
@@ -1070,6 +1168,75 @@ mod tests {
                 .color_overlay,
             color_array(overlay)
         );
+    }
+
+    #[test]
+    fn nested_opacity_emits_composable_subtree_layers() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let group = scene.create(Element::Item);
+        let child = scene.create(Element::Rect);
+        scene.assign(root, "opacity", 0.5).unwrap();
+        scene.assign(group, "opacity", 0.25).unwrap();
+        scene.assign(child, "width", 20.0).unwrap();
+        scene.assign(child, "height", 10.0).unwrap();
+        scene.reparent(group, Some(root)).unwrap();
+        scene.reparent(child, Some(group)).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 20.0,
+                height: 10.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+
+        assert_eq!(list.layers.len(), 2);
+        assert_eq!(list.layers[0].commands, 0..1);
+        assert_eq!(list.layers[0].parent, None);
+        assert_eq!(list.layers[0].opacity, 0.5);
+        assert_eq!(list.layers[1].commands, 0..1);
+        assert_eq!(list.layers[1].parent, Some(0));
+        assert_eq!(list.layers[1].opacity, 0.25);
+        let DrawCommand::Quad { color, .. } = list.commands[0] else {
+            panic!("child did not emit a quad");
+        };
+        assert_eq!(color.alpha, 1.0);
+    }
+
+    #[test]
+    fn layer_enabled_map_forces_an_offscreen_subtree() {
+        let mut scene = Scene::new();
+        let rect = scene.create(Element::Rect);
+        scene
+            .assign(
+                rect,
+                "layer",
+                Value::Map(BTreeMap::from([("enabled".to_owned(), Value::Bool(true))])),
+            )
+            .unwrap();
+        scene.assign(rect, "width", 20.0).unwrap();
+        scene.assign(rect, "height", 10.0).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            rect,
+            Size {
+                width: 20.0,
+                height: 10.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+
+        assert_eq!(list.layers.len(), 1);
+        assert_eq!(list.layers[0].commands, 0..1);
+        assert_eq!(list.layers[0].opacity, 1.0);
     }
 
     #[test]
@@ -1230,18 +1397,20 @@ mod tests {
                     red: 1.0,
                     green: 0.0,
                     blue: 0.0,
-                    alpha: 0.5,
+                    alpha: 1.0,
                 },
                 end_color: Color {
                     red: 0.0,
                     green: 0.0,
                     blue: 1.0,
-                    alpha: 0.5,
+                    alpha: 1.0,
                 },
                 start: [0.0, 0.0],
                 end: [1.0, 1.0],
             }
         );
+        assert_eq!(list.layers.len(), 1);
+        assert_eq!(list.layers[0].opacity, 0.5);
         let instance = SdfQuadInstance::from_command(&list.commands[0], 120).unwrap();
         assert_eq!(instance.gradient_data[0], 1.0);
         assert_eq!(instance.gradient_points, [0.0, 0.0, 1.0, 1.0]);
@@ -1427,6 +1596,7 @@ mod tests {
                 shadow_offset_x: 0.0,
                 shadow_offset_y: 0.0,
             }],
+            layers: Vec::new(),
         };
         tracker.diff(&first, 120);
         let mut second = first.clone();

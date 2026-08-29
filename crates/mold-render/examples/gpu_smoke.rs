@@ -1,6 +1,6 @@
 use mold_layout::{Geometry, Transform2D};
 use mold_render::{
-    DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, RenderBackend, WgpuBackend,
+    DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, Layer, RenderBackend, WgpuBackend,
 };
 use mold_scene::{Color, Element, Scene};
 
@@ -84,6 +84,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 even_odd: false,
             },
         ],
+        layers: vec![Layer {
+            node,
+            commands: 0..3,
+            parent: None,
+            opacity: 0.8,
+            bounds: Geometry {
+                x: 0.0,
+                y: 0.0,
+                width: 320.0,
+                height: 64.0,
+            },
+        }],
     };
     backend.render(
         &list,

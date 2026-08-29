@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client.logical_size().1 as f64,
                 Color::rgba8(31, 36, 48, 255),
             )],
+            layers: Vec::new(),
         },
         &[DamageRect {
             x: 0,
@@ -70,6 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 height as f64,
                 Color::rgba8(66, 76, 96, 255),
             )],
+            layers: Vec::new(),
         },
         &[DamageRect {
             x: 0,

@@ -380,7 +380,7 @@ impl RenderBackend for WgpuBackend {
             list,
             scale_120,
         );
-        let texture_batch = create_texture_batch(
+        let mut texture_batch = create_texture_batch(
             TextureBatchContext {
                 device: &self.device,
                 queue: &self.queue,
@@ -393,6 +393,51 @@ impl RenderBackend for WgpuBackend {
             list,
             scale_120,
         );
+        let scale = scale_120.max(1) as f64 / 120.0;
+        let mut layer_targets = Vec::with_capacity(list.layers.len());
+        for layer in &list.layers {
+            let (texture, view) = create_target(&self.device, self.width, self.height);
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mold layer bind group"),
+                layout: &self.glyph_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
+                    },
+                ],
+            });
+            let instance = texture_batch.instances.len() as u32;
+            let (origin, axes) = transformed_quad(
+                Transform2D::IDENTITY,
+                Geometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: self.width as f64 / scale,
+                    height: self.height as f64 / scale,
+                },
+                scale,
+                (self.width, self.height),
+            );
+            texture_batch.instances.push(GlyphInstance {
+                origin,
+                axes,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                color: [1.0, 1.0, 1.0, layer.opacity],
+                color_overlay: [0.0; 4],
+                mode: [1.0, 0.0, 0.0, 0.0],
+            });
+            layer_targets.push(LayerTarget {
+                _texture: texture,
+                view,
+                bind_group,
+                instance,
+            });
+        }
         let path_batch = create_path_batch(&mut self.paths, list, scale_120)
             .map_err(|error| GpuError(format!("could not prepare path draw: {error}")))?;
         self.ensure_instances(instances.len().max(1));
@@ -436,11 +481,122 @@ impl RenderBackend for WgpuBackend {
                 bytemuck::cast_slice(&path_batch.indices),
             );
         }
+        let mut command_layers = vec![None; list.commands.len()];
+        let mut child_layers = HashMap::new();
+        for (layer_index, layer) in list.layers.iter().enumerate() {
+            for owner in &mut command_layers[layer.commands.clone()] {
+                *owner = Some(layer_index);
+            }
+            child_layers.insert((layer.parent, layer.commands.start), layer_index);
+        }
+        macro_rules! draw_command {
+            ($pass:expr, $command_index:expr, $base_damage:expr) => {{
+                let command_index = $command_index;
+                let command_damage = if let Some(clip) = list.commands[command_index].clip() {
+                    physical_damage(clip, scale_120)
+                        .and_then(|clip| intersect_damage($base_damage, clip))
+                } else {
+                    Some($base_damage)
+                };
+                if let Some(command_damage) = command_damage
+                    && let Some((x, y, width, height)) =
+                        clamp_scissor(command_damage, self.width, self.height)
+                {
+                    $pass.set_scissor_rect(x, y, width, height);
+                    if let Some(instance) = quad_indices[command_index] {
+                        $pass.set_pipeline(&self.pipeline);
+                        $pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                        $pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+                        $pass.draw(0..6, instance..instance + 1);
+                    }
+                    if let Some(instance) = texture_batch.command_instances[command_index] {
+                        let image = &texture_batch.images[instance as usize];
+                        $pass.set_pipeline(&self.glyph_pipeline);
+                        $pass.set_bind_group(0, &image.bind_group, &[]);
+                        $pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
+                        $pass.draw(0..6, instance..instance + 1);
+                    }
+                    if let Some(batch) = &glyph_batch
+                        && let Some(range) = &batch.command_ranges[command_index]
+                    {
+                        $pass.set_pipeline(&self.glyph_pipeline);
+                        $pass.set_bind_group(0, &batch.bind_group, &[]);
+                        $pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
+                        $pass.draw(0..6, range.clone());
+                    }
+                    for range in &path_batch.command_ranges[command_index] {
+                        $pass.set_pipeline(&self.path_pipeline);
+                        $pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                        $pass.set_vertex_buffer(0, self.path_vertex_buffer.slice(..));
+                        $pass.set_index_buffer(
+                            self.path_index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        $pass.draw_indexed(range.clone(), 0, 0..1);
+                    }
+                }
+            }};
+        }
+        macro_rules! draw_layer {
+            ($pass:expr, $layer_index:expr, $base_damage:expr) => {{
+                let layer_index = $layer_index;
+                if let Some(layer_damage) =
+                    physical_damage(list.layers[layer_index].bounds, scale_120)
+                        .and_then(|bounds| intersect_damage($base_damage, bounds))
+                    && let Some((x, y, width, height)) =
+                        clamp_scissor(layer_damage, self.width, self.height)
+                {
+                    let target = &layer_targets[layer_index];
+                    $pass.set_scissor_rect(x, y, width, height);
+                    $pass.set_pipeline(&self.glyph_pipeline);
+                    $pass.set_bind_group(0, &target.bind_group, &[]);
+                    $pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
+                    $pass.draw(0..6, target.instance..target.instance + 1);
+                }
+            }};
+        }
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("mold frame encoder"),
             });
+        let full_damage = DamageRect {
+            x: 0,
+            y: 0,
+            width: self.width,
+            height: self.height,
+        };
+        for layer_index in (0..list.layers.len()).rev() {
+            let layer = &list.layers[layer_index];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mold subtree layer"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &layer_targets[layer_index].view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            let mut command_index = layer.commands.start;
+            while command_index < layer.commands.end {
+                if let Some(child) = child_layers
+                    .get(&(Some(layer_index), command_index))
+                    .copied()
+                {
+                    draw_layer!(pass, child, full_damage);
+                    command_index = list.layers[child].commands.end.max(command_index + 1);
+                } else {
+                    if command_layers[command_index] == Some(layer_index) {
+                        draw_command!(pass, command_index, full_damage);
+                    }
+                    command_index += 1;
+                }
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("mold frame"),
@@ -464,54 +620,16 @@ impl RenderBackend for WgpuBackend {
                 pass.set_pipeline(&self.clear_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.draw(0..3, 0..1);
-                for (command_index, quad_instance) in quad_indices.iter().enumerate() {
-                    let command_damage = if let Some(clip) = list.commands[command_index].clip() {
-                        let Some(clip) = physical_damage(clip, scale_120) else {
-                            continue;
-                        };
-                        let Some(clipped) = intersect_damage(*damage, clip) else {
-                            continue;
-                        };
-                        clipped
+                let mut command_index = 0;
+                while command_index < list.commands.len() {
+                    if let Some(layer) = child_layers.get(&(None, command_index)).copied() {
+                        draw_layer!(pass, layer, *damage);
+                        command_index = list.layers[layer].commands.end.max(command_index + 1);
                     } else {
-                        *damage
-                    };
-                    let Some((x, y, width, height)) =
-                        clamp_scissor(command_damage, self.width, self.height)
-                    else {
-                        continue;
-                    };
-                    pass.set_scissor_rect(x, y, width, height);
-                    if let Some(instance) = *quad_instance {
-                        pass.set_pipeline(&self.pipeline);
-                        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                        pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                        pass.draw(0..6, instance..instance + 1);
-                    }
-                    if let Some(instance) = texture_batch.command_instances[command_index] {
-                        let image = &texture_batch.images[instance as usize];
-                        pass.set_pipeline(&self.glyph_pipeline);
-                        pass.set_bind_group(0, &image.bind_group, &[]);
-                        pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
-                        pass.draw(0..6, instance..instance + 1);
-                    }
-                    if let Some(batch) = &glyph_batch
-                        && let Some(range) = &batch.command_ranges[command_index]
-                    {
-                        pass.set_pipeline(&self.glyph_pipeline);
-                        pass.set_bind_group(0, &batch.bind_group, &[]);
-                        pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
-                        pass.draw(0..6, range.clone());
-                    }
-                    for range in &path_batch.command_ranges[command_index] {
-                        pass.set_pipeline(&self.path_pipeline);
-                        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                        pass.set_vertex_buffer(0, self.path_vertex_buffer.slice(..));
-                        pass.set_index_buffer(
-                            self.path_index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        pass.draw_indexed(range.clone(), 0, 0..1);
+                        if command_layers[command_index].is_none() {
+                            draw_command!(pass, command_index, *damage);
+                        }
+                        command_index += 1;
                     }
                 }
             }
@@ -779,6 +897,7 @@ struct GlyphInstance {
     uv: [f32; 4],
     color: [f32; 4],
     color_overlay: [f32; 4],
+    mode: [f32; 4],
 }
 
 fn transformed_quad(
@@ -862,7 +981,8 @@ fn create_glyph_pipeline(
         1 => Float32x4,
         2 => Float32x4,
         3 => Float32x4,
-        4 => Float32x4
+        4 => Float32x4,
+        5 => Float32x4
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<GlyphInstance>() as u64,
@@ -940,6 +1060,13 @@ fn create_index_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
 struct TextureImage {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+}
+
+struct LayerTarget {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    instance: u32,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1189,6 +1316,7 @@ fn push_texture_instance(
         uv: placement.uv,
         color: [1.0, 1.0, 1.0, tint.opacity],
         color_overlay: color_array(tint.overlay),
+        mode: [0.0; 4],
     });
     batch.images.push(image);
 }
@@ -1352,6 +1480,7 @@ fn create_glyph_batch(
             ],
             color: tint,
             color_overlay: color_array(color_overlay),
+            mode: [0.0; 4],
         });
     }
     let texture = device.create_texture(&wgpu::TextureDescriptor {

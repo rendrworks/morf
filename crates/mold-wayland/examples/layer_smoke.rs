@@ -81,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vertical_alignment: VerticalAlignment::Top,
             },
         ],
+        layers: Vec::new(),
     };
     client.request_frame();
     client

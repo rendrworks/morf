@@ -1134,6 +1134,7 @@ fn property_class(property: &str) -> PropertyClass {
         }
         "color"
         | "color_overlay"
+        | "layer"
         | "radius"
         | "top_left_radius"
         | "top_right_radius"
@@ -1194,6 +1195,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         any("anchors", Value::Map(BTreeMap::new())),
         boolean("visible", true),
         number("opacity", 1.0),
+        any("layer", Value::Map(BTreeMap::new())),
         color("color_overlay", Color::rgba8(0, 0, 0, 0)),
         number("z", 0.0),
         boolean("clip", false),
