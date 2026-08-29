@@ -25,8 +25,8 @@ pub enum DrawCommand {
         color: Color,
         /// Optional normalized gradient fill.
         gradient: Gradient,
-        /// Uniform corner radius.
-        radius: f64,
+        /// Corner radii in top-left clockwise order.
+        radii: [f64; 4],
         /// Border width.
         border_width: f64,
         /// Border colour after node opacity.
@@ -347,7 +347,7 @@ impl SdfQuadInstance {
             bounds,
             color,
             gradient,
-            radius,
+            radii,
             border_width,
             border_color,
             blur,
@@ -380,7 +380,7 @@ impl SdfQuadInstance {
                 (expanded.height * scale) as f32,
             ],
             color: color_array(*color),
-            radii: [(*radius * scale) as f32; 4],
+            radii: radii.map(|radius| (radius.max(0.0) * scale) as f32),
             border: [(*border_width * scale) as f32, 0.0, 0.0, 0.0],
             border_color: color_array(*border_color),
             shape: [
@@ -456,7 +456,7 @@ fn append_node(
             bounds,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
             gradient: scene_gradient(scene, node, opacity)?,
-            radius: scene.number(node, "radius")?,
+            radii: rect_radii(scene, node)?,
             border_width: scene.number(node, "border_width")?,
             border_color: with_opacity(scene.color_value(node, "border_color")?, opacity),
             blur: scene.number(node, "blur")?.max(0.0),
@@ -564,6 +564,20 @@ fn scene_gradient(scene: &Scene, node: NodeHandle, opacity: f64) -> Result<Gradi
             )));
         }
     })
+}
+
+fn rect_radii(scene: &Scene, node: NodeHandle) -> Result<[f64; 4], RenderError> {
+    let uniform = scene.number(node, "radius")?.max(0.0);
+    let corner = |property| -> Result<f64, RenderError> {
+        let value = scene.number(node, property)?;
+        Ok(if value < 0.0 { uniform } else { value })
+    };
+    Ok([
+        corner("top_left_radius")?,
+        corner("top_right_radius")?,
+        corner("bottom_right_radius")?,
+        corner("bottom_left_radius")?,
+    ])
 }
 
 fn gradient_instance(gradient: &Gradient) -> ([f32; 4], [f32; 4], [f32; 4], [f32; 4], f32) {
@@ -789,6 +803,8 @@ mod tests {
             .unwrap();
         scene.assign(rect, "gradient_end_color", "#0000ff").unwrap();
         scene.assign(rect, "gradient_end_y", 1.0).unwrap();
+        scene.assign(rect, "radius", 4.0).unwrap();
+        scene.assign(rect, "top_right_radius", 12.0).unwrap();
         let layout = Layout::compute(
             &scene,
             rect,
@@ -801,9 +817,13 @@ mod tests {
         .unwrap();
 
         let list = DrawList::from_scene(&scene, &layout).unwrap();
-        let DrawCommand::Quad { gradient, .. } = &list.commands[0] else {
+        let DrawCommand::Quad {
+            gradient, radii, ..
+        } = &list.commands[0]
+        else {
             panic!("rectangle did not emit a quad");
         };
+        assert_eq!(*radii, [4.0, 12.0, 4.0, 4.0]);
         assert_eq!(
             gradient,
             &Gradient::Linear {
@@ -826,6 +846,7 @@ mod tests {
         let instance = SdfQuadInstance::from_command(&list.commands[0], 120).unwrap();
         assert_eq!(instance.gradient_data[0], 1.0);
         assert_eq!(instance.gradient_points, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(instance.radii, [4.0, 12.0, 4.0, 4.0]);
     }
 
     #[test]
@@ -987,7 +1008,7 @@ mod tests {
                 },
                 color: Color::rgba8(0, 0, 0, 255),
                 gradient: Gradient::None,
-                radius: 0.0,
+                radii: [0.0; 4],
                 border_width: 0.0,
                 border_color: Color::rgba8(0, 0, 0, 0),
                 blur: 0.0,
@@ -1025,7 +1046,7 @@ mod tests {
             },
             color: Color::rgba8(255, 255, 255, 255),
             gradient: Gradient::None,
-            radius: 4.0,
+            radii: [4.0; 4],
             border_width: 0.0,
             border_color: Color::rgba8(0, 0, 0, 0),
             blur: 2.0,

@@ -73,7 +73,14 @@ fn vs_main(
     return output;
 }
 
-fn rounded_distance(point: vec2<f32>, size: vec2<f32>, radius: f32) -> f32 {
+fn rounded_distance(point: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 {
+    var radius = radii.x;
+    if point.y >= size.y * 0.5 {
+        radius = select(radii.w, radii.z, point.x >= size.x * 0.5);
+    } else {
+        radius = select(radii.x, radii.y, point.x >= size.x * 0.5);
+    }
+    radius = max(radius, 0.0);
     let centered = point - size * 0.5;
     let half_size = max(size * 0.5 - vec2<f32>(radius), vec2<f32>(0.0));
     let offset = abs(centered) - half_size;
@@ -82,9 +89,8 @@ fn rounded_distance(point: vec2<f32>, size: vec2<f32>, radius: f32) -> f32 {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let radius = max(input.radii.x, 0.0);
     let point = input.local - input.shape.xy;
-    let signed_distance = rounded_distance(point, input.shape.zw, radius);
+    let signed_distance = rounded_distance(point, input.shape.zw, input.radii);
     let softness = max(input.effects.x, 0.5);
     let coverage = smoothstep(softness, -softness, signed_distance);
     let border_width = max(input.border.x, 0.0);
@@ -112,7 +118,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let spread = input.effects.z;
     let shadow_point = point - input.shadow.xy + vec2<f32>(spread);
     let shadow_size = max(input.shape.zw + vec2<f32>(spread * 2.0), vec2<f32>(0.0));
-    let shadow_distance = rounded_distance(shadow_point, shadow_size, max(radius + spread, 0.0));
+    let shadow_distance = rounded_distance(shadow_point, shadow_size, max(input.radii + vec4<f32>(spread), vec4<f32>(0.0)));
     let shadow_softness = max(input.effects.y, 0.5);
     let shadow_alpha = input.shadow_color.a * smoothstep(shadow_softness, -shadow_softness, shadow_distance);
     let shadow_layer = vec4<f32>(input.shadow_color.rgb * shadow_alpha, shadow_alpha);

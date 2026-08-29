@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     start: [0.0, 0.0],
                     end: [1.0, 0.0],
                 },
-                radius: 8.0,
+                radii: [8.0, 16.0, 8.0, 16.0],
                 border_width: 1.0,
                 border_color: Color::rgba8(255, 255, 255, 128),
                 blur: 0.0,
