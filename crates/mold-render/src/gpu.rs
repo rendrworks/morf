@@ -374,7 +374,11 @@ fn create_pipeline(
         1 => Float32x4,
         2 => Float32x4,
         3 => Float32x4,
-        4 => Float32x4
+        4 => Float32x4,
+        5 => Float32x4,
+        6 => Float32x4,
+        7 => Float32x4,
+        8 => Float32x4
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<SdfQuadInstance>() as u64,

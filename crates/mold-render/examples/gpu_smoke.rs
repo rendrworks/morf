@@ -19,6 +19,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             radius: 8.0,
             border_width: 1.0,
             border_color: Color::rgba8(255, 255, 255, 128),
+            blur: 0.0,
+            shadow_color: Color::rgba8(0, 0, 0, 128),
+            shadow_blur: 6.0,
+            shadow_spread: 1.0,
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 2.0,
         }],
     };
     backend.render(

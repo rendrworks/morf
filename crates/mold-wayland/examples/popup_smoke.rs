@@ -162,5 +162,11 @@ fn quad(
         radius: 8.0,
         border_width: 1.0,
         border_color: Color::rgba8(255, 255, 255, 80),
+        blur: 0.0,
+        shadow_color: Color::rgba8(0, 0, 0, 100),
+        shadow_blur: 8.0,
+        shadow_spread: 0.0,
+        shadow_offset_x: 0.0,
+        shadow_offset_y: 3.0,
     }
 }

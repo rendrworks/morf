@@ -1135,6 +1135,12 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("radius", 0.0),
                 number("border_width", 0.0),
                 color("border_color", Color::rgba8(0, 0, 0, 0)),
+                number("blur", 0.0),
+                color("shadow_color", Color::rgba8(0, 0, 0, 0)),
+                number("shadow_blur", 0.0),
+                number("shadow_spread", 0.0),
+                number("shadow_offset_x", 0.0),
+                number("shadow_offset_y", 0.0),
             ]);
         }
         Element::Text => {

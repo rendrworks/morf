@@ -28,6 +28,18 @@ pub enum DrawCommand {
         border_width: f64,
         /// Border colour after node opacity.
         border_color: Color,
+        /// Fill-edge blur radius.
+        blur: f64,
+        /// Outer shadow colour.
+        shadow_color: Color,
+        /// Shadow blur radius.
+        shadow_blur: f64,
+        /// Shadow expansion around the rectangle.
+        shadow_spread: f64,
+        /// Shadow horizontal displacement.
+        shadow_offset_x: f64,
+        /// Shadow vertical displacement.
+        shadow_offset_y: f64,
     },
     /// Shaped glyph run owned by the text subsystem.
     Text {
@@ -55,7 +67,23 @@ impl DrawCommand {
 
     fn bounds(&self) -> Geometry {
         match self {
-            Self::Quad { bounds, .. } | Self::Text { bounds, .. } => *bounds,
+            Self::Quad {
+                bounds,
+                blur,
+                shadow_blur,
+                shadow_spread,
+                shadow_offset_x,
+                shadow_offset_y,
+                ..
+            } => effect_bounds(
+                *bounds,
+                *blur,
+                *shadow_blur,
+                *shadow_spread,
+                *shadow_offset_x,
+                *shadow_offset_y,
+            ),
+            Self::Text { bounds, .. } => *bounds,
         }
     }
 }
@@ -217,6 +245,14 @@ pub struct SdfQuadInstance {
     pub border: [f32; 4],
     /// RGBA border.
     pub border_color: [f32; 4],
+    /// Original rectangle within the expanded effect bounds.
+    pub shape: [f32; 4],
+    /// Fill blur, shadow blur, shadow spread, and padding.
+    pub effects: [f32; 4],
+    /// Shadow offset followed by padding.
+    pub shadow: [f32; 4],
+    /// RGBA shadow colour.
+    pub shadow_color: [f32; 4],
 }
 
 impl SdfQuadInstance {
@@ -228,23 +264,56 @@ impl SdfQuadInstance {
             radius,
             border_width,
             border_color,
+            blur,
+            shadow_color,
+            shadow_blur,
+            shadow_spread,
+            shadow_offset_x,
+            shadow_offset_y,
             ..
         } = command
         else {
             return None;
         };
         let scale = scale_120.max(1) as f64 / 120.0;
+        let expanded = effect_bounds(
+            *bounds,
+            *blur,
+            *shadow_blur,
+            *shadow_spread,
+            *shadow_offset_x,
+            *shadow_offset_y,
+        );
         Some(Self {
             bounds: [
-                (bounds.x * scale) as f32,
-                (bounds.y * scale) as f32,
-                (bounds.width * scale) as f32,
-                (bounds.height * scale) as f32,
+                (expanded.x * scale) as f32,
+                (expanded.y * scale) as f32,
+                (expanded.width * scale) as f32,
+                (expanded.height * scale) as f32,
             ],
             color: color_array(*color),
             radii: [(*radius * scale) as f32; 4],
             border: [(*border_width * scale) as f32, 0.0, 0.0, 0.0],
             border_color: color_array(*border_color),
+            shape: [
+                ((bounds.x - expanded.x) * scale) as f32,
+                ((bounds.y - expanded.y) * scale) as f32,
+                (bounds.width * scale) as f32,
+                (bounds.height * scale) as f32,
+            ],
+            effects: [
+                (*blur * scale) as f32,
+                (*shadow_blur * scale) as f32,
+                (*shadow_spread * scale) as f32,
+                0.0,
+            ],
+            shadow: [
+                (*shadow_offset_x * scale) as f32,
+                (*shadow_offset_y * scale) as f32,
+                0.0,
+                0.0,
+            ],
+            shadow_color: color_array(*shadow_color),
         })
     }
 }
@@ -297,6 +366,12 @@ fn append_node(
             radius: scene.number(node, "radius")?,
             border_width: scene.number(node, "border_width")?,
             border_color: with_opacity(scene.color_value(node, "border_color")?, opacity),
+            blur: scene.number(node, "blur")?.max(0.0),
+            shadow_color: with_opacity(scene.color_value(node, "shadow_color")?, opacity),
+            shadow_blur: scene.number(node, "shadow_blur")?.max(0.0),
+            shadow_spread: scene.number(node, "shadow_spread")?,
+            shadow_offset_x: scene.number(node, "shadow_offset_x")?,
+            shadow_offset_y: scene.number(node, "shadow_offset_y")?,
         }),
         Element::Text => commands.push(DrawCommand::Text {
             node,
@@ -317,6 +392,28 @@ fn append_node(
 fn with_opacity(mut color: Color, opacity: f64) -> Color {
     color.alpha *= opacity as f32;
     color
+}
+
+fn effect_bounds(
+    bounds: Geometry,
+    blur: f64,
+    shadow_blur: f64,
+    shadow_spread: f64,
+    shadow_offset_x: f64,
+    shadow_offset_y: f64,
+) -> Geometry {
+    let blur = blur.max(0.0);
+    let shadow = (shadow_blur.max(0.0) + shadow_spread.max(0.0)).max(0.0);
+    let left = blur.max(shadow - shadow_offset_x);
+    let right = blur.max(shadow + shadow_offset_x);
+    let top = blur.max(shadow - shadow_offset_y);
+    let bottom = blur.max(shadow + shadow_offset_y);
+    Geometry {
+        x: bounds.x - left,
+        y: bounds.y - top,
+        width: bounds.width + left + right,
+        height: bounds.height + top + bottom,
+    }
 }
 
 fn color_array(color: Color) -> [f32; 4] {
@@ -546,6 +643,12 @@ mod tests {
                 radius: 0.0,
                 border_width: 0.0,
                 border_color: Color::rgba8(0, 0, 0, 0),
+                blur: 0.0,
+                shadow_color: Color::rgba8(0, 0, 0, 0),
+                shadow_blur: 0.0,
+                shadow_spread: 0.0,
+                shadow_offset_x: 0.0,
+                shadow_offset_y: 0.0,
             }],
         };
         tracker.diff(&first, 120);
@@ -557,5 +660,46 @@ mod tests {
         let damage = tracker.diff(&second, 120);
 
         assert_eq!(damage.len(), 2);
+    }
+
+    #[test]
+    fn blur_and_shadow_expand_damage_and_gpu_bounds() {
+        let node = {
+            let mut scene = Scene::new();
+            scene.create(Element::Rect)
+        };
+        let command = DrawCommand::Quad {
+            node,
+            bounds: Geometry {
+                x: 20.0,
+                y: 20.0,
+                width: 40.0,
+                height: 20.0,
+            },
+            color: Color::rgba8(255, 255, 255, 255),
+            radius: 4.0,
+            border_width: 0.0,
+            border_color: Color::rgba8(0, 0, 0, 0),
+            blur: 2.0,
+            shadow_color: Color::rgba8(0, 0, 0, 128),
+            shadow_blur: 6.0,
+            shadow_spread: 2.0,
+            shadow_offset_x: 3.0,
+            shadow_offset_y: 4.0,
+        };
+
+        assert_eq!(
+            command.bounds(),
+            Geometry {
+                x: 15.0,
+                y: 16.0,
+                width: 56.0,
+                height: 36.0,
+            }
+        );
+        let instance = SdfQuadInstance::from_command(&command, 120).unwrap();
+        assert_eq!(instance.bounds, [15.0, 16.0, 56.0, 36.0]);
+        assert_eq!(instance.shape, [5.0, 4.0, 40.0, 20.0]);
+        assert_eq!(instance.effects[..3], [2.0, 6.0, 2.0]);
     }
 }

@@ -40,6 +40,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 radius: 0.0,
                 border_width: 0.0,
                 border_color: Color::rgba8(0, 0, 0, 0),
+                blur: 0.0,
+                shadow_color: Color::rgba8(0, 0, 0, 0),
+                shadow_blur: 0.0,
+                shadow_spread: 0.0,
+                shadow_offset_x: 0.0,
+                shadow_offset_y: 0.0,
             },
             DrawCommand::Text {
                 node: text_node,
