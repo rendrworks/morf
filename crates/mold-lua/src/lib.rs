@@ -4,6 +4,8 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -76,6 +78,7 @@ pub struct Runtime {
     lua: Lua,
     limits: Limits,
     reactive: Rc<RefCell<ReactiveState>>,
+    module_roots: Rc<RefCell<Vec<PathBuf>>>,
 }
 
 /// Output metadata exposed to one per-screen Lua configuration instance.
@@ -181,16 +184,32 @@ impl Runtime {
         let mut lua = Lua::core();
         lua.set_memory_limit(Some(limits.memory));
         let reactive = Rc::new(RefCell::new(ReactiveState::new()));
-        install_reactive_api(&mut lua, Rc::clone(&reactive), limits, screen.as_ref());
+        let module_roots = Rc::new(RefCell::new(default_module_roots()));
+        install_reactive_api(
+            &mut lua,
+            Rc::clone(&reactive),
+            Rc::clone(&module_roots),
+            limits,
+            screen.as_ref(),
+        );
         Self {
             lua,
             limits,
             reactive,
+            module_roots,
         }
     }
 
     /// Compiles and executes a Lua chunk.
     pub fn execute(&mut self, name: &str, source: &[u8]) -> Result<(), Error> {
+        if let Some(parent) = Path::new(name).parent()
+            && !parent.as_os_str().is_empty()
+            && !self.module_roots.borrow().contains(&parent.to_path_buf())
+        {
+            self.module_roots
+                .borrow_mut()
+                .insert(0, parent.to_path_buf());
+        }
         let executor = self
             .lua
             .try_enter(|ctx| {
@@ -531,6 +550,7 @@ impl StdError for HostError {}
 fn install_reactive_api(
     lua: &mut Lua,
     state: Rc<RefCell<ReactiveState>>,
+    module_roots: Rc<RefCell<Vec<PathBuf>>>,
     limits: Limits,
     screen: Option<&Screen>,
 ) {
@@ -1267,13 +1287,60 @@ fn install_reactive_api(
                         stack.replace(ctx, module);
                     }
                     _ => {
-                        return Err(HostError(format!("module `{name}` is not available")).into());
+                        let source = load_runtime_module(&module_roots.borrow(), &name)
+                            .map_err(HostError)?;
+                        let module =
+                            execute_module(ctx, &name, &source, limits).map_err(HostError)?;
+                        stack.replace(ctx, module);
                     }
                 }
                 Ok(CallbackReturn::Return)
             }),
         );
     });
+}
+
+fn default_module_roots() -> Vec<PathBuf> {
+    let mut roots = std::env::var_os("MOLD_RUNTIME_PATH")
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lua"));
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(prefix) = executable.parent().and_then(Path::parent)
+    {
+        roots.push(prefix.join("share/mold/runtime/lua"));
+    }
+    roots
+}
+
+fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String> {
+    if name.is_empty()
+        || name.split('.').any(|part| {
+            part.is_empty()
+                || !part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        })
+    {
+        return Err(format!("invalid module name `{name}`"));
+    }
+    let relative = name.replace('.', "/");
+    for root in roots {
+        for path in [
+            root.join(format!("{relative}.lua")),
+            root.join(&relative).join("init.lua"),
+            root.join("lua").join(format!("{relative}.lua")),
+            root.join("lua").join(&relative).join("init.lua"),
+        ] {
+            match fs::read(&path) {
+                Ok(source) => return Ok(source),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+            }
+        }
+    }
+    Err(format!("module `{name}` is not available"))
 }
 
 fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> LuaValue<'_> {
@@ -2482,6 +2549,25 @@ mod tests {
     }
 
     #[test]
+    fn runtimepath_loads_user_modules_without_rust_registration() {
+        let root = std::env::temp_dir().join(format!("mold-runtime-{}", std::process::id()));
+        let module = root.join("lua/user/widget.lua");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, b"return { answer = 42 }").unwrap();
+        let shell = root.join("shell.lua");
+        let mut runtime = Runtime::default();
+
+        runtime
+            .execute(
+                &shell.to_string_lossy(),
+                b"local widget = require('user.widget'); assert(widget.answer == 42)",
+            )
+            .unwrap();
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn ipc_registry_calls_named_bounded_handlers() {
         let mut runtime = Runtime::default();
         runtime
@@ -2608,6 +2694,36 @@ mod tests {
             runtime.scene().string_value(roots[2], "text").unwrap(),
             "42%"
         );
+    }
+
+    #[test]
+    fn pure_lua_patin_builds_complete_phone_shell() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "phone.lua",
+                br#"
+                    local mold = require("mold")
+                    local patin = require("patin")
+                    local apps = {}
+                    for index = 1, 500 do apps[index] = "App " .. index end
+                    patin.shells.Phone {
+                        width = 720,
+                        height = 1280,
+                        apps = mold.list_model(apps),
+                        notifications = mold.list_model({ "Ready" }),
+                        launcher_visible = true,
+                        locked = false,
+                    }
+                "#,
+            )
+            .unwrap();
+        let scene = runtime.scene();
+        let root = scene.roots()[0];
+
+        assert_eq!(scene.number(root, "width").unwrap(), 720.0);
+        assert_eq!(scene.children(root).unwrap().len(), 6);
+        assert!(scene.roots().len() == 1);
     }
 
     #[test]
