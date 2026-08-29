@@ -532,7 +532,11 @@ fn run_surface(
                 | LayerEvent::PopupDone
                 | LayerEvent::FloatingConfigure { .. }
                 | LayerEvent::FloatingFrame { .. }
-                | LayerEvent::FloatingClose => {}
+                | LayerEvent::FloatingClose
+                | LayerEvent::SessionLocked
+                | LayerEvent::SessionLockFinished
+                | LayerEvent::SessionLockConfigure { .. }
+                | LayerEvent::SessionLockFrame { .. } => {}
             }
         }
     }
@@ -669,7 +673,11 @@ fn run_surface(
                 | LayerEvent::PopupDone
                 | LayerEvent::FloatingConfigure { .. }
                 | LayerEvent::FloatingFrame { .. }
-                | LayerEvent::FloatingClose => {}
+                | LayerEvent::FloatingClose
+                | LayerEvent::SessionLocked
+                | LayerEvent::SessionLockFinished
+                | LayerEvent::SessionLockConfigure { .. }
+                | LayerEvent::SessionLockFrame { .. } => {}
                 LayerEvent::Screens(screens) => {
                     tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
                         output: name.clone(),

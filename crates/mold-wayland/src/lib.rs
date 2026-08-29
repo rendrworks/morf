@@ -21,6 +21,10 @@ use smithay_client_toolkit::seat::keyboard::{
 };
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
+use smithay_client_toolkit::session_lock::{
+    SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
+    SessionLockSurfaceConfigure,
+};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -171,6 +175,18 @@ pub enum LayerEvent {
     FloatingFrame { time_ms: u32 },
     /// The compositor requested that the floating window close.
     FloatingClose,
+    /// The compositor accepted exclusive session ownership.
+    SessionLocked,
+    /// The compositor rejected or ended the session lock.
+    SessionLockFinished,
+    /// One output lock surface received its logical size.
+    SessionLockConfigure {
+        index: usize,
+        width: u32,
+        height: u32,
+    },
+    /// The compositor permits the next lock-surface paint tick.
+    SessionLockFrame { index: usize, time_ms: u32 },
     /// The compositor closed the layer surface.
     Closed,
 }
@@ -212,6 +228,7 @@ impl LayerClient {
             .bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
+        let session_locks = SessionLockState::new(&globals, &qh);
         let mut state = LayerState {
             registry: RegistryState::new(&globals),
             compositor,
@@ -233,6 +250,9 @@ impl LayerClient {
             pointer: None,
             keyboard: None,
             screens: Vec::new(),
+            session_locks,
+            session_lock: None,
+            lock_surfaces: Vec::new(),
         };
         let mut queue = queue;
         queue
@@ -522,6 +542,81 @@ impl LayerClient {
                 surface: window.wl_surface().clone(),
             })
     }
+
+    /// Requests exclusive compositor session ownership.
+    pub fn begin_session_lock(&mut self) -> Result<(), WaylandError> {
+        if self.state.session_lock.is_some() {
+            return Err(WaylandError("session lock is already active".to_owned()));
+        }
+        let lock = self
+            .state
+            .session_locks
+            .lock(&self.queue.handle())
+            .map_err(|error| WaylandError(format!("session lock is unavailable: {error}")))?;
+        self.state.session_lock = Some(lock);
+        self.connection
+            .flush()
+            .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
+    }
+
+    /// Unlocks only after the compositor confirmed that the lock is active.
+    pub fn unlock_session(&mut self) -> Result<(), WaylandError> {
+        let lock = self
+            .state
+            .session_lock
+            .take()
+            .ok_or_else(|| WaylandError("session lock is not active".to_owned()))?;
+        if !lock.is_locked() {
+            self.state.session_lock = Some(lock);
+            return Err(WaylandError(
+                "session lock has not been confirmed by the compositor".to_owned(),
+            ));
+        }
+        lock.unlock();
+        self.state.lock_surfaces.clear();
+        self.connection
+            .flush()
+            .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
+    }
+
+    /// Returns one configured lock surface for rendering.
+    pub fn lock_surface(&self, index: usize) -> Option<&wl_surface::WlSurface> {
+        self.state
+            .lock_surfaces
+            .get(index)
+            .map(|surface| surface.surface.wl_surface())
+    }
+
+    /// Returns one lock surface's configured logical size.
+    pub fn lock_size(&self, index: usize) -> Option<(u32, u32)> {
+        self.state
+            .lock_surfaces
+            .get(index)
+            .map(|surface| surface.size)
+    }
+
+    /// Returns an owned raw-window target for one lock surface.
+    pub fn lock_window_target(&self, index: usize) -> Option<WaylandWindowTarget> {
+        self.lock_surface(index).map(|surface| WaylandWindowTarget {
+            backend: self.connection.backend(),
+            surface: surface.clone(),
+        })
+    }
+
+    /// Requests a compositor frame callback for one lock surface.
+    pub fn request_lock_frame(&self, index: usize) {
+        let Some(surface) = self.lock_surface(index) else {
+            return;
+        };
+        surface.frame(&self.queue.handle(), FrameCallbackData(surface.clone()));
+    }
+
+    /// Commits one lock surface without attaching a new buffer.
+    pub fn commit_lock(&self, index: usize) {
+        if let Some(surface) = self.lock_surface(index) {
+            surface.commit();
+        }
+    }
 }
 
 /// Owned Wayland display and surface handles for graphics APIs.
@@ -567,6 +662,14 @@ struct LayerState {
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     screens: Vec<ScreenInfo>,
+    session_locks: SessionLockState,
+    session_lock: Option<SessionLock>,
+    lock_surfaces: Vec<LockSurface>,
+}
+
+struct LockSurface {
+    surface: SessionLockSurface,
+    size: (u32, u32),
 }
 
 impl CompositorHandler for LayerState {
@@ -619,6 +722,15 @@ impl CompositorHandler for LayerState {
         {
             self.events
                 .push_back(LayerEvent::FloatingFrame { time_ms: time });
+        } else if let Some(index) = self
+            .lock_surfaces
+            .iter()
+            .position(|lock| surface == lock.surface.wl_surface())
+        {
+            self.events.push_back(LayerEvent::SessionLockFrame {
+                index,
+                time_ms: time,
+            });
         }
     }
 
@@ -662,6 +774,63 @@ impl LayerShellHandler for LayerState {
         self.events.push_back(LayerEvent::Configure {
             width: self.width,
             height: self.height,
+        });
+    }
+}
+
+impl SessionLockHandler for LayerState {
+    fn locked(
+        &mut self,
+        _connection: &Connection,
+        qh: &QueueHandle<Self>,
+        session_lock: SessionLock,
+    ) {
+        self.lock_surfaces.clear();
+        for output in self.outputs.outputs() {
+            let surface = self.compositor.create_surface(qh);
+            surface.set_buffer_scale(1);
+            let surface = session_lock.create_lock_surface(surface, &output, qh);
+            surface.wl_surface().commit();
+            self.lock_surfaces.push(LockSurface {
+                surface,
+                size: (1, 1),
+            });
+        }
+        self.events.push_back(LayerEvent::SessionLocked);
+    }
+
+    fn finished(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _session_lock: SessionLock,
+    ) {
+        self.lock_surfaces.clear();
+        self.session_lock = None;
+        self.events.push_back(LayerEvent::SessionLockFinished);
+    }
+
+    fn configure(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        surface: SessionLockSurface,
+        configure: SessionLockSurfaceConfigure,
+        _serial: u32,
+    ) {
+        let Some(index) = self
+            .lock_surfaces
+            .iter()
+            .position(|lock| lock.surface.wl_surface() == surface.wl_surface())
+        else {
+            return;
+        };
+        let size = (configure.new_size.0.max(1), configure.new_size.1.max(1));
+        self.lock_surfaces[index].size = size;
+        self.events.push_back(LayerEvent::SessionLockConfigure {
+            index,
+            width: size.0,
+            height: size.1,
         });
     }
 }
