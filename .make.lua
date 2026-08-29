@@ -229,6 +229,14 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "udev-smoke",
+  desc = "open the native kernel uevent monitor",
+  run = function()
+    sh.cargo("run", "--package", "mold-services", "--example", "udev_smoke")
+  end,
+}
+
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function()
                sh.cargo("test", "--workspace", "--all-targets", "--all-features")

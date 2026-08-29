@@ -23,7 +23,8 @@ use mold_scene::{
     NodeHandle, Physics, Scene, Value as SceneValue, ViewTransition, VirtualList,
 };
 use mold_services::{
-    AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire,
+    AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire, UdevEvent,
+    UdevMonitor,
 };
 
 /// Execution limits applied independently to each loaded chunk.
@@ -530,6 +531,7 @@ impl Runtime {
         let mut ready = Vec::new();
         let mut timers = Vec::new();
         let mut dbus_signals = Vec::new();
+        let mut udev_events = Vec::new();
         let mut loaders = Vec::new();
         let mut service_changed = false;
         {
@@ -640,6 +642,26 @@ impl Runtime {
                     dbus_signals.push((subscription.callback.clone(), value));
                 }
             }
+            let mut udev_errors = Vec::new();
+            for subscription in &state.udev_monitors {
+                for _ in 0..32 {
+                    match subscription.monitor.next_event(Duration::ZERO) {
+                        Ok(Some(event)) => {
+                            udev_events.push((subscription.callback.clone(), event));
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            udev_errors.push(error.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+            state.logs.extend(
+                udev_errors
+                    .into_iter()
+                    .map(|error| format!("udev: {error}")),
+            );
         }
         for (node, factory) in loaders {
             let result = self
@@ -661,8 +683,11 @@ impl Runtime {
                     .push(format!("Loader: {error}")),
             }
         }
-        let changed =
-            service_changed || !ready.is_empty() || !timers.is_empty() || !dbus_signals.is_empty();
+        let changed = service_changed
+            || !ready.is_empty()
+            || !timers.is_empty()
+            || !dbus_signals.is_empty()
+            || !udev_events.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;
@@ -714,6 +739,16 @@ impl Runtime {
                     .borrow_mut()
                     .logs
                     .push(format!("D-Bus callback: {message}"));
+            }
+        }
+        for (callback, event) in udev_events {
+            if let Err(message) = self.lua.enter(|ctx| {
+                execute_dbus_handler(ctx, &callback, udev_event_value(event), self.limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("udev callback: {message}"));
             }
         }
         changed
@@ -914,6 +949,11 @@ struct PendingDbusSignal {
     callback: StashedClosure,
 }
 
+struct PendingUdev {
+    monitor: UdevMonitor,
+    callback: StashedClosure,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -988,6 +1028,7 @@ struct ReactiveState {
     loader_factories: HashMap<NodeHandle, StashedClosure>,
     loaded_loaders: HashSet<NodeHandle>,
     dbus_signals: Vec<PendingDbusSignal>,
+    udev_monitors: Vec<PendingUdev>,
     session_unlock_requested: bool,
 }
 
@@ -1020,6 +1061,7 @@ impl ReactiveState {
             loader_factories: HashMap::new(),
             loaded_loaders: HashSet::new(),
             dbus_signals: Vec::new(),
+            udev_monitors: Vec::new(),
             session_unlock_requested: false,
         }
     }
@@ -2030,6 +2072,21 @@ fn install_reactive_api(
         let pipewire = Table::new(&ctx);
         pipewire.set_field(ctx, "connect", pipewire_connect);
         mold.set_field(ctx, "pipewire", pipewire);
+
+        let udev_state = Rc::clone(&state);
+        let udev_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (subsystem, callback): (Option<String>, Closure) = stack.consume(ctx)?;
+            let monitor =
+                UdevMonitor::new(subsystem).map_err(|error| HostError(error.to_string()))?;
+            udev_state.borrow_mut().udev_monitors.push(PendingUdev {
+                monitor,
+                callback: ctx.stash(callback),
+            });
+            Ok(CallbackReturn::Return)
+        });
+        let udev = Table::new(&ctx);
+        udev.set_field(ctx, "subscribe", udev_subscribe);
+        mold.set_field(ctx, "udev", udev);
 
         let greetd_create = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (greetd, username): (UserRef<GreetdToken>, String) = stack.consume(ctx)?;
@@ -3929,6 +3986,27 @@ fn execute_dbus_handler(
     }
 }
 
+fn udev_event_value(event: UdevEvent) -> DbusValue {
+    let properties = event
+        .properties
+        .into_iter()
+        .map(|(key, value)| (key, DbusValue::String(value)))
+        .collect();
+    DbusValue::Map(BTreeMap::from([
+        ("action".to_owned(), DbusValue::String(event.action)),
+        ("devpath".to_owned(), DbusValue::String(event.devpath)),
+        (
+            "subsystem".to_owned(),
+            event.subsystem.map_or(DbusValue::Nil, DbusValue::String),
+        ),
+        (
+            "devname".to_owned(),
+            event.devname.map_or(DbusValue::Nil, DbusValue::String),
+        ),
+        ("properties".to_owned(), DbusValue::Map(properties)),
+    ]))
+}
+
 fn execute_ipc_handler(
     ctx: Context<'_>,
     closure: &StashedClosure,
@@ -4114,6 +4192,10 @@ mod tests {
                     assert(type(Mpris.new) == "function")
                     assert(type(Oxin.new) == "function")
                     assert(type(mold.greetd.connect) == "function")
+                    assert(type(mold.udev.subscribe) == "function")
+                    mold.udev.subscribe("input", function(event)
+                      assert(event.subsystem == "input")
+                    end)
                     assert(type(BatteryIndicator) == "function")
                     assert(type(NetworkIndicator) == "function")
                     assert(type(VolumeIndicator) == "function")
