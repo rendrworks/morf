@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let idle_notify = client.set_idle_timeouts(&[600_000]);
     let output_power = client.set_output_power(OutputPowerMode::On);
     let clipboard = client.supports_clipboard();
+    let virtual_keyboard = client.supports_virtual_keyboard();
     'configured: loop {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
@@ -101,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
@@ -109,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     idle_notify,
                     output_power,
                     clipboard,
+                    virtual_keyboard,
                     time_ms,
                     backend.info().name,
                     backend.info().backend,

@@ -119,6 +119,20 @@ pub enum IpcValue {
     String(String),
 }
 
+/// Deferred virtual keyboard request produced by Lua.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VirtualKeyboardRequest {
+    /// One evdev keycode state change.
+    Key { keycode: u32, pressed: bool },
+    /// XKB modifier masks and layout group.
+    Modifiers {
+        depressed: u32,
+        latched: u32,
+        locked: u32,
+        group: u32,
+    },
+}
+
 impl IpcValue {
     fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
         match self {
@@ -469,6 +483,11 @@ impl Runtime {
             }
         }
         !callbacks.is_empty()
+    }
+
+    /// Takes pending virtual keyboard protocol requests.
+    pub fn take_virtual_keyboard_requests(&mut self) -> Vec<VirtualKeyboardRequest> {
+        std::mem::take(&mut self.reactive.borrow_mut().virtual_keyboard_requests)
     }
 
     /// Runs one bounded key handler with keysym and UTF-8 text arguments.
@@ -1132,6 +1151,7 @@ struct ReactiveState {
     output_power_requests: Vec<bool>,
     clipboard_requests: Vec<String>,
     clipboard_callbacks: Vec<StashedClosure>,
+    virtual_keyboard_requests: Vec<VirtualKeyboardRequest>,
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
@@ -1171,6 +1191,7 @@ impl ReactiveState {
             output_power_requests: Vec::new(),
             clipboard_requests: Vec::new(),
             clipboard_callbacks: Vec::new(),
+            virtual_keyboard_requests: Vec::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
@@ -1439,6 +1460,45 @@ fn install_reactive_api(
         clipboard.set_field(ctx, "set", clipboard_set);
         clipboard.set_field(ctx, "subscribe", clipboard_subscribe);
         mold.set_field(ctx, "clipboard", clipboard);
+        let virtual_key_state = Rc::clone(&state);
+        let virtual_key = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (keycode, pressed): (i64, bool) = stack.consume(ctx)?;
+            let keycode = u32::try_from(keycode).map_err(|_| {
+                HostError("virtual keycode must fit an unsigned 32-bit value".into())
+            })?;
+            let mut state = virtual_key_state.borrow_mut();
+            if state.virtual_keyboard_requests.len() >= 256 {
+                return Err(HostError("virtual keyboard request limit reached".into()).into());
+            }
+            state
+                .virtual_keyboard_requests
+                .push(VirtualKeyboardRequest::Key { keycode, pressed });
+            Ok(CallbackReturn::Return)
+        });
+        let virtual_modifiers_state = Rc::clone(&state);
+        let virtual_modifiers = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let values: (i64, i64, i64, i64) = stack.consume(ctx)?;
+            let request = VirtualKeyboardRequest::Modifiers {
+                depressed: u32::try_from(values.0)
+                    .map_err(|_| HostError("depressed modifiers must fit u32".into()))?,
+                latched: u32::try_from(values.1)
+                    .map_err(|_| HostError("latched modifiers must fit u32".into()))?,
+                locked: u32::try_from(values.2)
+                    .map_err(|_| HostError("locked modifiers must fit u32".into()))?,
+                group: u32::try_from(values.3)
+                    .map_err(|_| HostError("keyboard group must fit u32".into()))?,
+            };
+            let mut state = virtual_modifiers_state.borrow_mut();
+            if state.virtual_keyboard_requests.len() >= 256 {
+                return Err(HostError("virtual keyboard request limit reached".into()).into());
+            }
+            state.virtual_keyboard_requests.push(request);
+            Ok(CallbackReturn::Return)
+        });
+        let virtual_keyboard = Table::new(&ctx);
+        virtual_keyboard.set_field(ctx, "key", virtual_key);
+        virtual_keyboard.set_field(ctx, "modifiers", virtual_modifiers);
+        mold.set_field(ctx, "virtual_keyboard", virtual_keyboard);
         let timer_state = Rc::clone(&state);
         let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
@@ -4459,6 +4519,41 @@ mod tests {
         assert_eq!(
             runtime.call_ipc("clipboard.get", &[]).unwrap(),
             [IpcValue::String("none".to_owned())]
+        );
+    }
+
+    #[test]
+    fn virtual_keyboard_requests_preserve_protocol_order() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "keyboard.lua",
+                br#"
+                    mold.virtual_keyboard.modifiers(1, 2, 4, 0)
+                    mold.virtual_keyboard.key(30, true)
+                    mold.virtual_keyboard.key(30, false)
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            runtime.take_virtual_keyboard_requests(),
+            [
+                VirtualKeyboardRequest::Modifiers {
+                    depressed: 1,
+                    latched: 2,
+                    locked: 4,
+                    group: 0,
+                },
+                VirtualKeyboardRequest::Key {
+                    keycode: 30,
+                    pressed: true,
+                },
+                VirtualKeyboardRequest::Key {
+                    keycode: 30,
+                    pressed: false,
+                },
+            ]
         );
     }
 

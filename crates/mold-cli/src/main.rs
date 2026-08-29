@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
 use mold_layout::{Layout, ReparentTransition, Size};
-use mold_lua::{IpcValue, Limits, Runtime, Screen, UiEvent};
+use mold_lua::{IpcValue, Limits, Runtime, Screen, UiEvent, VirtualKeyboardRequest};
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
 use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, OutputPowerMode, ScreenInfo};
@@ -173,6 +173,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         .begin_session_lock()
         .map_err(|error| error.to_string())?;
     apply_output_power_requests(&mut runtime, &mut client);
+    apply_virtual_keyboard_requests(&mut runtime, &mut client);
     let mut renderers: Vec<Option<RenderEngine<WgpuBackend>>> = Vec::new();
     let mut last_frame = None;
     let mut locked = false;
@@ -188,6 +189,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         let mut repaint = runtime.poll_services();
         apply_output_power_requests(&mut runtime, &mut client);
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_virtual_keyboard_requests(&mut runtime, &mut client);
         unlock_pending |= runtime.take_session_unlock_request();
         if locked && unlock_pending {
             client.unlock_session().map_err(|error| error.to_string())?;
@@ -280,6 +282,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
             }
         }
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_virtual_keyboard_requests(&mut runtime, &mut client);
         if repaint {
             for (index, renderer) in renderers.iter_mut().enumerate() {
                 if let Some(renderer) = renderer {
@@ -817,6 +820,24 @@ fn apply_clipboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     }
 }
 
+fn apply_virtual_keyboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    for request in runtime.take_virtual_keyboard_requests() {
+        match request {
+            VirtualKeyboardRequest::Key { keycode, pressed } => {
+                client.send_virtual_key(keycode, pressed);
+            }
+            VirtualKeyboardRequest::Modifiers {
+                depressed,
+                latched,
+                locked,
+                group,
+            } => {
+                client.send_virtual_modifiers(depressed, latched, locked, group);
+            }
+        }
+    }
+}
+
 fn stop_workers(workers: BTreeMap<String, Worker>) {
     for worker in workers.values() {
         worker.stop.store(true, Ordering::Release);
@@ -911,6 +932,7 @@ fn run_surface(
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let mut layout = paint(&runtime, &mut renderer, &client)?;
     apply_output_power_requests(&mut runtime, &mut client);
+    apply_virtual_keyboard_requests(&mut runtime, &mut client);
 
     let mut last_frame = None;
     let mut hovered = None;
@@ -941,6 +963,7 @@ fn run_surface(
         }
         apply_output_power_requests(&mut runtime, &mut client);
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_virtual_keyboard_requests(&mut runtime, &mut client);
         if next_clock != clock {
             clock = next_clock;
             runtime
@@ -1144,6 +1167,7 @@ fn run_surface(
             }
         }
         apply_clipboard_requests(&mut runtime, &mut client);
+        apply_virtual_keyboard_requests(&mut runtime, &mut client);
         if repaint {
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;

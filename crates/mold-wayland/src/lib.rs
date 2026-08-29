@@ -3,19 +3,22 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::NonZeroU32;
+use std::os::fd::AsFd;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
     WaylandWindowHandle, WindowHandle,
 };
 use rustix::event::{PollFd, PollFlags, poll};
+use rustix::fs::{MemfdFlags, memfd_create};
 use rustix::time::Timespec;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
 use smithay_client_toolkit::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
@@ -27,7 +30,7 @@ use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, WriteP
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
 use smithay_client_toolkit::seat::touch::TouchHandler;
@@ -66,6 +69,10 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 use wayland_protocols::xdg::shell::client::xdg_positioner;
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+};
 use wayland_protocols_wlr::output_power_management::v1::client::{
     zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
     zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
@@ -287,6 +294,9 @@ impl LayerClient {
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
         let idle_notifier = globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok();
         let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
+        let virtual_keyboard_manager = globals
+            .bind::<ZwpVirtualKeyboardManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
         let output_power_manager = globals
             .bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
@@ -326,6 +336,11 @@ impl LayerClient {
             clipboard_reads: Arc::new(AtomicUsize::new(0)),
             clipboard_writes: Arc::new(AtomicUsize::new(0)),
             latest_input_serial: None,
+            virtual_keyboard_manager,
+            virtual_keyboard: None,
+            virtual_keyboard_keymap: default_keymap(),
+            virtual_keyboard_keymap_file: None,
+            virtual_keyboard_clock: Instant::now(),
             output_power_manager,
             output_power: Vec::new(),
             output_power_target: None,
@@ -503,6 +518,51 @@ impl LayerClient {
     /// Returns whether the compositor exposes a clipboard data device.
     pub fn supports_clipboard(&self) -> bool {
         self.state.data_device_manager.is_some() && !self.state.data_devices.is_empty()
+    }
+
+    /// Sends one evdev keycode through the compositor virtual keyboard protocol.
+    pub fn send_virtual_key(&mut self, keycode: u32, pressed: bool) -> bool {
+        self.state.refresh_virtual_keyboard(&self.queue.handle());
+        let Some(keyboard) = &self.state.virtual_keyboard else {
+            return false;
+        };
+        if self.connection.flush().is_err() {
+            return false;
+        }
+        let time = self
+            .state
+            .virtual_keyboard_clock
+            .elapsed()
+            .as_millis()
+            .min(u32::MAX as u128) as u32;
+        keyboard.key(time, keycode, u32::from(pressed));
+        true
+    }
+
+    /// Sends virtual keyboard modifier masks and layout group.
+    pub fn send_virtual_modifiers(
+        &mut self,
+        depressed: u32,
+        latched: u32,
+        locked: u32,
+        group: u32,
+    ) -> bool {
+        self.state.refresh_virtual_keyboard(&self.queue.handle());
+        let Some(keyboard) = &self.state.virtual_keyboard else {
+            return false;
+        };
+        if self.connection.flush().is_err() {
+            return false;
+        }
+        keyboard.modifiers(depressed, latched, locked, group);
+        true
+    }
+
+    /// Returns whether a virtual keyboard was created for the current seat.
+    pub fn supports_virtual_keyboard(&self) -> bool {
+        self.state.virtual_keyboard_manager.is_some()
+            && self.state.seats.seats().next().is_some()
+            && self.state.virtual_keyboard_keymap.is_some()
     }
 
     /// Removes the next queued surface event.
@@ -842,6 +902,11 @@ struct LayerState {
     clipboard_reads: Arc<AtomicUsize>,
     clipboard_writes: Arc<AtomicUsize>,
     latest_input_serial: Option<u32>,
+    virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
+    virtual_keyboard: Option<ZwpVirtualKeyboardV1>,
+    virtual_keyboard_keymap: Option<String>,
+    virtual_keyboard_keymap_file: Option<File>,
+    virtual_keyboard_clock: Instant,
     output_power_manager: Option<ZwlrOutputPowerManagerV1>,
     output_power: Vec<OutputPowerControl>,
     output_power_target: Option<wl_output::WlOutput>,
@@ -865,6 +930,29 @@ struct LockSurface {
 }
 
 impl LayerState {
+    fn refresh_virtual_keyboard(&mut self, qh: &QueueHandle<Self>) {
+        if self.virtual_keyboard.is_some() {
+            return;
+        }
+        let Some(manager) = &self.virtual_keyboard_manager else {
+            return;
+        };
+        let Some(seat) = self.seats.seats().next() else {
+            return;
+        };
+        let Some(keymap) = &self.virtual_keyboard_keymap else {
+            return;
+        };
+        let keyboard = manager.create_virtual_keyboard(&seat, qh, ());
+        match install_virtual_keymap(&keyboard, keymap) {
+            Ok(file) => {
+                self.virtual_keyboard_keymap_file = Some(file);
+                self.virtual_keyboard = Some(keyboard);
+            }
+            Err(_) => keyboard.destroy(),
+        }
+    }
+
     fn refresh_data_devices(&mut self, qh: &QueueHandle<Self>) {
         let Some(manager) = &self.data_device_manager else {
             return;
@@ -1523,6 +1611,23 @@ impl KeyboardHandler for LayerState {
             logo: modifiers.logo,
         });
     }
+
+    fn update_keymap(
+        &mut self,
+        connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        keymap: Keymap<'_>,
+    ) {
+        let keymap = keymap.as_string();
+        self.virtual_keyboard_keymap = Some(keymap.clone());
+        if let Some(keyboard) = &self.virtual_keyboard
+            && let Ok(file) = install_virtual_keymap(keyboard, &keymap)
+            && connection.flush().is_ok()
+        {
+            self.virtual_keyboard_keymap_file = Some(file);
+        }
+    }
 }
 
 impl DataDeviceHandler for LayerState {
@@ -1846,6 +1951,8 @@ wayland_client::delegate_noop!(LayerState: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewporter);
 wayland_client::delegate_noop!(LayerState: ignore ExtIdleNotifierV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwlrOutputPowerManagerV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardManagerV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
 
@@ -1857,6 +1964,34 @@ fn physical_size(logical: (u32, u32), scale_120: u32) -> (u32, u32) {
     )
 }
 
+fn default_keymap() -> Option<String> {
+    let context = xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS);
+    xkbcommon::xkb::Keymap::new_from_names(
+        &context,
+        "",
+        "pc105",
+        "us",
+        "",
+        None,
+        xkbcommon::xkb::COMPILE_NO_FLAGS,
+    )
+    .map(|keymap| keymap.get_as_string(xkbcommon::xkb::KEYMAP_FORMAT_TEXT_V1))
+}
+
+fn install_virtual_keymap(keyboard: &ZwpVirtualKeyboardV1, keymap: &str) -> std::io::Result<File> {
+    let mut bytes = keymap.as_bytes().to_vec();
+    if !bytes.ends_with(&[0]) {
+        bytes.push(0);
+    }
+    let fd = memfd_create("mold-keymap", MemfdFlags::CLOEXEC)?;
+    let mut file = File::from(fd);
+    file.write_all(&bytes)?;
+    file.flush()?;
+    file.seek(SeekFrom::Start(0))?;
+    keyboard.keymap(1, file.as_fd(), bytes.len() as u32);
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1864,5 +1999,20 @@ mod tests {
     #[test]
     fn physical_size_rounds_fractional_scale_upward() {
         assert_eq!(physical_size((101, 31), 150), (127, 39));
+    }
+
+    #[test]
+    fn default_virtual_keymap_round_trips() {
+        let keymap = default_keymap().unwrap();
+        let context = xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS);
+        assert!(
+            xkbcommon::xkb::Keymap::new_from_string(
+                &context,
+                keymap,
+                xkbcommon::xkb::KEYMAP_FORMAT_TEXT_V1,
+                xkbcommon::xkb::COMPILE_NO_FLAGS,
+            )
+            .is_some()
+        );
     }
 }
