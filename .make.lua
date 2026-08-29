@@ -220,6 +220,15 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "pipewire-smoke",
+  desc = "enumerate the native PipeWire graph and round-trip sink volume",
+  run = function()
+    sh.cargo("run", "--package", "mold-services", "--example", "pipewire_smoke")
+    sh.cargo("run", "--package", "mold-lua", "--example", "pipewire_smoke")
+  end,
+}
+
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function()
                sh.cargo("test", "--workspace", "--all-targets", "--all-features")

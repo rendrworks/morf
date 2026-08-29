@@ -11,3 +11,4 @@ luna.workspace = true
 mold-io.workspace = true
 mold-reactive.workspace = true
 mold-scene.workspace = true
+mold-services.workspace = true

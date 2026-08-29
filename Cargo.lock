@@ -993,6 +993,7 @@ dependencies = [
  "mold-io",
  "mold-reactive",
  "mold-scene",
+ "mold-services",
 ]
 
 [[package]]
