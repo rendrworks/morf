@@ -1748,6 +1748,42 @@ mod tests {
     }
 
     #[test]
+    fn failed_reload_keeps_the_previous_runtime() {
+        let screen = Screen {
+            name: "test".into(),
+            width: None,
+            height: None,
+            scale: 1,
+        };
+        let mut runtime = Runtime::for_screen(Limits::default(), screen.clone());
+        runtime
+            .execute(
+                "shell.lua",
+                b"mold.ipc.value = function() return 7 end; mold.ui.Item {}",
+            )
+            .unwrap();
+        let (reply, result) = mpsc::sync_channel(1);
+
+        let update = handle_worker_command(
+            &mut runtime,
+            &screen,
+            LoadPolicy::default(),
+            WorkerCommand::Reload {
+                path: Arc::new(PathBuf::from("shell.lua")),
+                source: Arc::from(&b"local ="[..]),
+                reply,
+            },
+        );
+
+        assert!(result.recv().unwrap().is_err());
+        assert!(!update.repaint);
+        assert_eq!(
+            runtime.call_ipc("value", &[]).unwrap(),
+            [IpcValue::Integer(7)]
+        );
+    }
+
+    #[test]
     fn supervisor_dispatches_registered_ipc_handler() {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
