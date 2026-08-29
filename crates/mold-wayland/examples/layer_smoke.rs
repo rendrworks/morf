@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..BarConfig::default()
     };
     let mut client = LayerClient::connect(config)?;
+    let idle_notify = client.set_idle_timeouts(&[600_000]);
     'configured: loop {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
@@ -98,11 +99,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
                     screens,
+                    idle_notify,
                     time_ms,
                     backend.info().name,
                     backend.info().backend,

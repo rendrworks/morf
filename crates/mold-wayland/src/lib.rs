@@ -43,6 +43,10 @@ use wayland_client::protocol::{
     wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+use wayland_protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+    ext_idle_notifier_v1::ExtIdleNotifierV1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
@@ -170,6 +174,8 @@ pub enum LayerEvent {
         shift: bool,
         logo: bool,
     },
+    /// A configured seat idle threshold changed state.
+    Idle { timeout_ms: u32, idle: bool },
     /// The compositor output set changed.
     Screens(Vec<ScreenInfo>),
     /// The compositor positioned and sized the popup.
@@ -248,6 +254,7 @@ impl LayerClient {
             .bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
+        let idle_notifier = globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok();
         let session_locks = SessionLockState::new(&globals, &qh);
         let mut state = LayerState {
             registry: RegistryState::new(&globals),
@@ -271,6 +278,9 @@ impl LayerClient {
             keyboard: None,
             touch: None,
             touch_points: HashMap::new(),
+            idle_notifier,
+            idle_notifications: Vec::new(),
+            idle_timeouts: Vec::new(),
             screens: Vec::new(),
             session_locks,
             session_lock: None,
@@ -381,6 +391,15 @@ impl LayerClient {
             .dispatch_pending(&mut self.state)
             .map(|count| count > 0)
             .map_err(|error| WaylandError(format!("Wayland dispatch failed: {error}")))
+    }
+
+    /// Replaces seat idle thresholds and returns whether the compositor supports them.
+    pub fn set_idle_timeouts(&mut self, timeouts: &[u32]) -> bool {
+        self.state.idle_timeouts = timeouts.iter().copied().take(64).collect();
+        self.state.idle_timeouts.sort_unstable();
+        self.state.idle_timeouts.dedup();
+        self.state.refresh_idle(&self.queue.handle());
+        self.state.idle_notifier.is_some()
     }
 
     /// Removes the next queued surface event.
@@ -705,6 +724,9 @@ struct LayerState {
     keyboard: Option<wl_keyboard::WlKeyboard>,
     touch: Option<wl_touch::WlTouch>,
     touch_points: HashMap<i32, (f64, f64)>,
+    idle_notifier: Option<ExtIdleNotifierV1>,
+    idle_notifications: Vec<ExtIdleNotificationV1>,
+    idle_timeouts: Vec<u32>,
     screens: Vec<ScreenInfo>,
     session_locks: SessionLockState,
     session_lock: Option<SessionLock>,
@@ -719,6 +741,23 @@ struct LockSurface {
 }
 
 impl LayerState {
+    fn refresh_idle(&mut self, qh: &QueueHandle<Self>) {
+        for notification in self.idle_notifications.drain(..) {
+            notification.destroy();
+        }
+        let Some(notifier) = &self.idle_notifier else {
+            return;
+        };
+        let Some(seat) = self.seats.seats().next() else {
+            return;
+        };
+        self.idle_notifications = self
+            .idle_timeouts
+            .iter()
+            .map(|timeout| notifier.get_idle_notification(*timeout, &seat, qh, *timeout))
+            .collect();
+    }
+
     fn create_lock_surface(&mut self, output: wl_output::WlOutput, qh: &QueueHandle<Self>) {
         let Some(lock) = self.session_lock.clone().filter(SessionLock::is_locked) else {
             return;
@@ -1029,9 +1068,10 @@ impl SeatHandler for LayerState {
     fn new_seat(
         &mut self,
         _connection: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _seat: wl_seat::WlSeat,
     ) {
+        self.refresh_idle(qh);
     }
 
     fn new_capability(
@@ -1351,6 +1391,27 @@ impl Dispatch<WpFractionalScaleV1, ()> for LayerState {
     }
 }
 
+impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ExtIdleNotificationV1,
+        event: ext_idle_notification_v1::Event,
+        timeout_ms: &u32,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let idle = match event {
+            ext_idle_notification_v1::Event::Idled => true,
+            ext_idle_notification_v1::Event::Resumed => false,
+            _ => return,
+        };
+        state.events.push_back(LayerEvent::Idle {
+            timeout_ms: *timeout_ms,
+            idle,
+        });
+    }
+}
+
 impl ProvidesRegistryState for LayerState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry
@@ -1363,6 +1424,7 @@ delegate_registry!(LayerState);
 smithay_client_toolkit::delegate_dispatch2!(LayerState);
 wayland_client::delegate_noop!(LayerState: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewporter);
+wayland_client::delegate_noop!(LayerState: ignore ExtIdleNotifierV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
 

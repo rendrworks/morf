@@ -409,6 +409,41 @@ impl Runtime {
         self.dispatch_ui_event_with_args(node, event, &[])
     }
 
+    /// Returns compositor idle thresholds requested by Lua callbacks.
+    pub fn idle_timeouts(&self) -> Vec<u32> {
+        let mut timeouts = self
+            .reactive
+            .borrow()
+            .idle_callbacks
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        timeouts.sort_unstable();
+        timeouts
+    }
+
+    /// Dispatches one compositor idle state change to registered Lua callbacks.
+    pub fn dispatch_idle(&mut self, timeout_ms: u32, idle: bool) -> bool {
+        let callbacks = self
+            .reactive
+            .borrow()
+            .idle_callbacks
+            .get(&timeout_ms)
+            .cloned()
+            .unwrap_or_default();
+        for callback in &callbacks {
+            if let Err(message) = self.lua.enter(|ctx| {
+                execute_handler_args(ctx, callback, &[IpcValue::Boolean(idle)], self.limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("idle callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
     /// Runs one bounded key handler with keysym and UTF-8 text arguments.
     pub fn dispatch_key_event(
         &mut self,
@@ -1066,6 +1101,7 @@ struct ReactiveState {
     parent_transitions: Vec<ParentTransitionRequest>,
     states: HashMap<NodeHandle, StateSet>,
     ipc_handlers: HashMap<String, StashedClosure>,
+    idle_callbacks: HashMap<u32, Vec<StashedClosure>>,
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
@@ -1101,6 +1137,7 @@ impl ReactiveState {
             parent_transitions: Vec::new(),
             states: HashMap::new(),
             ipc_handlers: HashMap::new(),
+            idle_callbacks: HashMap::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
@@ -1300,6 +1337,30 @@ fn install_reactive_api(
         );
         clock.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
         mold.set_field(ctx, "clock", clock);
+        let idle_state = Rc::clone(&state);
+        let idle_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (milliseconds, callback): (i64, Closure) = stack.consume(ctx)?;
+            let milliseconds = u32::try_from(milliseconds)
+                .map_err(|_| HostError("idle timeout must fit an unsigned 32-bit value".into()))?;
+            let mut state = idle_state.borrow_mut();
+            let callback_count = state.idle_callbacks.values().map(Vec::len).sum::<usize>();
+            if callback_count >= 256 {
+                return Err(HostError("idle callback limit reached".into()).into());
+            }
+            if !state.idle_callbacks.contains_key(&milliseconds) && state.idle_callbacks.len() >= 64
+            {
+                return Err(HostError("idle timeout limit reached".into()).into());
+            }
+            state
+                .idle_callbacks
+                .entry(milliseconds)
+                .or_default()
+                .push(ctx.stash(callback));
+            Ok(CallbackReturn::Return)
+        });
+        let idle = Table::new(&ctx);
+        idle.set_field(ctx, "subscribe", idle_subscribe);
+        mold.set_field(ctx, "idle", idle);
         let timer_state = Rc::clone(&state);
         let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
@@ -4252,6 +4313,28 @@ mod tests {
 
         assert_eq!(
             second.call_ipc("state.get", &[]).unwrap(),
+            [IpcValue::Boolean(true)]
+        );
+    }
+
+    #[test]
+    fn idle_callbacks_receive_compositor_state() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "idle.lua",
+                br#"
+                    local idle = mold.signal("idle", false)
+                    mold.idle.subscribe(30000, function(value) idle:set(value) end)
+                    mold.ipc["idle.get"] = function() return idle:get() end
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(runtime.idle_timeouts(), [30_000]);
+        assert!(runtime.dispatch_idle(30_000, true));
+        assert_eq!(
+            runtime.call_ipc("idle.get", &[]).unwrap(),
             [IpcValue::Boolean(true)]
         );
     }

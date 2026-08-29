@@ -168,6 +168,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         return Err("lock configuration root must be an opaque Rect".to_owned());
     }
     let mut client = LayerClient::connect_lock().map_err(|error| error.to_string())?;
+    client.set_idle_timeouts(&runtime.idle_timeouts());
     client
         .begin_session_lock()
         .map_err(|error| error.to_string())?;
@@ -246,6 +247,9 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 }
                 LayerEvent::SessionLockFinished => {
                     return Err("compositor ended the session lock".to_owned());
+                }
+                LayerEvent::Idle { timeout_ms, idle } => {
+                    repaint |= runtime.dispatch_idle(timeout_ms, idle);
                 }
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
@@ -697,6 +701,7 @@ fn handle_ipc(
 struct WorkerUpdate {
     repaint: bool,
     reset_input: bool,
+    refresh_idle: bool,
 }
 
 fn handle_worker_command(
@@ -718,6 +723,7 @@ fn handle_worker_command(
             WorkerUpdate {
                 repaint,
                 reset_input: false,
+                refresh_idle: false,
             }
         }
         WorkerCommand::Verbs(reply) => {
@@ -758,6 +764,7 @@ fn handle_worker_command(
             WorkerUpdate {
                 repaint,
                 reset_input: repaint,
+                refresh_idle: repaint,
             }
         }
     }
@@ -821,6 +828,7 @@ fn run_surface(
         ..BarConfig::default()
     })
     .map_err(|error| error.to_string())?;
+    client.set_idle_timeouts(&runtime.idle_timeouts());
     tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
         output: name.clone(),
         screens: client.screens().to_vec(),
@@ -833,6 +841,7 @@ fn run_surface(
                 LayerEvent::Configure { .. } => break 'configured,
                 LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
                 LayerEvent::Scale(_)
+                | LayerEvent::Idle { .. }
                 | LayerEvent::Frame { .. }
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave
@@ -896,6 +905,9 @@ fn run_surface(
                 focused = runtime.first_key_target();
                 touches.clear();
             }
+            if update.refresh_idle {
+                client.set_idle_timeouts(&runtime.idle_timeouts());
+            }
         }
         if next_clock != clock {
             clock = next_clock;
@@ -922,6 +934,9 @@ fn run_surface(
                     repaint |= frame.active || !frame.changes.is_empty();
                 }
                 LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
+                LayerEvent::Idle { timeout_ms, idle } => {
+                    repaint |= runtime.dispatch_idle(timeout_ms, idle);
+                }
                 LayerEvent::PointerMotion { x, y } => {
                     let hit = layout
                         .hit_test(&runtime.scene(), x, y)
