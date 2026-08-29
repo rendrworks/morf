@@ -1,4 +1,4 @@
-use mold_layout::{Geometry, TextAlignment};
+use mold_layout::{Geometry, TextAlignment, TextElide};
 use mold_render::{
     DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, VerticalAlignment, WgpuBackend,
 };
@@ -63,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 size: 18.0,
                 color: Color::rgba8(255, 255, 255, 255),
                 wrap: false,
+                elide: TextElide::None,
                 horizontal_alignment: TextAlignment::Left,
                 vertical_alignment: VerticalAlignment::Top,
             },

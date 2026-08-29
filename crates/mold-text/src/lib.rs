@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use cosmic_text::{
     Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
 };
-use mold_layout::{Size, TextAlignment, TextMeasurer, TextOptions};
+use mold_layout::{Size, TextAlignment, TextElide, TextMeasurer, TextOptions};
 use mold_scene::NodeHandle;
+use unicode_segmentation::UnicodeSegmentation;
 
 struct CachedBuffer {
     buffer: Buffer,
@@ -21,6 +22,7 @@ struct TextInput {
     width: Option<u64>,
     wrap: bool,
     alignment: TextAlignment,
+    elide: TextElide,
 }
 
 /// Shared font database, per-node shaped buffers, and glyph image cache.
@@ -148,6 +150,7 @@ impl TextMeasurer for TextSystem {
             width: options.width.map(f64::to_bits),
             wrap: options.wrap,
             alignment: options.alignment,
+            elide: options.elide,
         };
         let cached = self.buffers.entry(node).or_insert_with(|| CachedBuffer {
             buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),
@@ -164,8 +167,9 @@ impl TextMeasurer for TextSystem {
             } else {
                 Wrap::None
             });
+            let displayed = elided_text(&mut self.fonts, text, family, size, options);
             cached.buffer.set_text(
-                text,
+                &displayed,
                 &Attrs::new().family(Family::Name(family)),
                 Shaping::Advanced,
                 Some(match options.alignment {
@@ -190,6 +194,71 @@ impl TextMeasurer for TextSystem {
             height: height as f64,
         }
     }
+}
+
+fn elided_text(
+    fonts: &mut FontSystem,
+    text: &str,
+    family: &str,
+    size: f32,
+    options: TextOptions,
+) -> String {
+    let Some(width) = options
+        .width
+        .filter(|_| !options.wrap && options.elide != TextElide::None)
+    else {
+        return text.to_owned();
+    };
+    if shaped_width(fonts, text, family, size) <= width as f32 {
+        return text.to_owned();
+    }
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
+    let mut low = 0;
+    let mut high = graphemes.len();
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        let candidate = elide_candidate(&graphemes, middle, options.elide);
+        if shaped_width(fonts, &candidate, family, size) <= width as f32 {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    elide_candidate(&graphemes, low, options.elide)
+}
+
+fn elide_candidate(graphemes: &[&str], kept: usize, mode: TextElide) -> String {
+    let kept = kept.min(graphemes.len());
+    match mode {
+        TextElide::None => graphemes.concat(),
+        TextElide::Left => format!("…{}", graphemes[graphemes.len() - kept..].concat()),
+        TextElide::Right => format!("{}…", graphemes[..kept].concat()),
+        TextElide::Middle => {
+            let left = kept.div_ceil(2);
+            let right = kept - left;
+            format!(
+                "{}…{}",
+                graphemes[..left].concat(),
+                graphemes[graphemes.len() - right..].concat()
+            )
+        }
+    }
+}
+
+fn shaped_width(fonts: &mut FontSystem, text: &str, family: &str, size: f32) -> f32 {
+    let mut buffer = Buffer::new(fonts, Metrics::relative(size, 1.2));
+    buffer.set_wrap(Wrap::None);
+    buffer.set_text(
+        text,
+        &Attrs::new().family(Family::Name(family)),
+        Shaping::Advanced,
+        Some(Align::Left),
+    );
+    buffer.shape_until_scroll(fonts, false);
+    buffer
+        .layout_runs()
+        .map(|run| run.line_w)
+        .fold(0.0, f32::max)
 }
 
 #[cfg(test)]
@@ -291,5 +360,36 @@ mod tests {
                 .all(|glyph| glyph.width > 0 && glyph.height > 0)
         );
         assert!(glyphs.iter().all(|glyph| !glyph.data.is_empty()));
+    }
+
+    #[test]
+    fn eliding_places_ellipsis_and_constrains_width() {
+        let mut fonts = FontSystem::new();
+        let text = "application launcher settings";
+        for mode in [TextElide::Left, TextElide::Middle, TextElide::Right] {
+            let displayed = elided_text(
+                &mut fonts,
+                text,
+                "sans-serif",
+                16.0,
+                TextOptions {
+                    width: Some(100.0),
+                    elide: mode,
+                    ..TextOptions::default()
+                },
+            );
+            assert!(displayed.contains('…'));
+            assert!(shaped_width(&mut fonts, &displayed, "sans-serif", 16.0) <= 100.0);
+            match mode {
+                TextElide::Left => assert!(text.ends_with(displayed.trim_start_matches('…'))),
+                TextElide::Middle => {
+                    let (left, right) = displayed.split_once('…').unwrap();
+                    assert!(text.starts_with(left));
+                    assert!(text.ends_with(right));
+                }
+                TextElide::Right => assert!(text.starts_with(displayed.trim_end_matches('…'))),
+                TextElide::None => unreachable!(),
+            }
+        }
     }
 }

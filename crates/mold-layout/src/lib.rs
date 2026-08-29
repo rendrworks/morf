@@ -38,12 +38,23 @@ pub enum TextAlignment {
     Justified,
 }
 
+/// Ellipsis placement when an unwrapped line exceeds its width.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextElide {
+    #[default]
+    None,
+    Left,
+    Middle,
+    Right,
+}
+
 /// Width, wrapping, and alignment supplied to the text subsystem.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TextOptions {
     pub width: Option<f64>,
     pub wrap: bool,
     pub alignment: TextAlignment,
+    pub elide: TextElide,
 }
 
 /// Text measurement supplied by the text subsystem.
@@ -251,6 +262,7 @@ impl Layout {
                     width: positive(scene.number(node, "width")?),
                     wrap: scene.bool_value(node, "wrap")?,
                     alignment: text_alignment(scene.string_value(node, "horizontal_alignment")?)?,
+                    elide: text_elide(scene.string_value(node, "elide")?)?,
                 },
             ),
             Element::Image | Element::Icon => {
@@ -503,6 +515,18 @@ fn text_alignment(value: &str) -> Result<TextAlignment, LayoutError> {
         "justified" => Ok(TextAlignment::Justified),
         _ => Err(LayoutError::Scene(format!(
             "unknown Text horizontal alignment `{value}`"
+        ))),
+    }
+}
+
+fn text_elide(value: &str) -> Result<TextElide, LayoutError> {
+    match value {
+        "none" => Ok(TextElide::None),
+        "left" => Ok(TextElide::Left),
+        "middle" => Ok(TextElide::Middle),
+        "right" => Ok(TextElide::Right),
+        _ => Err(LayoutError::Scene(format!(
+            "unknown text elide mode `{value}`"
         ))),
     }
 }

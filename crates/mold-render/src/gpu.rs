@@ -1143,6 +1143,7 @@ fn create_glyph_batch(
             size,
             color,
             wrap,
+            elide,
             horizontal_alignment,
             vertical_alignment,
         } = command
@@ -1158,6 +1159,7 @@ fn create_glyph_batch(
                 width: Some(bounds.width),
                 wrap: *wrap,
                 alignment: *horizontal_alignment,
+                elide: *elide,
             },
         );
         let spare_height = (bounds.height - measured.height).max(0.0);

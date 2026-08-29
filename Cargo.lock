@@ -1271,6 +1271,7 @@ dependencies = [
  "cosmic-text",
  "mold-layout",
  "mold-scene",
+ "unicode-segmentation",
 ]
 
 [[package]]

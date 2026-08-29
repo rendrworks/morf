@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 
-use mold_layout::{Geometry, Layout, TextAlignment};
+use mold_layout::{Geometry, Layout, TextAlignment, TextElide};
 use mold_scene::{Color, Element, NodeHandle, Scene, SceneError};
 
 mod gpu;
@@ -60,6 +60,8 @@ pub enum DrawCommand {
         color: Color,
         /// Whether lines wrap at the resolved width.
         wrap: bool,
+        /// Ellipsis placement for an overflowing unwrapped line.
+        elide: TextElide,
         /// Horizontal line alignment.
         horizontal_alignment: TextAlignment,
         /// Vertical placement inside the resolved height.
@@ -500,6 +502,7 @@ fn append_node(
             size: scene.number(node, "font_size")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
             wrap: scene.bool_value(node, "wrap")?,
+            elide: render_text_elide(scene.string_value(node, "elide")?)?,
             horizontal_alignment: render_text_alignment(
                 scene.string_value(node, "horizontal_alignment")?,
             )?,
@@ -623,6 +626,18 @@ fn render_text_alignment(value: &str) -> Result<TextAlignment, RenderError> {
         "justified" => Ok(TextAlignment::Justified),
         _ => Err(RenderError::Scene(format!(
             "unknown Text horizontal alignment `{value}`"
+        ))),
+    }
+}
+
+fn render_text_elide(value: &str) -> Result<TextElide, RenderError> {
+    match value {
+        "none" => Ok(TextElide::None),
+        "left" => Ok(TextElide::Left),
+        "middle" => Ok(TextElide::Middle),
+        "right" => Ok(TextElide::Right),
+        _ => Err(RenderError::Scene(format!(
+            "unknown text elide mode `{value}`"
         ))),
     }
 }
@@ -866,6 +881,7 @@ mod tests {
         scene.assign(text, "width", 200.0).unwrap();
         scene.assign(text, "height", 80.0).unwrap();
         scene.assign(text, "wrap", true).unwrap();
+        scene.assign(text, "elide", "right").unwrap();
         scene
             .assign(text, "horizontal_alignment", "center")
             .unwrap();
@@ -884,6 +900,7 @@ mod tests {
         let list = DrawList::from_scene(&scene, &layout).unwrap();
         let DrawCommand::Text {
             wrap,
+            elide,
             horizontal_alignment,
             vertical_alignment,
             ..
@@ -892,6 +909,7 @@ mod tests {
             panic!("text did not emit a text command");
         };
         assert!(wrap);
+        assert_eq!(elide, TextElide::Right);
         assert_eq!(horizontal_alignment, TextAlignment::Center);
         assert_eq!(vertical_alignment, VerticalAlignment::Bottom);
     }
