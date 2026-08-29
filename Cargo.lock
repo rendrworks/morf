@@ -1027,6 +1027,10 @@ dependencies = [
 [[package]]
 name = "mold-services"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "libloading",
+]
 
 [[package]]
 name = "mold-text"

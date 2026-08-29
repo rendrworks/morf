@@ -12,6 +12,8 @@ repository = "https://github.com/rendrworks/mold"
 bytemuck = { version = "1.25", features = ["derive"] }
 cosmic-text = "=0.19.0"
 jiff = "=0.2.35"
+libc = "0.2"
+libloading = "0.8"
 luna = { git = "https://github.com/onix-os/luna", rev = "e8b7e98ec977c8973ce1a182d935d0ca1f06f465" }
 pollster = "1.0"
 raw-window-handle = "0.6"

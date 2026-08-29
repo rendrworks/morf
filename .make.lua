@@ -212,6 +212,14 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "pam-smoke",
+  desc = "load PAM and reject invalid credentials",
+  run = function()
+    sh.cargo("run", "--package", "mold-services", "--example", "pam_smoke")
+  end,
+}
+
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function()
                sh.cargo("test", "--workspace", "--all-targets", "--all-features")
