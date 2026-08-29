@@ -597,6 +597,12 @@ fn execute_config(
 ) -> Result<(), String> {
     let roots = runtimepath_roots(path, policy.external_roots);
     runtime.set_module_roots(roots.clone());
+    runtime.set_shell_root(
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
     for plugin in policy
         .plugins
         .then(|| runtime_scripts(&roots, "plugin"))

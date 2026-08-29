@@ -6,8 +6,9 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command as StdCommand, Stdio};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
@@ -434,6 +435,11 @@ impl Runtime {
     /// Replaces the ordered filesystem roots used for user Lua modules.
     pub fn set_module_roots(&mut self, roots: Vec<PathBuf>) {
         *self.module_roots.borrow_mut() = roots;
+    }
+
+    /// Sets the root directory used by native shell path helpers.
+    pub fn set_shell_root(&mut self, root: PathBuf) {
+        self.reactive.borrow_mut().shell_root = root;
     }
 
     /// Returns the native layer-surface settings assigned by the configuration.
@@ -1319,6 +1325,10 @@ struct VirtualListToken {
     view: RefCell<VirtualList>,
 }
 
+struct ElapsedTimerToken {
+    started: RefCell<Instant>,
+}
+
 struct LuaVirtualView {
     model: Rc<RefCell<ListModel>>,
     view: VirtualList,
@@ -1474,6 +1484,7 @@ struct ReactiveState {
     status_notifiers: Vec<PendingStatusNotifier>,
     session_unlock_requested: bool,
     layer_surface: LayerSurfaceConfig,
+    shell_root: PathBuf,
 }
 
 impl ReactiveState {
@@ -1528,6 +1539,7 @@ impl ReactiveState {
             status_notifiers: Vec::new(),
             session_unlock_requested: false,
             layer_surface: LayerSurfaceConfig::default(),
+            shell_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
 }
@@ -2007,6 +2019,127 @@ fn install_reactive_api(
         let surface = Table::new(&ctx);
         surface.set_metatable(ctx, Some(surface_metatable));
         mold.set_field(ctx, "surface", surface);
+        let env = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let name: String = stack.consume(ctx)?;
+            if name.is_empty() || name.len() > 256 || name.as_bytes().contains(&0) {
+                return Err(HostError("environment variable name is invalid".into()).into());
+            }
+            match std::env::var_os(name) {
+                Some(value) => stack.replace(ctx, value.to_string_lossy().as_ref()),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "env", env);
+        mold.set_field(ctx, "process_id", i64::from(std::process::id()));
+        mold.set_field(ctx, "version", env!("CARGO_PKG_VERSION"));
+        let shell_root_state = Rc::clone(&state);
+        let shell_path = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let relative: String = stack.consume(ctx)?;
+            let path = shell_root_state.borrow().shell_root.join(relative);
+            stack.replace(ctx, path.to_string_lossy().as_ref());
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "shell_path", shell_path);
+        let has_version = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (major, minor): (i64, i64) = stack.consume(ctx)?;
+            let current = env!("CARGO_PKG_VERSION")
+                .split('.')
+                .take(2)
+                .map(|part| part.parse::<i64>().unwrap_or(0))
+                .collect::<Vec<_>>();
+            let available = current.first().copied().unwrap_or(0) > major
+                || current.first().copied().unwrap_or(0) == major
+                    && current.get(1).copied().unwrap_or(0) >= minor;
+            stack.replace(ctx, available);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "has_version", has_version);
+        let elapsed = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
+            stack.replace(ctx, timer.started.borrow().elapsed().as_secs_f64());
+            Ok(CallbackReturn::Return)
+        });
+        let elapsed_ms = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
+            let milliseconds = timer.started.borrow().elapsed().as_millis();
+            stack.replace(ctx, i64::try_from(milliseconds).unwrap_or(i64::MAX));
+            Ok(CallbackReturn::Return)
+        });
+        let elapsed_ns = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
+            let nanoseconds = timer.started.borrow().elapsed().as_nanos();
+            stack.replace(ctx, i64::try_from(nanoseconds).unwrap_or(i64::MAX));
+            Ok(CallbackReturn::Return)
+        });
+        let restart = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
+            let now = Instant::now();
+            let elapsed = now.duration_since(*timer.started.borrow());
+            *timer.started.borrow_mut() = now;
+            stack.replace(ctx, elapsed.as_secs_f64());
+            Ok(CallbackReturn::Return)
+        });
+        let restart_ms = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
+            let now = Instant::now();
+            let elapsed = now.duration_since(*timer.started.borrow());
+            *timer.started.borrow_mut() = now;
+            stack.replace(ctx, i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX));
+            Ok(CallbackReturn::Return)
+        });
+        let restart_ns = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
+            let now = Instant::now();
+            let elapsed = now.duration_since(*timer.started.borrow());
+            *timer.started.borrow_mut() = now;
+            stack.replace(ctx, i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX));
+            Ok(CallbackReturn::Return)
+        });
+        let elapsed_methods = Table::new(&ctx);
+        elapsed_methods.set_field(ctx, "elapsed", elapsed);
+        elapsed_methods.set_field(ctx, "elapsed_ms", elapsed_ms);
+        elapsed_methods.set_field(ctx, "elapsed_ns", elapsed_ns);
+        elapsed_methods.set_field(ctx, "restart", restart);
+        elapsed_methods.set_field(ctx, "restart_ms", restart_ms);
+        elapsed_methods.set_field(ctx, "restart_ns", restart_ns);
+        let elapsed_metatable = Table::new(&ctx);
+        elapsed_metatable.set_field(ctx, "__index", elapsed_methods);
+        let elapsed_metatable = ctx.stash(elapsed_metatable);
+        let elapsed_timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let timer = UserData::new_static(
+                &ctx,
+                ElapsedTimerToken {
+                    started: RefCell::new(Instant::now()),
+                },
+            );
+            timer.set_metatable(ctx, Some(ctx.fetch(&elapsed_metatable)));
+            stack.replace(ctx, timer);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "elapsed_timer", elapsed_timer);
+        let exec_detached = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let command: Table = stack.consume(ctx)?;
+            let mut command = table_string_array(ctx, command, 64).map_err(HostError)?;
+            if command.is_empty() {
+                return Err(HostError("detached command cannot be empty".into()).into());
+            }
+            let program = command.remove(0);
+            let mut child = StdCommand::new(program)
+                .args(command)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| HostError(error.to_string()))?;
+            let id = child.id();
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            stack.replace(ctx, i64::from(id));
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "exec_detached", exec_detached);
         mold.set_field(ctx, "signal", signal);
         mold.set_field(ctx, "reloadable", reloadable);
         mold.set_field(ctx, "effect", effect);
@@ -3411,6 +3544,13 @@ fn install_reactive_api(
         mold.set_field(ctx, "ui", ui);
         let core = Table::new(&ctx);
         for name in [
+            "env",
+            "process_id",
+            "version",
+            "shell_path",
+            "has_version",
+            "elapsed_timer",
+            "exec_detached",
             "signal",
             "reloadable",
             "effect",
@@ -5636,6 +5776,33 @@ mod tests {
                 keyboard_focus: "none".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn core_namespace_exposes_native_process_and_path_data() {
+        let mut runtime = Runtime::default();
+        runtime.set_shell_root(PathBuf::from("/tmp/mold-shell"));
+        runtime
+            .execute(
+                "core.lua",
+                br#"
+                    local core = require("mold.core")
+                    assert(type(core.process_id) == "number")
+                    assert(type(core.version) == "string")
+                    assert(core.env("PATH") ~= nil)
+                    assert(core.env("MOLD_VARIABLE_THAT_DOES_NOT_EXIST") == nil)
+                    assert(core.shell_path("icons/logo.svg") == "/tmp/mold-shell/icons/logo.svg")
+                    assert(core.has_version(0, 1))
+                    local timer = core.elapsed_timer()
+                    assert(timer:elapsed() >= 0)
+                    assert(timer:elapsed_ms() >= 0)
+                    assert(timer:elapsed_ns() >= 0)
+                    assert(timer:restart() >= 0)
+                    assert(timer:restart_ms() >= 0)
+                    assert(timer:restart_ns() >= 0)
+                "#,
+            )
+            .unwrap();
     }
 
     #[test]
