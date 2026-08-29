@@ -8,7 +8,8 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
 use mold_image::ImageCache;
-use mold_layout::TextMeasurer;
+use mold_layout::{Size, TextMeasurer};
+use mold_scene::{Element, NodeHandle};
 use mold_text::{RasterContent, TextSystem};
 
 use crate::path::PathCache;
@@ -307,6 +308,43 @@ impl WgpuBackend {
             self.path_index_capacity = indices.next_power_of_two();
             self.path_index_buffer = create_index_buffer(&self.device, self.path_index_capacity);
         }
+    }
+}
+
+impl TextMeasurer for WgpuBackend {
+    fn measure(
+        &mut self,
+        node: NodeHandle,
+        text: &str,
+        family: &str,
+        size: f64,
+        wrap_width: Option<f64>,
+    ) -> Size {
+        self.text.measure(node, text, family, size, wrap_width)
+    }
+
+    fn measure_image(
+        &mut self,
+        _node: NodeHandle,
+        element: Element,
+        source: &str,
+        theme: Option<&str>,
+    ) -> Option<Size> {
+        if source.is_empty() {
+            return None;
+        }
+        let (width, height) = match element {
+            Element::Image => self.images.intrinsic_size(source).ok()?,
+            Element::Icon => self
+                .images
+                .icon_intrinsic_size(source, theme.unwrap_or("hicolor"), 48)
+                .ok()?,
+            _ => return None,
+        };
+        Some(Size {
+            width: f64::from(width),
+            height: f64::from(height),
+        })
     }
 }
 

@@ -76,6 +76,7 @@ struct CacheKey {
 pub struct ImageCache {
     images: HashMap<CacheKey, Arc<ImageData>>,
     icons: HashMap<(String, String, u32, u32), PathBuf>,
+    intrinsic: HashMap<PathBuf, (u32, u32)>,
 }
 
 impl ImageCache {
@@ -124,10 +125,51 @@ impl ImageCache {
         self.load(path, logical_size, logical_size, scale_120)
     }
 
+    /// Returns a source's unscaled pixel dimensions.
+    pub fn intrinsic_size(&mut self, source: impl AsRef<Path>) -> Result<(u32, u32), ImageError> {
+        let source = source.as_ref().to_path_buf();
+        if let Some(size) = self.intrinsic.get(&source) {
+            return Ok(*size);
+        }
+        let size = if source.extension().and_then(|value| value.to_str()) == Some("svg") {
+            let bytes = fs::read(&source)?;
+            let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default())
+                .map_err(|error| ImageError::Svg(error.to_string()))?;
+            let size = tree.size();
+            (size.width().ceil() as u32, size.height().ceil() as u32)
+        } else {
+            image::image_dimensions(&source)?
+        };
+        if size.0 == 0 || size.1 == 0 {
+            return Err(ImageError::InvalidSize);
+        }
+        self.intrinsic.insert(source, size);
+        Ok(size)
+    }
+
+    /// Resolves an icon and returns its source dimensions.
+    pub fn icon_intrinsic_size(
+        &mut self,
+        name: &str,
+        theme: &str,
+        preferred_size: u32,
+    ) -> Result<(u32, u32), ImageError> {
+        let key = (name.to_owned(), theme.to_owned(), preferred_size, 120);
+        let path = if let Some(path) = self.icons.get(&key) {
+            path.clone()
+        } else {
+            let path = IconResolver::from_environment().find(name, theme, preferred_size)?;
+            self.icons.insert(key, path.clone());
+            path
+        };
+        self.intrinsic_size(path)
+    }
+
     /// Removes all decoded and resolved entries.
     pub fn clear(&mut self) {
         self.images.clear();
         self.icons.clear();
+        self.intrinsic.clear();
     }
 }
 
@@ -432,6 +474,7 @@ mod tests {
         let first = cache.load(&path, 8, 4, 180).unwrap();
         let second = cache.load(&path, 8, 4, 180).unwrap();
         assert_eq!((first.width, first.height), (12, 6));
+        assert_eq!(cache.intrinsic_size(&path).unwrap(), (2, 2));
         assert_eq!(&first.rgba[..4], &[255, 0, 0, 255]);
         assert!(Arc::ptr_eq(&first, &second));
         fs::remove_dir_all(root).unwrap();

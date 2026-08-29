@@ -331,7 +331,7 @@ fn paint_lock(
             width: width as f64,
             height: height as f64,
         },
-        renderer.backend_mut().text_mut(),
+        renderer.backend_mut(),
     )
     .map_err(|error| error.to_string())?;
     client.request_lock_frame(index);
@@ -1096,7 +1096,7 @@ fn apply_parent_transitions(
     for transition in transitions {
         Layout::transition_reparent(
             &mut runtime.scene_mut(),
-            renderer.backend_mut().text_mut(),
+            renderer.backend_mut(),
             ReparentTransition {
                 root,
                 node: transition.node,
@@ -1126,7 +1126,7 @@ fn paint(
             width: width as f64,
             height: height as f64,
         },
-        renderer.backend_mut().text_mut(),
+        renderer.backend_mut(),
     )
     .map_err(|error| error.to_string())?;
     let (physical_width, physical_height) = client.physical_size();

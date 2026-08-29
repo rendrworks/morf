@@ -39,6 +39,17 @@ pub trait TextMeasurer {
         size: f64,
         wrap_width: Option<f64>,
     ) -> Size;
+
+    /// Returns intrinsic image or icon dimensions when the source is available.
+    fn measure_image(
+        &mut self,
+        _node: NodeHandle,
+        _element: Element,
+        _source: &str,
+        _theme: Option<&str>,
+    ) -> Option<Size> {
+        None
+    }
 }
 
 /// Complete layout output keyed by stable node handles.
@@ -220,10 +231,24 @@ impl Layout {
                 scene.number(node, "font_size")?,
                 positive(scene.number(node, "width")?),
             ),
-            Element::Image | Element::Icon => Size {
-                width: scene.number(node, "source_width")?,
-                height: scene.number(node, "source_height")?,
-            },
+            Element::Image | Element::Icon => {
+                let element = scene.element(node)?;
+                let source = if element == Element::Image {
+                    scene.string_value(node, "source")?
+                } else {
+                    scene.string_value(node, "name")?
+                };
+                let theme = (element == Element::Icon)
+                    .then(|| scene.string_value(node, "theme"))
+                    .transpose()?;
+                let natural = text
+                    .measure_image(node, element, source, theme)
+                    .unwrap_or_default();
+                let width = positive(scene.number(node, "source_width")?).unwrap_or(natural.width);
+                let height =
+                    positive(scene.number(node, "source_height")?).unwrap_or(natural.height);
+                Size { width, height }
+            }
             Element::Row | Element::RowLayout => Size {
                 width: sum_with_spacing(&child_sizes, scene.number(node, "spacing")?, true),
                 height: child_sizes
@@ -596,6 +621,45 @@ mod tests {
                 height: size,
             }
         }
+
+        fn measure_image(
+            &mut self,
+            _node: NodeHandle,
+            element: Element,
+            source: &str,
+            _theme: Option<&str>,
+        ) -> Option<Size> {
+            (element == Element::Image && !source.is_empty()).then_some(Size {
+                width: 64.0,
+                height: 32.0,
+            })
+        }
+    }
+
+    #[test]
+    fn image_implicit_size_uses_source_dimensions() {
+        let mut scene = Scene::new();
+        let image = scene.create(Element::Image);
+        scene.assign(image, "source", "/tmp/image.png").unwrap();
+
+        let layout = Layout::compute(
+            &scene,
+            image,
+            Size {
+                width: 64.0,
+                height: 32.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(
+            layout.implicit_size(image),
+            Some(Size {
+                width: 64.0,
+                height: 32.0
+            })
+        );
     }
 
     #[test]
