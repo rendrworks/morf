@@ -1,5 +1,5 @@
 use mold_layout::Geometry;
-use mold_render::{DamageRect, DrawCommand, DrawList, RenderBackend, WgpuBackend};
+use mold_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
 use mold_scene::{Color, Element, Scene};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,6 +25,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height: 48.0,
                 },
                 color: Color::rgba8(38, 115, 217, 255),
+                gradient: Gradient::Linear {
+                    start_color: Color::rgba8(38, 115, 217, 255),
+                    end_color: Color::rgba8(124, 58, 237, 255),
+                    start: [0.0, 0.0],
+                    end: [1.0, 0.0],
+                },
                 radius: 8.0,
                 border_width: 1.0,
                 border_color: Color::rgba8(255, 255, 255, 128),

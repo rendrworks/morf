@@ -1187,6 +1187,17 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         Element::Rect => {
             properties.extend([
                 color("color", Color::rgba8(255, 255, 255, 255)),
+                string("gradient_type", "none"),
+                color("gradient_start_color", Color::rgba8(255, 255, 255, 255)),
+                color("gradient_end_color", Color::rgba8(0, 0, 0, 255)),
+                number("gradient_start_x", 0.0),
+                number("gradient_start_y", 0.0),
+                number("gradient_end_x", 1.0),
+                number("gradient_end_y", 0.0),
+                number("gradient_center_x", 0.5),
+                number("gradient_center_y", 0.5),
+                number("gradient_radius", 0.5),
+                number("gradient_angle", 0.0),
                 number("radius", 0.0),
                 number("border_width", 0.0),
                 color("border_color", Color::rgba8(0, 0, 0, 0)),

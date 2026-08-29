@@ -1,5 +1,5 @@
 use mold_layout::Geometry;
-use mold_render::{DamageRect, DrawCommand, DrawList, RenderBackend, WgpuBackend};
+use mold_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
 use mold_scene::{Color, Element, Scene};
 use mold_wayland::{BarConfig, LayerClient, LayerEvent};
 
@@ -37,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height: client.logical_size().1 as f64,
                 },
                 color: Color::rgba8(31, 36, 48, 255),
+                gradient: Gradient::None,
                 radius: 0.0,
                 border_width: 0.0,
                 border_color: Color::rgba8(0, 0, 0, 0),

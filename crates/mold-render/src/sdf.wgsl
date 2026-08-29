@@ -17,6 +17,10 @@ struct VertexOutput {
     @location(7) effects: vec4<f32>,
     @location(8) shadow: vec4<f32>,
     @location(9) shadow_color: vec4<f32>,
+    @location(10) gradient_start_color: vec4<f32>,
+    @location(11) gradient_end_color: vec4<f32>,
+    @location(12) gradient_points: vec4<f32>,
+    @location(13) gradient_data: vec4<f32>,
 }
 
 @vertex
@@ -31,6 +35,10 @@ fn vs_main(
     @location(6) effects: vec4<f32>,
     @location(7) shadow: vec4<f32>,
     @location(8) shadow_color: vec4<f32>,
+    @location(9) gradient_start_color: vec4<f32>,
+    @location(10) gradient_end_color: vec4<f32>,
+    @location(11) gradient_points: vec4<f32>,
+    @location(12) gradient_data: vec4<f32>,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -58,6 +66,10 @@ fn vs_main(
     output.effects = effects;
     output.shadow = shadow;
     output.shadow_color = shadow_color;
+    output.gradient_start_color = gradient_start_color;
+    output.gradient_end_color = gradient_end_color;
+    output.gradient_points = gradient_points;
+    output.gradient_data = gradient_data;
     return output;
 }
 
@@ -72,15 +84,29 @@ fn rounded_distance(point: vec2<f32>, size: vec2<f32>, radius: f32) -> f32 {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let radius = max(input.radii.x, 0.0);
     let point = input.local - input.shape.xy;
-    let distance = rounded_distance(point, input.shape.zw, radius);
+    let signed_distance = rounded_distance(point, input.shape.zw, radius);
     let softness = max(input.effects.x, 0.5);
-    let coverage = smoothstep(softness, -softness, distance);
+    let coverage = smoothstep(softness, -softness, signed_distance);
     let border_width = max(input.border.x, 0.0);
-    let inner = smoothstep(softness, -softness, distance + border_width);
-    let fill_alpha = input.color.a * inner;
+    let inner = smoothstep(softness, -softness, signed_distance + border_width);
+    let normalized = point / max(input.shape.zw, vec2<f32>(0.000001));
+    var fill_color = input.color;
+    if input.gradient_data.x == 1.0 {
+        let direction = input.gradient_points.zw - input.gradient_points.xy;
+        let amount = dot(normalized - input.gradient_points.xy, direction) / max(dot(direction, direction), 0.000001);
+        fill_color = mix(input.gradient_start_color, input.gradient_end_color, clamp(amount, 0.0, 1.0));
+    } else if input.gradient_data.x == 2.0 {
+        let amount = distance(normalized, input.gradient_data.yz) / max(input.gradient_data.w, 0.000001);
+        fill_color = mix(input.gradient_start_color, input.gradient_end_color, clamp(amount, 0.0, 1.0));
+    } else if input.gradient_data.x == 3.0 {
+        let delta = normalized - input.gradient_data.yz;
+        let amount = fract((atan2(delta.y, delta.x) - input.effects.w) / 6.28318530718);
+        fill_color = mix(input.gradient_start_color, input.gradient_end_color, amount);
+    }
+    let fill_alpha = fill_color.a * inner;
     let border_alpha = input.border_color.a * max(coverage - inner, 0.0);
     let shape = vec4<f32>(
-        input.color.rgb * fill_alpha + input.border_color.rgb * border_alpha,
+        fill_color.rgb * fill_alpha + input.border_color.rgb * border_alpha,
         fill_alpha + border_alpha,
     );
     let spread = input.effects.z;

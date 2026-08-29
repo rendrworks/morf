@@ -23,6 +23,8 @@ pub enum DrawCommand {
         bounds: Geometry,
         /// Fill colour after node opacity.
         color: Color,
+        /// Optional normalized gradient fill.
+        gradient: Gradient,
         /// Uniform corner radius.
         radius: f64,
         /// Border width.
@@ -86,6 +88,34 @@ pub enum DrawCommand {
         stroke_width: f64,
         /// True for even-odd fill, false for nonzero fill.
         even_odd: bool,
+    },
+}
+
+/// Gradient fill encoded in normalized rectangle coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Gradient {
+    /// Use the rectangle's solid colour.
+    None,
+    /// Interpolate along a line.
+    Linear {
+        start_color: Color,
+        end_color: Color,
+        start: [f64; 2],
+        end: [f64; 2],
+    },
+    /// Interpolate outwards from a center point.
+    Radial {
+        start_color: Color,
+        end_color: Color,
+        center: [f64; 2],
+        radius: f64,
+    },
+    /// Interpolate around a center point from an angle in degrees.
+    Conical {
+        start_color: Color,
+        end_color: Color,
+        center: [f64; 2],
+        angle: f64,
     },
 }
 
@@ -300,6 +330,14 @@ pub struct SdfQuadInstance {
     pub shadow: [f32; 4],
     /// RGBA shadow colour.
     pub shadow_color: [f32; 4],
+    /// RGBA gradient start colour.
+    pub gradient_start_color: [f32; 4],
+    /// RGBA gradient end colour.
+    pub gradient_end_color: [f32; 4],
+    /// Normalized gradient start and end points.
+    pub gradient_points: [f32; 4],
+    /// Gradient kind, center, and radius.
+    pub gradient_data: [f32; 4],
 }
 
 impl SdfQuadInstance {
@@ -308,6 +346,7 @@ impl SdfQuadInstance {
         let DrawCommand::Quad {
             bounds,
             color,
+            gradient,
             radius,
             border_width,
             border_color,
@@ -331,6 +370,8 @@ impl SdfQuadInstance {
             *shadow_offset_x,
             *shadow_offset_y,
         );
+        let (gradient_start_color, gradient_end_color, gradient_points, gradient_data, angle) =
+            gradient_instance(gradient);
         Some(Self {
             bounds: [
                 (expanded.x * scale) as f32,
@@ -352,7 +393,7 @@ impl SdfQuadInstance {
                 (*blur * scale) as f32,
                 (*shadow_blur * scale) as f32,
                 (*shadow_spread * scale) as f32,
-                0.0,
+                angle,
             ],
             shadow: [
                 (*shadow_offset_x * scale) as f32,
@@ -361,6 +402,10 @@ impl SdfQuadInstance {
                 0.0,
             ],
             shadow_color: color_array(*shadow_color),
+            gradient_start_color,
+            gradient_end_color,
+            gradient_points,
+            gradient_data,
         })
     }
 }
@@ -410,6 +455,7 @@ fn append_node(
             node,
             bounds,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
+            gradient: scene_gradient(scene, node, opacity)?,
             radius: scene.number(node, "radius")?,
             border_width: scene.number(node, "border_width")?,
             border_color: with_opacity(scene.color_value(node, "border_color")?, opacity),
@@ -467,6 +513,104 @@ fn append_node(
         append_node(scene, layout, child, opacity, commands)?;
     }
     Ok(())
+}
+
+fn scene_gradient(scene: &Scene, node: NodeHandle, opacity: f64) -> Result<Gradient, RenderError> {
+    let start_color = with_opacity(scene.color_value(node, "gradient_start_color")?, opacity);
+    let end_color = with_opacity(scene.color_value(node, "gradient_end_color")?, opacity);
+    Ok(match scene.string_value(node, "gradient_type")? {
+        "none" => Gradient::None,
+        "linear" => Gradient::Linear {
+            start_color,
+            end_color,
+            start: [
+                scene.number(node, "gradient_start_x")?,
+                scene.number(node, "gradient_start_y")?,
+            ],
+            end: [
+                scene.number(node, "gradient_end_x")?,
+                scene.number(node, "gradient_end_y")?,
+            ],
+        },
+        "radial" => {
+            let radius = scene.number(node, "gradient_radius")?;
+            if radius <= 0.0 {
+                return Err(RenderError::Scene(
+                    "Rect radial gradient radius must be positive".to_owned(),
+                ));
+            }
+            Gradient::Radial {
+                start_color,
+                end_color,
+                center: [
+                    scene.number(node, "gradient_center_x")?,
+                    scene.number(node, "gradient_center_y")?,
+                ],
+                radius,
+            }
+        }
+        "conical" => Gradient::Conical {
+            start_color,
+            end_color,
+            center: [
+                scene.number(node, "gradient_center_x")?,
+                scene.number(node, "gradient_center_y")?,
+            ],
+            angle: scene.number(node, "gradient_angle")?,
+        },
+        kind => {
+            return Err(RenderError::Scene(format!(
+                "unknown Rect gradient type `{kind}`"
+            )));
+        }
+    })
+}
+
+fn gradient_instance(gradient: &Gradient) -> ([f32; 4], [f32; 4], [f32; 4], [f32; 4], f32) {
+    match gradient {
+        Gradient::None => ([0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4], 0.0),
+        Gradient::Linear {
+            start_color,
+            end_color,
+            start,
+            end,
+        } => (
+            color_array(*start_color),
+            color_array(*end_color),
+            [
+                start[0] as f32,
+                start[1] as f32,
+                end[0] as f32,
+                end[1] as f32,
+            ],
+            [1.0, 0.0, 0.0, 0.0],
+            0.0,
+        ),
+        Gradient::Radial {
+            start_color,
+            end_color,
+            center,
+            radius,
+        } => (
+            color_array(*start_color),
+            color_array(*end_color),
+            [0.0; 4],
+            [2.0, center[0] as f32, center[1] as f32, *radius as f32],
+            0.0,
+        ),
+        Gradient::Conical {
+            start_color,
+            end_color,
+            center,
+            angle,
+        } => (
+            color_array(*start_color),
+            color_array(*end_color),
+            [0.0; 4],
+            [3.0, center[0] as f32, center[1] as f32, 0.0],
+            angle.to_radians() as f32,
+        ),
+    }
 }
 
 fn with_opacity(mut color: Color, opacity: f64) -> Color {
@@ -633,6 +777,58 @@ mod tests {
     }
 
     #[test]
+    fn rectangles_emit_normalized_gradient_instances() {
+        let mut scene = Scene::new();
+        let rect = scene.create(Element::Rect);
+        scene.assign(rect, "width", 100.0).unwrap();
+        scene.assign(rect, "height", 50.0).unwrap();
+        scene.assign(rect, "opacity", 0.5).unwrap();
+        scene.assign(rect, "gradient_type", "linear").unwrap();
+        scene
+            .assign(rect, "gradient_start_color", "#ff0000")
+            .unwrap();
+        scene.assign(rect, "gradient_end_color", "#0000ff").unwrap();
+        scene.assign(rect, "gradient_end_y", 1.0).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            rect,
+            Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+        let DrawCommand::Quad { gradient, .. } = &list.commands[0] else {
+            panic!("rectangle did not emit a quad");
+        };
+        assert_eq!(
+            gradient,
+            &Gradient::Linear {
+                start_color: Color {
+                    red: 1.0,
+                    green: 0.0,
+                    blue: 0.0,
+                    alpha: 0.5,
+                },
+                end_color: Color {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 1.0,
+                    alpha: 0.5,
+                },
+                start: [0.0, 0.0],
+                end: [1.0, 1.0],
+            }
+        );
+        let instance = SdfQuadInstance::from_command(&list.commands[0], 120).unwrap();
+        assert_eq!(instance.gradient_data[0], 1.0);
+        assert_eq!(instance.gradient_points, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
     fn images_and_icons_emit_texture_commands() {
         let mut scene = Scene::new();
         let root = scene.create(Element::Item);
@@ -790,6 +986,7 @@ mod tests {
                     ..Geometry::default()
                 },
                 color: Color::rgba8(0, 0, 0, 255),
+                gradient: Gradient::None,
                 radius: 0.0,
                 border_width: 0.0,
                 border_color: Color::rgba8(0, 0, 0, 0),
@@ -827,6 +1024,7 @@ mod tests {
                 height: 20.0,
             },
             color: Color::rgba8(255, 255, 255, 255),
+            gradient: Gradient::None,
             radius: 4.0,
             border_width: 0.0,
             border_color: Color::rgba8(0, 0, 0, 0),

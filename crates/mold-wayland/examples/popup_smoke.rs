@@ -1,5 +1,5 @@
 use mold_layout::Geometry;
-use mold_render::{DamageRect, DrawCommand, DrawList, RenderBackend, WgpuBackend};
+use mold_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
 use mold_scene::{Color, Element, Scene};
 use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, PopupConfig};
 
@@ -159,6 +159,7 @@ fn quad(
             height,
         },
         color,
+        gradient: Gradient::None,
         radius: 8.0,
         border_width: 1.0,
         border_color: Color::rgba8(255, 255, 255, 80),
