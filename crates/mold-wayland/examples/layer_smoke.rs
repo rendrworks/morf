@@ -5,8 +5,13 @@ use mold_wayland::{BarConfig, LayerClient, LayerEvent};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = LayerClient::connect(BarConfig::default())?;
-    while !matches!(client.next_event(), Some(LayerEvent::Configure { .. })) {
+    'configured: loop {
         client.dispatch()?;
+        while let Some(event) = client.next_event() {
+            if matches!(event, LayerEvent::Configure { .. }) {
+                break 'configured;
+            }
+        }
     }
     let (width, height) = client.physical_size();
     let mut backend = pollster::block_on(WgpuBackend::new_surface(

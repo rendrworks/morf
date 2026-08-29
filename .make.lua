@@ -138,7 +138,13 @@ make.recipe{
   run = function(a)
     local script = a.example or EXAMPLE
     if script == "main" then script = "tests/fixtures/hello.lua" end
-    sh.cargo("run", "--package", "mold-cli", "--", script)
+    sh.cargo("build", "--package", "mold-cli")
+    local command = { "target/debug/mold", script }
+    local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
+    if wrapper.ok then
+      command = { (wrapper.out or ""):match("[^\n]+"), command[1], command[2] }
+    end
+    assert(oslo.run(command).ok, "mold exited with an error")
   end,
 }
 make.alias("r", "run")

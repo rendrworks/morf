@@ -5,11 +5,14 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
+use std::time::Duration;
 
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
     WaylandWindowHandle, WindowHandle,
 };
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::time::Timespec;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, FrameCallbackData};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -150,6 +153,47 @@ impl LayerClient {
             .flush()
             .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))?;
         Ok(())
+    }
+
+    /// Dispatches Wayland events or returns when the timeout expires.
+    pub fn dispatch_timeout(&mut self, timeout: Duration) -> Result<bool, WaylandError> {
+        if self
+            .queue
+            .dispatch_pending(&mut self.state)
+            .map_err(|error| WaylandError(format!("Wayland dispatch failed: {error}")))?
+            > 0
+        {
+            return Ok(true);
+        }
+        self.queue
+            .flush()
+            .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))?;
+        let Some(guard) = self.queue.prepare_read() else {
+            return self
+                .queue
+                .dispatch_pending(&mut self.state)
+                .map(|count| count > 0)
+                .map_err(|error| WaylandError(format!("Wayland dispatch failed: {error}")));
+        };
+        let seconds = timeout.as_secs().min(i64::MAX as u64) as i64;
+        let timeout = Timespec {
+            tv_sec: seconds,
+            tv_nsec: timeout.subsec_nanos() as i64,
+        };
+        let mut fds = [PollFd::new(&self.queue, PollFlags::IN)];
+        let ready = poll(&mut fds, Some(&timeout))
+            .map_err(|error| WaylandError(format!("Wayland poll failed: {error}")))?;
+        if ready == 0 {
+            drop(guard);
+            return Ok(false);
+        }
+        guard
+            .read()
+            .map_err(|error| WaylandError(format!("Wayland read failed: {error}")))?;
+        self.queue
+            .dispatch_pending(&mut self.state)
+            .map(|count| count > 0)
+            .map_err(|error| WaylandError(format!("Wayland dispatch failed: {error}")))
     }
 
     /// Removes the next queued surface event.

@@ -11,4 +11,9 @@ name = "mold"
 path = "src/main.rs"
 
 [dependencies]
+jiff.workspace = true
+mold-layout.workspace = true
 mold-lua.workspace = true
+mold-render.workspace = true
+mold-wayland.workspace = true
+pollster.workspace = true

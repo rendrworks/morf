@@ -95,11 +95,22 @@ pub struct DamageRect {
 #[derive(Default)]
 pub struct DamageTracker {
     previous: DrawList,
+    scale_120: u32,
 }
 
 impl DamageTracker {
     /// Diffs commands and converts changed logical bounds at protocol scale in 120ths.
     pub fn diff(&mut self, next: &DrawList, scale_120: u32) -> Vec<DamageRect> {
+        if self.scale_120 != 0 && self.scale_120 != scale_120 {
+            self.previous = next.clone();
+            self.scale_120 = scale_120;
+            return merge_damage(
+                next.commands
+                    .iter()
+                    .filter_map(|command| physical_damage(command.bounds(), scale_120))
+                    .collect(),
+            );
+        }
         let previous: HashMap<_, _> = self
             .previous
             .commands
@@ -130,6 +141,7 @@ impl DamageTracker {
             }
         }
         self.previous = next.clone();
+        self.scale_120 = scale_120;
         merge_damage(
             logical
                 .into_iter()
@@ -483,6 +495,35 @@ mod tests {
                 width: 5,
                 height: 6,
             })
+        );
+    }
+
+    #[test]
+    fn scale_change_redamages_an_unchanged_frame() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Rect);
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 20.0,
+                height: 10.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+        let mut tracker = DamageTracker::default();
+        tracker.diff(&list, 120);
+
+        assert_eq!(
+            tracker.diff(&list, 150),
+            vec![DamageRect {
+                x: 0,
+                y: 0,
+                width: 25,
+                height: 13,
+            }]
         );
     }
 
