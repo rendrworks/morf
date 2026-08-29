@@ -459,7 +459,9 @@ fn append_node(
         | Element::RowLayout
         | Element::ColumnLayout
         | Element::GridLayout
-        | Element::Flickable => {}
+        | Element::Flickable
+        | Element::Loader
+        | Element::Timer => {}
     }
     for child in scene.children(node)? {
         append_node(scene, layout, child, opacity, commands)?;

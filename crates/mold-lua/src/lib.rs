@@ -498,6 +498,9 @@ impl Runtime {
                 if state.timers[index].timer.tick(Duration::ZERO) {
                     timers.push(state.timers[index].callback.clone());
                     if !state.timers[index].repeat {
+                        if let Some(node) = state.timers[index].node {
+                            let _ = state.scene.assign(node, "running", false);
+                        }
                         state.timers.swap_remove(index);
                         continue;
                     }
@@ -730,6 +733,7 @@ struct PendingTimer {
     timer: IoTimer,
     callback: StashedClosure,
     repeat: bool,
+    node: Option<NodeHandle>,
 }
 
 struct PendingDbusSignal {
@@ -995,6 +999,7 @@ fn install_reactive_api(
                 timer,
                 callback: ctx.stash(callback),
                 repeat,
+                node: None,
             });
             Ok(CallbackReturn::Return)
         });
@@ -1914,6 +1919,16 @@ fn install_reactive_api(
             "Flickable",
             element_constructor(ctx, Rc::clone(&state), limits, Element::Flickable),
         );
+        ui.set_field(
+            ctx,
+            "Loader",
+            loader_constructor(ctx, Rc::clone(&state), limits),
+        );
+        ui.set_field(
+            ctx,
+            "Timer",
+            timer_constructor(ctx, Rc::clone(&state), limits),
+        );
         let component = execute_module(
             ctx,
             "mold.component",
@@ -2253,6 +2268,105 @@ fn element_constructor<'gc>(
     })
 }
 
+fn loader_constructor<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let properties: Table = stack.consume(ctx)?;
+        let clean = Table::new(&ctx);
+        let mut source = None;
+        for (key, value) in properties.iter(ctx) {
+            if matches!(key, LuaValue::String(name) if name.display_lossy().to_string() == "source")
+            {
+                let LuaValue::Function(Function::Closure(factory)) = value else {
+                    return Err(HostError("Loader source must be a function".into()).into());
+                };
+                source = Some(ctx.stash(factory));
+            } else {
+                clean.set(ctx, key, value)?;
+            }
+        }
+        let node = state.borrow_mut().scene.create(Element::Loader);
+        configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
+        if state
+            .borrow()
+            .scene
+            .bool_value(node, "active")
+            .map_err(|error| HostError(error.to_string()))?
+            && let Some(source) = source
+        {
+            let child = execute_node_factory(ctx, &source, limits).map_err(HostError)?;
+            state
+                .borrow_mut()
+                .scene
+                .reparent(child, Some(node))
+                .map_err(|error| HostError(error.to_string()))?;
+        }
+        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn timer_constructor<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let properties: Table = stack.consume(ctx)?;
+        let clean = Table::new(&ctx);
+        let mut callback = None;
+        for (key, value) in properties.iter(ctx) {
+            if matches!(key, LuaValue::String(name) if name.display_lossy().to_string() == "on_triggered")
+            {
+                let LuaValue::Function(Function::Closure(closure)) = value else {
+                    return Err(HostError("Timer on_triggered must be a function".into()).into());
+                };
+                callback = Some(ctx.stash(closure));
+            } else {
+                clean.set(ctx, key, value)?;
+            }
+        }
+        let node = state.borrow_mut().scene.create(Element::Timer);
+        configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
+        let (interval, repeat, running) = {
+            let state = state.borrow();
+            let interval = state
+                .scene
+                .number(node, "interval")
+                .map_err(|error| HostError(error.to_string()))?;
+            let repeat = state
+                .scene
+                .bool_value(node, "repeat")
+                .map_err(|error| HostError(error.to_string()))?;
+            let running = state
+                .scene
+                .bool_value(node, "running")
+                .map_err(|error| HostError(error.to_string()))?;
+            (interval, repeat, running)
+        };
+        if running {
+            if !interval.is_finite() || interval <= 0.0 {
+                return Err(HostError("Timer interval must be finite and positive".into()).into());
+            }
+            let callback =
+                callback.ok_or_else(|| HostError("running Timer requires on_triggered".into()))?;
+            let timer = IoTimer::every(Duration::from_secs_f64(interval / 1_000.0))
+                .map_err(|error| HostError(error.to_string()))?;
+            state.borrow_mut().timers.push(PendingTimer {
+                timer,
+                callback,
+                repeat,
+                node: Some(node),
+            });
+        }
+        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        Ok(CallbackReturn::Return)
+    })
+}
+
 fn view_constructor<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
@@ -2417,6 +2531,39 @@ fn execute_delegate(
             executor.stop(&ctx);
             return Err(format!(
                 "Lua delegate fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            break;
+        }
+    }
+    match executor.take_result::<UserRef<NodeToken>>(ctx) {
+        Ok(Ok(node)) => Ok(node.handle),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn execute_node_factory(
+    ctx: Context<'_>,
+    factory: &StashedClosure,
+    limits: Limits,
+) -> Result<NodeHandle, String> {
+    let executor = Executor::start(ctx, ctx.fetch(factory).into(), ());
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua Loader source fuel exhausted after {budget} instructions"
             ));
         }
         let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
@@ -4052,6 +4199,62 @@ mod tests {
         let root = runtime.scene().roots()[0];
 
         assert_eq!(runtime.scene().string_value(root, "text").unwrap(), "1");
+    }
+
+    #[test]
+    fn loader_and_timer_build_native_scene_objects() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "scene-objects.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local count = mold.signal("scene.timer.count", 0)
+                    ui.Item {
+                      ui.Loader {
+                        source = function() return ui.Text { text = "loaded" } end,
+                      },
+                      ui.Timer {
+                        interval = 1,
+                        running = true,
+                        on_triggered = function() count:set(count:get() + 1) end,
+                      },
+                      ui.Text { text = function() return "" .. count:get() end },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+        let loader_children = runtime.scene().children(children[0]).unwrap();
+
+        assert_eq!(
+            runtime.scene().element(children[0]).unwrap(),
+            Element::Loader
+        );
+        assert_eq!(
+            runtime.scene().element(children[1]).unwrap(),
+            Element::Timer
+        );
+        assert_eq!(
+            runtime
+                .scene()
+                .string_value(loader_children[0], "text")
+                .unwrap(),
+            "loaded"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !runtime.poll_services() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(
+            runtime.scene().string_value(children[2], "text").unwrap(),
+            "1"
+        );
+        assert!(!runtime.scene().bool_value(children[1], "running").unwrap());
     }
 
     #[test]

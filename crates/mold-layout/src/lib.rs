@@ -248,7 +248,9 @@ impl Layout {
             | Element::Rect
             | Element::Shape
             | Element::MouseArea
-            | Element::Flickable => {
+            | Element::Flickable
+            | Element::Loader
+            | Element::Timer => {
                 let mut bounds = Size::default();
                 for (child, size) in children.iter().zip(child_sizes) {
                     bounds.width = bounds.width.max(scene.number(*child, "x")? + size.width);

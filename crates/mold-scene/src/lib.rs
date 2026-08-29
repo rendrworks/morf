@@ -53,6 +53,10 @@ pub enum Element {
     GridLayout,
     /// Clipped viewport over movable content.
     Flickable,
+    /// Non-painting container for a lazily constructed child.
+    Loader,
+    /// Non-painting periodic callback object.
+    Timer,
 }
 
 impl Element {
@@ -72,6 +76,8 @@ impl Element {
             Self::ColumnLayout => "ColumnLayout",
             Self::GridLayout => "GridLayout",
             Self::Flickable => "Flickable",
+            Self::Loader => "Loader",
+            Self::Timer => "Timer",
         }
     }
 }
@@ -1155,6 +1161,14 @@ fn schema(element: Element) -> Vec<PropertySpec> {
     ];
     match element {
         Element::Item => {}
+        Element::Loader => properties.push(boolean("active", true)),
+        Element::Timer => {
+            properties.extend([
+                number("interval", 1_000.0),
+                boolean("repeat", false),
+                boolean("running", false),
+            ]);
+        }
         Element::MouseArea => {
             properties.push(any(
                 "accepted_buttons",
