@@ -10,6 +10,7 @@ return ui.component(function(props)
     if ok then text:set(string.format("%.0f%%", percentage)) end
   end
   refresh()
+  if battery.watch then pcall(battery.watch, battery, refresh) end
   mold.timer(props.interval or 30000, refresh)
   return ui.Text {
     color = props.color or "#eceff4",

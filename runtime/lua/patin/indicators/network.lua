@@ -12,6 +12,7 @@ return ui.component(function(props)
     text:set(wireless and active and "wifi" or "network")
   end
   refresh()
+  if network.watch then pcall(network.watch, network, refresh) end
   mold.timer(props.interval or 5000, refresh)
   return ui.Text {
     color = props.color or "#eceff4",

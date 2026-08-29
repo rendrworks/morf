@@ -10,6 +10,12 @@ function Mpris.new(bus_name)
     "/org/mpris/MediaPlayer2",
     "org.mpris.MediaPlayer2.Player"
   )
+  local properties = mold.dbus.proxy(
+    "session",
+    bus_name,
+    "/org/mpris/MediaPlayer2",
+    "org.freedesktop.DBus.Properties"
+  )
   return {
     playback_status = function() return player:get("PlaybackStatus") end,
     position = function() return player:get("Position") end,
@@ -20,6 +26,11 @@ function Mpris.new(bus_name)
     pause = function() return player:call("Pause") end,
     next = function() return player:call("Next") end,
     previous = function() return player:call("Previous") end,
+    watch = function(_, callback)
+      properties:subscribe("PropertiesChanged", function(change)
+        if change[1] == "org.mpris.MediaPlayer2.Player" then callback(change[2], change[3]) end
+      end)
+    end,
   }
 end
 
