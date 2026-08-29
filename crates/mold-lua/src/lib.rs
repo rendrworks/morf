@@ -75,6 +75,19 @@ pub struct Runtime {
     reactive: Rc<RefCell<ReactiveState>>,
 }
 
+/// Output metadata exposed to one per-screen Lua configuration instance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Screen {
+    /// Compositor output name.
+    pub name: String,
+    /// Logical output width when advertised.
+    pub width: Option<i32>,
+    /// Logical output height when advertised.
+    pub height: Option<i32>,
+    /// Integer fallback scale advertised by wl_output.
+    pub scale: i32,
+}
+
 /// Event name accepted by Lua element handlers.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UiEvent {
@@ -108,10 +121,19 @@ impl UiEvent {
 impl Runtime {
     /// Creates a sandboxed runtime with the supplied limits.
     pub fn new(limits: Limits) -> Self {
+        Self::with_screen(limits, None)
+    }
+
+    /// Creates a runtime whose `mold.screens` model contains one output.
+    pub fn for_screen(limits: Limits, screen: Screen) -> Self {
+        Self::with_screen(limits, Some(screen))
+    }
+
+    fn with_screen(limits: Limits, screen: Option<Screen>) -> Self {
         let mut lua = Lua::core();
         lua.set_memory_limit(Some(limits.memory));
         let reactive = Rc::new(RefCell::new(ReactiveState::new()));
-        install_reactive_api(&mut lua, Rc::clone(&reactive), limits);
+        install_reactive_api(&mut lua, Rc::clone(&reactive), limits, screen.as_ref());
         Self {
             lua,
             limits,
@@ -350,7 +372,12 @@ impl fmt::Display for HostError {
 
 impl StdError for HostError {}
 
-fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits: Limits) {
+fn install_reactive_api(
+    lua: &mut Lua,
+    state: Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+    screen: Option<&Screen>,
+) {
     lua.enter(|ctx| {
         let get = Callback::from_fn(&ctx, {
             let state = Rc::clone(&state);
@@ -469,6 +496,38 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
         );
         clock.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
         mold.set_field(ctx, "clock", clock);
+        let screens = Table::new(&ctx);
+        if let Some(screen) = screen {
+            let value = Table::new(&ctx);
+            value.set_field(ctx, "name", screen.name.as_str());
+            value.set_field(
+                ctx,
+                "width",
+                screen
+                    .width
+                    .map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+            );
+            value.set_field(
+                ctx,
+                "height",
+                screen
+                    .height
+                    .map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+            );
+            value.set_field(ctx, "scale", screen.scale as i64);
+            screens
+                .set(ctx, 1, value)
+                .expect("screen table accepts integer keys");
+        }
+        mold.set_field(ctx, "screens", screens);
+        let variants = execute_module(
+            ctx,
+            "mold.variants",
+            b"return function(items, factory) return factory(items[1]) end",
+            limits,
+        )
+        .expect("embedded variants module is valid");
+        mold.set_field(ctx, "variants", variants);
 
         let ui = Table::new(&ctx);
         for (name, element) in [
@@ -1006,6 +1065,34 @@ mod tests {
         runtime
             .execute("test.lua", b"local answer = 40 + 2")
             .unwrap();
+    }
+
+    #[test]
+    fn variants_builds_the_current_screen_instance() {
+        let mut runtime = Runtime::for_screen(
+            Limits::default(),
+            Screen {
+                name: "DP-1".to_owned(),
+                width: Some(1920),
+                height: Some(1080),
+                scale: 2,
+            },
+        );
+        runtime
+            .execute(
+                "variants.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    mold.variants(mold.screens, function(screen)
+                        return ui.Text { text = screen.name, width = screen.width }
+                    end)
+                "#,
+            )
+            .unwrap();
+        let node = runtime.scene().roots()[0];
+        assert_eq!(runtime.scene().string_value(node, "text").unwrap(), "DP-1");
+        assert_eq!(runtime.scene().number(node, "width").unwrap(), 1920.0);
     }
 
     #[test]

@@ -1,13 +1,17 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mold_layout::{Layout, Size};
-use mold_lua::{Runtime, UiEvent};
+use mold_lua::{Limits, Runtime, Screen, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
-use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent};
+use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, ScreenInfo};
 
 fn usage() -> &'static str {
     "mold - reactive Wayland shell runtime\n\nusage: mold <shell.lua>\n       mold --help\n       mold --version"
@@ -35,16 +39,164 @@ fn run() -> Result<(), String> {
     let path = PathBuf::from(argument);
     let source =
         fs::read(&path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let mut runtime = Runtime::default();
+    supervise(path, source)
+}
+
+struct Worker {
+    stop: Arc<AtomicBool>,
+    join: JoinHandle<()>,
+}
+
+enum WorkerMessage {
+    Screens {
+        output: String,
+        screens: Vec<ScreenInfo>,
+    },
+    Failed {
+        output: String,
+        error: String,
+    },
+}
+
+fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
+    let probe = LayerClient::connect(BarConfig::default()).map_err(|error| error.to_string())?;
+    let mut desired = named_screens(probe.screens())?;
+    drop(probe);
+    if desired.is_empty() {
+        return Err("compositor advertised no named outputs".to_owned());
+    }
+    let path = Arc::new(path);
+    let source: Arc<[u8]> = source.into();
+    let (tx, rx) = mpsc::channel();
+    let mut workers = BTreeMap::new();
+    reconcile_workers(
+        &mut workers,
+        &desired,
+        Arc::clone(&path),
+        Arc::clone(&source),
+        &tx,
+    );
+
+    loop {
+        match rx.recv() {
+            Ok(WorkerMessage::Screens { output, screens }) if workers.contains_key(&output) => {
+                desired = named_screens(&screens)?;
+                reconcile_workers(
+                    &mut workers,
+                    &desired,
+                    Arc::clone(&path),
+                    Arc::clone(&source),
+                    &tx,
+                );
+            }
+            Ok(WorkerMessage::Screens { .. }) => {}
+            Ok(WorkerMessage::Failed { output, error }) => {
+                stop_workers(workers);
+                return Err(format!("output {output}: {error}"));
+            }
+            Err(_) => return Err("all output workers stopped".to_owned()),
+        }
+    }
+}
+
+fn named_screens(screens: &[ScreenInfo]) -> Result<BTreeMap<String, ScreenInfo>, String> {
+    screens
+        .iter()
+        .map(|screen| {
+            screen
+                .name
+                .clone()
+                .map(|name| (name, screen.clone()))
+                .ok_or_else(|| format!("output {} has no compositor name", screen.id))
+        })
+        .collect()
+}
+
+fn reconcile_workers(
+    workers: &mut BTreeMap<String, Worker>,
+    desired: &BTreeMap<String, ScreenInfo>,
+    path: Arc<PathBuf>,
+    source: Arc<[u8]>,
+    tx: &mpsc::Sender<WorkerMessage>,
+) {
+    let stale = workers
+        .keys()
+        .filter(|name| !desired.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in stale {
+        let worker = workers.remove(&name).expect("worker key is present");
+        worker.stop.store(true, Ordering::Release);
+        let _ = worker.join.join();
+    }
+    for (name, screen) in desired {
+        if workers.contains_key(name) {
+            continue;
+        }
+        let output = name.clone();
+        let screen = screen.clone();
+        let path = Arc::clone(&path);
+        let source = Arc::clone(&source);
+        let tx = tx.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let join = thread::spawn(move || {
+            if let Err(error) = run_surface(&path, &source, screen, &tx, &worker_stop)
+                && !worker_stop.load(Ordering::Acquire)
+            {
+                let _ = tx.send(WorkerMessage::Failed { output, error });
+            }
+        });
+        workers.insert(name.clone(), Worker { stop, join });
+    }
+}
+
+fn stop_workers(workers: BTreeMap<String, Worker>) {
+    for worker in workers.values() {
+        worker.stop.store(true, Ordering::Release);
+    }
+    for (_, worker) in workers {
+        let _ = worker.join.join();
+    }
+}
+
+fn run_surface(
+    path: &Path,
+    source: &[u8],
+    screen: ScreenInfo,
+    tx: &mpsc::Sender<WorkerMessage>,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    let name = screen
+        .name
+        .clone()
+        .ok_or_else(|| format!("output {} has no compositor name", screen.id))?;
+    let mut runtime = Runtime::for_screen(
+        Limits::default(),
+        Screen {
+            name: name.clone(),
+            width: screen.size.map(|size| size.0),
+            height: screen.size.map(|size| size.1),
+            scale: screen.scale,
+        },
+    );
     runtime
-        .execute(&path.to_string_lossy(), &source)
+        .execute(&path.to_string_lossy(), source)
         .map_err(|error| error.to_string())?;
     if runtime.scene().roots().len() != 1 {
         return Err("configuration must create exactly one root item".to_owned());
     }
 
-    let mut client =
-        LayerClient::connect(BarConfig::default()).map_err(|error| error.to_string())?;
+    let mut client = LayerClient::connect(BarConfig {
+        output: Some(name.clone()),
+        ..BarConfig::default()
+    })
+    .map_err(|error| error.to_string())?;
+    tx.send(WorkerMessage::Screens {
+        output: name.clone(),
+        screens: client.screens().to_vec(),
+    })
+    .map_err(|_| "output supervisor stopped".to_owned())?;
     'configured: loop {
         client.dispatch().map_err(|error| error.to_string())?;
         while let Some(event) = client.next_event() {
@@ -87,8 +239,11 @@ fn run() -> Result<(), String> {
     let mut pressed = None;
     let mut focused = None;
     loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
         client
-            .dispatch_timeout(until_next_second())
+            .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
             .map_err(|error| error.to_string())?;
         let next_clock = clock_text();
         let mut repaint = false;
@@ -116,7 +271,7 @@ fn run() -> Result<(), String> {
                         .map_err(|error| error.to_string())?;
                     repaint |= frame.active || !frame.changes.is_empty();
                 }
-                LayerEvent::Closed => return Ok(()),
+                LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
                 LayerEvent::PointerMotion { x, y } => {
                     let hit = layout
                         .hit_test(&runtime.scene(), x, y)
@@ -174,13 +329,19 @@ fn run() -> Result<(), String> {
                 }
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
-                | LayerEvent::Screens(_)
                 | LayerEvent::PopupConfigure { .. }
                 | LayerEvent::PopupFrame { .. }
                 | LayerEvent::PopupDone
                 | LayerEvent::FloatingConfigure { .. }
                 | LayerEvent::FloatingFrame { .. }
                 | LayerEvent::FloatingClose => {}
+                LayerEvent::Screens(screens) => {
+                    tx.send(WorkerMessage::Screens {
+                        output: name.clone(),
+                        screens,
+                    })
+                    .map_err(|_| "output supervisor stopped".to_owned())?;
+                }
             }
         }
         if repaint {
@@ -257,5 +418,35 @@ fn main() -> ExitCode {
             eprintln!("mold: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_screen_set_tracks_hotplug_identity() {
+        let screens = [
+            ScreenInfo {
+                id: 7,
+                name: Some("eDP-1".to_owned()),
+                position: Some((0, 0)),
+                size: Some((1920, 1080)),
+                scale: 1,
+            },
+            ScreenInfo {
+                id: 9,
+                name: Some("DP-2".to_owned()),
+                position: Some((1920, 0)),
+                size: Some((2560, 1440)),
+                scale: 2,
+            },
+        ];
+
+        let names = named_screens(&screens).unwrap();
+
+        assert_eq!(names.keys().cloned().collect::<Vec<_>>(), ["DP-2", "eDP-1"]);
+        assert_eq!(names["DP-2"].id, 9);
     }
 }
