@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 
-use mold_layout::{Geometry, Layout};
+use mold_layout::{Geometry, Layout, TextAlignment};
 use mold_scene::{Color, Element, NodeHandle, Scene, SceneError};
 
 mod gpu;
@@ -58,6 +58,12 @@ pub enum DrawCommand {
         size: f64,
         /// Glyph colour after node opacity.
         color: Color,
+        /// Whether lines wrap at the resolved width.
+        wrap: bool,
+        /// Horizontal line alignment.
+        horizontal_alignment: TextAlignment,
+        /// Vertical placement inside the resolved height.
+        vertical_alignment: VerticalAlignment,
     },
     /// Rasterized image or theme icon.
     Texture {
@@ -89,6 +95,15 @@ pub enum DrawCommand {
         /// True for even-odd fill, false for nonzero fill.
         even_odd: bool,
     },
+}
+
+/// Vertical positioning for shaped text inside its node bounds.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VerticalAlignment {
+    #[default]
+    Top,
+    Center,
+    Bottom,
 }
 
 /// Gradient fill encoded in normalized rectangle coordinates.
@@ -473,6 +488,13 @@ fn append_node(
             family: scene.string_value(node, "font_family")?.to_owned(),
             size: scene.number(node, "font_size")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
+            wrap: scene.bool_value(node, "wrap")?,
+            horizontal_alignment: render_text_alignment(
+                scene.string_value(node, "horizontal_alignment")?,
+            )?,
+            vertical_alignment: vertical_alignment(
+                scene.string_value(node, "vertical_alignment")?,
+            )?,
         }),
         Element::Image => commands.push(DrawCommand::Texture {
             node,
@@ -578,6 +600,29 @@ fn rect_radii(scene: &Scene, node: NodeHandle) -> Result<[f64; 4], RenderError> 
         corner("bottom_right_radius")?,
         corner("bottom_left_radius")?,
     ])
+}
+
+fn render_text_alignment(value: &str) -> Result<TextAlignment, RenderError> {
+    match value {
+        "left" => Ok(TextAlignment::Left),
+        "right" => Ok(TextAlignment::Right),
+        "center" => Ok(TextAlignment::Center),
+        "justified" => Ok(TextAlignment::Justified),
+        _ => Err(RenderError::Scene(format!(
+            "unknown Text horizontal alignment `{value}`"
+        ))),
+    }
+}
+
+fn vertical_alignment(value: &str) -> Result<VerticalAlignment, RenderError> {
+    match value {
+        "top" => Ok(VerticalAlignment::Top),
+        "center" => Ok(VerticalAlignment::Center),
+        "bottom" => Ok(VerticalAlignment::Bottom),
+        _ => Err(RenderError::Scene(format!(
+            "unknown Text vertical alignment `{value}`"
+        ))),
+    }
 }
 
 fn gradient_instance(gradient: &Gradient) -> ([f32; 4], [f32; 4], [f32; 4], [f32; 4], f32) {
@@ -736,7 +781,7 @@ mod tests {
             _text: &str,
             _family: &str,
             _size: f64,
-            _wrap_width: Option<f64>,
+            _options: mold_layout::TextOptions,
         ) -> Size {
             Size::default()
         }
@@ -788,6 +833,43 @@ mod tests {
 
         assert_eq!(list.commands[0].node(), first);
         assert_eq!(list.commands[1].node(), second);
+    }
+
+    #[test]
+    fn text_commands_preserve_wrap_and_alignment() {
+        let mut scene = Scene::new();
+        let text = scene.create(Element::Text);
+        scene.assign(text, "width", 200.0).unwrap();
+        scene.assign(text, "height", 80.0).unwrap();
+        scene.assign(text, "wrap", true).unwrap();
+        scene
+            .assign(text, "horizontal_alignment", "center")
+            .unwrap();
+        scene.assign(text, "vertical_alignment", "bottom").unwrap();
+        let layout = Layout::compute(
+            &scene,
+            text,
+            Size {
+                width: 200.0,
+                height: 80.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+        let DrawCommand::Text {
+            wrap,
+            horizontal_alignment,
+            vertical_alignment,
+            ..
+        } = list.commands[0]
+        else {
+            panic!("text did not emit a text command");
+        };
+        assert!(wrap);
+        assert_eq!(horizontal_alignment, TextAlignment::Center);
+        assert_eq!(vertical_alignment, VerticalAlignment::Bottom);
     }
 
     #[test]

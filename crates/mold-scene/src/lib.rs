@@ -1220,6 +1220,8 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("font_size", 16.0),
                 string("font_family", "sans-serif"),
                 boolean("wrap", false),
+                string("horizontal_alignment", "left"),
+                string("vertical_alignment", "top"),
             ]);
         }
         Element::Image => {

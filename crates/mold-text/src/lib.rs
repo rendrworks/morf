@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 
 use cosmic_text::{
-    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
+    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
 };
-use mold_layout::{Size, TextMeasurer};
+use mold_layout::{Size, TextAlignment, TextMeasurer, TextOptions};
 use mold_scene::NodeHandle;
 
 struct CachedBuffer {
@@ -18,7 +18,9 @@ struct TextInput {
     text: String,
     family: String,
     size: u64,
-    wrap_width: Option<u64>,
+    width: Option<u64>,
+    wrap: bool,
+    alignment: TextAlignment,
 }
 
 /// Shared font database, per-node shaped buffers, and glyph image cache.
@@ -136,14 +138,16 @@ impl TextMeasurer for TextSystem {
         text: &str,
         family: &str,
         size: f64,
-        wrap_width: Option<f64>,
+        options: TextOptions,
     ) -> Size {
         let size = size.max(1.0) as f32;
         let input = TextInput {
             text: text.to_owned(),
             family: family.to_owned(),
             size: (size as f64).to_bits(),
-            wrap_width: wrap_width.map(f64::to_bits),
+            width: options.width.map(f64::to_bits),
+            wrap: options.wrap,
+            alignment: options.alignment,
         };
         let cached = self.buffers.entry(node).or_insert_with(|| CachedBuffer {
             buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),
@@ -152,10 +156,10 @@ impl TextMeasurer for TextSystem {
         if cached.input.as_ref() != Some(&input) {
             cached.buffer.set_metrics_and_size(
                 Metrics::relative(size, 1.2),
-                wrap_width.map(|v| v as f32),
+                options.width.map(|value| value as f32),
                 None,
             );
-            cached.buffer.set_wrap(if wrap_width.is_some() {
+            cached.buffer.set_wrap(if options.wrap {
                 Wrap::WordOrGlyph
             } else {
                 Wrap::None
@@ -164,7 +168,12 @@ impl TextMeasurer for TextSystem {
                 text,
                 &Attrs::new().family(Family::Name(family)),
                 Shaping::Advanced,
-                None,
+                Some(match options.alignment {
+                    TextAlignment::Left => Align::Left,
+                    TextAlignment::Right => Align::Right,
+                    TextAlignment::Center => Align::Center,
+                    TextAlignment::Justified => Align::Justified,
+                }),
             );
             cached.buffer.shape_until_scroll(&mut self.fonts, false);
             cached.input = Some(input);
@@ -195,7 +204,7 @@ mod tests {
         let node = scene.create(Element::Text);
         let mut text = TextSystem::new();
 
-        let measured = text.measure(node, "mold", "sans-serif", 16.0, None);
+        let measured = text.measure(node, "mold", "sans-serif", 16.0, TextOptions::default());
 
         assert!(measured.width > 0.0);
         assert!(measured.height > 0.0);
@@ -210,11 +219,60 @@ mod tests {
         let mut text = TextSystem::new();
         let content = "a shell runtime configured entirely in Lua";
 
-        let unwrapped = text.measure(unwrapped_node, content, "sans-serif", 16.0, None);
-        let wrapped = text.measure(wrapped_node, content, "sans-serif", 16.0, Some(80.0));
+        let unwrapped = text.measure(
+            unwrapped_node,
+            content,
+            "sans-serif",
+            16.0,
+            TextOptions {
+                width: Some(80.0),
+                wrap: false,
+                ..TextOptions::default()
+            },
+        );
+        let wrapped = text.measure(
+            wrapped_node,
+            content,
+            "sans-serif",
+            16.0,
+            TextOptions {
+                width: Some(80.0),
+                wrap: true,
+                ..TextOptions::default()
+            },
+        );
 
         assert!(wrapped.width <= 80.0);
         assert!(wrapped.height > unwrapped.height);
+        assert!(unwrapped.width > 80.0);
+    }
+
+    #[test]
+    fn centered_text_offsets_glyphs_inside_width() {
+        let mut scene = Scene::new();
+        let node = scene.create(Element::Text);
+        let mut text = TextSystem::new();
+        text.measure(
+            node,
+            "mold",
+            "sans-serif",
+            16.0,
+            TextOptions {
+                width: Some(200.0),
+                alignment: TextAlignment::Center,
+                ..TextOptions::default()
+            },
+        );
+
+        let first_x = text
+            .buffer(node)
+            .unwrap()
+            .layout_runs()
+            .next()
+            .unwrap()
+            .glyphs[0]
+            .x;
+        assert!(first_x > 0.0);
     }
 
     #[test]
@@ -222,7 +280,7 @@ mod tests {
         let mut scene = Scene::new();
         let node = scene.create(Element::Text);
         let mut text = TextSystem::new();
-        text.measure(node, "mold", "sans-serif", 16.0, None);
+        text.measure(node, "mold", "sans-serif", 16.0, TextOptions::default());
 
         let glyphs = text.rasterize(node, (5.0, 7.0), 1.25);
 

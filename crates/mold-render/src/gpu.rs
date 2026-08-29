@@ -8,12 +8,12 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
 use mold_image::ImageCache;
-use mold_layout::{Size, TextMeasurer};
+use mold_layout::{Size, TextMeasurer, TextOptions};
 use mold_scene::{Element, NodeHandle};
 use mold_text::{RasterContent, TextSystem};
 
 use crate::path::PathCache;
-use crate::{DamageRect, DrawCommand, DrawList, RenderBackend, SdfQuadInstance};
+use crate::{DamageRect, DrawCommand, DrawList, RenderBackend, SdfQuadInstance, VerticalAlignment};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -318,9 +318,9 @@ impl TextMeasurer for WgpuBackend {
         text: &str,
         family: &str,
         size: f64,
-        wrap_width: Option<f64>,
+        options: TextOptions,
     ) -> Size {
-        self.text.measure(node, text, family, size, wrap_width)
+        self.text.measure(node, text, family, size, options)
     }
 
     fn measure_image(
@@ -1071,15 +1071,37 @@ fn create_glyph_batch(
             family,
             size,
             color,
+            wrap,
+            horizontal_alignment,
+            vertical_alignment,
         } = command
         else {
             continue;
         };
-        text_system.measure(*node, text, family, *size, Some(bounds.width));
+        let measured = text_system.measure(
+            *node,
+            text,
+            family,
+            *size,
+            TextOptions {
+                width: Some(bounds.width),
+                wrap: *wrap,
+                alignment: *horizontal_alignment,
+            },
+        );
+        let spare_height = (bounds.height - measured.height).max(0.0);
+        let vertical_offset = match vertical_alignment {
+            VerticalAlignment::Top => 0.0,
+            VerticalAlignment::Center => spare_height / 2.0,
+            VerticalAlignment::Bottom => spare_height,
+        };
         let start = glyphs.len() as u32;
         for glyph in text_system.rasterize(
             *node,
-            (bounds.x as f32 * scale, bounds.y as f32 * scale),
+            (
+                bounds.x as f32 * scale,
+                (bounds.y + vertical_offset) as f32 * scale,
+            ),
             scale,
         ) {
             if glyph.width > 0 && glyph.height > 0 {

@@ -28,6 +28,24 @@ pub struct Geometry {
     pub height: f64,
 }
 
+/// Horizontal positioning applied while shaping text lines.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextAlignment {
+    #[default]
+    Left,
+    Right,
+    Center,
+    Justified,
+}
+
+/// Width, wrapping, and alignment supplied to the text subsystem.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TextOptions {
+    pub width: Option<f64>,
+    pub wrap: bool,
+    pub alignment: TextAlignment,
+}
+
 /// Text measurement supplied by the text subsystem.
 pub trait TextMeasurer {
     /// Shapes text and returns its logical bounds.
@@ -37,7 +55,7 @@ pub trait TextMeasurer {
         text: &str,
         family: &str,
         size: f64,
-        wrap_width: Option<f64>,
+        options: TextOptions,
     ) -> Size;
 
     /// Returns intrinsic image or icon dimensions when the source is available.
@@ -229,7 +247,11 @@ impl Layout {
                 scene.string_value(node, "text")?,
                 scene.string_value(node, "font_family")?,
                 scene.number(node, "font_size")?,
-                positive(scene.number(node, "width")?),
+                TextOptions {
+                    width: positive(scene.number(node, "width")?),
+                    wrap: scene.bool_value(node, "wrap")?,
+                    alignment: text_alignment(scene.string_value(node, "horizontal_alignment")?)?,
+                },
             ),
             Element::Image | Element::Icon => {
                 let element = scene.element(node)?;
@@ -473,6 +495,18 @@ fn positive(value: f64) -> Option<f64> {
     (value > 0.0).then_some(value)
 }
 
+fn text_alignment(value: &str) -> Result<TextAlignment, LayoutError> {
+    match value {
+        "left" => Ok(TextAlignment::Left),
+        "right" => Ok(TextAlignment::Right),
+        "center" => Ok(TextAlignment::Center),
+        "justified" => Ok(TextAlignment::Justified),
+        _ => Err(LayoutError::Scene(format!(
+            "unknown Text horizontal alignment `{value}`"
+        ))),
+    }
+}
+
 fn sum_with_spacing(children: &[Size], spacing: f64, horizontal: bool) -> f64 {
     let content = children
         .iter()
@@ -614,7 +648,7 @@ mod tests {
             text: &str,
             _family: &str,
             size: f64,
-            _wrap_width: Option<f64>,
+            _options: TextOptions,
         ) -> Size {
             Size {
                 width: text.len() as f64 * size / 2.0,

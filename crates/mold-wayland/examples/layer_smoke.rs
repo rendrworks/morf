@@ -1,5 +1,7 @@
-use mold_layout::Geometry;
-use mold_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
+use mold_layout::{Geometry, TextAlignment};
+use mold_render::{
+    DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, VerticalAlignment, WgpuBackend,
+};
 use mold_scene::{Color, Element, Scene};
 use mold_wayland::{BarConfig, LayerClient, LayerEvent};
 
@@ -60,6 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 family: "sans-serif".to_owned(),
                 size: 18.0,
                 color: Color::rgba8(255, 255, 255, 255),
+                wrap: false,
+                horizontal_alignment: TextAlignment::Left,
+                vertical_alignment: VerticalAlignment::Top,
             },
         ],
     };
