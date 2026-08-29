@@ -854,7 +854,7 @@ fn run_surface(
 
     let mut last_frame = None;
     let mut hovered = None;
-    let mut pressed = None;
+    let mut pressed = None::<(NodeHandle, f64, f64, bool)>;
     let mut focused = None;
     let mut touches = HashMap::<i32, (NodeHandle, f64, f64)>::new();
     loop {
@@ -914,6 +914,41 @@ fn run_surface(
                         }
                         hovered = hit;
                     }
+                    if let Some(node) = hit {
+                        repaint |= runtime.dispatch_pointer_event(
+                            node,
+                            UiEvent::PointerMoved,
+                            x,
+                            y,
+                            0.0,
+                            0.0,
+                        );
+                    }
+                    if let Some((node, start_x, start_y, dragging)) = &mut pressed {
+                        let delta_x = x - *start_x;
+                        let delta_y = y - *start_y;
+                        if !*dragging && delta_x.hypot(delta_y) >= 8.0 {
+                            *dragging = true;
+                            repaint |= runtime.dispatch_pointer_event(
+                                *node,
+                                UiEvent::DragStarted,
+                                x,
+                                y,
+                                delta_x,
+                                delta_y,
+                            );
+                        }
+                        if *dragging {
+                            repaint |= runtime.dispatch_pointer_event(
+                                *node,
+                                UiEvent::Dragged,
+                                x,
+                                y,
+                                delta_x,
+                                delta_y,
+                            );
+                        }
+                    }
                 }
                 LayerEvent::PointerLeave => {
                     if let Some(node) = hovered.take() {
@@ -921,15 +956,16 @@ fn run_surface(
                     }
                 }
                 LayerEvent::PointerButton {
+                    button,
                     pressed: true,
                     x,
                     y,
-                    ..
                 } => {
                     let hit = layout
                         .hit_test(&runtime.scene(), x, y)
                         .map_err(|error| error.to_string())?;
-                    pressed = hit;
+                    let hit = hit.filter(|node| runtime.accepts_pointer_button(*node, button));
+                    pressed = hit.map(|node| (node, x, y, false));
                     focused = hit;
                     if let Some(node) = hit {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
@@ -984,9 +1020,18 @@ fn run_surface(
                     let hit = layout
                         .hit_test(&runtime.scene(), x, y)
                         .map_err(|error| error.to_string())?;
-                    if let Some(node) = pressed.take() {
+                    if let Some((node, start_x, start_y, dragging)) = pressed.take() {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
-                        if hit == Some(node) {
+                        if dragging {
+                            repaint |= runtime.dispatch_pointer_event(
+                                node,
+                                UiEvent::DragFinished,
+                                x,
+                                y,
+                                x - start_x,
+                                y - start_y,
+                            );
+                        } else if hit == Some(node) {
                             repaint |= runtime.dispatch_ui_event(node, UiEvent::Clicked);
                         }
                     }

@@ -149,12 +149,20 @@ pub enum UiEvent {
     PointerEntered,
     /// Pointer left the target.
     PointerExited,
+    /// Pointer moved over or while grabbing the target.
+    PointerMoved,
     /// Pointer button was pressed on the target.
     Pressed,
     /// Pointer button was released after pressing the target.
     Released,
     /// Pointer press and release completed on the same target.
     Clicked,
+    /// A pointer drag crossed the movement threshold.
+    DragStarted,
+    /// A pointer drag moved after crossing the threshold.
+    Dragged,
+    /// A pointer drag ended.
+    DragFinished,
     /// A key was pressed while the target held focus.
     KeyPressed,
     /// A touch contact began on the target.
@@ -172,9 +180,13 @@ impl UiEvent {
         match self {
             Self::PointerEntered => "on_entered",
             Self::PointerExited => "on_exited",
+            Self::PointerMoved => "on_position_changed",
             Self::Pressed => "on_pressed",
             Self::Released => "on_released",
             Self::Clicked => "on_clicked",
+            Self::DragStarted => "on_drag_started",
+            Self::Dragged => "on_dragged",
+            Self::DragFinished => "on_drag_finished",
             Self::KeyPressed => "on_key_pressed",
             Self::TouchPressed => "on_touch_pressed",
             Self::TouchMoved => "on_touch_moved",
@@ -372,6 +384,57 @@ impl Runtime {
                 IpcValue::Number(y),
             ],
         )
+    }
+
+    /// Dispatches pointer coordinates and displacement to a movement handler.
+    pub fn dispatch_pointer_event(
+        &mut self,
+        node: NodeHandle,
+        event: UiEvent,
+        x: f64,
+        y: f64,
+        delta_x: f64,
+        delta_y: f64,
+    ) -> bool {
+        if !matches!(
+            event,
+            UiEvent::PointerMoved | UiEvent::DragStarted | UiEvent::Dragged | UiEvent::DragFinished
+        ) {
+            return false;
+        }
+        self.dispatch_ui_event_with_args(
+            node,
+            event,
+            &[
+                IpcValue::Number(x),
+                IpcValue::Number(y),
+                IpcValue::Number(delta_x),
+                IpcValue::Number(delta_y),
+            ],
+        )
+    }
+
+    /// Returns whether a MouseArea accepts one Linux input button code.
+    pub fn accepts_pointer_button(&self, node: NodeHandle, button: u32) -> bool {
+        let state = self.reactive.borrow();
+        let Ok(value) = state.scene.current(node, "accepted_buttons") else {
+            return false;
+        };
+        let accepted = |value: &SceneValue| match value {
+            SceneValue::String(name) => match name.as_str() {
+                "all" => true,
+                "left" => button == 0x110,
+                "right" => button == 0x111,
+                "middle" => button == 0x112,
+                _ => false,
+            },
+            SceneValue::Number(code) => *code == f64::from(button),
+            _ => false,
+        };
+        match value {
+            SceneValue::List(values) => values.iter().any(accepted),
+            value => accepted(value),
+        }
     }
 
     /// Returns the first scene node with a key handler in tree order.
@@ -2398,9 +2461,13 @@ fn handler_event(property: &str) -> Option<UiEvent> {
     match property {
         "on_entered" => Some(UiEvent::PointerEntered),
         "on_exited" => Some(UiEvent::PointerExited),
+        "on_position_changed" => Some(UiEvent::PointerMoved),
         "on_pressed" => Some(UiEvent::Pressed),
         "on_released" => Some(UiEvent::Released),
         "on_clicked" => Some(UiEvent::Clicked),
+        "on_drag_started" => Some(UiEvent::DragStarted),
+        "on_dragged" => Some(UiEvent::Dragged),
+        "on_drag_finished" => Some(UiEvent::DragFinished),
         "on_key_pressed" => Some(UiEvent::KeyPressed),
         "on_touch_pressed" => Some(UiEvent::TouchPressed),
         "on_touch_moved" => Some(UiEvent::TouchMoved),
@@ -3640,6 +3707,7 @@ mod tests {
                         return ui.MouseArea {
                             width = 80,
                             height = 24,
+                            accepted_buttons = { "right", 274 },
                             on_clicked = props.on_clicked,
                         }
                     end)
@@ -3653,6 +3721,9 @@ mod tests {
         let root = runtime.scene().roots()[0];
         let children = runtime.scene().children(root).unwrap();
 
+        assert!(!runtime.accepts_pointer_button(children[1], 0x110));
+        assert!(runtime.accepts_pointer_button(children[1], 0x111));
+        assert!(runtime.accepts_pointer_button(children[1], 0x112));
         assert!(runtime.dispatch_ui_event(children[1], UiEvent::Clicked));
 
         assert_eq!(
@@ -3903,6 +3974,38 @@ mod tests {
         );
         assert!(runtime.dispatch_touch_event(root, UiEvent::TouchReleased, 7, 20.0, 30.0));
         assert_eq!(runtime.scene().string_value(text, "text").unwrap(), "up:7");
+    }
+
+    #[test]
+    fn pointer_drag_handlers_receive_position_and_displacement() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "drag.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local status = mold.signal("drag.status", "idle")
+                    ui.MouseArea {
+                      accepted_buttons = { "right" },
+                      on_dragged = function(x, y, dx, dy)
+                        status:set(string.format("%.0f:%.0f:%.0f:%.0f", x, y, dx, dy))
+                      end,
+                      ui.Text { text = function() return status:get() end },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let text = runtime.scene().children(root).unwrap()[0];
+
+        assert!(!runtime.accepts_pointer_button(root, 0x110));
+        assert!(runtime.accepts_pointer_button(root, 0x111));
+        assert!(runtime.dispatch_pointer_event(root, UiEvent::Dragged, 20.0, 30.0, 9.0, 12.0));
+        assert_eq!(
+            runtime.scene().string_value(text, "text").unwrap(),
+            "20:30:9:12"
+        );
     }
 
     #[test]

@@ -1154,7 +1154,13 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         any("layout", Value::Map(BTreeMap::new())),
     ];
     match element {
-        Element::Item | Element::MouseArea => {}
+        Element::Item => {}
+        Element::MouseArea => {
+            properties.push(any(
+                "accepted_buttons",
+                Value::List(vec![Value::String("left".to_owned())]),
+            ));
+        }
         Element::Flickable => {
             properties.extend([
                 number("content_x", 0.0),
