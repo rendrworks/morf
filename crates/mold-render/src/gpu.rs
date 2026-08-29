@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 use std::mem;
+use std::ops::Range;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
@@ -281,11 +282,14 @@ impl RenderBackend for WgpuBackend {
         damage: &[DamageRect],
         scale_120: u32,
     ) -> Result<(), Self::Error> {
-        let instances: Vec<_> = list
-            .commands
-            .iter()
-            .filter_map(|command| SdfQuadInstance::from_command(command, scale_120))
-            .collect();
+        let mut quad_indices = vec![None; list.commands.len()];
+        let mut instances = Vec::new();
+        for (command_index, command) in list.commands.iter().enumerate() {
+            if let Some(instance) = SdfQuadInstance::from_command(command, scale_120) {
+                quad_indices[command_index] = Some(instances.len() as u32);
+                instances.push(instance);
+            }
+        }
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
                 device: &self.device,
@@ -355,7 +359,6 @@ impl RenderBackend for WgpuBackend {
                 })],
                 ..Default::default()
             });
-            pass.set_bind_group(0, &self.viewport_bind_group, &[]);
             for damage in damage {
                 let Some((x, y, width, height)) = clamp_scissor(*damage, self.width, self.height)
                 else {
@@ -363,25 +366,30 @@ impl RenderBackend for WgpuBackend {
                 };
                 pass.set_scissor_rect(x, y, width, height);
                 pass.set_pipeline(&self.clear_pipeline);
+                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.draw(0..3, 0..1);
-                if !instances.is_empty() {
-                    pass.set_pipeline(&self.pipeline);
-                    pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                    pass.draw(0..6, 0..instances.len() as u32);
-                }
-                if !texture_batch.instances.is_empty() {
-                    pass.set_pipeline(&self.glyph_pipeline);
-                    pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
-                    for (index, image) in texture_batch.images.iter().enumerate() {
-                        pass.set_bind_group(0, &image.bind_group, &[]);
-                        pass.draw(0..6, index as u32..index as u32 + 1);
+                for (command_index, quad_instance) in quad_indices.iter().enumerate() {
+                    if let Some(instance) = *quad_instance {
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                        pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+                        pass.draw(0..6, instance..instance + 1);
                     }
-                }
-                if let Some(batch) = &glyph_batch {
-                    pass.set_pipeline(&self.glyph_pipeline);
-                    pass.set_bind_group(0, &batch.bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
-                    pass.draw(0..6, 0..batch.instances.len() as u32);
+                    if let Some(instance) = texture_batch.command_instances[command_index] {
+                        let image = &texture_batch.images[instance as usize];
+                        pass.set_pipeline(&self.glyph_pipeline);
+                        pass.set_bind_group(0, &image.bind_group, &[]);
+                        pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
+                        pass.draw(0..6, instance..instance + 1);
+                    }
+                    if let Some(batch) = &glyph_batch
+                        && let Some(range) = &batch.command_ranges[command_index]
+                    {
+                        pass.set_pipeline(&self.glyph_pipeline);
+                        pass.set_bind_group(0, &batch.bind_group, &[]);
+                        pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
+                        pass.draw(0..6, range.clone());
+                    }
                 }
             }
         }
@@ -496,6 +504,7 @@ struct GlyphInstance {
 
 struct GlyphBatch {
     instances: Vec<GlyphInstance>,
+    command_ranges: Vec<Option<Range<u32>>>,
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
 }
@@ -609,6 +618,7 @@ struct TextureKey {
 struct TextureBatch {
     instances: Vec<GlyphInstance>,
     images: Vec<TextureImage>,
+    command_instances: Vec<Option<u32>>,
 }
 
 type TextureBatchContext<'a> = GlyphBatchContext<'a>;
@@ -620,9 +630,12 @@ fn create_texture_batch(
     list: &DrawList,
     scale_120: u32,
 ) -> TextureBatch {
-    let mut batch = TextureBatch::default();
+    let mut batch = TextureBatch {
+        command_instances: vec![None; list.commands.len()],
+        ..TextureBatch::default()
+    };
     let scale = scale_120.max(1) as f64 / 120.0;
-    for command in &list.commands {
+    for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Texture {
             bounds,
             source,
@@ -648,6 +661,7 @@ fn create_texture_batch(
         if let Some(image) = textures.get(&key) {
             push_texture_instance(
                 &mut batch,
+                command_index,
                 image.clone(),
                 *bounds,
                 *opacity,
@@ -723,6 +737,7 @@ fn create_texture_batch(
         textures.insert(key, texture_image.clone());
         push_texture_instance(
             &mut batch,
+            command_index,
             texture_image,
             *bounds,
             *opacity,
@@ -735,6 +750,7 @@ fn create_texture_batch(
 
 fn push_texture_instance(
     batch: &mut TextureBatch,
+    command_index: usize,
     image: TextureImage,
     bounds: mold_layout::Geometry,
     opacity: f32,
@@ -742,6 +758,7 @@ fn push_texture_instance(
     scale: f64,
 ) {
     let (target_width, target_height) = target_size;
+    batch.command_instances[command_index] = Some(batch.instances.len() as u32);
     batch.instances.push(GlyphInstance {
         bounds: [
             (bounds.x * scale) as f32 / target_width as f32 * 2.0 - 1.0,
@@ -778,7 +795,8 @@ fn create_glyph_batch(
     } = context;
     let scale = scale_120.max(1) as f32 / 120.0;
     let mut glyphs = Vec::new();
-    for command in &list.commands {
+    let mut command_ranges = vec![None; list.commands.len()];
+    for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Text {
             node,
             bounds,
@@ -791,6 +809,7 @@ fn create_glyph_batch(
             continue;
         };
         text_system.measure(*node, text, family, *size, Some(bounds.width));
+        let start = glyphs.len() as u32;
         for glyph in text_system.rasterize(
             *node,
             (bounds.x as f32 * scale, bounds.y as f32 * scale),
@@ -799,6 +818,10 @@ fn create_glyph_batch(
             if glyph.width > 0 && glyph.height > 0 {
                 glyphs.push((glyph, *color));
             }
+        }
+        let end = glyphs.len() as u32;
+        if start != end {
+            command_ranges[command_index] = Some(start..end);
         }
     }
     if glyphs.is_empty() {
@@ -923,6 +946,7 @@ fn create_glyph_batch(
     });
     Some(GlyphBatch {
         instances,
+        command_ranges,
         _texture: texture,
         bind_group,
     })
