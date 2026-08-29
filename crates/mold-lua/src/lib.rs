@@ -155,6 +155,25 @@ impl Runtime {
             .map_err(|error| Error::Runtime(error.to_string()))
     }
 
+    /// Updates the clock service signal and recomputes dependent Lua bindings.
+    pub fn update_clock(&mut self, value: impl Into<String>) -> Result<(), Error> {
+        let value = ScriptValue::String(value.into());
+        {
+            let mut state = self.reactive.borrow_mut();
+            let clock = state.clock;
+            state
+                .graph
+                .as_mut()
+                .ok_or_else(|| Error::Runtime("reactive graph is already running".to_owned()))?
+                .write(clock, value.clone())
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            state.values.insert(clock, value);
+        }
+        self.lua
+            .enter(|ctx| flush_reactive(&self.reactive, ctx, self.limits))
+            .map_err(Error::Runtime)
+    }
+
     /// Returns the number of Lua effect evaluations performed by this runtime.
     pub fn effect_runs(&self) -> u64 {
         self.reactive.borrow().effect_runs
@@ -244,20 +263,27 @@ struct ReactiveState {
     logs: Vec<String>,
     scene: Scene,
     effect_runs: u64,
+    clock: SignalId,
 }
 
 impl ReactiveState {
     fn new() -> Self {
+        let mut graph = Graph::default();
+        let initial_clock = ScriptValue::String(String::new());
+        let clock = graph.signal("mold.clock", initial_clock.clone());
+        let mut values = HashMap::new();
+        values.insert(clock, initial_clock);
         Self {
-            graph: Some(Graph::default()),
-            values: HashMap::new(),
-            signals: Vec::new(),
+            graph: Some(graph),
+            values,
+            signals: vec![clock],
             effects: HashMap::new(),
             next_effect: 0,
             active: None,
             logs: Vec::new(),
             scene: Scene::new(),
             effect_runs: 0,
+            clock,
         }
     }
 }
@@ -384,6 +410,14 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
         let mold = Table::new(&ctx);
         mold.set_field(ctx, "signal", signal);
         mold.set_field(ctx, "effect", effect);
+        let clock = UserData::new_static(
+            &ctx,
+            SignalToken {
+                id: state.borrow().clock,
+            },
+        );
+        clock.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
+        mold.set_field(ctx, "clock", clock);
 
         let ui = Table::new(&ctx);
         for (name, element) in [
@@ -960,6 +994,28 @@ mod tests {
             &SceneValue::String("12:01".to_owned())
         );
         assert_eq!(scene.number(children[1], "width").unwrap(), 20.0);
+    }
+
+    #[test]
+    fn clock_service_recomputes_text_bindings() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "clock.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    ui.Text { text = function() return mold.clock:get() end }
+                "#,
+            )
+            .unwrap();
+        runtime.update_clock("12:34:56").unwrap();
+
+        let node = runtime.scene().roots()[0];
+        assert_eq!(
+            runtime.scene().string_value(node, "text").unwrap(),
+            "12:34:56"
+        );
     }
 
     #[test]
