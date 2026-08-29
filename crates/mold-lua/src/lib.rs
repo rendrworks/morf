@@ -3409,11 +3409,99 @@ fn install_reactive_api(
             );
         }
         mold.set_field(ctx, "ui", ui);
+        let core = Table::new(&ctx);
+        for name in [
+            "signal",
+            "reloadable",
+            "effect",
+            "clock",
+            "timer",
+            "screens",
+            "variants",
+            "list_model",
+            "virtual_list",
+            "sync_view",
+            "flickable",
+            "transition_parent",
+        ] {
+            core.set(ctx, name, mold.get_value(ctx, name))
+                .expect("core module accepts native fields");
+        }
+        let io = Table::new(&ctx);
+        for name in [
+            "process",
+            "file",
+            "socket_server",
+            "socket",
+            "line_parser",
+            "split_parser",
+            "dbus",
+        ] {
+            io.set(ctx, name, mold.get_value(ctx, name))
+                .expect("IO module accepts native fields");
+        }
+        let wayland = Table::new(&ctx);
+        for name in [
+            "idle",
+            "output_power",
+            "clipboard",
+            "screencopy",
+            "virtual_keyboard",
+            "input_method",
+            "text_input",
+            "screens",
+            "surface",
+        ] {
+            wayland
+                .set(ctx, name, mold.get_value(ctx, name))
+                .expect("Wayland module accepts native fields");
+        }
+        let window = Table::new(&ctx);
+        window.set_field(ctx, "layer_surface", surface);
+        let services = Table::new(&ctx);
+        for name in [
+            "pipewire",
+            "udev",
+            "status_notifier",
+            "greetd",
+            "pam",
+            "xkb",
+        ] {
+            services
+                .set(ctx, name, mold.get_value(ctx, name))
+                .expect("services module accepts native fields");
+        }
+        mold.set_field(ctx, "core", core);
+        mold.set_field(ctx, "io", io);
+        mold.set_field(ctx, "wayland", wayland);
+        mold.set_field(ctx, "window", window);
+        mold.set_field(ctx, "services", services);
         ctx.set_global("mold", mold);
 
         let loaded = Table::new(&ctx);
         loaded.set_field(ctx, "mold", mold);
+        loaded.set_field(ctx, "mold.core", core);
         loaded.set_field(ctx, "mold.ui", ui);
+        loaded.set_field(ctx, "mold.io", io);
+        loaded.set_field(ctx, "mold.wayland", wayland);
+        loaded.set_field(ctx, "mold.window", window);
+        loaded.set_field(ctx, "mold.services", services);
+        for name in [
+            "pipewire",
+            "udev",
+            "status_notifier",
+            "greetd",
+            "pam",
+            "xkb",
+        ] {
+            loaded
+                .set(
+                    ctx,
+                    format!("mold.services.{name}"),
+                    services.get_value(ctx, name),
+                )
+                .expect("package.loaded accepts native service modules");
+        }
         let package = Table::new(&ctx);
         package.set_field(ctx, "loaded", loaded);
         ctx.set_global("package", package);
@@ -5479,10 +5567,26 @@ mod tests {
                 "native-modules.lua",
                 br#"
                     local mold = require("mold")
+                    local core = require("mold.core")
                     local ui = require("mold.ui")
+                    local io = require("mold.io")
+                    local wayland = require("mold.wayland")
+                    local window = require("mold.window")
+                    local services = require("mold.services")
                     assert(package.loaded["mold"] == mold)
+                    assert(package.loaded["mold.core"] == core)
                     assert(package.loaded["mold.ui"] == ui)
+                    assert(package.loaded["mold.io"] == io)
+                    assert(package.loaded["mold.wayland"] == wayland)
+                    assert(package.loaded["mold.window"] == window)
+                    assert(package.loaded["mold.services"] == services)
                     assert(type(ui.Item) == "function")
+                    assert(core.signal == mold.signal)
+                    assert(io.process == mold.process)
+                    assert(wayland.screencopy == mold.screencopy)
+                    assert(window.layer_surface == mold.surface)
+                    assert(require("mold.services.pipewire") == mold.pipewire)
+                    assert(require("mold.services.greetd") == mold.greetd)
                 "#,
             )
             .unwrap();
