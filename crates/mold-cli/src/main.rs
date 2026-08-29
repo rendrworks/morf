@@ -855,7 +855,7 @@ fn run_surface(
     let mut last_frame = None;
     let mut hovered = None;
     let mut pressed = None::<(NodeHandle, f64, f64, bool)>;
-    let mut focused = None;
+    let mut focused = runtime.first_key_target();
     let mut touches = HashMap::<i32, (NodeHandle, f64, f64)>::new();
     loop {
         if stop.load(Ordering::Acquire) {
@@ -872,7 +872,7 @@ fn run_surface(
             if update.reset_input {
                 hovered = None;
                 pressed = None;
-                focused = None;
+                focused = runtime.first_key_target();
                 touches.clear();
             }
         }
@@ -966,7 +966,7 @@ fn run_surface(
                         .map_err(|error| error.to_string())?;
                     let hit = hit.filter(|node| runtime.accepts_pointer_button(*node, button));
                     pressed = hit.map(|node| (node, x, y, false));
-                    focused = hit;
+                    focused = hit.and_then(|node| runtime.key_target_for_node(node));
                     if let Some(node) = hit {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
                     }
@@ -977,7 +977,7 @@ fn run_surface(
                         .map_err(|error| error.to_string())?;
                     if let Some(node) = hit {
                         touches.insert(id, (node, x, y));
-                        focused = Some(node);
+                        focused = runtime.key_target_for_node(node);
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
                         repaint |=
                             runtime.dispatch_touch_event(node, UiEvent::TouchPressed, id, x, y);
@@ -1042,7 +1042,10 @@ fn run_surface(
                     text,
                     ..
                 } => {
-                    if let Some(node) = focused {
+                    if keysym == 0xff09 {
+                        focused = runtime.next_key_target(focused);
+                        repaint = true;
+                    } else if let Some(node) = focused {
                         repaint |= runtime.dispatch_key_event(node, keysym, text.as_deref());
                     }
                 }

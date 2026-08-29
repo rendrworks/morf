@@ -440,17 +440,41 @@ impl Runtime {
     /// Returns the first scene node with a key handler in tree order.
     pub fn first_key_target(&self) -> Option<NodeHandle> {
         let state = self.reactive.borrow();
-        let mut pending = state.scene.roots();
-        pending.reverse();
-        while let Some(node) = pending.pop() {
-            if state.handlers.contains_key(&(node, UiEvent::KeyPressed)) {
+        let targets = key_targets(&state);
+        targets
+            .iter()
+            .copied()
+            .find(|node| state.scene.bool_value(*node, "focus").unwrap_or(false))
+            .or_else(|| targets.first().copied())
+    }
+
+    /// Returns the nearest key-handling ancestor of a hit-tested node.
+    pub fn key_target_for_node(&self, node: NodeHandle) -> Option<NodeHandle> {
+        let state = self.reactive.borrow();
+        let mut current = Some(node);
+        while let Some(node) = current {
+            if state.handlers.contains_key(&(node, UiEvent::KeyPressed))
+                && state.scene.bool_value(node, "enabled").unwrap_or(false)
+                && state.scene.bool_value(node, "visible").unwrap_or(false)
+            {
                 return Some(node);
             }
-            let mut children = state.scene.children(node).ok()?;
-            children.reverse();
-            pending.extend(children);
+            current = state.scene.parent(node).ok().flatten();
         }
         None
+    }
+
+    /// Advances keyboard focus through enabled visible key handlers.
+    pub fn next_key_target(&self, current: Option<NodeHandle>) -> Option<NodeHandle> {
+        let state = self.reactive.borrow();
+        let targets = key_targets(&state);
+        if targets.is_empty() {
+            return None;
+        }
+        let next = current
+            .and_then(|current| targets.iter().position(|node| *node == current))
+            .map_or(0, |index| (index + 1) % targets.len());
+        Some(targets[next])
     }
 
     fn dispatch_ui_event_with_args(
@@ -601,6 +625,25 @@ impl Runtime {
             .enter(|ctx| execute_ipc_handler(ctx, &handler, args, self.limits))
             .map_err(Error::Runtime)
     }
+}
+
+fn key_targets(state: &ReactiveState) -> Vec<NodeHandle> {
+    let mut targets = Vec::new();
+    let mut pending = state.scene.roots();
+    pending.reverse();
+    while let Some(node) = pending.pop() {
+        if state.handlers.contains_key(&(node, UiEvent::KeyPressed))
+            && state.scene.bool_value(node, "enabled").unwrap_or(false)
+            && state.scene.bool_value(node, "visible").unwrap_or(false)
+        {
+            targets.push(node);
+        }
+        if let Ok(mut children) = state.scene.children(node) {
+            children.reverse();
+            pending.extend(children);
+        }
+    }
+    targets
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4125,6 +4168,43 @@ mod tests {
         assert_eq!(
             runtime.scene().string_value(children[1], "text").unwrap(),
             "65:A"
+        );
+    }
+
+    #[test]
+    fn keyboard_focus_routes_ancestors_and_cycles() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "focus.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    ui.Item {
+                      ui.MouseArea {
+                        ui.Rect {},
+                        on_key_pressed = function() end,
+                      },
+                      ui.MouseArea {
+                        focus = true,
+                        on_key_pressed = function() end,
+                      },
+                      ui.MouseArea {
+                        enabled = false,
+                        on_key_pressed = function() end,
+                      },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+        let nested = runtime.scene().children(children[0]).unwrap()[0];
+
+        assert_eq!(runtime.first_key_target(), Some(children[1]));
+        assert_eq!(runtime.key_target_for_node(nested), Some(children[0]));
+        assert_eq!(
+            runtime.next_key_target(Some(children[1])),
+            Some(children[0])
         );
     }
 

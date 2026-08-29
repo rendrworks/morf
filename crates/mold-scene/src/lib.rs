@@ -1157,6 +1157,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         number("transition_x", 0.0),
         number("transition_y", 0.0),
         boolean("enabled", true),
+        boolean("focus", false),
         any("layout", Value::Map(BTreeMap::new())),
     ];
     match element {
