@@ -295,9 +295,25 @@ impl Scene {
         self.nodes.contains_key(node.0)
     }
 
+    /// Returns all live nodes without a parent in arena order.
+    pub fn roots(&self) -> Vec<NodeHandle> {
+        self.nodes
+            .iter()
+            .filter(|(_, node)| node.parent.is_none())
+            .map(|(id, _)| NodeHandle(id))
+            .collect()
+    }
+
     /// Returns the element kind for a live node.
     pub fn element(&self, node: NodeHandle) -> Result<Element, SceneError> {
         Ok(self.nodes[self.live(node)?].element)
+    }
+
+    /// Checks whether a live element schema declares a property.
+    pub fn has_property(&self, node: NodeHandle, property: &str) -> Result<bool, SceneError> {
+        Ok(self.nodes[self.live(node)?]
+            .properties
+            .contains_key(property))
     }
 
     /// Appends a node to a new parent while preserving the child's identity.

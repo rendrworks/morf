@@ -1,16 +1,17 @@
 //! Sandboxed execution of mold configuration code.
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
 use std::rc::Rc;
 
 use luna::{
-    Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Lua, StashedClosure,
-    Table, UserData, UserRef, Value as LuaValue,
+    Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
+    StashedClosure, Table, UserData, UserRef, Value as LuaValue,
 };
 use mold_reactive::{EffectContext, Graph, SignalId};
+use mold_scene::{Element, NodeHandle, Scene, Value as SceneValue};
 
 /// Execution limits applied independently to each loaded chunk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +137,11 @@ impl Runtime {
     pub fn take_logs(&mut self) -> Vec<String> {
         std::mem::take(&mut self.reactive.borrow_mut().logs)
     }
+
+    /// Borrows the scene produced by executed configuration code.
+    pub fn scene(&self) -> Ref<'_, Scene> {
+        Ref::map(self.reactive.borrow(), |state| &state.scene)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -171,11 +177,38 @@ impl ScriptValue {
             Self::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
         }
     }
+
+    fn to_scene(&self) -> SceneValue {
+        match self {
+            Self::Nil => SceneValue::Nil,
+            Self::Boolean(value) => SceneValue::Bool(*value),
+            Self::Integer(value) => SceneValue::Number(*value as f64),
+            Self::Number(value) => SceneValue::Number(*value),
+            Self::String(value) => SceneValue::String(value.clone()),
+        }
+    }
 }
 
 #[derive(Debug)]
 struct SignalToken {
     id: SignalId,
+}
+
+#[derive(Debug)]
+struct NodeToken {
+    handle: NodeHandle,
+}
+
+#[derive(Clone)]
+struct LuaEffect {
+    closure: StashedClosure,
+    sink: Option<PropertySink>,
+}
+
+#[derive(Clone)]
+struct PropertySink {
+    node: NodeHandle,
+    property: String,
 }
 
 #[derive(Default)]
@@ -188,10 +221,11 @@ struct ReactiveState {
     graph: Option<Graph<ScriptValue>>,
     values: HashMap<SignalId, ScriptValue>,
     signals: Vec<SignalId>,
-    effects: HashMap<u64, StashedClosure>,
+    effects: HashMap<u64, LuaEffect>,
     next_effect: u64,
     active: Option<Capture>,
     logs: Vec<String>,
+    scene: Scene,
 }
 
 impl ReactiveState {
@@ -204,6 +238,7 @@ impl ReactiveState {
             next_effect: 0,
             active: None,
             logs: Vec::new(),
+            scene: Scene::new(),
         }
     }
 }
@@ -309,7 +344,13 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
                     let mut state = state.borrow_mut();
                     let token = state.next_effect;
                     state.next_effect = state.next_effect.wrapping_add(1);
-                    state.effects.insert(token, ctx.stash(closure));
+                    state.effects.insert(
+                        token,
+                        LuaEffect {
+                            closure: ctx.stash(closure),
+                            sink: None,
+                        },
+                    );
                     state
                         .graph
                         .as_mut()
@@ -324,21 +365,204 @@ fn install_reactive_api(lua: &mut Lua, state: Rc<RefCell<ReactiveState>>, limits
         let mold = Table::new(&ctx);
         mold.set_field(ctx, "signal", signal);
         mold.set_field(ctx, "effect", effect);
+
+        let ui = Table::new(&ctx);
+        for (name, element) in [
+            ("Item", Element::Item),
+            ("Rect", Element::Rect),
+            ("Text", Element::Text),
+            ("Row", Element::Row),
+            ("Column", Element::Column),
+        ] {
+            ui.set_field(
+                ctx,
+                name,
+                element_constructor(ctx, Rc::clone(&state), limits, element),
+            );
+        }
+        mold.set_field(ctx, "ui", ui);
         ctx.set_global("mold", mold);
 
         let mold = ctx.stash(mold);
+        let ui = ctx.stash(ui);
         ctx.set_global(
             "require",
             Callback::from_fn(&ctx, move |ctx, _, mut stack| {
                 let name: String = stack.consume(ctx)?;
-                if name != "mold" {
-                    return Err(HostError(format!("module `{name}` is not available")).into());
+                match name.as_str() {
+                    "mold" => stack.replace(ctx, ctx.fetch(&mold)),
+                    "mold.ui" => stack.replace(ctx, ctx.fetch(&ui)),
+                    _ => {
+                        return Err(HostError(format!("module `{name}` is not available")).into());
+                    }
                 }
-                stack.replace(ctx, ctx.fetch(&mold));
                 Ok(CallbackReturn::Return)
             }),
         );
     });
+}
+
+fn element_constructor<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+    element: Element,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let properties: Table = stack.consume(ctx)?;
+        let node = state.borrow_mut().scene.create(element);
+        configure_element(&state, ctx, limits, node, properties).map_err(HostError)?;
+        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn configure_element<'gc>(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'gc>,
+    limits: Limits,
+    node: NodeHandle,
+    properties: Table<'gc>,
+) -> Result<(), String> {
+    let entries: Vec<_> = properties.iter(ctx).collect();
+    let mut children = Vec::<(i64, NodeHandle)>::new();
+    for (key, value) in entries {
+        match key {
+            LuaValue::Integer(index) => {
+                let LuaValue::UserData(child) = value else {
+                    return Err(format!("child {index} must be a mold node"));
+                };
+                let child = child
+                    .downcast_static::<NodeToken>()
+                    .map_err(|_| format!("child {index} must be a mold node"))?;
+                children.push((index, child.handle));
+            }
+            LuaValue::String(property) => {
+                let property = property.display_lossy().to_string();
+                if let LuaValue::Function(Function::Closure(closure)) = value {
+                    if !state
+                        .borrow()
+                        .scene
+                        .has_property(node, &property)
+                        .map_err(|error| error.to_string())?
+                    {
+                        let element = state
+                            .borrow()
+                            .scene
+                            .element(node)
+                            .map_err(|error| error.to_string())?;
+                        return Err(format!("unknown {element:?} property `{property}`"));
+                    }
+                    register_property_binding(state, ctx, limits, node, property, closure);
+                } else {
+                    let value = lua_to_scene(ctx, value, 0)?;
+                    state
+                        .borrow_mut()
+                        .scene
+                        .assign(node, &property, value)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            value => {
+                return Err(format!(
+                    "element table key must be a string or integer, found {}",
+                    value.type_name()
+                ));
+            }
+        }
+    }
+    children.sort_by_key(|(index, _)| *index);
+    for (_, child) in children {
+        state
+            .borrow_mut()
+            .scene
+            .reparent(child, Some(node))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn register_property_binding<'gc>(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'gc>,
+    limits: Limits,
+    node: NodeHandle,
+    property: String,
+    closure: Closure<'gc>,
+) {
+    let name = format!("{node:?}.{property}");
+    {
+        let mut state = state.borrow_mut();
+        let token = state.next_effect;
+        state.next_effect = state.next_effect.wrapping_add(1);
+        state.effects.insert(
+            token,
+            LuaEffect {
+                closure: ctx.stash(closure),
+                sink: Some(PropertySink { node, property }),
+            },
+        );
+        state
+            .graph
+            .as_mut()
+            .expect("reactive graph unavailable outside evaluation")
+            .external_effect(name, token);
+    }
+    let _ = flush_reactive(state, ctx, limits);
+}
+
+fn lua_to_scene<'gc>(
+    ctx: Context<'gc>,
+    value: LuaValue<'gc>,
+    depth: usize,
+) -> Result<SceneValue, String> {
+    if depth >= 16 {
+        return Err("declarative value nesting exceeds 16 levels".to_owned());
+    }
+    match value {
+        LuaValue::Nil => Ok(SceneValue::Nil),
+        LuaValue::Boolean(value) => Ok(SceneValue::Bool(value)),
+        LuaValue::Integer(value) => Ok(SceneValue::Number(value as f64)),
+        LuaValue::Number(value) if value.is_finite() => Ok(SceneValue::Number(value)),
+        LuaValue::String(value) => Ok(SceneValue::String(value.display_lossy().to_string())),
+        LuaValue::Table(table) => {
+            let entries: Vec<_> = table.iter(ctx).collect();
+            let is_list = entries
+                .iter()
+                .all(|(key, _)| matches!(key, LuaValue::Integer(index) if *index > 0));
+            if is_list {
+                let mut items = entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let LuaValue::Integer(index) = key else {
+                            unreachable!()
+                        };
+                        Ok((index, lua_to_scene(ctx, value, depth + 1)?))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                items.sort_by_key(|(index, _)| *index);
+                Ok(SceneValue::List(
+                    items.into_iter().map(|(_, value)| value).collect(),
+                ))
+            } else {
+                let mut map = std::collections::BTreeMap::new();
+                for (key, value) in entries {
+                    let LuaValue::String(key) = key else {
+                        return Err("declarative maps require string keys".to_owned());
+                    };
+                    map.insert(
+                        key.display_lossy().to_string(),
+                        lua_to_scene(ctx, value, depth + 1)?,
+                    );
+                }
+                Ok(SceneValue::Map(map))
+            }
+        }
+        value => Err(format!(
+            "scene properties do not support {} values",
+            value.type_name()
+        )),
+    }
 }
 
 fn replace_status<'gc>(
@@ -403,7 +627,7 @@ fn evaluate_effect(
     token: u64,
     effect: &mut EffectContext<'_, ScriptValue>,
 ) -> Result<(), String> {
-    let closure = {
+    let lua_effect = {
         let mut state = state.borrow_mut();
         if state.active.is_some() {
             return Err("reactive effects cannot run recursively".to_owned());
@@ -415,7 +639,13 @@ fn evaluate_effect(
             .cloned()
             .ok_or_else(|| format!("missing Lua closure for effect {token}"))?
     };
-    let result = execute_effect(ctx, &closure, limits, frame_remaining);
+    let result = execute_effect(
+        ctx,
+        &lua_effect.closure,
+        limits,
+        frame_remaining,
+        lua_effect.sink.is_some(),
+    );
     let capture = state.borrow_mut().active.take().unwrap_or_default();
     for signal in capture.reads {
         effect.get(signal).map_err(|error| error.to_string())?;
@@ -428,7 +658,14 @@ fn evaluate_effect(
             state.borrow_mut().values.insert(signal, value);
         }
     }
-    result
+    if let (Ok(Some(value)), Some(sink)) = (&result, lua_effect.sink) {
+        state
+            .borrow_mut()
+            .scene
+            .assign(sink.node, &sink.property, value.to_scene())
+            .map_err(|error| error.to_string())?;
+    }
+    result.map(|_| ())
 }
 
 fn execute_effect(
@@ -436,7 +673,8 @@ fn execute_effect(
     closure: &StashedClosure,
     limits: Limits,
     frame_remaining: &mut u64,
-) -> Result<(), String> {
+    capture_value: bool,
+) -> Result<Option<ScriptValue>, String> {
     let budget = limits.effect_fuel.min(*frame_remaining);
     if budget == 0 {
         return Err("Lua frame fuel exhausted".to_owned());
@@ -461,10 +699,18 @@ fn execute_effect(
         if finished {
             let spent = budget - remaining;
             *frame_remaining = frame_remaining.saturating_sub(spent);
-            return match executor.take_result::<()>(ctx) {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(error.to_string()),
-                Err(error) => Err(error.to_string()),
+            return if capture_value {
+                match executor.take_result::<LuaValue>(ctx) {
+                    Ok(Ok(value)) => ScriptValue::from_lua(value).map(Some),
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                }
+            } else {
+                match executor.take_result::<()>(ctx) {
+                    Ok(Ok(())) => Ok(None),
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                }
             };
         }
     }
@@ -593,5 +839,62 @@ mod tests {
             )
             .unwrap();
         assert!(runtime.take_logs()[0].contains("runaway"));
+    }
+
+    #[test]
+    fn lua_builds_a_scene_tree_with_bound_properties() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "scene.lua",
+                br##"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local clock = mold.signal("clock", "12:00")
+                    ui.Row {
+                        spacing = 6,
+                        ui.Text {
+                            text = function() return clock:get() end,
+                            color = "#ffffff",
+                        },
+                        ui.Rect {
+                            width = 20,
+                            height = 10,
+                            color = "#7c3aed",
+                        },
+                    }
+                    local ok, err = clock:set("12:01")
+                    assert(ok, err)
+                "##,
+            )
+            .unwrap();
+
+        let scene = runtime.scene();
+        let roots = scene.roots();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(scene.element(roots[0]).unwrap(), Element::Row);
+        let children = scene.children(roots[0]).unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(
+            scene.current(children[0], "text").unwrap(),
+            &SceneValue::String("12:01".to_owned())
+        );
+        assert_eq!(scene.number(children[1], "width").unwrap(), 20.0);
+    }
+
+    #[test]
+    fn lua_scene_errors_name_unknown_properties() {
+        let mut runtime = Runtime::default();
+        let error = runtime
+            .execute(
+                "bad-scene.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    ui.Text { radius = 4 }
+                "#,
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unknown Text property `radius`"));
     }
 }

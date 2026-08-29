@@ -9,3 +9,4 @@ repository.workspace = true
 [dependencies]
 luna.workspace = true
 mold-reactive.workspace = true
+mold-scene.workspace = true
