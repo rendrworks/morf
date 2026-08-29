@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
 use std::fmt;
+use std::time::Duration;
 
 use mold_reactive::{Graph, GraphError, SignalId};
 use slotmap::{SlotMap, new_key_type};
@@ -154,6 +155,14 @@ impl From<String> for Value {
 pub struct Scene {
     nodes: SlotMap<NodeId, Node>,
     properties: Graph<Value>,
+    behaviors: HashMap<PropertyKey, Behavior>,
+    animations: HashMap<PropertyKey, Animation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PropertyKey {
+    node: NodeId,
+    property: &'static str,
 }
 
 struct Node {
@@ -177,6 +186,109 @@ enum PropertyType {
     Number,
     String,
     Color,
+}
+
+/// Frame-pipeline work invalidated by an animated property.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PropertyClass {
+    /// Node transform or compositor uniform only.
+    Transform,
+    /// Geometry requiring a layout pass.
+    Layout,
+    /// Draw-list data requiring repaint only.
+    Paint,
+}
+
+/// Easing applied to a property behavior.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Easing {
+    /// Constant interpolation rate.
+    Linear,
+    /// Cubic acceleration.
+    InCubic,
+    /// Cubic deceleration.
+    OutCubic,
+    /// Cubic acceleration followed by deceleration.
+    InOutCubic,
+    /// CSS-style cubic Bezier timing curve.
+    CubicBezier {
+        /// First control point x coordinate.
+        x1: f64,
+        /// First control point y coordinate.
+        y1: f64,
+        /// Second control point x coordinate.
+        x2: f64,
+        /// Second control point y coordinate.
+        y2: f64,
+    },
+}
+
+impl Easing {
+    fn sample(self, progress: f64) -> f64 {
+        let progress = progress.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => progress,
+            Self::InCubic => progress.powi(3),
+            Self::OutCubic => 1.0 - (1.0 - progress).powi(3),
+            Self::InOutCubic if progress < 0.5 => 4.0 * progress.powi(3),
+            Self::InOutCubic => 1.0 - (-2.0 * progress + 2.0).powi(3) / 2.0,
+            Self::CubicBezier { x1, y1, x2, y2 } => cubic_bezier(progress, x1, y1, x2, y2),
+        }
+    }
+}
+
+/// Write interceptor installed on an animatable property.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Behavior {
+    /// Time from current value to the new target.
+    pub duration: Duration,
+    /// Timing curve for uninterrupted motion.
+    pub easing: Easing,
+}
+
+/// One property changed by an animation tick.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimatedChange {
+    /// Node whose current property value changed.
+    pub node: NodeHandle,
+    /// Property name.
+    pub property: &'static str,
+    /// Frame-pipeline work required by the property.
+    pub class: PropertyClass,
+}
+
+/// Result of a pure-Rust animation clock tick.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AnimationFrame {
+    /// Properties whose current level advanced.
+    pub changes: Vec<AnimatedChange>,
+    /// Whether another compositor frame callback is required.
+    pub active: bool,
+}
+
+#[derive(Clone, Debug)]
+struct Animation {
+    from: Value,
+    to: Value,
+    initial_velocity: Velocity,
+    preserve_velocity: bool,
+    elapsed: Duration,
+    behavior: Behavior,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Velocity {
+    Number(f64),
+    Color([f64; 4]),
+}
+
+impl Velocity {
+    fn is_moving(self) -> bool {
+        match self {
+            Self::Number(value) => value.abs() > 1e-6,
+            Self::Color(values) => values.into_iter().any(|value| value.abs() > 1e-6),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -254,6 +366,8 @@ impl Scene {
         Self {
             nodes: SlotMap::with_key(),
             properties: Graph::default(),
+            behaviors: HashMap::new(),
+            animations: HashMap::new(),
         }
     }
 
@@ -371,6 +485,8 @@ impl Scene {
         let mut pending = vec![id];
         while let Some(current) = pending.pop() {
             pending.extend(self.nodes[current].children.iter().copied());
+            self.behaviors.retain(|key, _| key.node != current);
+            self.animations.retain(|key, _| key.node != current);
             self.nodes.remove(current);
         }
         Ok(())
@@ -385,21 +501,127 @@ impl Scene {
     ) -> Result<(), SceneError> {
         let id = self.live(node)?;
         let element = self.nodes[id].element;
-        let slot = self.nodes[id]
+        let (property_name, slot) = self.nodes[id]
             .properties
-            .get(property)
-            .copied()
+            .get_key_value(property)
+            .map(|(name, slot)| (*name, *slot))
             .ok_or_else(|| SceneError::UnknownProperty {
                 element: element.name(),
                 property: property.to_owned(),
             })?;
         let value = coerce(element, property, slot.kind, value.into())?;
-        self.properties.batch(|graph| {
-            graph.write(slot.target, value.clone())?;
-            graph.write(slot.current, value)?;
-            Ok(())
-        })?;
+        let key = PropertyKey {
+            node: id,
+            property: property_name,
+        };
+        if self.properties.read(slot.target)? == &value {
+            return Ok(());
+        }
+        if let Some(behavior) = self.behaviors.get(&key).copied()
+            && behavior.duration > Duration::ZERO
+            && interpolatable(self.properties.read(slot.current)?, &value)
+        {
+            let from = self.properties.read(slot.current)?.clone();
+            let initial_velocity = self
+                .animations
+                .get(&key)
+                .map(Animation::velocity)
+                .unwrap_or_else(|| zero_velocity(&from));
+            self.properties.write(slot.target, value.clone())?;
+            self.animations.insert(
+                key,
+                Animation {
+                    from,
+                    to: value,
+                    initial_velocity,
+                    preserve_velocity: initial_velocity.is_moving(),
+                    elapsed: Duration::ZERO,
+                    behavior,
+                },
+            );
+        } else {
+            self.animations.remove(&key);
+            self.properties.batch(|graph| {
+                graph.write(slot.target, value.clone())?;
+                graph.write(slot.current, value)?;
+                Ok(())
+            })?;
+        }
         Ok(())
+    }
+
+    /// Installs or removes a write-intercepting behavior on a property.
+    pub fn set_behavior(
+        &mut self,
+        node: NodeHandle,
+        property: &str,
+        behavior: Option<Behavior>,
+    ) -> Result<(), SceneError> {
+        let id = self.live(node)?;
+        let (name, _) = self.nodes[id]
+            .properties
+            .get_key_value(property)
+            .ok_or_else(|| SceneError::UnknownProperty {
+                element: self.nodes[id].element.name(),
+                property: property.to_owned(),
+            })?;
+        let key = PropertyKey {
+            node: id,
+            property: name,
+        };
+        if let Some(behavior) = behavior {
+            self.behaviors.insert(key, behavior);
+        } else {
+            self.behaviors.remove(&key);
+            self.animations.remove(&key);
+        }
+        Ok(())
+    }
+
+    /// Advances every active behavior without invoking Lua.
+    pub fn tick_animations(&mut self, delta: Duration) -> Result<AnimationFrame, SceneError> {
+        let mut frame = AnimationFrame::default();
+        let keys: Vec<_> = self.animations.keys().copied().collect();
+        let mut finished = Vec::new();
+        for key in keys {
+            let animation = self
+                .animations
+                .get_mut(&key)
+                .expect("animation key vanished");
+            animation.elapsed = animation.elapsed.saturating_add(delta);
+            let complete = animation.elapsed >= animation.behavior.duration;
+            let value = if complete {
+                animation.to.clone()
+            } else {
+                animation.value()
+            };
+            let Some(node) = self.nodes.get(key.node) else {
+                finished.push(key);
+                continue;
+            };
+            let slot = node.properties[key.property];
+            self.properties.write(slot.current, value)?;
+            frame.changes.push(AnimatedChange {
+                node: NodeHandle(key.node),
+                property: key.property,
+                class: property_class(key.property),
+            });
+            if complete {
+                finished.push(key);
+            }
+        }
+        for key in finished {
+            self.animations.remove(&key);
+        }
+        let report = self.properties.flush()?;
+        if let Some(error) = report.errors.first() {
+            return Err(SceneError::Reactive(format!(
+                "{}: {}",
+                error.effect, error.message
+            )));
+        }
+        frame.active = !self.animations.is_empty();
+        Ok(frame)
     }
 
     /// Reads the value currently used by layout or paint.
@@ -453,6 +675,164 @@ impl Scene {
                 property: property.to_owned(),
             })
     }
+}
+
+impl Animation {
+    fn progress(&self) -> f64 {
+        let duration = self.behavior.duration.as_secs_f64();
+        if duration == 0.0 {
+            1.0
+        } else {
+            (self.elapsed.as_secs_f64() / duration).clamp(0.0, 1.0)
+        }
+    }
+
+    fn value(&self) -> Value {
+        let progress = self.progress();
+        if self.preserve_velocity {
+            interpolate_hermite(
+                &self.from,
+                &self.to,
+                self.initial_velocity,
+                self.behavior.duration.as_secs_f64(),
+                progress,
+            )
+        } else {
+            interpolate(&self.from, &self.to, self.behavior.easing.sample(progress))
+        }
+    }
+
+    fn velocity(&self) -> Velocity {
+        let duration = self.behavior.duration.as_secs_f64();
+        if duration == 0.0 {
+            return zero_velocity(&self.to);
+        }
+        let progress = self.progress();
+        let epsilon = (1.0 / (duration * 1_000.0)).clamp(1e-6, 1e-3);
+        let before = (progress - epsilon).max(0.0);
+        let after = (progress + epsilon).min(1.0);
+        let span = (after - before) * duration;
+        let before_value = if self.preserve_velocity {
+            interpolate_hermite(
+                &self.from,
+                &self.to,
+                self.initial_velocity,
+                duration,
+                before,
+            )
+        } else {
+            interpolate(&self.from, &self.to, self.behavior.easing.sample(before))
+        };
+        let after_value = if self.preserve_velocity {
+            interpolate_hermite(&self.from, &self.to, self.initial_velocity, duration, after)
+        } else {
+            interpolate(&self.from, &self.to, self.behavior.easing.sample(after))
+        };
+        value_velocity(&before_value, &after_value, span)
+    }
+}
+
+fn interpolatable(from: &Value, to: &Value) -> bool {
+    matches!(
+        (from, to),
+        (Value::Number(_), Value::Number(_)) | (Value::Color(_), Value::Color(_))
+    )
+}
+
+fn zero_velocity(value: &Value) -> Velocity {
+    match value {
+        Value::Color(_) => Velocity::Color([0.0; 4]),
+        _ => Velocity::Number(0.0),
+    }
+}
+
+fn value_velocity(from: &Value, to: &Value, seconds: f64) -> Velocity {
+    let seconds = seconds.max(f64::EPSILON);
+    match (from, to) {
+        (Value::Number(from), Value::Number(to)) => Velocity::Number((to - from) / seconds),
+        (Value::Color(from), Value::Color(to)) => Velocity::Color([
+            (to.red as f64 - from.red as f64) / seconds,
+            (to.green as f64 - from.green as f64) / seconds,
+            (to.blue as f64 - from.blue as f64) / seconds,
+            (to.alpha as f64 - from.alpha as f64) / seconds,
+        ]),
+        _ => Velocity::Number(0.0),
+    }
+}
+
+fn interpolate(from: &Value, to: &Value, progress: f64) -> Value {
+    match (from, to) {
+        (Value::Number(from), Value::Number(to)) => Value::Number(from + (to - from) * progress),
+        (Value::Color(from), Value::Color(to)) => Value::Color(Color {
+            red: (from.red as f64 + (to.red as f64 - from.red as f64) * progress) as f32,
+            green: (from.green as f64 + (to.green as f64 - from.green as f64) * progress) as f32,
+            blue: (from.blue as f64 + (to.blue as f64 - from.blue as f64) * progress) as f32,
+            alpha: (from.alpha as f64 + (to.alpha as f64 - from.alpha as f64) * progress) as f32,
+        }),
+        _ => to.clone(),
+    }
+}
+
+fn interpolate_hermite(
+    from: &Value,
+    to: &Value,
+    velocity: Velocity,
+    duration: f64,
+    progress: f64,
+) -> Value {
+    let t2 = progress * progress;
+    let t3 = t2 * progress;
+    let from_weight = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let velocity_weight = t3 - 2.0 * t2 + progress;
+    let to_weight = -2.0 * t3 + 3.0 * t2;
+    match (from, to, velocity) {
+        (Value::Number(from), Value::Number(to), Velocity::Number(velocity)) => Value::Number(
+            from_weight * from + velocity_weight * duration * velocity + to_weight * to,
+        ),
+        (Value::Color(from), Value::Color(to), Velocity::Color(velocity)) => {
+            let from = [from.red, from.green, from.blue, from.alpha].map(f64::from);
+            let to = [to.red, to.green, to.blue, to.alpha].map(f64::from);
+            let channels: [f32; 4] = std::array::from_fn(|index| {
+                (from_weight * from[index]
+                    + velocity_weight * duration * velocity[index]
+                    + to_weight * to[index])
+                    .clamp(0.0, 1.0) as f32
+            });
+            Value::Color(Color {
+                red: channels[0],
+                green: channels[1],
+                blue: channels[2],
+                alpha: channels[3],
+            })
+        }
+        _ => interpolate(from, to, progress),
+    }
+}
+
+fn property_class(property: &str) -> PropertyClass {
+    match property {
+        "x" | "y" | "scale" | "rotation" | "opacity" => PropertyClass::Transform,
+        "color" | "radius" | "border_width" | "border_color" => PropertyClass::Paint,
+        _ => PropertyClass::Layout,
+    }
+}
+
+fn cubic_bezier(progress: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    let curve = |t: f64, first: f64, second: f64| {
+        let inverse = 1.0 - t;
+        3.0 * inverse * inverse * t * first + 3.0 * inverse * t * t * second + t * t * t
+    };
+    let mut low = 0.0;
+    let mut high = 1.0;
+    for _ in 0..20 {
+        let midpoint = (low + high) / 2.0;
+        if curve(midpoint, x1, x2) < progress {
+            low = midpoint;
+        } else {
+            high = midpoint;
+        }
+    }
+    curve((low + high) / 2.0, y1, y2)
 }
 
 fn schema(element: Element) -> Vec<PropertySpec> {
@@ -632,5 +1012,76 @@ mod tests {
         assert_eq!(unknown.to_string(), "unknown Text property `radius`");
         let wrong = scene.assign(text, "font_size", "large").unwrap_err();
         assert!(wrong.to_string().contains("Text property `font_size`"));
+    }
+
+    #[test]
+    fn behavior_intercepts_writes_and_keeps_target_live() {
+        let mut scene = Scene::new();
+        let rect = scene.create(Element::Rect);
+        scene
+            .set_behavior(
+                rect,
+                "width",
+                Some(Behavior {
+                    duration: Duration::from_millis(200),
+                    easing: Easing::Linear,
+                }),
+            )
+            .unwrap();
+
+        scene.assign(rect, "width", 100.0).unwrap();
+        assert_eq!(scene.current(rect, "width").unwrap(), &Value::Number(0.0));
+        assert_eq!(scene.target(rect, "width").unwrap(), &Value::Number(100.0));
+        let frame = scene.tick_animations(Duration::from_millis(100)).unwrap();
+
+        assert_eq!(scene.current(rect, "width").unwrap(), &Value::Number(50.0));
+        assert_eq!(frame.changes[0].class, PropertyClass::Layout);
+        assert!(frame.active);
+    }
+
+    #[test]
+    fn interrupted_animation_retargets_without_a_jump() {
+        let mut scene = Scene::new();
+        let rect = scene.create(Element::Rect);
+        let behavior = Behavior {
+            duration: Duration::from_millis(200),
+            easing: Easing::Linear,
+        };
+        scene.set_behavior(rect, "opacity", Some(behavior)).unwrap();
+        scene.assign(rect, "opacity", 0.0).unwrap();
+        scene.tick_animations(Duration::from_millis(50)).unwrap();
+        let before = scene.number(rect, "opacity").unwrap();
+
+        scene.assign(rect, "opacity", 0.8).unwrap();
+        let retargeted = scene.number(rect, "opacity").unwrap();
+        scene.tick_animations(Duration::from_millis(1)).unwrap();
+        let after = scene.number(rect, "opacity").unwrap();
+
+        assert_eq!(before, retargeted);
+        assert!((after - before).abs() < 0.02);
+        assert_eq!(scene.target(rect, "opacity").unwrap(), &Value::Number(0.8));
+    }
+
+    #[test]
+    fn paint_animation_finishes_at_the_exact_target() {
+        let mut scene = Scene::new();
+        let rect = scene.create(Element::Rect);
+        scene
+            .set_behavior(
+                rect,
+                "color",
+                Some(Behavior {
+                    duration: Duration::from_millis(120),
+                    easing: Easing::OutCubic,
+                }),
+            )
+            .unwrap();
+        scene.assign(rect, "color", "#7c3aed").unwrap();
+
+        let frame = scene.tick_animations(Duration::from_millis(120)).unwrap();
+
+        assert_eq!(scene.current(rect, "color"), scene.target(rect, "color"));
+        assert_eq!(frame.changes[0].class, PropertyClass::Paint);
+        assert!(!frame.active);
     }
 }

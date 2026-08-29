@@ -5,13 +5,16 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
 use std::rc::Rc;
+use std::time::Duration;
 
 use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
     StashedClosure, Table, UserData, UserRef, Value as LuaValue,
 };
 use mold_reactive::{EffectContext, Graph, SignalId};
-use mold_scene::{Element, NodeHandle, Scene, Value as SceneValue};
+use mold_scene::{
+    AnimationFrame, Behavior, Easing, Element, NodeHandle, Scene, Value as SceneValue,
+};
 
 /// Execution limits applied independently to each loaded chunk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +145,20 @@ impl Runtime {
     pub fn scene(&self) -> Ref<'_, Scene> {
         Ref::map(self.reactive.borrow(), |state| &state.scene)
     }
+
+    /// Advances the pure-Rust animation driver.
+    pub fn tick_animations(&mut self, delta: Duration) -> Result<AnimationFrame, Error> {
+        self.reactive
+            .borrow_mut()
+            .scene
+            .tick_animations(delta)
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    /// Returns the number of Lua effect evaluations performed by this runtime.
+    pub fn effect_runs(&self) -> u64 {
+        self.reactive.borrow().effect_runs
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -226,6 +243,7 @@ struct ReactiveState {
     active: Option<Capture>,
     logs: Vec<String>,
     scene: Scene,
+    effect_runs: u64,
 }
 
 impl ReactiveState {
@@ -239,6 +257,7 @@ impl ReactiveState {
             active: None,
             logs: Vec::new(),
             scene: Scene::new(),
+            effect_runs: 0,
         }
     }
 }
@@ -426,6 +445,7 @@ fn configure_element<'gc>(
 ) -> Result<(), String> {
     let entries: Vec<_> = properties.iter(ctx).collect();
     let mut children = Vec::<(i64, NodeHandle)>::new();
+    let mut named = Vec::<(String, LuaValue<'gc>)>::new();
     for (key, value) in entries {
         match key {
             LuaValue::Integer(index) => {
@@ -438,30 +458,7 @@ fn configure_element<'gc>(
                 children.push((index, child.handle));
             }
             LuaValue::String(property) => {
-                let property = property.display_lossy().to_string();
-                if let LuaValue::Function(Function::Closure(closure)) = value {
-                    if !state
-                        .borrow()
-                        .scene
-                        .has_property(node, &property)
-                        .map_err(|error| error.to_string())?
-                    {
-                        let element = state
-                            .borrow()
-                            .scene
-                            .element(node)
-                            .map_err(|error| error.to_string())?;
-                        return Err(format!("unknown {element:?} property `{property}`"));
-                    }
-                    register_property_binding(state, ctx, limits, node, property, closure);
-                } else {
-                    let value = lua_to_scene(ctx, value, 0)?;
-                    state
-                        .borrow_mut()
-                        .scene
-                        .assign(node, &property, value)
-                        .map_err(|error| error.to_string())?;
-                }
+                named.push((property.display_lossy().to_string(), value));
             }
             value => {
                 return Err(format!(
@@ -471,12 +468,94 @@ fn configure_element<'gc>(
             }
         }
     }
+    if let Some((_, behavior)) = named.iter().find(|(name, _)| name == "behavior") {
+        configure_behaviors(state, ctx, node, *behavior)?;
+    }
+    for (property, value) in named {
+        if property == "behavior" {
+            continue;
+        }
+        if let LuaValue::Function(Function::Closure(closure)) = value {
+            if !state
+                .borrow()
+                .scene
+                .has_property(node, &property)
+                .map_err(|error| error.to_string())?
+            {
+                let element = state
+                    .borrow()
+                    .scene
+                    .element(node)
+                    .map_err(|error| error.to_string())?;
+                return Err(format!("unknown {element:?} property `{property}`"));
+            }
+            register_property_binding(state, ctx, limits, node, property, closure);
+        } else {
+            let value = lua_to_scene(ctx, value, 0)?;
+            state
+                .borrow_mut()
+                .scene
+                .assign(node, &property, value)
+                .map_err(|error| error.to_string())?;
+        }
+    }
     children.sort_by_key(|(index, _)| *index);
     for (_, child) in children {
         state
             .borrow_mut()
             .scene
             .reparent(child, Some(node))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn configure_behaviors<'gc>(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'gc>,
+    node: NodeHandle,
+    value: LuaValue<'gc>,
+) -> Result<(), String> {
+    let LuaValue::Table(behaviors) = value else {
+        return Err("behavior must be a property-keyed table".to_owned());
+    };
+    for (property, behavior) in behaviors.iter(ctx) {
+        let LuaValue::String(property) = property else {
+            return Err("behavior keys must be property names".to_owned());
+        };
+        let LuaValue::Table(behavior) = behavior else {
+            return Err("each behavior must be a table".to_owned());
+        };
+        let duration = match behavior.get_value(ctx, "duration") {
+            LuaValue::Integer(value) => value as f64,
+            LuaValue::Number(value) if value.is_finite() => value,
+            _ => return Err("behavior duration must be milliseconds".to_owned()),
+        };
+        if duration < 0.0 {
+            return Err("behavior duration cannot be negative".to_owned());
+        }
+        let easing = match behavior.get_value(ctx, "easing") {
+            LuaValue::Nil => Easing::Linear,
+            LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
+                "linear" => Easing::Linear,
+                "in_cubic" => Easing::InCubic,
+                "out_cubic" => Easing::OutCubic,
+                "in_out_cubic" => Easing::InOutCubic,
+                name => return Err(format!("unknown easing `{name}`")),
+            },
+            _ => return Err("behavior easing must be a string".to_owned()),
+        };
+        state
+            .borrow_mut()
+            .scene
+            .set_behavior(
+                node,
+                &property.display_lossy().to_string(),
+                Some(Behavior {
+                    duration: Duration::from_secs_f64(duration / 1_000.0),
+                    easing,
+                }),
+            )
             .map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -633,6 +712,7 @@ fn evaluate_effect(
             return Err("reactive effects cannot run recursively".to_owned());
         }
         state.active = Some(Capture::default());
+        state.effect_runs = state.effect_runs.saturating_add(1);
         state
             .effects
             .get(&token)
@@ -896,5 +976,43 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("unknown Text property `radius`"));
+    }
+
+    #[test]
+    fn lua_binding_glides_without_lua_on_animation_ticks() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "behavior.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local expanded = mold.signal("expanded", false)
+                    ui.Rect {
+                        behavior = {
+                            width = { duration = 200, easing = "linear" },
+                        },
+                        width = function()
+                            return expanded:get() and 100 or 0
+                        end,
+                    }
+                    local ok, err = expanded:set(true)
+                    assert(ok, err)
+                "#,
+            )
+            .unwrap();
+        let node = runtime.scene().roots()[0];
+        assert_eq!(runtime.scene().number(node, "width").unwrap(), 0.0);
+        assert_eq!(
+            runtime.scene().target(node, "width").unwrap(),
+            &SceneValue::Number(100.0)
+        );
+        let runs = runtime.effect_runs();
+
+        let frame = runtime.tick_animations(Duration::from_millis(100)).unwrap();
+
+        assert_eq!(runtime.scene().number(node, "width").unwrap(), 50.0);
+        assert_eq!(runtime.effect_runs(), runs);
+        assert!(frame.active);
     }
 }
