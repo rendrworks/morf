@@ -1,7 +1,7 @@
-use mold_layout::{Geometry, Transform2D};
+use mold_layout::{Geometry, TextAlignment, TextElide, Transform2D};
 use mold_render::{
     DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, Layer, LayerMask, RenderBackend,
-    WgpuBackend,
+    VerticalAlignment, WgpuBackend,
 };
 use mold_scene::{Color, Element, Scene};
 
@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = scene.create(Element::Rect);
     let image = scene.create(Element::Image);
     let shape = scene.create(Element::Shape);
+    let text = scene.create(Element::Text);
     let list = DrawList {
         commands: vec![
             DrawCommand::Quad {
@@ -84,10 +85,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 stroke_width: 1.0,
                 even_odd: false,
             },
+            DrawCommand::Text {
+                node: text,
+                bounds: Geometry {
+                    x: 190.0,
+                    y: 18.0,
+                    width: 110.0,
+                    height: 28.0,
+                },
+                transform: Transform2D::IDENTITY,
+                clip: None,
+                text: "mold".to_owned(),
+                family: "sans-serif".to_owned(),
+                size: 18.0,
+                color: Color::rgba8(255, 255, 255, 255),
+                color_overlay: Color::rgba8(0, 0, 0, 0),
+                wrap: false,
+                elide: TextElide::None,
+                horizontal_alignment: TextAlignment::Left,
+                vertical_alignment: VerticalAlignment::Center,
+            },
         ],
         layers: vec![Layer {
             node,
-            commands: 0..3,
+            commands: 0..4,
             parent: None,
             opacity: 0.8,
             blur: 6.0,

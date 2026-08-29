@@ -58,7 +58,8 @@ pub struct WgpuBackend {
     glyph_pipeline: wgpu::RenderPipeline,
     glyph_layout: wgpu::BindGroupLayout,
     glyph_sampler: wgpu::Sampler,
-    glyph_atlas: GlyphAtlas,
+    glyph_mask_atlas: GlyphAtlas,
+    glyph_color_atlas: GlyphAtlas,
     blur_pipeline: wgpu::RenderPipeline,
     blur_layout: wgpu::BindGroupLayout,
     blur_sampler: wgpu::Sampler,
@@ -176,7 +177,10 @@ impl WgpuBackend {
         let clear_pipeline = create_pipeline(&device, &pipeline_layout, &clear_shader, false);
         let path_pipeline = create_path_pipeline(&device, &viewport_layout);
         let (glyph_pipeline, glyph_layout, glyph_sampler) = create_glyph_pipeline(&device);
-        let glyph_atlas = GlyphAtlas::new(&device, &glyph_layout, &glyph_sampler);
+        let glyph_mask_atlas =
+            GlyphAtlas::new(&device, &glyph_layout, &glyph_sampler, RasterContent::Mask);
+        let glyph_color_atlas =
+            GlyphAtlas::new(&device, &glyph_layout, &glyph_sampler, RasterContent::Color);
         let (blur_pipeline, blur_layout, blur_sampler) = create_blur_pipeline(&device);
         let instance_capacity = 1;
         let instance_buffer = create_instance_buffer(&device, instance_capacity);
@@ -213,7 +217,8 @@ impl WgpuBackend {
             glyph_pipeline,
             glyph_layout,
             glyph_sampler,
-            glyph_atlas,
+            glyph_mask_atlas,
+            glyph_color_atlas,
             blur_pipeline,
             blur_layout,
             blur_sampler,
@@ -381,7 +386,8 @@ impl RenderBackend for WgpuBackend {
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
                 queue: &self.queue,
-                atlas: &mut self.glyph_atlas,
+                mask_atlas: &mut self.glyph_mask_atlas,
+                color_atlas: &mut self.glyph_color_atlas,
                 target_size: (self.width, self.height),
             },
             &mut self.text,
@@ -613,13 +619,18 @@ impl RenderBackend for WgpuBackend {
                         $pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
                         $pass.draw(0..6, instance..instance + 1);
                     }
-                    if let Some(batch) = &glyph_batch
-                        && let Some(range) = &batch.command_ranges[command_index]
-                    {
-                        $pass.set_pipeline(&self.glyph_pipeline);
-                        $pass.set_bind_group(0, &self.glyph_atlas.bind_group, &[]);
-                        $pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
-                        $pass.draw(0..6, range.clone());
+                    if let Some(batch) = &glyph_batch {
+                        for span in &batch.command_spans[command_index] {
+                            $pass.set_pipeline(&self.glyph_pipeline);
+                            let atlas = if span.color {
+                                &self.glyph_color_atlas
+                            } else {
+                                &self.glyph_mask_atlas
+                            };
+                            $pass.set_bind_group(0, &atlas.bind_group, &[]);
+                            $pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
+                            $pass.draw(0..6, span.range.clone());
+                        }
                     }
                     for range in &path_batch.command_ranges[command_index] {
                         $pass.set_pipeline(&self.path_pipeline);
@@ -1096,7 +1107,12 @@ fn transformed_quad(
 
 struct GlyphBatch {
     instances: Vec<GlyphInstance>,
-    command_ranges: Vec<Option<Range<u32>>>,
+    command_spans: Vec<Vec<GlyphSpan>>,
+}
+
+struct GlyphSpan {
+    range: Range<u32>,
+    color: bool,
 }
 
 const GLYPH_ATLAS_SIZE: u32 = 2048;
@@ -1106,7 +1122,6 @@ struct GlyphKey {
     id: u64,
     width: u32,
     height: u32,
-    color: bool,
 }
 
 impl GlyphKey {
@@ -1115,7 +1130,6 @@ impl GlyphKey {
             id: glyph.cache_key,
             width: glyph.width,
             height: glyph.height,
-            color: glyph.content == RasterContent::Color,
         }
     }
 }
@@ -1169,15 +1183,30 @@ impl ShelfAllocator {
 struct GlyphAtlas {
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    content: RasterContent,
+    bytes_per_pixel: u32,
     entries: HashMap<GlyphKey, GlyphAtlasEntry>,
     allocator: ShelfAllocator,
     clock: u64,
 }
 
 impl GlyphAtlas {
-    fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        content: RasterContent,
+    ) -> Self {
+        let (format, bytes_per_pixel, label) = match content {
+            RasterContent::Mask => (wgpu::TextureFormat::R8Unorm, 1, "mold glyph mask atlas"),
+            RasterContent::Color => (
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                4,
+                "mold color glyph atlas",
+            ),
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("mold persistent glyph atlas"),
+            label: Some(label),
             size: wgpu::Extent3d {
                 width: GLYPH_ATLAS_SIZE,
                 height: GLYPH_ATLAS_SIZE,
@@ -1186,13 +1215,13 @@ impl GlyphAtlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mold persistent glyph atlas bind group"),
+            label: Some(label),
             layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -1208,6 +1237,8 @@ impl GlyphAtlas {
         Self {
             texture,
             bind_group,
+            content,
+            bytes_per_pixel,
             entries: HashMap::new(),
             allocator: ShelfAllocator::default(),
             clock: 0,
@@ -1220,6 +1251,9 @@ impl GlyphAtlas {
         let mut missing = Vec::new();
         for prepared in glyphs {
             let glyph = &prepared.glyph;
+            if glyph.content != self.content {
+                continue;
+            }
             let key = GlyphKey::from_glyph(glyph);
             if !requested.insert(key) {
                 continue;
@@ -1248,7 +1282,7 @@ impl GlyphAtlas {
                 last_used: self.clock,
                 pixels,
             };
-            upload_glyph(queue, &self.texture, &entry);
+            upload_glyph(queue, &self.texture, &entry, self.bytes_per_pixel);
             self.entries.insert(key, entry);
         }
         Ok(())
@@ -1265,6 +1299,9 @@ impl GlyphAtlas {
         let mut seen = HashSet::new();
         for prepared in glyphs {
             let glyph = &prepared.glyph;
+            if glyph.content != self.content {
+                continue;
+            }
             let key = GlyphKey::from_glyph(glyph);
             if !seen.insert(key) {
                 continue;
@@ -1294,7 +1331,7 @@ impl GlyphAtlas {
                 last_used: self.clock,
                 pixels,
             };
-            upload_glyph(queue, &self.texture, &entry);
+            upload_glyph(queue, &self.texture, &entry, self.bytes_per_pixel);
             self.entries.insert(key, entry);
         }
         for (key, mut entry) in retained {
@@ -1303,7 +1340,7 @@ impl GlyphAtlas {
             };
             entry.x = x;
             entry.y = y;
-            upload_glyph(queue, &self.texture, &entry);
+            upload_glyph(queue, &self.texture, &entry, self.bytes_per_pixel);
             self.entries.insert(key, entry);
         }
         Ok(())
@@ -1312,38 +1349,36 @@ impl GlyphAtlas {
 
 fn glyph_pixels(glyph: &RasterGlyph) -> Vec<u8> {
     let pixel_count = glyph.width as usize * glyph.height as usize;
-    let mut pixels = Vec::with_capacity(pixel_count * 4);
-    for index in 0..pixel_count {
-        let pixel = match glyph.content {
-            RasterContent::Mask if glyph.data.len() >= pixel_count * 3 => {
+    match glyph.content {
+        RasterContent::Mask if glyph.data.len() >= pixel_count * 3 => {
+            let mut pixels = Vec::with_capacity(pixel_count);
+            for index in 0..pixel_count {
                 let at = index * 3;
-                [
-                    255,
-                    255,
-                    255,
-                    glyph.data[at..at + 3].iter().copied().max().unwrap_or(0),
-                ]
+                pixels.push(glyph.data[at..at + 3].iter().copied().max().unwrap_or(0));
             }
-            RasterContent::Mask => [255, 255, 255, glyph.data[index]],
-            RasterContent::Color => {
-                let at = index * 4;
-                glyph.data[at..at + 4].try_into().unwrap()
-            }
-        };
-        pixels.extend_from_slice(&pixel);
+            pixels
+        }
+        RasterContent::Mask => glyph.data[..pixel_count].to_vec(),
+        RasterContent::Color => glyph.data[..pixel_count * 4].to_vec(),
     }
-    pixels
 }
 
-fn upload_glyph(queue: &wgpu::Queue, texture: &wgpu::Texture, entry: &GlyphAtlasEntry) {
+fn upload_glyph(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    entry: &GlyphAtlasEntry,
+    bytes_per_pixel: u32,
+) {
     let padded_width = entry.width + 2;
     let padded_height = entry.height + 2;
-    let mut padded = vec![0; padded_width as usize * padded_height as usize * 4];
+    let bytes_per_pixel = bytes_per_pixel as usize;
+    let mut padded = vec![0; padded_width as usize * padded_height as usize * bytes_per_pixel];
     for row in 0..entry.height as usize {
-        let source = row * entry.width as usize * 4;
-        let destination = ((row + 1) * padded_width as usize + 1) * 4;
-        padded[destination..destination + entry.width as usize * 4]
-            .copy_from_slice(&entry.pixels[source..source + entry.width as usize * 4]);
+        let source = row * entry.width as usize * bytes_per_pixel;
+        let destination = ((row + 1) * padded_width as usize + 1) * bytes_per_pixel;
+        let row_bytes = entry.width as usize * bytes_per_pixel;
+        padded[destination..destination + row_bytes]
+            .copy_from_slice(&entry.pixels[source..source + row_bytes]);
     }
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -1359,7 +1394,7 @@ fn upload_glyph(queue: &wgpu::Queue, texture: &wgpu::Texture, entry: &GlyphAtlas
         &padded,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(padded_width * 4),
+            bytes_per_row: Some(padded_width * bytes_per_pixel as u32),
             rows_per_image: Some(padded_height),
         },
         wgpu::Extent3d {
@@ -1864,7 +1899,8 @@ fn push_texture_instance(
 
 struct GlyphBatchContext<'a> {
     queue: &'a wgpu::Queue,
-    atlas: &'a mut GlyphAtlas,
+    mask_atlas: &'a mut GlyphAtlas,
+    color_atlas: &'a mut GlyphAtlas,
     target_size: (u32, u32),
 }
 
@@ -1876,7 +1912,8 @@ fn create_glyph_batch(
 ) -> Result<Option<GlyphBatch>, GpuError> {
     let GlyphBatchContext {
         queue,
-        atlas,
+        mask_atlas,
+        color_atlas,
         target_size: (target_width, target_height),
     } = context;
     let scale = scale_120.max(1) as f32 / 120.0;
@@ -1940,12 +1977,20 @@ fn create_glyph_batch(
     if glyphs.is_empty() {
         return Ok(None);
     }
-    atlas.prepare(queue, &glyphs)?;
+    mask_atlas.prepare(queue, &glyphs)?;
+    color_atlas.prepare(queue, &glyphs)?;
     let mut instances = Vec::with_capacity(glyphs.len());
-    let mut command_ranges = vec![None; list.commands.len()];
+    let mut command_spans: Vec<Vec<GlyphSpan>> =
+        (0..list.commands.len()).map(|_| Vec::new()).collect();
     for prepared in glyphs {
         let glyph = prepared.glyph;
         let key = GlyphKey::from_glyph(&glyph);
+        let color_glyph = glyph.content == RasterContent::Color;
+        let atlas = if color_glyph {
+            &*color_atlas
+        } else {
+            &*mask_atlas
+        };
         let entry = atlas.entries.get(&key).ok_or_else(|| {
             GpuError("prepared glyph is missing from the persistent atlas".to_owned())
         })?;
@@ -1970,9 +2015,18 @@ fn create_glyph_batch(
             (target_width, target_height),
         );
         let instance = instances.len() as u32;
-        command_ranges[prepared.command_index]
-            .get_or_insert(instance..instance)
-            .end = instance + 1;
+        let spans = &mut command_spans[prepared.command_index];
+        if let Some(span) = spans.last_mut()
+            && span.color == color_glyph
+            && span.range.end == instance
+        {
+            span.range.end = instance + 1;
+        } else {
+            spans.push(GlyphSpan {
+                range: instance..instance + 1,
+                color: color_glyph,
+            });
+        }
         instances.push(GlyphInstance {
             origin,
             axes,
@@ -1984,7 +2038,7 @@ fn create_glyph_batch(
             ],
             color: tint,
             color_overlay: color_array(prepared.color_overlay),
-            mode: [0.0; 4],
+            mode: [0.0, 0.0, if color_glyph { 0.0 } else { 1.0 }, 0.0],
             surface: [0.0; 4],
             mask_bounds: [0.0; 4],
             mask_inverse_0: [0.0; 4],
@@ -1994,7 +2048,7 @@ fn create_glyph_batch(
     }
     Ok(Some(GlyphBatch {
         instances,
-        command_ranges,
+        command_spans,
     }))
 }
 
