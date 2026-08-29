@@ -19,7 +19,7 @@ use mold_scene::{
     AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
     NodeHandle, Physics, Scene, Value as SceneValue, ViewTransition, VirtualList,
 };
-use mold_services::PipeWire;
+use mold_services::{PamAuthenticator, PamTask, PipeWire};
 
 /// Execution limits applied independently to each loaded chunk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -310,13 +310,39 @@ impl Runtime {
 
     /// Runs one bounded Lua UI handler and retains failures as runtime logs.
     pub fn dispatch_ui_event(&mut self, node: NodeHandle, event: UiEvent) -> bool {
+        self.dispatch_ui_event_with_args(node, event, &[])
+    }
+
+    /// Runs one bounded key handler with keysym and UTF-8 text arguments.
+    pub fn dispatch_key_event(
+        &mut self,
+        node: NodeHandle,
+        keysym: u32,
+        text: Option<&str>,
+    ) -> bool {
+        self.dispatch_ui_event_with_args(
+            node,
+            UiEvent::KeyPressed,
+            &[
+                IpcValue::Integer(keysym as i64),
+                text.map_or(IpcValue::Nil, |value| IpcValue::String(value.to_owned())),
+            ],
+        )
+    }
+
+    fn dispatch_ui_event_with_args(
+        &mut self,
+        node: NodeHandle,
+        event: UiEvent,
+        args: &[IpcValue],
+    ) -> bool {
         let handler = self.reactive.borrow().handlers.get(&(node, event)).cloned();
         let Some(handler) = handler else {
             return false;
         };
         let result = self
             .lua
-            .enter(|ctx| execute_handler(ctx, &handler, self.limits));
+            .enter(|ctx| execute_handler_args(ctx, &handler, args, self.limits));
         if let Err(message) = result {
             self.reactive.borrow_mut().logs.push(format!(
                 "{:?}.{}: {message}",
@@ -325,6 +351,44 @@ impl Runtime {
             ));
         }
         true
+    }
+
+    /// Polls native service jobs and runs completed callbacks with bounded fuel.
+    pub fn poll_services(&mut self) -> bool {
+        let mut ready = Vec::new();
+        {
+            let mut state = self.reactive.borrow_mut();
+            let mut index = 0;
+            while index < state.pam_tasks.len() {
+                let result = state.pam_tasks[index].task.wait(Duration::ZERO);
+                if let Some(result) = result {
+                    let task = state.pam_tasks.swap_remove(index);
+                    ready.push((task.callback, result));
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        let changed = !ready.is_empty();
+        for (callback, result) in ready {
+            let args = match result {
+                Ok(()) => vec![IpcValue::Boolean(true), IpcValue::Nil],
+                Err(error) => vec![
+                    IpcValue::Boolean(false),
+                    IpcValue::String(error.to_string()),
+                ],
+            };
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_handler_args(ctx, &callback, &args, self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("PAM callback: {message}"));
+            }
+        }
+        changed
     }
 
     /// Returns registered IPC verb names in lexical order.
@@ -439,6 +503,11 @@ struct FlickToken {
     state: RefCell<FlickState>,
 }
 
+struct PendingPam {
+    task: PamTask,
+    callback: StashedClosure,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -507,6 +576,7 @@ struct ReactiveState {
     states: HashMap<NodeHandle, StateSet>,
     ipc_handlers: HashMap<String, StashedClosure>,
     views: HashMap<NodeHandle, LuaVirtualView>,
+    pam_tasks: Vec<PendingPam>,
 }
 
 impl ReactiveState {
@@ -532,6 +602,7 @@ impl ReactiveState {
             states: HashMap::new(),
             ipc_handlers: HashMap::new(),
             views: HashMap::new(),
+            pam_tasks: Vec::new(),
         }
     }
 }
@@ -1152,6 +1223,20 @@ fn install_reactive_api(
         let pipewire = Table::new(&ctx);
         pipewire.set_field(ctx, "connect", pipewire_connect);
         mold.set_field(ctx, "pipewire", pipewire);
+
+        let pam_state = Rc::clone(&state);
+        let pam_authenticate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (service, username, password, callback): (String, String, String, Closure) =
+                stack.consume(ctx)?;
+            pam_state.borrow_mut().pam_tasks.push(PendingPam {
+                task: PamAuthenticator::authenticate_async(service, username, password),
+                callback: ctx.stash(callback),
+            });
+            Ok(CallbackReturn::Return)
+        });
+        let pam = Table::new(&ctx);
+        pam.set_field(ctx, "authenticate", pam_authenticate);
+        mold.set_field(ctx, "pam", pam);
 
         let ui = Table::new(&ctx);
         for (name, element) in [
@@ -2457,12 +2542,18 @@ fn execute_effect(
     }
 }
 
-fn execute_handler(
+fn execute_handler_args(
     ctx: Context<'_>,
     closure: &StashedClosure,
+    args: &[IpcValue],
     limits: Limits,
 ) -> Result<(), String> {
-    let executor = Executor::start(ctx, ctx.fetch(closure).into(), ());
+    let args = Variadic(
+        args.iter()
+            .map(|value| value.to_lua(ctx))
+            .collect::<Vec<_>>(),
+    );
+    let executor = Executor::start(ctx, ctx.fetch(closure).into(), args);
     let budget = limits.effect_fuel;
     let mut remaining = budget;
     loop {
@@ -2928,6 +3019,68 @@ mod tests {
         assert_eq!(
             runtime.scene().string_value(children[0], "text").unwrap(),
             "1"
+        );
+    }
+
+    #[test]
+    fn key_handlers_receive_keysym_and_text() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "key.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local value = mold.signal("key", "")
+                    ui.Item {
+                        ui.MouseArea {
+                            width = 100,
+                            height = 40,
+                            on_key_pressed = function(keysym, text)
+                                value:set(keysym .. ":" .. text)
+                            end,
+                        },
+                        ui.Text { text = function() return value:get() end },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+
+        assert!(runtime.dispatch_key_event(children[0], 65, Some("A")));
+        assert_eq!(
+            runtime.scene().string_value(children[1], "text").unwrap(),
+            "65:A"
+        );
+    }
+
+    #[test]
+    fn pam_callbacks_return_asynchronously_to_lua() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "pam.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local result = mold.signal("pam.result", "pending")
+                    mold.pam.authenticate("mold\0test", "user", "secret", function(ok, error)
+                        result:set(ok and "ok" or error)
+                    end)
+                    ui.Text { text = function() return result:get() end }
+                "#,
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !runtime.poll_services() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let root = runtime.scene().roots()[0];
+
+        assert_eq!(
+            runtime.scene().string_value(root, "text").unwrap(),
+            "service contains a null byte"
         );
     }
 

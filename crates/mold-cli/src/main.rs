@@ -655,7 +655,7 @@ fn run_surface(
             .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
             .map_err(|error| error.to_string())?;
         let next_clock = clock_text();
-        let mut repaint = false;
+        let mut repaint = runtime.poll_services();
         while let Ok(command) = commands.try_recv() {
             let update = handle_worker_command(&mut runtime, &runtime_screen, command);
             repaint |= update.repaint;
@@ -740,9 +740,14 @@ fn run_surface(
                         }
                     }
                 }
-                LayerEvent::Key { pressed: true, .. } => {
+                LayerEvent::Key {
+                    pressed: true,
+                    keysym,
+                    text,
+                    ..
+                } => {
                     if let Some(node) = focused {
-                        repaint |= runtime.dispatch_ui_event(node, UiEvent::KeyPressed);
+                        repaint |= runtime.dispatch_key_event(node, keysym, text.as_deref());
                     }
                 }
                 LayerEvent::Key { pressed: false, .. }
