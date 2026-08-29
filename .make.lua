@@ -147,6 +147,20 @@ make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--workspace", "--all-targets") end }
 make.alias("t", "test")
 
+make.recipe{
+  name = "gpu-smoke",
+  desc = "initialize the GPU and submit an SDF frame",
+  run = function()
+    sh.cargo("build", "--package", "mold-render", "--example", "gpu_smoke")
+    local command = { "target/debug/examples/gpu_smoke" }
+    local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
+    if wrapper.ok then
+      command = { (wrapper.out or ""):match("[^\n]+"), command[1] }
+    end
+    assert(oslo.run(command).ok, "GPU smoke failed")
+  end,
+}
+
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function()
                sh.cargo("test", "--workspace", "--all-targets", "--all-features")

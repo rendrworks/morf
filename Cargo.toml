@@ -9,9 +9,11 @@ license = "MIT"
 repository = "https://github.com/rendrworks/mold"
 
 [workspace.dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
 cosmic-text = "=0.19.0"
 luna = { git = "https://github.com/onix-os/luna", rev = "e8b7e98ec977c8973ce1a182d935d0ca1f06f465" }
 slotmap = "1.0"
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "gles", "wgsl"] }
 mold-image = { path = "crates/mold-image" }
 mold-io = { path = "crates/mold-io" }
 mold-layout = { path = "crates/mold-layout" }

@@ -7,6 +7,10 @@ use std::fmt;
 use mold_layout::{Geometry, Layout};
 use mold_scene::{Color, Element, NodeHandle, Scene, SceneError};
 
+mod gpu;
+
+pub use gpu::{GpuError, GpuInfo, WgpuBackend};
+
 /// One ordered paint operation emitted from the scene graph.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawCommand {
@@ -137,7 +141,12 @@ pub trait RenderBackend {
     type Error: StdError + Send + Sync + 'static;
 
     /// Draws an ordered list, restricting pixel work to damage rectangles.
-    fn render(&mut self, list: &DrawList, damage: &[DamageRect]) -> Result<(), Self::Error>;
+    fn render(
+        &mut self,
+        list: &DrawList,
+        damage: &[DamageRect],
+        scale_120: u32,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Scene painter and damage tracker driving a selected backend.
@@ -166,7 +175,7 @@ impl<B: RenderBackend> RenderEngine<B> {
         let damage = self.damage.diff(&list, scale_120);
         if !damage.is_empty() {
             self.backend
-                .render(&list, &damage)
+                .render(&list, &damage, scale_120)
                 .map_err(|error| RenderError::Backend(error.to_string()))?;
         }
         Ok(damage)
@@ -180,7 +189,7 @@ impl<B: RenderBackend> RenderEngine<B> {
 
 /// Instance payload consumed by the SDF quad shader.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct SdfQuadInstance {
     /// Physical x, y, width, and height.
     pub bounds: [f32; 4],
@@ -389,7 +398,12 @@ mod tests {
     impl RenderBackend for RecordingBackend {
         type Error = Infallible;
 
-        fn render(&mut self, _list: &DrawList, damage: &[DamageRect]) -> Result<(), Self::Error> {
+        fn render(
+            &mut self,
+            _list: &DrawList,
+            damage: &[DamageRect],
+            _scale_120: u32,
+        ) -> Result<(), Self::Error> {
             self.frames += 1;
             self.damage = damage.to_vec();
             Ok(())
