@@ -1329,6 +1329,8 @@ struct ElapsedTimerToken {
     started: RefCell<Instant>,
 }
 
+struct JsonNullToken;
+
 struct LuaVirtualView {
     model: Rc<RefCell<ListModel>>,
     view: VirtualList,
@@ -3542,6 +3544,91 @@ fn install_reactive_api(
             );
         }
         mold.set_field(ctx, "ui", ui);
+        let json_array_metatable = Table::new(&ctx);
+        json_array_metatable.set_field(ctx, "__json_kind", "array");
+        json_array_metatable.set_field(ctx, "__metatable", "mold.io.json");
+        let json_object_metatable = Table::new(&ctx);
+        json_object_metatable.set_field(ctx, "__json_kind", "object");
+        json_object_metatable.set_field(ctx, "__metatable", "mold.io.json");
+        let json_null_metatable = Table::new(&ctx);
+        json_null_metatable.set_field(ctx, "__metatable", "mold.io.json");
+        let json_null = UserData::new_static(&ctx, JsonNullToken);
+        json_null.set_metatable(ctx, Some(json_null_metatable));
+        let array_metatable = ctx.stash(json_array_metatable);
+        let object_metatable = ctx.stash(json_object_metatable);
+        let null = ctx.stash(json_null);
+        let json_decode = Callback::from_fn(&ctx, {
+            let array_metatable = array_metatable.clone();
+            let object_metatable = object_metatable.clone();
+            let null = null.clone();
+            move |ctx, _, mut stack| {
+                let source: String = stack.consume(ctx)?;
+                if source.len() > 1024 * 1024 {
+                    return Err(HostError("JSON input exceeds 1 MiB".into()).into());
+                }
+                let value = serde_json::from_str::<serde_json::Value>(&source)
+                    .map_err(|error| HostError(error.to_string()))?;
+                let mut entries = 0;
+                let value = json_to_lua(
+                    ctx,
+                    &value,
+                    ctx.fetch(&array_metatable),
+                    ctx.fetch(&object_metatable),
+                    ctx.fetch(&null),
+                    0,
+                    &mut entries,
+                )
+                .map_err(HostError)?;
+                stack.replace(ctx, value);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let json_encode = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (value, pretty): (LuaValue, LuaValue) = stack.consume(ctx)?;
+            let pretty = match pretty {
+                LuaValue::Nil => false,
+                LuaValue::Boolean(value) => value,
+                _ => return Err(HostError("JSON pretty flag must be boolean".into()).into()),
+            };
+            let mut entries = 0;
+            let value = lua_to_json(ctx, value, 0, &mut entries).map_err(HostError)?;
+            let encoded = if pretty {
+                serde_json::to_string_pretty(&value)
+            } else {
+                serde_json::to_string(&value)
+            }
+            .map_err(|error| HostError(error.to_string()))?;
+            if encoded.len() > 1024 * 1024 {
+                return Err(HostError("JSON output exceeds 1 MiB".into()).into());
+            }
+            stack.replace(ctx, encoded);
+            Ok(CallbackReturn::Return)
+        });
+        let json_array = Callback::from_fn(&ctx, {
+            let array_metatable = array_metatable.clone();
+            move |ctx, _, mut stack| {
+                let value: Table = stack.consume(ctx)?;
+                value.set_metatable(ctx, Some(ctx.fetch(&array_metatable)));
+                stack.replace(ctx, value);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let json_object = Callback::from_fn(&ctx, {
+            let object_metatable = object_metatable.clone();
+            move |ctx, _, mut stack| {
+                let value: Table = stack.consume(ctx)?;
+                value.set_metatable(ctx, Some(ctx.fetch(&object_metatable)));
+                stack.replace(ctx, value);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let json = Table::new(&ctx);
+        json.set_field(ctx, "decode", json_decode);
+        json.set_field(ctx, "encode", json_encode);
+        json.set_field(ctx, "array", json_array);
+        json.set_field(ctx, "object", json_object);
+        json.set_field(ctx, "null", json_null);
+        mold.set_field(ctx, "json", json);
         let core = Table::new(&ctx);
         for name in [
             "env",
@@ -3575,6 +3662,7 @@ fn install_reactive_api(
             "socket",
             "line_parser",
             "split_parser",
+            "json",
         ] {
             io.set(ctx, name, mold.get_value(ctx, name))
                 .expect("IO module accepts native fields");
@@ -3591,6 +3679,7 @@ fn install_reactive_api(
         loaded.set_field(ctx, "mold.core", core);
         loaded.set_field(ctx, "mold.ui", ui);
         loaded.set_field(ctx, "mold.io", io);
+        loaded.set_field(ctx, "mold.io.json", json);
         loaded.set_field(ctx, "mold.window", window);
         let package = Table::new(&ctx);
         package.set_field(ctx, "loaded", loaded);
@@ -3674,6 +3763,169 @@ fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String>
         }
     }
     Err(format!("module `{name}` is not available"))
+}
+
+fn json_to_lua<'gc>(
+    ctx: Context<'gc>,
+    value: &serde_json::Value,
+    array_metatable: Table<'gc>,
+    object_metatable: Table<'gc>,
+    null: UserData<'gc>,
+    depth: usize,
+    entries: &mut usize,
+) -> Result<LuaValue<'gc>, String> {
+    if depth > 64 {
+        return Err("JSON value exceeds maximum depth 64".to_owned());
+    }
+    *entries += 1;
+    if *entries > 65_536 {
+        return Err("JSON value exceeds 65536 entries".to_owned());
+    }
+    Ok(match value {
+        serde_json::Value::Null => LuaValue::UserData(null),
+        serde_json::Value::Bool(value) => LuaValue::Boolean(*value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                LuaValue::Integer(value)
+            } else if let Some(value) = value.as_u64().and_then(|value| i64::try_from(value).ok()) {
+                LuaValue::Integer(value)
+            } else {
+                LuaValue::Number(
+                    value
+                        .as_f64()
+                        .ok_or_else(|| "JSON number is not representable".to_owned())?,
+                )
+            }
+        }
+        serde_json::Value::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+        serde_json::Value::Array(values) => {
+            let table = Table::new(&ctx);
+            table.set_metatable(ctx, Some(array_metatable));
+            for (index, value) in values.iter().enumerate() {
+                table
+                    .set(
+                        ctx,
+                        index as i64 + 1,
+                        json_to_lua(
+                            ctx,
+                            value,
+                            array_metatable,
+                            object_metatable,
+                            null,
+                            depth + 1,
+                            entries,
+                        )?,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            LuaValue::Table(table)
+        }
+        serde_json::Value::Object(values) => {
+            let table = Table::new(&ctx);
+            table.set_metatable(ctx, Some(object_metatable));
+            for (key, value) in values {
+                table
+                    .set(
+                        ctx,
+                        ctx.intern(key.as_bytes()),
+                        json_to_lua(
+                            ctx,
+                            value,
+                            array_metatable,
+                            object_metatable,
+                            null,
+                            depth + 1,
+                            entries,
+                        )?,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            LuaValue::Table(table)
+        }
+    })
+}
+
+fn lua_to_json<'gc>(
+    ctx: Context<'gc>,
+    value: LuaValue<'gc>,
+    depth: usize,
+    entries: &mut usize,
+) -> Result<serde_json::Value, String> {
+    if depth > 64 {
+        return Err("JSON value exceeds maximum depth 64".to_owned());
+    }
+    *entries += 1;
+    if *entries > 65_536 {
+        return Err("JSON value exceeds 65536 entries".to_owned());
+    }
+    match value {
+        LuaValue::Nil => Ok(serde_json::Value::Null),
+        LuaValue::Boolean(value) => Ok(serde_json::Value::Bool(value)),
+        LuaValue::Integer(value) => Ok(serde_json::Value::Number(value.into())),
+        LuaValue::Number(value) if value.is_finite() => serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| "JSON number is not representable".to_owned()),
+        LuaValue::String(value) => Ok(serde_json::Value::String(value.display_lossy().to_string())),
+        LuaValue::UserData(value) if value.is_static::<JsonNullToken>() => {
+            Ok(serde_json::Value::Null)
+        }
+        LuaValue::Table(table) => {
+            let kind = table.metatable().and_then(|metatable| {
+                let LuaValue::String(kind) = metatable.get_value(ctx, "__json_kind") else {
+                    return None;
+                };
+                Some(kind.display_lossy().to_string())
+            });
+            let values = table.iter(ctx).collect::<Vec<_>>();
+            let is_array = match kind.as_deref() {
+                Some("array") => true,
+                Some("object") => false,
+                Some(_) => return Err("unknown JSON table kind".to_owned()),
+                None => {
+                    !values.is_empty()
+                        && values
+                            .iter()
+                            .all(|(key, _)| matches!(key, LuaValue::Integer(_)))
+                }
+            };
+            if is_array {
+                let mut values = values
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let LuaValue::Integer(index) = key else {
+                            return Err("JSON array keys must be integers".to_owned());
+                        };
+                        Ok((index, lua_to_json(ctx, value, depth + 1, entries)?))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                values.sort_by_key(|(index, _)| *index);
+                for (offset, (index, _)) in values.iter().enumerate() {
+                    if *index != offset as i64 + 1 {
+                        return Err("JSON arrays must be dense sequences".to_owned());
+                    }
+                }
+                Ok(serde_json::Value::Array(
+                    values.into_iter().map(|(_, value)| value).collect(),
+                ))
+            } else {
+                let mut object = serde_json::Map::new();
+                for (key, value) in values {
+                    let LuaValue::String(key) = key else {
+                        return Err("JSON object keys must be strings".to_owned());
+                    };
+                    object.insert(
+                        key.display_lossy().to_string(),
+                        lua_to_json(ctx, value, depth + 1, entries)?,
+                    );
+                }
+                Ok(serde_json::Value::Object(object))
+            }
+        }
+        value => Err(format!(
+            "JSON does not support Lua {} values",
+            value.type_name()
+        )),
+    }
 }
 
 fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> Result<LuaValue<'_>, String> {
@@ -5744,6 +5996,29 @@ mod tests {
                     assert(timer:restart() >= 0)
                     assert(timer:restart_ms() >= 0)
                     assert(timer:restart_ns() >= 0)
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn json_codec_preserves_arrays_objects_and_null() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "json.lua",
+                br#"
+                    local json = require("mold.io.json")
+                    local value = json.decode('{"array":[],"null":null,"object":{},"values":[1,true,"x"]}')
+                    assert(value.values[1] == 1)
+                    assert(value.values[2] == true)
+                    assert(value.values[3] == "x")
+                    assert(value.null ~= nil)
+                    assert(json.encode(value) == '{"array":[],"null":null,"object":{},"values":[1,true,"x"]}')
+                    assert(json.encode(json.array({})) == '[]')
+                    assert(json.encode(json.object({})) == '{}')
+                    assert(json.encode({ empty = json.array({}), missing = json.null }) == '{"empty":[],"missing":null}')
+                    assert(json.decode(json.encode({ nested = { answer = 42 } })).nested.answer == 42)
                 "#,
             )
             .unwrap();

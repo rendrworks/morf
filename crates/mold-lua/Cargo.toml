@@ -12,3 +12,4 @@ mold-io.workspace = true
 mold-reactive.workspace = true
 mold-scene.workspace = true
 mold-services.workspace = true
+serde_json.workspace = true

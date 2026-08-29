@@ -1223,6 +1223,7 @@ dependencies = [
  "mold-reactive",
  "mold-scene",
  "mold-services",
+ "serde_json",
 ]
 
 [[package]]
