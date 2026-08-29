@@ -22,7 +22,9 @@ use mold_scene::{
     AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
     NodeHandle, Physics, Scene, Value as SceneValue, ViewTransition, VirtualList,
 };
-use mold_services::{PamAuthenticator, PamTask, PipeWire};
+use mold_services::{
+    AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire,
+};
 
 /// Execution limits applied independently to each loaded chunk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -708,6 +710,10 @@ struct DbusToken {
 
 struct PipeWireToken {
     service: PipeWire,
+}
+
+struct GreetdToken {
+    client: RefCell<GreetdClient>,
 }
 
 struct ProcessToken {
@@ -1892,6 +1898,79 @@ fn install_reactive_api(
         let pipewire = Table::new(&ctx);
         pipewire.set_field(ctx, "connect", pipewire_connect);
         mold.set_field(ctx, "pipewire", pipewire);
+
+        let greetd_create = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (greetd, username): (UserRef<GreetdToken>, String) = stack.consume(ctx)?;
+            let response = greetd
+                .client
+                .borrow_mut()
+                .create_session(&username)
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, greetd_response(ctx, response));
+            Ok(CallbackReturn::Return)
+        });
+        let greetd_respond = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (greetd, response): (UserRef<GreetdToken>, Option<String>) = stack.consume(ctx)?;
+            let response = greetd
+                .client
+                .borrow_mut()
+                .respond(response.as_deref())
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, greetd_response(ctx, response));
+            Ok(CallbackReturn::Return)
+        });
+        let greetd_start = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (greetd, command, environment): (UserRef<GreetdToken>, Table, Table) =
+                stack.consume(ctx)?;
+            let command = table_string_array(ctx, command, 64).map_err(HostError)?;
+            let environment = table_string_array(ctx, environment, 256).map_err(HostError)?;
+            let response = greetd
+                .client
+                .borrow_mut()
+                .start_session(&command, &environment)
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, greetd_response(ctx, response));
+            Ok(CallbackReturn::Return)
+        });
+        let greetd_cancel = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let greetd: UserRef<GreetdToken> = stack.consume(ctx)?;
+            let response = greetd
+                .client
+                .borrow_mut()
+                .cancel_session()
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, greetd_response(ctx, response));
+            Ok(CallbackReturn::Return)
+        });
+        let greetd_methods = Table::new(&ctx);
+        greetd_methods.set_field(ctx, "create_session", greetd_create);
+        greetd_methods.set_field(ctx, "respond", greetd_respond);
+        greetd_methods.set_field(ctx, "start_session", greetd_start);
+        greetd_methods.set_field(ctx, "cancel_session", greetd_cancel);
+        let greetd_metatable = Table::new(&ctx);
+        greetd_metatable.set_field(ctx, "__index", greetd_methods);
+        let greetd_metatable = ctx.stash(greetd_metatable);
+        let greetd_connect = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let path: Option<String> = stack.consume(ctx)?;
+            let timeout = Duration::from_secs(2);
+            let client = match path {
+                Some(path) => GreetdClient::connect(path, timeout),
+                None => GreetdClient::connect_environment(timeout),
+            }
+            .map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                GreetdToken {
+                    client: RefCell::new(client),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&greetd_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        let greetd = Table::new(&ctx);
+        greetd.set_field(ctx, "connect", greetd_connect);
+        mold.set_field(ctx, "greetd", greetd);
 
         let pam_state = Rc::clone(&state);
         let pam_authenticate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
@@ -3134,6 +3213,38 @@ fn string_table<'gc>(ctx: Context<'gc>, values: impl IntoIterator<Item = String>
     table
 }
 
+fn greetd_response<'gc>(ctx: Context<'gc>, response: GreetdResponse) -> Table<'gc> {
+    let value = Table::new(&ctx);
+    match response {
+        GreetdResponse::Success => {
+            value.set_field(ctx, "type", "success");
+        }
+        GreetdResponse::AuthMessage { kind, message } => {
+            value.set_field(ctx, "type", "auth_message");
+            value.set_field(
+                ctx,
+                "auth_message_type",
+                match kind {
+                    AuthMessageType::Visible => "visible",
+                    AuthMessageType::Secret => "secret",
+                    AuthMessageType::Info => "info",
+                    AuthMessageType::Error => "error",
+                },
+            );
+            value.set_field(ctx, "auth_message", message.as_str());
+        }
+        GreetdResponse::Error {
+            authentication,
+            description,
+        } => {
+            value.set_field(ctx, "type", "error");
+            value.set_field(ctx, "authentication", authentication);
+            value.set_field(ctx, "description", description.as_str());
+        }
+    }
+    value
+}
+
 fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
     u64::try_from(milliseconds)
         .ok()
@@ -3658,6 +3769,10 @@ impl Default for Runtime {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::thread;
+
     use super::*;
 
     #[test]
@@ -3790,6 +3905,7 @@ mod tests {
                     assert(type(Logind.new) == "function")
                     assert(type(Mpris.new) == "function")
                     assert(type(Oxin.new) == "function")
+                    assert(type(mold.greetd.connect) == "function")
                     assert(type(BatteryIndicator) == "function")
                     assert(type(NetworkIndicator) == "function")
                     assert(type(VolumeIndicator) == "function")
@@ -3840,6 +3956,45 @@ mod tests {
             runtime.scene().string_value(roots[4], "text").unwrap(),
             "cell"
         );
+    }
+
+    #[test]
+    fn lua_greetd_client_handles_authentication_prompts() {
+        let path = std::env::temp_dir().join(format!("mold-greetd-{}.sock", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut length = [0_u8; 4];
+            stream.read_exact(&mut length).unwrap();
+            let mut request = vec![0_u8; u32::from_ne_bytes(length) as usize];
+            stream.read_exact(&mut request).unwrap();
+            assert!(
+                String::from_utf8(request)
+                    .unwrap()
+                    .contains("create_session")
+            );
+            let response = br#"{"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}"#;
+            stream
+                .write_all(&(response.len() as u32).to_ne_bytes())
+                .unwrap();
+            stream.write_all(response).unwrap();
+        });
+        let mut runtime = Runtime::default();
+        let source = format!(
+            r#"
+                local client = mold.greetd.connect({:?})
+                local response = client:create_session("mold")
+                assert(response.type == "auth_message")
+                assert(response.auth_message_type == "secret")
+                assert(response.auth_message == "Password:")
+            "#,
+            path.to_string_lossy()
+        );
+
+        runtime.execute("greetd.lua", source.as_bytes()).unwrap();
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
