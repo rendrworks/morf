@@ -129,9 +129,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let shadow_size = max(input.shape.zw + vec2<f32>(spread * 2.0), vec2<f32>(0.0));
     let shadow_distance = rounded_distance(shadow_point, shadow_size, max(input.radii + vec4<f32>(spread), vec4<f32>(0.0)));
     let shadow_softness = max(input.effects.y, 0.5);
-    let shadow_alpha = input.shadow_color.a * smoothstep(shadow_softness, -shadow_softness, shadow_distance);
+    let outer_shadow = select(1.0, 0.0, input.shadow.z > 0.5);
+    let shadow_alpha = input.shadow_color.a * outer_shadow * smoothstep(shadow_softness, -shadow_softness, shadow_distance);
     let shadow_layer = vec4<f32>(input.shadow_color.rgb * shadow_alpha, shadow_alpha);
-    let result = shape + shadow_layer * (1.0 - shape.a);
+    let inner_point = point - input.shadow.xy;
+    let inner_distance = rounded_distance(inner_point, input.shape.zw, input.radii);
+    let inner_amount = input.shadow_color.a * coverage * smoothstep(-shadow_softness, shadow_softness, inner_distance) * input.shadow.z;
+    let outer_result = shape + shadow_layer * (1.0 - shape.a);
+    let result = vec4<f32>(
+        mix(outer_result.rgb, input.shadow_color.rgb * outer_result.a, inner_amount),
+        outer_result.a,
+    );
     return vec4<f32>(
         mix(result.rgb, input.color_overlay.rgb * result.a, input.color_overlay.a),
         result.a,

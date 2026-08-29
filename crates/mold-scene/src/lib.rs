@@ -1158,6 +1158,7 @@ fn property_class(property: &str) -> PropertyClass {
         | "shadow_spread"
         | "shadow_offset_x"
         | "shadow_offset_y"
+        | "shadow_inner"
         | "path"
         | "fill_color"
         | "stroke_color"
@@ -1258,6 +1259,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("shadow_spread", 0.0),
                 number("shadow_offset_x", 0.0),
                 number("shadow_offset_y", 0.0),
+                boolean("shadow_inner", false),
             ]);
         }
         Element::Text => {

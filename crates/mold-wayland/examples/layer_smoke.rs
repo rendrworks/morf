@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shadow_spread: 0.0,
                 shadow_offset_x: 0.0,
                 shadow_offset_y: 0.0,
+                shadow_inner: false,
             },
             DrawCommand::Text {
                 node: text_node,

@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shadow_spread: 1.0,
                 shadow_offset_x: 0.0,
                 shadow_offset_y: 2.0,
+                shadow_inner: true,
             },
             DrawCommand::Texture {
                 node: image,

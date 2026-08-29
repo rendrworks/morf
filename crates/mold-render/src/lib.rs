@@ -50,6 +50,8 @@ pub enum DrawCommand {
         shadow_offset_x: f64,
         /// Shadow vertical displacement.
         shadow_offset_y: f64,
+        /// Draw the shadow inside the rectangle edge.
+        shadow_inner: bool,
     },
     /// Shaped glyph run owned by the text subsystem.
     Text {
@@ -190,14 +192,15 @@ impl DrawCommand {
                 shadow_spread,
                 shadow_offset_x,
                 shadow_offset_y,
+                shadow_inner,
                 ..
             } => transform.bounds(effect_bounds(
                 *bounds,
                 *blur,
-                *shadow_blur,
-                *shadow_spread,
-                *shadow_offset_x,
-                *shadow_offset_y,
+                if *shadow_inner { 0.0 } else { *shadow_blur },
+                if *shadow_inner { 0.0 } else { *shadow_spread },
+                if *shadow_inner { 0.0 } else { *shadow_offset_x },
+                if *shadow_inner { 0.0 } else { *shadow_offset_y },
             )),
             Self::Text {
                 bounds, transform, ..
@@ -495,6 +498,7 @@ impl SdfQuadInstance {
             shadow_spread,
             shadow_offset_x,
             shadow_offset_y,
+            shadow_inner,
             ..
         } = command
         else {
@@ -504,10 +508,10 @@ impl SdfQuadInstance {
         let expanded = effect_bounds(
             *bounds,
             *blur,
-            *shadow_blur,
-            *shadow_spread,
-            *shadow_offset_x,
-            *shadow_offset_y,
+            if *shadow_inner { 0.0 } else { *shadow_blur },
+            if *shadow_inner { 0.0 } else { *shadow_spread },
+            if *shadow_inner { 0.0 } else { *shadow_offset_x },
+            if *shadow_inner { 0.0 } else { *shadow_offset_y },
         );
         let (gradient_start_color, gradient_end_color, gradient_points, gradient_data, angle) =
             gradient_instance(gradient);
@@ -537,7 +541,7 @@ impl SdfQuadInstance {
             shadow: [
                 (*shadow_offset_x * scale) as f32,
                 (*shadow_offset_y * scale) as f32,
-                0.0,
+                if *shadow_inner { 1.0 } else { 0.0 },
                 0.0,
             ],
             shadow_color: color_array(*shadow_color),
@@ -697,6 +701,7 @@ fn append_node(
             shadow_spread: scene.number(node, "shadow_spread")?,
             shadow_offset_x: scene.number(node, "shadow_offset_x")?,
             shadow_offset_y: scene.number(node, "shadow_offset_y")?,
+            shadow_inner: scene.bool_value(node, "shadow_inner")?,
         }),
         Element::Text => list.commands.push(DrawCommand::Text {
             node,
@@ -1779,6 +1784,7 @@ mod tests {
                 shadow_spread: 0.0,
                 shadow_offset_x: 0.0,
                 shadow_offset_y: 0.0,
+                shadow_inner: false,
             }],
             layers: Vec::new(),
         };
@@ -1821,6 +1827,7 @@ mod tests {
             shadow_spread: 2.0,
             shadow_offset_x: 3.0,
             shadow_offset_y: 4.0,
+            shadow_inner: false,
         };
 
         assert_eq!(
@@ -1836,5 +1843,25 @@ mod tests {
         assert_eq!(instance.bounds, [15.0, 16.0, 56.0, 36.0]);
         assert_eq!(instance.shape, [5.0, 4.0, 40.0, 20.0]);
         assert_eq!(instance.effects[..3], [2.0, 6.0, 2.0]);
+
+        let mut inner = command;
+        if let DrawCommand::Quad {
+            blur, shadow_inner, ..
+        } = &mut inner
+        {
+            *blur = 0.0;
+            *shadow_inner = true;
+        }
+        assert_eq!(
+            inner.bounds(),
+            Geometry {
+                x: 20.0,
+                y: 20.0,
+                width: 40.0,
+                height: 20.0,
+            }
+        );
+        let instance = SdfQuadInstance::from_command(&inner, 120).unwrap();
+        assert_eq!(instance.shadow[2], 1.0);
     }
 }
