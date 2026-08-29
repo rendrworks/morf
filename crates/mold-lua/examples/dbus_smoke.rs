@@ -14,6 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             local id = proxy:call("GetId")
             assert(type(id) == "string" and #id > 0)
+            local owner = proxy:call_with("GetNameOwner", "org.freedesktop.DBus")
+            assert(type(owner) == "string" and #owner > 0)
             assert(string.find(proxy:introspect(), "org.freedesktop.DBus", 1, true))
             local battery = require("patin.services.upower").new()
             assert(type(battery:percentage()) == "number")

@@ -1421,6 +1421,27 @@ fn install_reactive_api(
             stack.replace(ctx, dbus_value_to_lua(ctx, value));
             Ok(CallbackReturn::Return)
         });
+        let dbus_call_with = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (proxy, method, argument): (UserRef<DbusToken>, String, LuaValue) =
+                stack.consume(ctx)?;
+            let argument = lua_to_dbus(argument).map_err(HostError)?;
+            let value = proxy
+                .proxy
+                .call_value_with(&method, &argument)
+                .map_err(HostError)?;
+            stack.replace(ctx, dbus_value_to_lua(ctx, value));
+            Ok(CallbackReturn::Return)
+        });
+        let dbus_set = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (proxy, property, value): (UserRef<DbusToken>, String, LuaValue) =
+                stack.consume(ctx)?;
+            let value = lua_to_dbus(value).map_err(HostError)?;
+            proxy
+                .proxy
+                .set_value(&property, &value)
+                .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
         let dbus_introspect = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let proxy: UserRef<DbusToken> = stack.consume(ctx)?;
             let xml = proxy
@@ -1433,6 +1454,8 @@ fn install_reactive_api(
         let dbus_methods = Table::new(&ctx);
         dbus_methods.set_field(ctx, "get", dbus_get);
         dbus_methods.set_field(ctx, "call", dbus_call);
+        dbus_methods.set_field(ctx, "call_with", dbus_call_with);
+        dbus_methods.set_field(ctx, "set", dbus_set);
         dbus_methods.set_field(ctx, "introspect", dbus_introspect);
         let dbus_metatable = Table::new(&ctx);
         dbus_metatable.set_field(ctx, "__index", dbus_methods);
@@ -1762,12 +1785,24 @@ fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String>
 
 fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> LuaValue<'_> {
     match value {
+        DbusValue::Nil => LuaValue::Nil,
         DbusValue::Bool(value) => LuaValue::Boolean(value),
         DbusValue::Integer(value) => LuaValue::Integer(value),
         DbusValue::Unsigned(value) if value <= i64::MAX as u64 => LuaValue::Integer(value as i64),
         DbusValue::Unsigned(value) => LuaValue::Number(value as f64),
         DbusValue::Number(value) => LuaValue::Number(value),
         DbusValue::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+    }
+}
+
+fn lua_to_dbus(value: LuaValue<'_>) -> Result<DbusValue, String> {
+    match value {
+        LuaValue::Nil => Ok(DbusValue::Nil),
+        LuaValue::Boolean(value) => Ok(DbusValue::Bool(value)),
+        LuaValue::Integer(value) => Ok(DbusValue::Integer(value)),
+        LuaValue::Number(value) if value.is_finite() => Ok(DbusValue::Number(value)),
+        LuaValue::String(value) => Ok(DbusValue::String(value.display_lossy().to_string())),
+        _ => Err("D-Bus values must be nil, boolean, number, or string".to_owned()),
     }
 }
 
@@ -3111,12 +3146,23 @@ mod tests {
                     local UPower = require("patin.services.upower")
                     local Network = require("patin.services.network")
                     local Volume = require("patin.services.volume")
+                    local Brightness = require("patin.services.brightness")
+                    local Logind = require("patin.services.logind")
+                    local Mpris = require("patin.services.mpris")
+                    local Oxin = require("patin.services.oxin")
                     local BatteryIndicator = require("patin.indicators.battery")
+                    local BrightnessIndicator = require("patin.indicators.brightness")
+                    local CellularIndicator = require("patin.indicators.cellular")
+                    local ClockIndicator = require("patin.indicators.clock")
                     local NetworkIndicator = require("patin.indicators.network")
                     local VolumeIndicator = require("patin.indicators.volume")
                     assert(type(UPower.new) == "function")
                     assert(type(Network.new) == "function")
                     assert(type(Volume.new) == "function")
+                    assert(type(Brightness.new) == "function")
+                    assert(type(Logind.new) == "function")
+                    assert(type(Mpris.new) == "function")
+                    assert(type(Oxin.new) == "function")
                     assert(type(BatteryIndicator) == "function")
                     assert(type(NetworkIndicator) == "function")
                     assert(type(VolumeIndicator) == "function")
@@ -3136,6 +3182,13 @@ mod tests {
                         muted = function() return false end,
                       },
                     }
+                    BrightnessIndicator {
+                      service = { level = function() return 0.65 end },
+                    }
+                    CellularIndicator {
+                      service = { state = function() return 70 end },
+                    }
+                    ClockIndicator {}
                 "#,
             )
             .unwrap();
@@ -3151,6 +3204,14 @@ mod tests {
         assert_eq!(
             runtime.scene().string_value(roots[2], "text").unwrap(),
             "42%"
+        );
+        assert_eq!(
+            runtime.scene().string_value(roots[3], "text").unwrap(),
+            "65%"
+        );
+        assert_eq!(
+            runtime.scene().string_value(roots[4], "text").unwrap(),
+            "cell"
         );
     }
 

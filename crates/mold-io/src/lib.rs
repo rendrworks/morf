@@ -817,6 +817,7 @@ pub struct DbusProxy {
 /// Scalar value transferable through the Lua D-Bus facade.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DbusValue {
+    Nil,
     Bool(bool),
     Integer(i64),
     Unsigned(u64),
@@ -900,38 +901,34 @@ impl DbusProxy {
             .proxy
             .call_method(method, &())
             .map_err(|error| error.to_string())?;
-        let body = message.body();
-        if let Ok(value) = body.deserialize::<bool>() {
-            return Ok(DbusValue::Bool(value));
+        decode_message_value(&message)
+    }
+
+    /// Calls a one-argument method returning one scalar value.
+    pub fn call_value_with(&self, method: &str, value: &DbusValue) -> Result<DbusValue, String> {
+        let message = match value {
+            DbusValue::Nil => self.proxy.call_method(method, &()),
+            DbusValue::Bool(value) => self.proxy.call_method(method, &(*value,)),
+            DbusValue::Integer(value) => self.proxy.call_method(method, &(*value,)),
+            DbusValue::Unsigned(value) => self.proxy.call_method(method, &(*value,)),
+            DbusValue::Number(value) => self.proxy.call_method(method, &(*value,)),
+            DbusValue::String(value) => self.proxy.call_method(method, &(value.as_str(),)),
         }
-        if let Ok(value) = body.deserialize::<i16>() {
-            return Ok(DbusValue::Integer(value as i64));
-        }
-        if let Ok(value) = body.deserialize::<i32>() {
-            return Ok(DbusValue::Integer(value as i64));
-        }
-        if let Ok(value) = body.deserialize::<i64>() {
-            return Ok(DbusValue::Integer(value));
-        }
-        if let Ok(value) = body.deserialize::<u8>() {
-            return Ok(DbusValue::Unsigned(value as u64));
-        }
-        if let Ok(value) = body.deserialize::<u16>() {
-            return Ok(DbusValue::Unsigned(value as u64));
-        }
-        if let Ok(value) = body.deserialize::<u32>() {
-            return Ok(DbusValue::Unsigned(value as u64));
-        }
-        if let Ok(value) = body.deserialize::<u64>() {
-            return Ok(DbusValue::Unsigned(value));
-        }
-        if let Ok(value) = body.deserialize::<f64>() {
-            return Ok(DbusValue::Number(value));
-        }
-        if let Ok(value) = body.deserialize::<String>() {
-            return Ok(DbusValue::String(value));
-        }
-        Err("D-Bus reply is not a supported scalar".to_owned())
+        .map_err(|error| error.to_string())?;
+        decode_message_value(&message)
+    }
+
+    /// Writes one scalar property for an interpreter-facing facade.
+    pub fn set_value(&self, property: &str, value: &DbusValue) -> Result<(), String> {
+        let result = match value {
+            DbusValue::Nil => return Err("D-Bus properties cannot be nil".to_owned()),
+            DbusValue::Bool(value) => self.set_property(property, *value),
+            DbusValue::Integer(value) => self.set_property(property, *value),
+            DbusValue::Unsigned(value) => self.set_property(property, *value),
+            DbusValue::Number(value) => self.set_property(property, *value),
+            DbusValue::String(value) => self.set_property(property, value.as_str()),
+        };
+        result.map_err(|error| error.to_string())
     }
 
     /// Subscribes to one signal on a dedicated bus connection.
@@ -961,6 +958,44 @@ impl DbusProxy {
             join: Some(join),
         })
     }
+}
+
+fn decode_message_value(message: &zbus::Message) -> Result<DbusValue, String> {
+    let body = message.body();
+    if body.deserialize::<()>().is_ok() {
+        return Ok(DbusValue::Nil);
+    }
+    if let Ok(value) = body.deserialize::<bool>() {
+        return Ok(DbusValue::Bool(value));
+    }
+    if let Ok(value) = body.deserialize::<i16>() {
+        return Ok(DbusValue::Integer(value as i64));
+    }
+    if let Ok(value) = body.deserialize::<i32>() {
+        return Ok(DbusValue::Integer(value as i64));
+    }
+    if let Ok(value) = body.deserialize::<i64>() {
+        return Ok(DbusValue::Integer(value));
+    }
+    if let Ok(value) = body.deserialize::<u8>() {
+        return Ok(DbusValue::Unsigned(value as u64));
+    }
+    if let Ok(value) = body.deserialize::<u16>() {
+        return Ok(DbusValue::Unsigned(value as u64));
+    }
+    if let Ok(value) = body.deserialize::<u32>() {
+        return Ok(DbusValue::Unsigned(value as u64));
+    }
+    if let Ok(value) = body.deserialize::<u64>() {
+        return Ok(DbusValue::Unsigned(value));
+    }
+    if let Ok(value) = body.deserialize::<f64>() {
+        return Ok(DbusValue::Number(value));
+    }
+    if let Ok(value) = body.deserialize::<String>() {
+        return Ok(DbusValue::String(value));
+    }
+    Err("D-Bus reply is not a supported scalar".to_owned())
 }
 
 /// Blocking receiver for a filtered D-Bus signal stream.
