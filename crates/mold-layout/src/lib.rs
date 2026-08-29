@@ -220,20 +220,26 @@ impl Layout {
                 scene.number(node, "font_size")?,
                 positive(scene.number(node, "width")?),
             ),
-            Element::Row => Size {
+            Element::Row | Element::RowLayout => Size {
                 width: sum_with_spacing(&child_sizes, scene.number(node, "spacing")?, true),
                 height: child_sizes
                     .iter()
                     .map(|size| size.height)
                     .fold(0.0, f64::max),
             },
-            Element::Column => Size {
+            Element::Column | Element::ColumnLayout => Size {
                 width: child_sizes
                     .iter()
                     .map(|size| size.width)
                     .fold(0.0, f64::max),
                 height: sum_with_spacing(&child_sizes, scene.number(node, "spacing")?, false),
             },
+            Element::Grid | Element::GridLayout => grid_size(
+                &child_sizes,
+                grid_columns(scene.number(node, "columns")?),
+                scene.number(node, "column_spacing")?,
+                scene.number(node, "row_spacing")?,
+            ),
             Element::Item | Element::Rect | Element::MouseArea | Element::Flickable => {
                 let mut bounds = Size::default();
                 for (child, size) in children.iter().zip(child_sizes) {
@@ -253,9 +259,16 @@ impl Layout {
         node: NodeHandle,
         implicit: Size,
     ) -> Result<Size, LayoutError> {
+        let attached = attached_layout(scene.current(node, "layout")?)?;
+        let width = positive(scene.number(node, "width")?)
+            .or_else(|| layout_number(&attached, "preferred_width"))
+            .unwrap_or(implicit.width);
+        let height = positive(scene.number(node, "height")?)
+            .or_else(|| layout_number(&attached, "preferred_height"))
+            .unwrap_or(implicit.height);
         Ok(Size {
-            width: positive(scene.number(node, "width")?).unwrap_or(implicit.width),
-            height: positive(scene.number(node, "height")?).unwrap_or(implicit.height),
+            width: clamp_layout(width, &attached, "minimum_width", "maximum_width"),
+            height: clamp_layout(height, &attached, "minimum_height", "maximum_height"),
         })
     }
 
@@ -264,12 +277,68 @@ impl Layout {
         let parent_element = scene.element(parent)?;
         let children = scene.children(parent)?;
         let spacing = match parent_element {
-            Element::Row | Element::Column => scene.number(parent, "spacing")?,
+            Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
+                scene.number(parent, "spacing")?
+            }
             _ => 0.0,
         };
         let mut cursor = 0.0;
+        let columns = matches!(parent_element, Element::Grid | Element::GridLayout)
+            .then(|| grid_columns(scene.number(parent, "columns").unwrap_or(1.0)))
+            .unwrap_or(1);
+        let column_spacing = if matches!(parent_element, Element::Grid | Element::GridLayout) {
+            scene.number(parent, "column_spacing")?
+        } else {
+            0.0
+        };
+        let row_spacing = if matches!(parent_element, Element::Grid | Element::GridLayout) {
+            scene.number(parent, "row_spacing")?
+        } else {
+            0.0
+        };
+        let mut grid_widths = Vec::new();
+        let mut grid_heights = Vec::new();
+        if matches!(parent_element, Element::Grid | Element::GridLayout) {
+            grid_widths.resize(columns, 0.0_f64);
+            grid_heights.resize(children.len().div_ceil(columns), 0.0_f64);
+            for (index, child) in children.iter().enumerate() {
+                let size = self.requested_size(scene, *child, self.implicit[child])?;
+                grid_widths[index % columns] = grid_widths[index % columns].max(size.width);
+                grid_heights[index / columns] = grid_heights[index / columns].max(size.height);
+            }
+        }
+        let mut growth = HashMap::new();
+        if matches!(parent_element, Element::RowLayout | Element::ColumnLayout) {
+            let horizontal = parent_element == Element::RowLayout;
+            let mut occupied = spacing * children.len().saturating_sub(1) as f64;
+            let mut fillers = Vec::new();
+            for child in &children {
+                let size = self.requested_size(scene, *child, self.implicit[child])?;
+                occupied += if horizontal { size.width } else { size.height };
+                let attached = attached_layout(scene.current(*child, "layout")?)?;
+                if flag(
+                    &attached,
+                    if horizontal {
+                        "fill_width"
+                    } else {
+                        "fill_height"
+                    },
+                ) {
+                    fillers.push(*child);
+                }
+            }
+            let available = if horizontal {
+                parent_geometry.width
+            } else {
+                parent_geometry.height
+            };
+            let share = ((available - occupied).max(0.0) / fillers.len().max(1) as f64).max(0.0);
+            for child in fillers {
+                growth.insert(child, share);
+            }
+        }
 
-        for child in children {
+        for (position, child) in children.into_iter().enumerate() {
             let implicit = self.implicit[&child];
             let size = self.requested_size(scene, child, implicit)?;
             let anchors = anchors(scene.current(child, "anchors")?)?;
@@ -280,15 +349,42 @@ impl Layout {
                 width: size.width,
                 height: size.height,
             };
+            let attached = attached_layout(scene.current(child, "layout")?)?;
+            if parent_element == Element::RowLayout {
+                geometry.width += growth.get(&child).copied().unwrap_or(0.0);
+                if flag(&attached, "fill_height") {
+                    geometry.height = parent_geometry.height;
+                }
+            } else if parent_element == Element::ColumnLayout {
+                geometry.height += growth.get(&child).copied().unwrap_or(0.0);
+                if flag(&attached, "fill_width") {
+                    geometry.width = parent_geometry.width;
+                }
+            }
             apply_anchors(parent_geometry, &anchors, &mut geometry);
             match parent_element {
-                Element::Row => {
+                Element::Row | Element::RowLayout => {
                     geometry.x = cursor;
                     cursor += geometry.width + spacing;
                 }
-                Element::Column => {
+                Element::Column | Element::ColumnLayout => {
                     geometry.y = cursor;
                     cursor += geometry.height + spacing;
+                }
+                Element::Grid | Element::GridLayout => {
+                    let column = position % columns;
+                    let row = position / columns;
+                    geometry.x =
+                        grid_widths[..column].iter().sum::<f64>() + column_spacing * column as f64;
+                    geometry.y = grid_heights[..row].iter().sum::<f64>() + row_spacing * row as f64;
+                    if parent_element == Element::GridLayout {
+                        if flag(&attached, "fill_width") {
+                            geometry.width = grid_widths[column];
+                        }
+                        if flag(&attached, "fill_height") {
+                            geometry.height = grid_heights[row];
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -350,6 +446,50 @@ fn sum_with_spacing(children: &[Size], spacing: f64, horizontal: bool) -> f64 {
     content + spacing * children.len().saturating_sub(1) as f64
 }
 
+fn grid_columns(value: f64) -> usize {
+    if value.is_finite() && value >= 1.0 {
+        value.floor().min(usize::MAX as f64) as usize
+    } else {
+        1
+    }
+}
+
+fn grid_size(children: &[Size], columns: usize, column_spacing: f64, row_spacing: f64) -> Size {
+    if children.is_empty() {
+        return Size::default();
+    }
+    let rows = children.len().div_ceil(columns);
+    let mut widths = vec![0.0_f64; columns];
+    let mut heights = vec![0.0_f64; rows];
+    for (index, child) in children.iter().enumerate() {
+        widths[index % columns] = widths[index % columns].max(child.width);
+        heights[index / columns] = heights[index / columns].max(child.height);
+    }
+    Size {
+        width: widths.into_iter().sum::<f64>() + column_spacing * columns.saturating_sub(1) as f64,
+        height: heights.into_iter().sum::<f64>() + row_spacing * rows.saturating_sub(1) as f64,
+    }
+}
+
+fn attached_layout(value: &Value) -> Result<BTreeMap<String, Value>, LayoutError> {
+    match value {
+        Value::Map(map) => Ok(map.clone()),
+        _ => Err(LayoutError::Scene(
+            "attached layout constraints must be a map".to_owned(),
+        )),
+    }
+}
+
+fn layout_number(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
+    number(map, key).filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn clamp_layout(value: f64, map: &BTreeMap<String, Value>, minimum: &str, maximum: &str) -> f64 {
+    let minimum = layout_number(map, minimum).unwrap_or(0.0);
+    let maximum = layout_number(map, maximum).unwrap_or(f64::INFINITY);
+    value.max(minimum).min(maximum.max(minimum))
+}
+
 fn anchors(value: &Value) -> Result<BTreeMap<String, Value>, LayoutError> {
     match value {
         Value::Map(map) => Ok(map.clone()),
@@ -363,12 +503,17 @@ fn reject_axis_conflict(
 ) -> Result<(), LayoutError> {
     let fill = flag(anchors, "fill");
     let center = flag(anchors, "center_in");
-    if parent == Element::Row && (fill || center || flag(anchors, "left") || flag(anchors, "right"))
+    if matches!(
+        parent,
+        Element::Row | Element::RowLayout | Element::Grid | Element::GridLayout
+    ) && (fill || center || flag(anchors, "left") || flag(anchors, "right"))
     {
         return Err(LayoutError::AxisConflict { axis: "horizontal" });
     }
-    if parent == Element::Column
-        && (fill || center || flag(anchors, "top") || flag(anchors, "bottom"))
+    if matches!(
+        parent,
+        Element::Column | Element::ColumnLayout | Element::Grid | Element::GridLayout
+    ) && (fill || center || flag(anchors, "top") || flag(anchors, "bottom"))
     {
         return Err(LayoutError::AxisConflict { axis: "vertical" });
     }
@@ -602,6 +747,75 @@ mod tests {
 
         assert_eq!(layout.geometry(child).unwrap().x, 15.0);
         assert_eq!(layout.geometry(child).unwrap().y, 40.0);
+    }
+
+    #[test]
+    fn grid_places_children_in_fixed_columns() {
+        let mut scene = Scene::new();
+        let grid = scene.create(Element::Grid);
+        scene.assign(grid, "columns", 2.0).unwrap();
+        scene.assign(grid, "column_spacing", 5.0).unwrap();
+        scene.assign(grid, "row_spacing", 7.0).unwrap();
+        let children = (0..4)
+            .map(|_| {
+                let child = scene.create(Element::Rect);
+                scene.assign(child, "width", 20.0).unwrap();
+                scene.assign(child, "height", 10.0).unwrap();
+                scene.reparent(child, Some(grid)).unwrap();
+                child
+            })
+            .collect::<Vec<_>>();
+
+        let layout = Layout::compute(
+            &scene,
+            grid,
+            Size {
+                width: 100.0,
+                height: 100.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(layout.geometry(children[1]).unwrap().x, 25.0);
+        assert_eq!(layout.geometry(children[2]).unwrap().y, 17.0);
+        assert_eq!(layout.implicit_size(grid).unwrap().width, 45.0);
+    }
+
+    #[test]
+    fn row_layout_distributes_remaining_width_to_fillers() {
+        let mut scene = Scene::new();
+        let row = scene.create(Element::RowLayout);
+        scene.assign(row, "spacing", 10.0).unwrap();
+        let fixed = scene.create(Element::Rect);
+        scene.assign(fixed, "width", 30.0).unwrap();
+        scene.assign(fixed, "height", 10.0).unwrap();
+        let fill = scene.create(Element::Rect);
+        scene.assign(fill, "width", 20.0).unwrap();
+        scene.assign(fill, "height", 10.0).unwrap();
+        scene
+            .assign(
+                fill,
+                "layout",
+                Value::Map(BTreeMap::from([("fill_width".into(), Value::Bool(true))])),
+            )
+            .unwrap();
+        scene.reparent(fixed, Some(row)).unwrap();
+        scene.reparent(fill, Some(row)).unwrap();
+
+        let layout = Layout::compute(
+            &scene,
+            row,
+            Size {
+                width: 100.0,
+                height: 20.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(layout.geometry(fill).unwrap().width, 60.0);
+        assert_eq!(layout.geometry(fill).unwrap().x, 40.0);
     }
 
     #[test]

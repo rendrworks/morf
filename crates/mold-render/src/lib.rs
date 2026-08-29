@@ -385,6 +385,10 @@ fn append_node(
         | Element::MouseArea
         | Element::Row
         | Element::Column
+        | Element::Grid
+        | Element::RowLayout
+        | Element::ColumnLayout
+        | Element::GridLayout
         | Element::Flickable => {}
     }
     for child in scene.children(node)? {

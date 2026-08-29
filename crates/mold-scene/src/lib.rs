@@ -37,6 +37,14 @@ pub enum Element {
     Row,
     /// Sequential vertical positioner.
     Column,
+    /// Fixed-column two-dimensional positioner.
+    Grid,
+    /// Horizontal positioner honoring attached layout constraints.
+    RowLayout,
+    /// Vertical positioner honoring attached layout constraints.
+    ColumnLayout,
+    /// Two-dimensional positioner honoring attached layout constraints.
+    GridLayout,
     /// Clipped viewport over movable content.
     Flickable,
 }
@@ -50,6 +58,10 @@ impl Element {
             Self::MouseArea => "MouseArea",
             Self::Row => "Row",
             Self::Column => "Column",
+            Self::Grid => "Grid",
+            Self::RowLayout => "RowLayout",
+            Self::ColumnLayout => "ColumnLayout",
+            Self::GridLayout => "GridLayout",
             Self::Flickable => "Flickable",
         }
     }
@@ -1129,6 +1141,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         number("transition_x", 0.0),
         number("transition_y", 0.0),
         boolean("enabled", true),
+        any("layout", Value::Map(BTreeMap::new())),
     ];
     match element {
         Element::Item | Element::MouseArea => {}
@@ -1163,8 +1176,15 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 boolean("wrap", false),
             ]);
         }
-        Element::Row | Element::Column => {
+        Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
             properties.push(number("spacing", 0.0));
+        }
+        Element::Grid | Element::GridLayout => {
+            properties.extend([
+                number("columns", 1.0),
+                number("row_spacing", 0.0),
+                number("column_spacing", 0.0),
+            ]);
         }
     }
     properties

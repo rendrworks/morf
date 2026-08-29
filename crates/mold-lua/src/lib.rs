@@ -1246,6 +1246,10 @@ fn install_reactive_api(
             ("MouseArea", Element::MouseArea),
             ("Row", Element::Row),
             ("Column", Element::Column),
+            ("Grid", Element::Grid),
+            ("RowLayout", Element::RowLayout),
+            ("ColumnLayout", Element::ColumnLayout),
+            ("GridLayout", Element::GridLayout),
         ] {
             ui.set_field(
                 ctx,
