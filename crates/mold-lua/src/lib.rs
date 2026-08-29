@@ -628,6 +628,26 @@ fn install_reactive_api(
                         .map_err(HostError)?;
                         stack.replace(ctx, module);
                     }
+                    "patin.services.upower" => {
+                        let module = execute_module(
+                            ctx,
+                            "patin.services.upower",
+                            include_bytes!("../../../runtime/lua/patin/services/upower.lua"),
+                            limits,
+                        )
+                        .map_err(HostError)?;
+                        stack.replace(ctx, module);
+                    }
+                    "patin.services.network" => {
+                        let module = execute_module(
+                            ctx,
+                            "patin.services.network",
+                            include_bytes!("../../../runtime/lua/patin/services/network.lua"),
+                            limits,
+                        )
+                        .map_err(HostError)?;
+                        stack.replace(ctx, module);
+                    }
                     _ => {
                         return Err(HostError(format!("module `{name}` is not available")).into());
                     }
@@ -1157,6 +1177,22 @@ mod tests {
         let node = runtime.scene().roots()[0];
         assert_eq!(runtime.scene().string_value(node, "text").unwrap(), "DP-1");
         assert_eq!(runtime.scene().number(node, "width").unwrap(), 1920.0);
+    }
+
+    #[test]
+    fn pure_lua_system_service_modules_load() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "services.lua",
+                br#"
+                    local UPower = require("patin.services.upower")
+                    local Network = require("patin.services.network")
+                    assert(type(UPower.new) == "function")
+                    assert(type(Network.new) == "function")
+                "#,
+            )
+            .unwrap();
     }
 
     #[test]

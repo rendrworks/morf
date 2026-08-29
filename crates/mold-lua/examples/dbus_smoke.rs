@@ -15,8 +15,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             local id = proxy:call("GetId")
             assert(type(id) == "string" and #id > 0)
             assert(string.find(proxy:introspect(), "org.freedesktop.DBus", 1, true))
+            local battery = require("patin.services.upower").new()
+            assert(type(battery:percentage()) == "number")
+            local network = require("patin.services.network").new()
+            assert(type(network:state()) == "number")
         "#,
     )?;
-    println!("Lua D-Bus call and introspection passed");
+    println!("Lua D-Bus, UPower, and NetworkManager passed");
     Ok(())
 }
