@@ -145,6 +145,26 @@ impl IpcValue {
     }
 }
 
+fn script_ipc_value(value: &ScriptValue) -> IpcValue {
+    match value {
+        ScriptValue::Nil => IpcValue::Nil,
+        ScriptValue::Boolean(value) => IpcValue::Boolean(*value),
+        ScriptValue::Integer(value) => IpcValue::Integer(*value),
+        ScriptValue::Number(value) => IpcValue::Number(*value),
+        ScriptValue::String(value) => IpcValue::String(value.clone()),
+    }
+}
+
+fn ipc_script_value(value: IpcValue) -> ScriptValue {
+    match value {
+        IpcValue::Nil => ScriptValue::Nil,
+        IpcValue::Boolean(value) => ScriptValue::Boolean(value),
+        IpcValue::Integer(value) => ScriptValue::Integer(value),
+        IpcValue::Number(value) => ScriptValue::Number(value),
+        IpcValue::String(value) => ScriptValue::String(value),
+    }
+}
+
 /// Event name accepted by Lua element handlers.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UiEvent {
@@ -311,6 +331,29 @@ impl Runtime {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Captures values explicitly marked for transfer to a replacement runtime.
+    pub fn reloadable_state(&self) -> BTreeMap<String, IpcValue> {
+        let state = self.reactive.borrow();
+        state
+            .reloadable
+            .iter()
+            .filter_map(|(name, signal)| {
+                state
+                    .values
+                    .get(signal)
+                    .map(|value| (name.clone(), script_ipc_value(value)))
+            })
+            .collect()
+    }
+
+    /// Seeds reloadable values before executing replacement configuration code.
+    pub fn restore_reloadable_state(&mut self, values: BTreeMap<String, IpcValue>) {
+        self.reactive.borrow_mut().reload_seed = values
+            .into_iter()
+            .map(|(name, value)| (name, ipc_script_value(value)))
+            .collect();
     }
 
     /// Borrows the scene produced by executed configuration code.
@@ -1010,6 +1053,8 @@ struct ReactiveState {
     graph: Option<Graph<ScriptValue>>,
     values: HashMap<SignalId, ScriptValue>,
     signals: Vec<SignalId>,
+    reload_seed: HashMap<String, ScriptValue>,
+    reloadable: HashMap<String, SignalId>,
     effects: HashMap<u64, LuaEffect>,
     next_effect: u64,
     active: Option<Capture>,
@@ -1043,6 +1088,8 @@ impl ReactiveState {
             graph: Some(graph),
             values,
             signals: vec![clock],
+            reload_seed: HashMap::new(),
+            reloadable: HashMap::new(),
             effects: HashMap::new(),
             next_effect: 0,
             active: None,
@@ -1166,6 +1213,55 @@ fn install_reactive_api(
             }
         });
 
+        let reloadable = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            let signal_metatable = signal_metatable.clone();
+            move |ctx, _, mut stack| {
+                let (name, initial): (String, LuaValue) = stack.consume(ctx)?;
+                if name.is_empty() {
+                    return Err(HostError("reloadable id cannot be empty".into()).into());
+                }
+                let initial = ScriptValue::from_lua(initial).map_err(HostError)?;
+                let id = {
+                    let mut state = state.borrow_mut();
+                    if state.reloadable.contains_key(&name) {
+                        return Err(HostError(format!(
+                            "reloadable id `{name}` is already registered"
+                        ))
+                        .into());
+                    }
+                    let value = match state.reload_seed.remove(&name) {
+                        Some(value)
+                            if std::mem::discriminant(&value)
+                                == std::mem::discriminant(&initial) =>
+                        {
+                            value
+                        }
+                        Some(_) => {
+                            state.logs.push(format!(
+                                "reloadable `{name}` changed value type; using its new default"
+                            ));
+                            initial
+                        }
+                        None => initial,
+                    };
+                    let id = state
+                        .graph
+                        .as_mut()
+                        .ok_or_else(|| HostError("reactive graph is already running".to_owned()))?
+                        .signal(format!("reloadable.{name}"), value.clone());
+                    state.values.insert(id, value);
+                    state.signals.push(id);
+                    state.reloadable.insert(name, id);
+                    id
+                };
+                let userdata = UserData::new_static(&ctx, SignalToken { id });
+                userdata.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
+
         let effect = Callback::from_fn(&ctx, {
             let state = Rc::clone(&state);
             move |ctx, _, mut stack| {
@@ -1194,6 +1290,7 @@ fn install_reactive_api(
 
         let mold = Table::new(&ctx);
         mold.set_field(ctx, "signal", signal);
+        mold.set_field(ctx, "reloadable", reloadable);
         mold.set_field(ctx, "effect", effect);
         let clock = UserData::new_static(
             &ctx,
@@ -4134,6 +4231,29 @@ mod tests {
 
         let error = runtime.call_ipc("loop", &[]).unwrap_err().to_string();
         assert!(error.contains("IPC handler fuel exhausted"), "{error}");
+    }
+
+    #[test]
+    fn reloadable_signals_carry_state_into_a_new_runtime() {
+        let source = br#"
+            local visible = mold.reloadable("launcher.visible", false)
+            mold.ipc["state.set"] = function(value) visible:set(value) end
+            mold.ipc["state.get"] = function() return visible:get() end
+        "#;
+        let mut first = Runtime::default();
+        first.execute("reloadable.lua", source).unwrap();
+        first
+            .call_ipc("state.set", &[IpcValue::Boolean(true)])
+            .unwrap();
+
+        let mut second = Runtime::default();
+        second.restore_reloadable_state(first.reloadable_state());
+        second.execute("reloadable.lua", source).unwrap();
+
+        assert_eq!(
+            second.call_ipc("state.get", &[]).unwrap(),
+            [IpcValue::Boolean(true)]
+        );
     }
 
     #[test]

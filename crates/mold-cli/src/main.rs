@@ -738,6 +738,7 @@ fn handle_worker_command(
             reply,
         } => {
             let mut candidate = Runtime::for_screen(Limits::default(), screen.clone());
+            candidate.restore_reloadable_state(runtime.reloadable_state());
             let result = execute_config(&mut candidate, &path, &source)
                 .and_then(|()| {
                     (candidate.scene().roots().len() == 1)
@@ -1300,6 +1301,45 @@ mod tests {
 
         assert_eq!(runtime.scene().roots().len(), 1);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn successful_reload_carries_opt_in_state() {
+        let screen = Screen {
+            name: "test".into(),
+            width: None,
+            height: None,
+            scale: 1,
+        };
+        let source = br#"
+            local value = mold.reloadable("counter", 0)
+            mold.ipc["counter.set"] = function(next) value:set(next) end
+            mold.ipc["counter.get"] = function() return value:get() end
+            mold.ui.Item {}
+        "#;
+        let mut runtime = Runtime::for_screen(Limits::default(), screen.clone());
+        runtime.execute("shell.lua", source).unwrap();
+        runtime
+            .call_ipc("counter.set", &[IpcValue::Integer(7)])
+            .unwrap();
+        let (reply, result) = mpsc::sync_channel(1);
+
+        let update = handle_worker_command(
+            &mut runtime,
+            &screen,
+            WorkerCommand::Reload {
+                path: Arc::new(PathBuf::from("shell.lua")),
+                source: Arc::from(&source[..]),
+                reply,
+            },
+        );
+
+        assert!(result.recv().unwrap().is_ok());
+        assert!(update.repaint);
+        assert_eq!(
+            runtime.call_ipc("counter.get", &[]).unwrap(),
+            [IpcValue::Integer(7)]
+        );
     }
 
     #[test]
