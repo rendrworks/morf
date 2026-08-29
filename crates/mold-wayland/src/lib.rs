@@ -185,6 +185,8 @@ pub enum LayerEvent {
         width: u32,
         height: u32,
     },
+    /// One output and its lock surface were removed.
+    SessionLockSurfaceRemoved { index: usize },
     /// The compositor permits the next lock-surface paint tick.
     SessionLockFrame { index: usize, time_ms: u32 },
     /// The compositor closed the layer surface.
@@ -595,6 +597,24 @@ impl LayerClient {
             .map(|surface| surface.size)
     }
 
+    /// Returns one lock surface's preferred integer scale in protocol 120ths.
+    pub fn lock_scale_120(&self, index: usize) -> Option<u32> {
+        self.state
+            .lock_surfaces
+            .get(index)
+            .map(|surface| surface.scale.saturating_mul(120))
+    }
+
+    /// Returns one lock surface's physical buffer size.
+    pub fn lock_physical_size(&self, index: usize) -> Option<(u32, u32)> {
+        self.state.lock_surfaces.get(index).map(|surface| {
+            (
+                surface.size.0.saturating_mul(surface.scale),
+                surface.size.1.saturating_mul(surface.scale),
+            )
+        })
+    }
+
     /// Returns an owned raw-window target for one lock surface.
     pub fn lock_window_target(&self, index: usize) -> Option<WaylandWindowTarget> {
         self.lock_surface(index).map(|surface| WaylandWindowTarget {
@@ -669,7 +689,39 @@ struct LayerState {
 
 struct LockSurface {
     surface: SessionLockSurface,
+    output: wl_output::WlOutput,
     size: (u32, u32),
+    scale: u32,
+}
+
+impl LayerState {
+    fn create_lock_surface(&mut self, output: wl_output::WlOutput, qh: &QueueHandle<Self>) {
+        let Some(lock) = self.session_lock.clone().filter(SessionLock::is_locked) else {
+            return;
+        };
+        if self
+            .lock_surfaces
+            .iter()
+            .any(|surface| surface.output == output)
+        {
+            return;
+        }
+        let scale = self
+            .outputs
+            .info(&output)
+            .map(|info| info.scale_factor.max(1) as u32)
+            .unwrap_or(1);
+        let surface = self.compositor.create_surface(qh);
+        surface.set_buffer_scale(scale as i32);
+        let surface = lock.create_lock_surface(surface, &output, qh);
+        surface.wl_surface().commit();
+        self.lock_surfaces.push(LockSurface {
+            surface,
+            output,
+            size: (1, 1),
+            scale,
+        });
+    }
 }
 
 impl CompositorHandler for LayerState {
@@ -783,18 +835,11 @@ impl SessionLockHandler for LayerState {
         &mut self,
         _connection: &Connection,
         qh: &QueueHandle<Self>,
-        session_lock: SessionLock,
+        _session_lock: SessionLock,
     ) {
         self.lock_surfaces.clear();
         for output in self.outputs.outputs() {
-            let surface = self.compositor.create_surface(qh);
-            surface.set_buffer_scale(1);
-            let surface = session_lock.create_lock_surface(surface, &output, qh);
-            surface.wl_surface().commit();
-            self.lock_surfaces.push(LockSurface {
-                surface,
-                size: (1, 1),
-            });
+            self.create_lock_surface(output, qh);
         }
         self.events.push_back(LayerEvent::SessionLocked);
     }
@@ -843,28 +888,59 @@ impl OutputHandler for LayerState {
     fn new_output(
         &mut self,
         _connection: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
     ) {
         self.refresh_screens();
+        self.create_lock_surface(output, qh);
     }
 
     fn update_output(
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
         self.refresh_screens();
+        let scale = self
+            .outputs
+            .info(&output)
+            .map(|info| info.scale_factor.max(1) as u32)
+            .unwrap_or(1);
+        if let Some((index, surface)) = self
+            .lock_surfaces
+            .iter_mut()
+            .enumerate()
+            .find(|(_, surface)| surface.output == output)
+            && surface.scale != scale
+        {
+            surface.scale = scale;
+            surface.surface.wl_surface().set_buffer_scale(scale as i32);
+            surface.surface.wl_surface().commit();
+            self.events.push_back(LayerEvent::SessionLockConfigure {
+                index,
+                width: surface.size.0,
+                height: surface.size.1,
+            });
+        }
     }
 
     fn output_destroyed(
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
         self.refresh_screens();
+        if let Some(index) = self
+            .lock_surfaces
+            .iter()
+            .position(|surface| surface.output == output)
+        {
+            self.lock_surfaces.remove(index);
+            self.events
+                .push_back(LayerEvent::SessionLockSurfaceRemoved { index });
+        }
     }
 }
 

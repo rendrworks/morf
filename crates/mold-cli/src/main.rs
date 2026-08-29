@@ -624,6 +624,7 @@ fn run_surface(
                 | LayerEvent::SessionLocked
                 | LayerEvent::SessionLockFinished
                 | LayerEvent::SessionLockConfigure { .. }
+                | LayerEvent::SessionLockSurfaceRemoved { .. }
                 | LayerEvent::SessionLockFrame { .. } => {}
             }
         }
@@ -761,6 +762,7 @@ fn run_surface(
                 | LayerEvent::SessionLocked
                 | LayerEvent::SessionLockFinished
                 | LayerEvent::SessionLockConfigure { .. }
+                | LayerEvent::SessionLockSurfaceRemoved { .. }
                 | LayerEvent::SessionLockFrame { .. } => {}
                 LayerEvent::Screens(screens) => {
                     tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
