@@ -19,7 +19,9 @@ use rustix::io::Errno;
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use zbus::blocking::{Connection as DbusConnection, Proxy as ZbusProxy};
-use zbus::zvariant::{Array, Dict, DynamicDeserialize, DynamicType, OwnedValue, Structure, Value};
+use zbus::zvariant::{
+    Array, Dict, DynamicDeserialize, DynamicType, OwnedValue, Structure, StructureBuilder, Value,
+};
 
 /// One event emitted by a child process.
 #[derive(Debug)]
@@ -841,6 +843,10 @@ pub enum DbusValue {
     String(String),
     List(Vec<DbusValue>),
     Map(BTreeMap<String, DbusValue>),
+    Typed {
+        signature: String,
+        value: Box<DbusValue>,
+    },
 }
 
 impl DbusProxy {
@@ -922,7 +928,7 @@ impl DbusProxy {
         decode_message_value(&message)
     }
 
-    /// Calls a one-scalar-argument method returning a supported value.
+    /// Calls a method with one scalar or a list of positional scalar arguments.
     pub fn call_value_with(&self, method: &str, value: &DbusValue) -> Result<DbusValue, String> {
         let message = match value {
             DbusValue::Nil => self.proxy.call_method(method, &()),
@@ -931,8 +937,24 @@ impl DbusProxy {
             DbusValue::Unsigned(value) => self.proxy.call_method(method, &(*value,)),
             DbusValue::Number(value) => self.proxy.call_method(method, &(*value,)),
             DbusValue::String(value) => self.proxy.call_method(method, &(value.as_str(),)),
-            DbusValue::List(_) | DbusValue::Map(_) => {
-                return Err("compound D-Bus method arguments are not supported".to_owned());
+            DbusValue::Typed { .. } => {
+                let body = StructureBuilder::new()
+                    .append_field(dbus_argument_value(value)?)
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                self.proxy.call_method(method, &body)
+            }
+            DbusValue::List(values) if values.is_empty() => self.proxy.call_method(method, &()),
+            DbusValue::List(values) => {
+                let mut body = StructureBuilder::new();
+                for value in values {
+                    body = body.append_field(dbus_argument_value(value)?);
+                }
+                let body = body.build().map_err(|error| error.to_string())?;
+                self.proxy.call_method(method, &body)
+            }
+            DbusValue::Map(_) => {
+                return Err("D-Bus maps need an explicit signature".to_owned());
             }
         }
         .map_err(|error| error.to_string())?;
@@ -948,6 +970,10 @@ impl DbusProxy {
             DbusValue::Unsigned(value) => self.set_property(property, *value),
             DbusValue::Number(value) => self.set_property(property, *value),
             DbusValue::String(value) => self.set_property(property, value.as_str()),
+            DbusValue::Typed { .. } => {
+                let value = dbus_argument_value(value)?;
+                self.set_property(property, value)
+            }
             DbusValue::List(_) | DbusValue::Map(_) => {
                 return Err("compound D-Bus properties are not supported".to_owned());
             }
@@ -981,6 +1007,70 @@ impl DbusProxy {
             connection: Some(connection),
             join: Some(join),
         })
+    }
+}
+
+fn dbus_argument_value(value: &DbusValue) -> Result<Value<'_>, String> {
+    match value {
+        DbusValue::Bool(value) => Ok(Value::Bool(*value)),
+        DbusValue::Integer(value) => Ok(Value::I64(*value)),
+        DbusValue::Unsigned(value) => Ok(Value::U64(*value)),
+        DbusValue::Number(value) => Ok(Value::F64(*value)),
+        DbusValue::String(value) => Ok(Value::Str(value.as_str().into())),
+        DbusValue::Typed { signature, value } => typed_dbus_value(signature, value),
+        DbusValue::Nil => Err("nil cannot be a positional D-Bus argument".to_owned()),
+        DbusValue::List(_) | DbusValue::Map(_) => {
+            Err("nested D-Bus arguments need an explicit signature".to_owned())
+        }
+    }
+}
+
+fn typed_dbus_value<'a>(signature: &str, value: &'a DbusValue) -> Result<Value<'a>, String> {
+    let integer = || match value {
+        DbusValue::Integer(value) => Ok(i128::from(*value)),
+        DbusValue::Unsigned(value) => Ok(i128::from(*value)),
+        _ => Err(format!("D-Bus `{signature}` value must be an integer")),
+    };
+    let range_error = || format!("D-Bus `{signature}` integer is out of range");
+    match signature {
+        "y" => Ok(Value::U8(
+            u8::try_from(integer()?).map_err(|_| range_error())?,
+        )),
+        "n" => Ok(Value::I16(
+            i16::try_from(integer()?).map_err(|_| range_error())?,
+        )),
+        "q" => Ok(Value::U16(
+            u16::try_from(integer()?).map_err(|_| range_error())?,
+        )),
+        "i" => Ok(Value::I32(
+            i32::try_from(integer()?).map_err(|_| range_error())?,
+        )),
+        "u" => Ok(Value::U32(
+            u32::try_from(integer()?).map_err(|_| range_error())?,
+        )),
+        "x" => Ok(Value::I64(
+            i64::try_from(integer()?).map_err(|_| range_error())?,
+        )),
+        "t" => Ok(Value::U64(
+            u64::try_from(integer()?).map_err(|_| range_error())?,
+        )),
+        "d" => match value {
+            DbusValue::Number(value) => Ok(Value::F64(*value)),
+            DbusValue::Integer(value) => Ok(Value::F64(*value as f64)),
+            DbusValue::Unsigned(value) => Ok(Value::F64(*value as f64)),
+            _ => Err("D-Bus `d` value must be numeric".to_owned()),
+        },
+        "b" => match value {
+            DbusValue::Bool(value) => Ok(Value::Bool(*value)),
+            _ => Err("D-Bus `b` value must be boolean".to_owned()),
+        },
+        "s" => match value {
+            DbusValue::String(value) => Ok(Value::Str(value.as_str().into())),
+            _ => Err("D-Bus `s` value must be a string".to_owned()),
+        },
+        _ => Err(format!(
+            "unsupported explicit D-Bus signature `{signature}`"
+        )),
     }
 }
 
@@ -1266,5 +1356,27 @@ mod tests {
         let value: JsonValue = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["n"], 2);
         assert_eq!(value["result"], serde_json::json!([7, true]));
+    }
+
+    #[test]
+    fn dbus_argument_lists_build_positional_structures() {
+        let arguments = [
+            DbusValue::String("device".to_owned()),
+            DbusValue::Typed {
+                signature: "u".to_owned(),
+                value: Box::new(DbusValue::Integer(7)),
+            },
+            DbusValue::Bool(true),
+        ];
+        let mut body = StructureBuilder::new();
+        for argument in &arguments {
+            body = body.append_field(dbus_argument_value(argument).unwrap());
+        }
+        let body = body.build().unwrap();
+
+        assert_eq!(body.fields().len(), 3);
+        assert!(matches!(&body.fields()[0], Value::Str(value) if value.as_str() == "device"));
+        assert!(matches!(body.fields()[1], Value::U32(7)));
+        assert!(matches!(body.fields()[2], Value::Bool(true)));
     }
 }

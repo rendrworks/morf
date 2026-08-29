@@ -1,7 +1,7 @@
 //! Sandboxed execution of mold configuration code.
 
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
 use std::fs;
@@ -1854,7 +1854,7 @@ fn install_reactive_api(
         let dbus_call_with = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, method, argument): (UserRef<DbusToken>, String, LuaValue) =
                 stack.consume(ctx)?;
-            let argument = lua_to_dbus(argument).map_err(HostError)?;
+            let argument = lua_to_dbus(ctx, argument, 0).map_err(HostError)?;
             let value = proxy
                 .proxy
                 .call_value_with(&method, &argument)
@@ -1865,7 +1865,7 @@ fn install_reactive_api(
         let dbus_set = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, property, value): (UserRef<DbusToken>, String, LuaValue) =
                 stack.consume(ctx)?;
-            let value = lua_to_dbus(value).map_err(HostError)?;
+            let value = lua_to_dbus(ctx, value, 0).map_err(HostError)?;
             proxy
                 .proxy
                 .set_value(&property, &value)
@@ -2350,17 +2350,84 @@ fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> Result<LuaValue<'_>,
             }
             LuaValue::Table(table)
         }
+        DbusValue::Typed { signature, value } => {
+            let table = Table::new(&ctx);
+            table.set_field(ctx, "signature", signature.as_str());
+            table.set_field(ctx, "value", dbus_value_to_lua(ctx, *value)?);
+            LuaValue::Table(table)
+        }
     })
 }
 
-fn lua_to_dbus(value: LuaValue<'_>) -> Result<DbusValue, String> {
+fn lua_to_dbus<'gc>(
+    ctx: Context<'gc>,
+    value: LuaValue<'gc>,
+    depth: usize,
+) -> Result<DbusValue, String> {
+    if depth > 8 {
+        return Err("D-Bus value exceeds maximum depth 8".to_owned());
+    }
     match value {
         LuaValue::Nil => Ok(DbusValue::Nil),
         LuaValue::Boolean(value) => Ok(DbusValue::Bool(value)),
         LuaValue::Integer(value) => Ok(DbusValue::Integer(value)),
         LuaValue::Number(value) if value.is_finite() => Ok(DbusValue::Number(value)),
         LuaValue::String(value) => Ok(DbusValue::String(value.display_lossy().to_string())),
-        _ => Err("D-Bus values must be nil, boolean, number, or string".to_owned()),
+        LuaValue::Table(table) => {
+            if let LuaValue::String(signature) = table.get_value(ctx, "signature") {
+                let value = table.get_value(ctx, "value");
+                return Ok(DbusValue::Typed {
+                    signature: signature.display_lossy().to_string(),
+                    value: Box::new(lua_to_dbus(ctx, value, depth + 1)?),
+                });
+            }
+            let entries = table.iter(ctx).collect::<Vec<_>>();
+            if entries.len() > 256 {
+                return Err("D-Bus table exceeds 256 entries".to_owned());
+            }
+            if entries.is_empty()
+                || entries
+                    .iter()
+                    .all(|(key, _)| matches!(key, LuaValue::Integer(_)))
+            {
+                let mut values = entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let LuaValue::Integer(index) = key else {
+                            unreachable!()
+                        };
+                        Ok((index, lua_to_dbus(ctx, value, depth + 1)?))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                values.sort_by_key(|(index, _)| *index);
+                for (offset, (index, _)) in values.iter().enumerate() {
+                    if *index != offset as i64 + 1 {
+                        return Err("D-Bus list must be a dense sequence".to_owned());
+                    }
+                }
+                Ok(DbusValue::List(
+                    values.into_iter().map(|(_, value)| value).collect(),
+                ))
+            } else if entries
+                .iter()
+                .all(|(key, _)| matches!(key, LuaValue::String(_)))
+            {
+                let mut values = BTreeMap::new();
+                for (key, value) in entries {
+                    let LuaValue::String(key) = key else {
+                        unreachable!()
+                    };
+                    values.insert(
+                        key.display_lossy().to_string(),
+                        lua_to_dbus(ctx, value, depth + 1)?,
+                    );
+                }
+                Ok(DbusValue::Map(values))
+            } else {
+                Err("D-Bus table keys must be all integers or all strings".to_owned())
+            }
+        }
+        _ => Err("unsupported D-Bus value".to_owned()),
     }
 }
 
@@ -4758,6 +4825,33 @@ mod tests {
             .unwrap();
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn lua_dbus_arguments_preserve_positional_lists() {
+        let mut runtime = Runtime::default();
+        let value = runtime.lua.enter(|ctx| {
+            let arguments = Table::new(&ctx);
+            arguments.set(ctx, 1, "device").unwrap();
+            let typed = Table::new(&ctx);
+            typed.set_field(ctx, "signature", "u");
+            typed.set_field(ctx, "value", 7_i64);
+            arguments.set(ctx, 2, typed).unwrap();
+            arguments.set(ctx, 3, true).unwrap();
+            lua_to_dbus(ctx, LuaValue::Table(arguments), 0)
+        });
+
+        assert_eq!(
+            value.unwrap(),
+            DbusValue::List(vec![
+                DbusValue::String("device".to_owned()),
+                DbusValue::Typed {
+                    signature: "u".to_owned(),
+                    value: Box::new(DbusValue::Integer(7)),
+                },
+                DbusValue::Bool(true),
+            ])
+        );
     }
 
     #[test]

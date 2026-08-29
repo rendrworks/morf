@@ -1,4 +1,4 @@
-use mold_io::{Bus, DbusProxy};
+use mold_io::{Bus, DbusProxy, DbusValue};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +15,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let signals = proxy.subscribe("NameOwnerChanged")?;
     let name = format!("org.mold.Smoke{}", std::process::id());
-    let _: u32 = proxy.call("RequestName", &(name.as_str(), 0_u32))?;
+    let reply = proxy.call_value_with(
+        "RequestName",
+        &DbusValue::List(vec![
+            DbusValue::String(name.clone()),
+            DbusValue::Typed {
+                signature: "u".to_owned(),
+                value: Box::new(DbusValue::Unsigned(0)),
+            },
+        ]),
+    )?;
+    if !matches!(reply, DbusValue::Unsigned(1 | 4)) {
+        return Err("dynamic D-Bus arguments returned an invalid result".into());
+    }
     if signals.next(Duration::from_secs(2)).is_none() {
         return Err("D-Bus signal was not received".into());
     }
