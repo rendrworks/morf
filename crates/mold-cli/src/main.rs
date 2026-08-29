@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -13,7 +13,7 @@ use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValu
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{IpcValue, Limits, Runtime, Screen, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
-use mold_scene::Element;
+use mold_scene::{Element, NodeHandle};
 use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, ScreenInfo};
 
 fn usage() -> &'static str {
@@ -253,6 +253,10 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave
                 | LayerEvent::PointerButton { .. }
+                | LayerEvent::TouchDown { .. }
+                | LayerEvent::TouchMotion { .. }
+                | LayerEvent::TouchUp { .. }
+                | LayerEvent::TouchCancel
                 | LayerEvent::PopupConfigure { .. }
                 | LayerEvent::PopupFrame { .. }
                 | LayerEvent::PopupDone
@@ -812,6 +816,10 @@ fn run_surface(
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave
                 | LayerEvent::PointerButton { .. }
+                | LayerEvent::TouchDown { .. }
+                | LayerEvent::TouchMotion { .. }
+                | LayerEvent::TouchUp { .. }
+                | LayerEvent::TouchCancel
                 | LayerEvent::Key { .. }
                 | LayerEvent::Modifiers { .. }
                 | LayerEvent::Screens(_)
@@ -848,6 +856,7 @@ fn run_surface(
     let mut hovered = None;
     let mut pressed = None;
     let mut focused = None;
+    let mut touches = HashMap::<i32, (NodeHandle, f64, f64)>::new();
     loop {
         if stop.load(Ordering::Acquire) {
             return Ok(());
@@ -864,6 +873,7 @@ fn run_surface(
                 hovered = None;
                 pressed = None;
                 focused = None;
+                touches.clear();
             }
         }
         if next_clock != clock {
@@ -923,6 +933,46 @@ fn run_surface(
                     focused = hit;
                     if let Some(node) = hit {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
+                    }
+                }
+                LayerEvent::TouchDown { id, x, y } => {
+                    let hit = layout
+                        .hit_test(&runtime.scene(), x, y)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(node) = hit {
+                        touches.insert(id, (node, x, y));
+                        focused = Some(node);
+                        repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
+                        repaint |=
+                            runtime.dispatch_touch_event(node, UiEvent::TouchPressed, id, x, y);
+                    }
+                }
+                LayerEvent::TouchMotion { id, x, y } => {
+                    if let Some((node, last_x, last_y)) = touches.get_mut(&id) {
+                        *last_x = x;
+                        *last_y = y;
+                        repaint |=
+                            runtime.dispatch_touch_event(*node, UiEvent::TouchMoved, id, x, y);
+                    }
+                }
+                LayerEvent::TouchUp { id, x, y } => {
+                    if let Some((node, _, _)) = touches.remove(&id) {
+                        repaint |=
+                            runtime.dispatch_touch_event(node, UiEvent::TouchReleased, id, x, y);
+                        repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
+                        let hit = layout
+                            .hit_test(&runtime.scene(), x, y)
+                            .map_err(|error| error.to_string())?;
+                        if hit == Some(node) {
+                            repaint |= runtime.dispatch_ui_event(node, UiEvent::Clicked);
+                        }
+                    }
+                }
+                LayerEvent::TouchCancel => {
+                    for (id, (node, x, y)) in touches.drain() {
+                        repaint |=
+                            runtime.dispatch_touch_event(node, UiEvent::TouchCanceled, id, x, y);
+                        repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
                     }
                 }
                 LayerEvent::PointerButton {

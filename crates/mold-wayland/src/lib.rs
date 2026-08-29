@@ -1,6 +1,6 @@
 //! Wayland layer surfaces, fractional scale, and compositor frame callbacks.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
 use std::num::NonZeroU32;
@@ -20,6 +20,7 @@ use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::touch::TouchHandler;
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::session_lock::{
     SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
@@ -39,7 +40,7 @@ use smithay_client_toolkit::shell::xdg::window::{
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{
-    wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface,
+    wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::fractional_scale::v1::client::{
@@ -147,6 +148,14 @@ pub enum LayerEvent {
         x: f64,
         y: f64,
     },
+    /// A touch contact began on the surface.
+    TouchDown { id: i32, x: f64, y: f64 },
+    /// A touch contact moved on the surface.
+    TouchMotion { id: i32, x: f64, y: f64 },
+    /// A touch contact ended on the surface.
+    TouchUp { id: i32, x: f64, y: f64 },
+    /// The compositor cancelled every active touch contact.
+    TouchCancel,
     /// A keyboard key changed state.
     Key {
         keysym: u32,
@@ -260,6 +269,8 @@ impl LayerClient {
             events: VecDeque::new(),
             pointer: None,
             keyboard: None,
+            touch: None,
+            touch_points: HashMap::new(),
             screens: Vec::new(),
             session_locks,
             session_lock: None,
@@ -692,6 +703,8 @@ struct LayerState {
     events: VecDeque<LayerEvent>,
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    touch: Option<wl_touch::WlTouch>,
+    touch_points: HashMap<i32, (f64, f64)>,
     screens: Vec<ScreenInfo>,
     session_locks: SessionLockState,
     session_lock: Option<SessionLock>,
@@ -1034,6 +1047,9 @@ impl SeatHandler for LayerState {
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             self.keyboard = self.seats.get_keyboard(qh, &seat, None).ok();
         }
+        if capability == Capability::Touch && self.touch.is_none() {
+            self.touch = self.seats.get_touch(qh, &seat).ok();
+        }
     }
 
     fn remove_capability(
@@ -1052,6 +1068,12 @@ impl SeatHandler for LayerState {
             && let Some(keyboard) = self.keyboard.take()
         {
             keyboard.release();
+        }
+        if capability == Capability::Touch
+            && let Some(touch) = self.touch.take()
+        {
+            touch.release();
+            self.touch_points.clear();
         }
     }
 
@@ -1107,6 +1129,98 @@ impl PointerHandler for LayerState {
                 PointerEventKind::Axis { .. } => {}
             }
         }
+    }
+}
+
+impl TouchHandler for LayerState {
+    fn down(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _serial: u32,
+        _time: u32,
+        surface: wl_surface::WlSurface,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        if self
+            .layer
+            .as_ref()
+            .is_none_or(|layer| surface != *layer.wl_surface())
+        {
+            return;
+        }
+        self.touch_points.insert(id, position);
+        self.events.push_back(LayerEvent::TouchDown {
+            id,
+            x: position.0,
+            y: position.1,
+        });
+    }
+
+    fn up(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _serial: u32,
+        _time: u32,
+        id: i32,
+    ) {
+        if let Some((x, y)) = self.touch_points.remove(&id) {
+            self.events.push_back(LayerEvent::TouchUp { id, x, y });
+        }
+    }
+
+    fn motion(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _time: u32,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        if let Some(point) = self.touch_points.get_mut(&id) {
+            *point = position;
+            self.events.push_back(LayerEvent::TouchMotion {
+                id,
+                x: position.0,
+                y: position.1,
+            });
+        }
+    }
+
+    fn shape(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _id: i32,
+        _major: f64,
+        _minor: f64,
+    ) {
+    }
+
+    fn orientation(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+        _id: i32,
+        _orientation: f64,
+    ) {
+    }
+
+    fn cancel(
+        &mut self,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+        _touch: &wl_touch::WlTouch,
+    ) {
+        self.touch_points.clear();
+        self.events.push_back(LayerEvent::TouchCancel);
     }
 }
 

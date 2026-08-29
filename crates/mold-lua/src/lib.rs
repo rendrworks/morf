@@ -157,6 +157,14 @@ pub enum UiEvent {
     Clicked,
     /// A key was pressed while the target held focus.
     KeyPressed,
+    /// A touch contact began on the target.
+    TouchPressed,
+    /// A grabbed touch contact moved.
+    TouchMoved,
+    /// A grabbed touch contact ended.
+    TouchReleased,
+    /// A grabbed touch contact was cancelled.
+    TouchCanceled,
 }
 
 impl UiEvent {
@@ -168,6 +176,10 @@ impl UiEvent {
             Self::Released => "on_released",
             Self::Clicked => "on_clicked",
             Self::KeyPressed => "on_key_pressed",
+            Self::TouchPressed => "on_touch_pressed",
+            Self::TouchMoved => "on_touch_moved",
+            Self::TouchReleased => "on_touch_released",
+            Self::TouchCanceled => "on_touch_canceled",
         }
     }
 }
@@ -329,6 +341,35 @@ impl Runtime {
             &[
                 IpcValue::Integer(keysym as i64),
                 text.map_or(IpcValue::Nil, |value| IpcValue::String(value.to_owned())),
+            ],
+        )
+    }
+
+    /// Dispatches one touch event with contact identity and surface coordinates.
+    pub fn dispatch_touch_event(
+        &mut self,
+        node: NodeHandle,
+        event: UiEvent,
+        id: i32,
+        x: f64,
+        y: f64,
+    ) -> bool {
+        if !matches!(
+            event,
+            UiEvent::TouchPressed
+                | UiEvent::TouchMoved
+                | UiEvent::TouchReleased
+                | UiEvent::TouchCanceled
+        ) {
+            return false;
+        }
+        self.dispatch_ui_event_with_args(
+            node,
+            event,
+            &[
+                IpcValue::Integer(i64::from(id)),
+                IpcValue::Number(x),
+                IpcValue::Number(y),
             ],
         )
     }
@@ -2361,6 +2402,10 @@ fn handler_event(property: &str) -> Option<UiEvent> {
         "on_released" => Some(UiEvent::Released),
         "on_clicked" => Some(UiEvent::Clicked),
         "on_key_pressed" => Some(UiEvent::KeyPressed),
+        "on_touch_pressed" => Some(UiEvent::TouchPressed),
+        "on_touch_moved" => Some(UiEvent::TouchMoved),
+        "on_touch_released" => Some(UiEvent::TouchReleased),
+        "on_touch_canceled" => Some(UiEvent::TouchCanceled),
         _ => None,
     }
 }
@@ -3814,6 +3859,50 @@ mod tests {
         assert!(runtime.dispatch_ui_event(node, UiEvent::Clicked));
         assert!(runtime.take_logs()[0].contains("handler fuel exhausted"));
         assert!(runtime.scene().contains(node));
+    }
+
+    #[test]
+    fn touch_handlers_receive_contact_identity_and_coordinates() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "touch.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local status = mold.signal("touch.status", "idle")
+                    ui.MouseArea {
+                      width = 100,
+                      height = 100,
+                      on_touch_pressed = function(id, x, y)
+                        status:set(string.format("down:%d:%.0f:%.0f", id, x, y))
+                      end,
+                      on_touch_moved = function(id, x, y)
+                        status:set(string.format("move:%d:%.0f:%.0f", id, x, y))
+                      end,
+                      on_touch_released = function(id)
+                        status:set("up:" .. id)
+                      end,
+                      ui.Text { text = function() return status:get() end },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let text = runtime.scene().children(root).unwrap()[0];
+
+        assert!(runtime.dispatch_touch_event(root, UiEvent::TouchPressed, 7, 12.0, 18.0));
+        assert_eq!(
+            runtime.scene().string_value(text, "text").unwrap(),
+            "down:7:12:18"
+        );
+        assert!(runtime.dispatch_touch_event(root, UiEvent::TouchMoved, 7, 20.0, 30.0));
+        assert_eq!(
+            runtime.scene().string_value(text, "text").unwrap(),
+            "move:7:20:30"
+        );
+        assert!(runtime.dispatch_touch_event(root, UiEvent::TouchReleased, 7, 20.0, 30.0));
+        assert_eq!(runtime.scene().string_value(text, "text").unwrap(), "up:7");
     }
 
     #[test]
