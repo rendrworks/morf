@@ -31,7 +31,14 @@ pub struct Geometry {
 /// Text measurement supplied by the text subsystem.
 pub trait TextMeasurer {
     /// Shapes text and returns its logical bounds.
-    fn measure(&mut self, text: &str, family: &str, size: f64, wrap_width: Option<f64>) -> Size;
+    fn measure(
+        &mut self,
+        node: NodeHandle,
+        text: &str,
+        family: &str,
+        size: f64,
+        wrap_width: Option<f64>,
+    ) -> Size;
 }
 
 /// Complete layout output keyed by stable node handles.
@@ -88,6 +95,7 @@ impl Layout {
 
         let size = match scene.element(node)? {
             Element::Text => text.measure(
+                node,
                 scene.string_value(node, "text")?,
                 scene.string_value(node, "font_family")?,
                 scene.number(node, "font_size")?,
@@ -295,6 +303,7 @@ mod tests {
     impl TextMeasurer for FixedText {
         fn measure(
             &mut self,
+            _node: NodeHandle,
             text: &str,
             _family: &str,
             size: f64,

@@ -7,3 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cosmic-text.workspace = true
+mold-layout.workspace = true
+mold-scene.workspace = true
