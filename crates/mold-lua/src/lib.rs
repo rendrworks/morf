@@ -14,7 +14,7 @@ use luna::{
 use mold_io::{Bus, DbusProxy, DbusValue};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
-    AnimationFrame, Behavior, Easing, Element, NodeHandle, Scene, Value as SceneValue,
+    AnimationFrame, Behavior, Easing, Element, NodeHandle, Physics, Scene, Value as SceneValue,
 };
 use mold_services::PipeWire;
 
@@ -692,6 +692,18 @@ fn install_reactive_api(
                 Ok(CallbackReturn::Return)
             }),
         );
+        for kind in ["spring", "smoothed"] {
+            ui.set_field(
+                ctx,
+                kind,
+                Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+                    let options: Table = stack.consume(ctx)?;
+                    options.set_field(ctx, "kind", kind);
+                    stack.replace(ctx, options);
+                    Ok(CallbackReturn::Return)
+                }),
+            );
+        }
         mold.set_field(ctx, "ui", ui);
         ctx.set_global("mold", mold);
 
@@ -956,6 +968,40 @@ fn configure_behaviors<'gc>(
         let LuaValue::Table(behavior) = behavior else {
             return Err("each behavior must be a table".to_owned());
         };
+        let property = property.display_lossy().to_string();
+        let kind = match behavior.get_value(ctx, "kind") {
+            LuaValue::Nil => None,
+            LuaValue::String(value) => Some(value.display_lossy().to_string()),
+            _ => return Err("behavior kind must be a string".to_owned()),
+        };
+        if kind.as_deref() == Some("spring") {
+            let physics = Physics::Spring {
+                mass: table_number(ctx, behavior, "mass", 1.0)?,
+                damping: table_number(ctx, behavior, "damping", 18.0)?,
+                stiffness: table_number(ctx, behavior, "stiffness", 180.0)?,
+                epsilon: table_number(ctx, behavior, "epsilon", 0.001)?,
+            };
+            state
+                .borrow_mut()
+                .scene
+                .set_physics(node, &property, Some(physics))
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+        if kind.as_deref() == Some("smoothed") {
+            let physics = Physics::Smoothed {
+                velocity: table_number(ctx, behavior, "velocity", 1_000.0)?,
+            };
+            state
+                .borrow_mut()
+                .scene
+                .set_physics(node, &property, Some(physics))
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+        if let Some(kind) = kind {
+            return Err(format!("unknown behavior kind `{kind}`"));
+        }
         let duration = match behavior.get_value(ctx, "duration") {
             LuaValue::Integer(value) => value as f64,
             LuaValue::Number(value) if value.is_finite() => value,
@@ -980,7 +1026,7 @@ fn configure_behaviors<'gc>(
             .scene
             .set_behavior(
                 node,
-                &property.display_lossy().to_string(),
+                &property,
                 Some(Behavior {
                     duration: Duration::from_secs_f64(duration / 1_000.0),
                     easing,
@@ -989,6 +1035,20 @@ fn configure_behaviors<'gc>(
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn table_number<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+    default: f64,
+) -> Result<f64, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(default),
+        LuaValue::Integer(value) => Ok(value as f64),
+        LuaValue::Number(value) if value.is_finite() => Ok(value),
+        _ => Err(format!("{field} must be a finite number")),
+    }
 }
 
 fn register_property_binding<'gc>(
@@ -1668,6 +1728,38 @@ mod tests {
         let frame = runtime.tick_animations(Duration::from_millis(100)).unwrap();
 
         assert_eq!(runtime.scene().number(node, "width").unwrap(), 50.0);
+        assert_eq!(runtime.effect_runs(), runs);
+        assert!(frame.active);
+    }
+
+    #[test]
+    fn lua_spring_chases_a_reactive_target_in_rust() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "spring.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local target = mold.signal("target", 0)
+                    ui.Item {
+                        behavior = {
+                            x = ui.spring { damping = 18, stiffness = 180 },
+                        },
+                        x = function() return target:get() end,
+                    }
+                    local ok, err = target:set(100)
+                    assert(ok, err)
+                "#,
+            )
+            .unwrap();
+        let node = runtime.scene().roots()[0];
+        let runs = runtime.effect_runs();
+
+        let frame = runtime.tick_animations(Duration::from_millis(50)).unwrap();
+
+        assert!(runtime.scene().number(node, "x").unwrap() > 0.0);
+        assert!(runtime.scene().number(node, "x").unwrap() < 100.0);
         assert_eq!(runtime.effect_runs(), runs);
         assert!(frame.active);
     }

@@ -160,6 +160,8 @@ pub struct Scene {
     properties: Graph<Value>,
     behaviors: HashMap<PropertyKey, Behavior>,
     animations: HashMap<PropertyKey, Animation>,
+    physics: HashMap<PropertyKey, PhysicsAnimation>,
+    physics_specs: HashMap<PropertyKey, Physics>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -249,6 +251,27 @@ pub struct Behavior {
     pub easing: Easing,
 }
 
+/// Physics-driven motion installed on a numeric property.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Physics {
+    /// Damped spring that retains velocity when its target changes.
+    Spring {
+        /// Moving mass.
+        mass: f64,
+        /// Velocity damping coefficient.
+        damping: f64,
+        /// Restoring-force coefficient.
+        stiffness: f64,
+        /// Position and velocity threshold used to settle.
+        epsilon: f64,
+    },
+    /// Constant-speed pursuit of the latest target.
+    Smoothed {
+        /// Maximum property units travelled per second.
+        velocity: f64,
+    },
+}
+
 /// One property changed by an animation tick.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnimatedChange {
@@ -277,6 +300,13 @@ struct Animation {
     preserve_velocity: bool,
     elapsed: Duration,
     behavior: Behavior,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PhysicsAnimation {
+    target: f64,
+    velocity: f64,
+    spec: Physics,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -371,6 +401,8 @@ impl Scene {
             properties: Graph::default(),
             behaviors: HashMap::new(),
             animations: HashMap::new(),
+            physics: HashMap::new(),
+            physics_specs: HashMap::new(),
         }
     }
 
@@ -490,6 +522,8 @@ impl Scene {
             pending.extend(self.nodes[current].children.iter().copied());
             self.behaviors.retain(|key, _| key.node != current);
             self.animations.retain(|key, _| key.node != current);
+            self.physics.retain(|key, _| key.node != current);
+            self.physics_specs.retain(|key, _| key.node != current);
             self.nodes.remove(current);
         }
         Ok(())
@@ -520,7 +554,22 @@ impl Scene {
         if self.properties.read(slot.target)? == &value {
             return Ok(());
         }
-        if let Some(behavior) = self.behaviors.get(&key).copied()
+        if let Some(spec) = self.physics_specs.get(&key).copied()
+            && let Value::Number(target) = value
+            && matches!(self.properties.read(slot.current)?, Value::Number(_))
+        {
+            let velocity = self.physics.get(&key).map_or(0.0, |motion| motion.velocity);
+            self.animations.remove(&key);
+            self.properties.write(slot.target, Value::Number(target))?;
+            self.physics.insert(
+                key,
+                PhysicsAnimation {
+                    target,
+                    velocity,
+                    spec,
+                },
+            );
+        } else if let Some(behavior) = self.behaviors.get(&key).copied()
             && behavior.duration > Duration::ZERO
             && interpolatable(self.properties.read(slot.current)?, &value)
         {
@@ -544,6 +593,7 @@ impl Scene {
             );
         } else {
             self.animations.remove(&key);
+            self.physics.remove(&key);
             self.properties.batch(|graph| {
                 graph.write(slot.target, value.clone())?;
                 graph.write(slot.current, value)?;
@@ -574,9 +624,49 @@ impl Scene {
         };
         if let Some(behavior) = behavior {
             self.behaviors.insert(key, behavior);
+            self.physics_specs.remove(&key);
+            self.physics.remove(&key);
         } else {
             self.behaviors.remove(&key);
             self.animations.remove(&key);
+        }
+        Ok(())
+    }
+
+    /// Installs or removes physics-driven motion on a numeric property.
+    pub fn set_physics(
+        &mut self,
+        node: NodeHandle,
+        property: &str,
+        physics: Option<Physics>,
+    ) -> Result<(), SceneError> {
+        let id = self.live(node)?;
+        let (name, slot) = self.nodes[id]
+            .properties
+            .get_key_value(property)
+            .ok_or_else(|| SceneError::UnknownProperty {
+                element: self.nodes[id].element.name(),
+                property: property.to_owned(),
+            })?;
+        if !matches!(slot.kind, PropertyType::Number) {
+            return Err(SceneError::InvalidPropertyType {
+                element: self.nodes[id].element.name(),
+                property: property.to_owned(),
+                expected: "numeric property",
+            });
+        }
+        let key = PropertyKey {
+            node: id,
+            property: name,
+        };
+        if let Some(physics) = physics {
+            validate_physics(physics).map_err(SceneError::Reactive)?;
+            self.physics_specs.insert(key, physics);
+            self.behaviors.remove(&key);
+            self.animations.remove(&key);
+        } else {
+            self.physics_specs.remove(&key);
+            self.physics.remove(&key);
         }
         Ok(())
     }
@@ -616,6 +706,34 @@ impl Scene {
         for key in finished {
             self.animations.remove(&key);
         }
+        let physics_keys: Vec<_> = self.physics.keys().copied().collect();
+        let mut physics_finished = Vec::new();
+        for key in physics_keys {
+            let Some(node) = self.nodes.get(key.node) else {
+                physics_finished.push(key);
+                continue;
+            };
+            let slot = node.properties[key.property];
+            let Value::Number(mut current) = *self.properties.read(slot.current)? else {
+                physics_finished.push(key);
+                continue;
+            };
+            let motion = self.physics.get_mut(&key).expect("physics key vanished");
+            let settled = advance_physics(motion, &mut current, delta);
+            self.properties
+                .write(slot.current, Value::Number(current))?;
+            frame.changes.push(AnimatedChange {
+                node: NodeHandle(key.node),
+                property: key.property,
+                class: property_class(key.property),
+            });
+            if settled {
+                physics_finished.push(key);
+            }
+        }
+        for key in physics_finished {
+            self.physics.remove(&key);
+        }
         let report = self.properties.flush()?;
         if let Some(error) = report.errors.first() {
             return Err(SceneError::Reactive(format!(
@@ -623,7 +741,7 @@ impl Scene {
                 error.effect, error.message
             )));
         }
-        frame.active = !self.animations.is_empty();
+        frame.active = !self.animations.is_empty() || !self.physics.is_empty();
         Ok(frame)
     }
 
@@ -760,6 +878,73 @@ fn interpolatable(from: &Value, to: &Value) -> bool {
         (from, to),
         (Value::Number(_), Value::Number(_)) | (Value::Color(_), Value::Color(_))
     )
+}
+
+fn validate_physics(physics: Physics) -> Result<(), String> {
+    match physics {
+        Physics::Spring {
+            mass,
+            damping,
+            stiffness,
+            epsilon,
+        } if mass.is_finite()
+            && mass > 0.0
+            && damping.is_finite()
+            && damping >= 0.0
+            && stiffness.is_finite()
+            && stiffness > 0.0
+            && epsilon.is_finite()
+            && epsilon > 0.0 =>
+        {
+            Ok(())
+        }
+        Physics::Smoothed { velocity } if velocity.is_finite() && velocity > 0.0 => Ok(()),
+        Physics::Spring { .. } => Err("spring values must be finite and physically valid".into()),
+        Physics::Smoothed { .. } => {
+            Err("smoothed velocity must be finite and greater than zero".into())
+        }
+    }
+}
+
+fn advance_physics(motion: &mut PhysicsAnimation, current: &mut f64, delta: Duration) -> bool {
+    let seconds = delta.as_secs_f64();
+    match motion.spec {
+        Physics::Spring {
+            mass,
+            damping,
+            stiffness,
+            epsilon,
+        } => {
+            let steps = (seconds / (1.0 / 120.0)).ceil().max(1.0) as usize;
+            let step = seconds / steps as f64;
+            for _ in 0..steps {
+                let acceleration =
+                    (stiffness * (motion.target - *current) - damping * motion.velocity) / mass;
+                motion.velocity += acceleration * step;
+                *current += motion.velocity * step;
+            }
+            if (*current - motion.target).abs() <= epsilon && motion.velocity.abs() <= epsilon {
+                *current = motion.target;
+                motion.velocity = 0.0;
+                true
+            } else {
+                false
+            }
+        }
+        Physics::Smoothed { velocity } => {
+            let distance = motion.target - *current;
+            let step = velocity * seconds;
+            if distance.abs() <= step {
+                *current = motion.target;
+                motion.velocity = 0.0;
+                true
+            } else {
+                motion.velocity = velocity.copysign(distance);
+                *current += motion.velocity * seconds;
+                false
+            }
+        }
+    }
 }
 
 fn zero_velocity(value: &Value) -> Velocity {
@@ -1106,5 +1291,47 @@ mod tests {
         assert_eq!(scene.current(rect, "color"), scene.target(rect, "color"));
         assert_eq!(frame.changes[0].class, PropertyClass::Paint);
         assert!(!frame.active);
+    }
+
+    #[test]
+    fn spring_retargets_with_continuous_position_and_velocity() {
+        let mut scene = Scene::new();
+        let item = scene.create(Element::Item);
+        scene
+            .set_physics(
+                item,
+                "x",
+                Some(Physics::Spring {
+                    mass: 1.0,
+                    damping: 18.0,
+                    stiffness: 180.0,
+                    epsilon: 0.001,
+                }),
+            )
+            .unwrap();
+        scene.assign(item, "x", 100.0).unwrap();
+        scene.tick_animations(Duration::from_millis(80)).unwrap();
+        let before = scene.number(item, "x").unwrap();
+
+        scene.assign(item, "x", -20.0).unwrap();
+        assert_eq!(scene.number(item, "x").unwrap(), before);
+        scene.tick_animations(Duration::from_millis(1)).unwrap();
+        assert!((scene.number(item, "x").unwrap() - before).abs() < 2.0);
+    }
+
+    #[test]
+    fn smoothed_motion_obeys_velocity_limit() {
+        let mut scene = Scene::new();
+        let item = scene.create(Element::Item);
+        scene
+            .set_physics(item, "x", Some(Physics::Smoothed { velocity: 200.0 }))
+            .unwrap();
+        scene.assign(item, "x", 100.0).unwrap();
+
+        let frame = scene.tick_animations(Duration::from_millis(100)).unwrap();
+        assert_eq!(scene.number(item, "x").unwrap(), 20.0);
+        assert!(frame.active);
+        scene.tick_animations(Duration::from_millis(400)).unwrap();
+        assert_eq!(scene.number(item, "x").unwrap(), 100.0);
     }
 }
