@@ -1145,6 +1145,7 @@ dependencies = [
  "mold-layout",
  "mold-lua",
  "mold-render",
+ "mold-scene",
  "mold-wayland",
  "pollster",
 ]

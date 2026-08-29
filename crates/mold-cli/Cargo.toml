@@ -16,5 +16,6 @@ mold-layout.workspace = true
 mold-lua.workspace = true
 mold-io.workspace = true
 mold-render.workspace = true
+mold-scene.workspace = true
 mold-wayland.workspace = true
 pollster.workspace = true

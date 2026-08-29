@@ -330,6 +330,22 @@ impl Runtime {
         )
     }
 
+    /// Returns the first scene node with a key handler in tree order.
+    pub fn first_key_target(&self) -> Option<NodeHandle> {
+        let state = self.reactive.borrow();
+        let mut pending = state.scene.roots();
+        pending.reverse();
+        while let Some(node) = pending.pop() {
+            if state.handlers.contains_key(&(node, UiEvent::KeyPressed)) {
+                return Some(node);
+            }
+            let mut children = state.scene.children(node).ok()?;
+            children.reverse();
+            pending.extend(children);
+        }
+        None
+    }
+
     fn dispatch_ui_event_with_args(
         &mut self,
         node: NodeHandle,
@@ -364,7 +380,7 @@ impl Runtime {
                 let result = state.pam_tasks[index].task.wait(Duration::ZERO);
                 if let Some(result) = result {
                     let task = state.pam_tasks.swap_remove(index);
-                    ready.push((task.callback, result));
+                    ready.push((task.callback, task.unlock_on_success, result));
                 } else {
                     index += 1;
                 }
@@ -382,7 +398,10 @@ impl Runtime {
             }
         }
         let changed = !ready.is_empty() || !timers.is_empty();
-        for (callback, result) in ready {
+        for (callback, unlock_on_success, result) in ready {
+            if unlock_on_success && result.is_ok() {
+                self.reactive.borrow_mut().session_unlock_requested = true;
+            }
             let args = match result {
                 Ok(()) => vec![IpcValue::Boolean(true), IpcValue::Nil],
                 Err(error) => vec![
@@ -412,6 +431,11 @@ impl Runtime {
             }
         }
         changed
+    }
+
+    /// Takes a successful native authentication request to release a session lock.
+    pub fn take_session_unlock_request(&mut self) -> bool {
+        std::mem::take(&mut self.reactive.borrow_mut().session_unlock_requested)
     }
 
     /// Returns registered IPC verb names in lexical order.
@@ -529,6 +553,7 @@ struct FlickToken {
 struct PendingPam {
     task: PamTask,
     callback: StashedClosure,
+    unlock_on_success: bool,
 }
 
 struct PendingTimer {
@@ -607,6 +632,7 @@ struct ReactiveState {
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
+    session_unlock_requested: bool,
 }
 
 impl ReactiveState {
@@ -634,6 +660,7 @@ impl ReactiveState {
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
+            session_unlock_requested: false,
         }
     }
 }
@@ -1283,11 +1310,24 @@ fn install_reactive_api(
             pam_state.borrow_mut().pam_tasks.push(PendingPam {
                 task: PamAuthenticator::authenticate_async(service, username, password),
                 callback: ctx.stash(callback),
+                unlock_on_success: false,
             });
             Ok(CallbackReturn::Return)
         });
         let pam = Table::new(&ctx);
         pam.set_field(ctx, "authenticate", pam_authenticate);
+        let pam_unlock_state = Rc::clone(&state);
+        let pam_authenticate_unlock = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (service, username, password, callback): (String, String, String, Closure) =
+                stack.consume(ctx)?;
+            pam_unlock_state.borrow_mut().pam_tasks.push(PendingPam {
+                task: PamAuthenticator::authenticate_async(service, username, password),
+                callback: ctx.stash(callback),
+                unlock_on_success: true,
+            });
+            Ok(CallbackReturn::Return)
+        });
+        pam.set_field(ctx, "authenticate_unlock", pam_authenticate_unlock);
         mold.set_field(ctx, "pam", pam);
 
         let ui = Table::new(&ctx);
@@ -2876,6 +2916,29 @@ mod tests {
     }
 
     #[test]
+    fn patin_lock_routes_keys_through_native_pam() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "lock.lua",
+                br#"
+                    local Lock = require("patin.shells.lock")
+                    Lock { pam_service = "mold\0test", username = "user" }
+                "#,
+            )
+            .unwrap();
+        let target = runtime.first_key_target().unwrap();
+        assert!(runtime.dispatch_key_event(target, 65, Some("a")));
+        assert!(runtime.dispatch_key_event(target, 65293, None));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !runtime.poll_services() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(!runtime.take_session_unlock_request());
+    }
+
+    #[test]
     fn reports_syntax_errors_with_the_source_name() {
         let mut runtime = Runtime::default();
         let error = runtime.execute("broken.lua", b"local =").unwrap_err();
@@ -3165,6 +3228,26 @@ mod tests {
             runtime.scene().string_value(root, "text").unwrap(),
             "service contains a null byte"
         );
+    }
+
+    #[test]
+    fn failed_pam_authentication_cannot_request_unlock() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "unlock.lua",
+                br#"
+                    local mold = require("mold")
+                    mold.pam.authenticate_unlock("mold\0test", "user", "secret", function() end)
+                "#,
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !runtime.poll_services() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(!runtime.take_session_unlock_request());
     }
 
     #[test]

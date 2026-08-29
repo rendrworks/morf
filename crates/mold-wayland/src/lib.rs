@@ -215,6 +215,15 @@ pub struct LayerClient {
 impl LayerClient {
     /// Connects to the current Wayland compositor and creates a top layer bar.
     pub fn connect(config: BarConfig) -> Result<Self, WaylandError> {
+        Self::connect_inner(Some(config))
+    }
+
+    /// Connects without creating a visible surface for exclusive session locking.
+    pub fn connect_lock() -> Result<Self, WaylandError> {
+        Self::connect_inner(None)
+    }
+
+    fn connect_inner(config: Option<BarConfig>) -> Result<Self, WaylandError> {
         let connection = Connection::connect_to_env()
             .map_err(|error| WaylandError(format!("could not connect to Wayland: {error}")))?;
         let (globals, queue) = registry_queue_init(&connection)
@@ -246,7 +255,7 @@ impl LayerClient {
             _viewporter: viewporter,
             viewport: None,
             width: 1,
-            height: config.height.max(1),
+            height: config.as_ref().map_or(1, |config| config.height.max(1)),
             scale_120: 120,
             events: VecDeque::new(),
             pointer: None,
@@ -260,48 +269,50 @@ impl LayerClient {
         queue
             .roundtrip(&mut state)
             .map_err(|error| WaylandError(format!("could not read Wayland outputs: {error}")))?;
-        let output = match config.output.as_deref() {
-            Some(name) => Some(
-                state
-                    .outputs
-                    .outputs()
-                    .find(|output| {
-                        state
-                            .outputs
-                            .info(output)
-                            .and_then(|info| info.name)
-                            .as_deref()
-                            == Some(name)
-                    })
-                    .ok_or_else(|| {
-                        WaylandError(format!("Wayland output `{name}` is unavailable"))
-                    })?,
-            ),
-            None => None,
-        };
-        let surface = state.compositor.create_surface(&qh);
-        surface.set_buffer_scale(1);
-        let layer = layer_shell.create_layer_surface(
-            &qh,
-            surface,
-            Layer::Top,
-            Some(config.namespace),
-            output.as_ref(),
-        );
-        layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-        layer.set_size(0, config.height);
-        layer.set_exclusive_zone(config.exclusive_zone);
-        state.fractional_scale = state
-            ._fractional_manager
-            .as_ref()
-            .map(|manager| manager.get_fractional_scale(layer.wl_surface(), &qh, ()));
-        state.viewport = state
-            ._viewporter
-            .as_ref()
-            .map(|manager| manager.get_viewport(layer.wl_surface(), &qh, ()));
-        layer.commit();
-        state.layer = Some(layer);
+        if let Some(config) = config {
+            let output = match config.output.as_deref() {
+                Some(name) => Some(
+                    state
+                        .outputs
+                        .outputs()
+                        .find(|output| {
+                            state
+                                .outputs
+                                .info(output)
+                                .and_then(|info| info.name)
+                                .as_deref()
+                                == Some(name)
+                        })
+                        .ok_or_else(|| {
+                            WaylandError(format!("Wayland output `{name}` is unavailable"))
+                        })?,
+                ),
+                None => None,
+            };
+            let surface = state.compositor.create_surface(&qh);
+            surface.set_buffer_scale(1);
+            let layer = layer_shell.create_layer_surface(
+                &qh,
+                surface,
+                Layer::Top,
+                Some(config.namespace),
+                output.as_ref(),
+            );
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+            layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+            layer.set_size(0, config.height);
+            layer.set_exclusive_zone(config.exclusive_zone);
+            state.fractional_scale = state
+                ._fractional_manager
+                .as_ref()
+                .map(|manager| manager.get_fractional_scale(layer.wl_surface(), &qh, ()));
+            state.viewport = state
+                ._viewporter
+                .as_ref()
+                .map(|manager| manager.get_viewport(layer.wl_surface(), &qh, ()));
+            layer.commit();
+            state.layer = Some(layer);
+        }
         Ok(Self {
             connection,
             queue,
