@@ -28,6 +28,108 @@ pub struct Geometry {
     pub height: f64,
 }
 
+/// Surface-space affine transform stored as two rows of a 3x3 matrix.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transform2D {
+    pub matrix: [f64; 6],
+}
+
+impl Default for Transform2D {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Transform2D {
+    pub const IDENTITY: Self = Self {
+        matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    };
+
+    /// Builds a uniform scale and clockwise rotation around a surface point.
+    pub fn around(center: (f64, f64), scale: f64, rotation_degrees: f64) -> Self {
+        let radians = rotation_degrees.to_radians();
+        let cosine = radians.cos() * scale;
+        let sine = radians.sin() * scale;
+        let (x, y) = center;
+        Self {
+            matrix: [
+                cosine,
+                sine,
+                -sine,
+                cosine,
+                x - cosine * x + sine * y,
+                y - sine * x - cosine * y,
+            ],
+        }
+    }
+
+    /// Composes this transform after `inner`.
+    pub fn then(self, inner: Self) -> Self {
+        let [a, b, c, d, tx, ty] = self.matrix;
+        let [e, f, g, h, ux, uy] = inner.matrix;
+        Self {
+            matrix: [
+                a * e + c * f,
+                b * e + d * f,
+                a * g + c * h,
+                b * g + d * h,
+                a * ux + c * uy + tx,
+                b * ux + d * uy + ty,
+            ],
+        }
+    }
+
+    pub fn point(self, x: f64, y: f64) -> (f64, f64) {
+        let [a, b, c, d, tx, ty] = self.matrix;
+        (a * x + c * y + tx, b * x + d * y + ty)
+    }
+
+    pub fn inverse_point(self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let [a, b, c, d, tx, ty] = self.matrix;
+        let determinant = a * d - b * c;
+        if determinant.abs() <= f64::EPSILON {
+            return None;
+        }
+        let x = x - tx;
+        let y = y - ty;
+        Some((
+            (d * x - c * y) / determinant,
+            (-b * x + a * y) / determinant,
+        ))
+    }
+
+    pub fn bounds(self, geometry: Geometry) -> Geometry {
+        let points = [
+            self.point(geometry.x, geometry.y),
+            self.point(geometry.x + geometry.width, geometry.y),
+            self.point(geometry.x, geometry.y + geometry.height),
+            self.point(geometry.x + geometry.width, geometry.y + geometry.height),
+        ];
+        let min_x = points
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::INFINITY, f64::min);
+        let min_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = points
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let max_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        Geometry {
+            x: min_x,
+            y: min_y,
+            width: max_x - min_x,
+            height: max_y - min_y,
+        }
+    }
+}
+
 /// Horizontal positioning applied while shaping text lines.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TextAlignment {
@@ -175,7 +277,7 @@ impl Layout {
         y: f64,
     ) -> Result<Option<NodeHandle>, LayoutError> {
         for root in scene.roots().into_iter().rev() {
-            if let Some(node) = self.hit_node(scene, root, x, y)? {
+            if let Some(node) = self.hit_node(scene, root, Transform2D::IDENTITY, x, y)? {
                 return Ok(Some(node));
             }
         }
@@ -186,7 +288,7 @@ impl Layout {
     pub fn input_geometry(&self, scene: &Scene) -> Result<Vec<Geometry>, LayoutError> {
         let mut rectangles = Vec::new();
         for root in scene.roots() {
-            self.collect_input_geometry(scene, root, &mut rectangles)?;
+            self.collect_input_geometry(scene, root, Transform2D::IDENTITY, &mut rectangles)?;
         }
         Ok(rectangles)
     }
@@ -195,18 +297,23 @@ impl Layout {
         &self,
         scene: &Scene,
         node: NodeHandle,
+        inherited: Transform2D,
         rectangles: &mut Vec<Geometry>,
     ) -> Result<(), LayoutError> {
         if !scene.bool_value(node, "visible")? || !scene.bool_value(node, "enabled")? {
             return Ok(());
         }
+        let Some(geometry) = self.geometry(node) else {
+            return Ok(());
+        };
+        let transform = inherited.then(node_transform(scene, node, geometry)?);
         if scene.element(node)? == Element::MouseArea
             && let Some(geometry) = self.geometry(node)
         {
-            rectangles.push(geometry);
+            rectangles.push(transform.bounds(geometry));
         }
         for child in scene.children(node)? {
-            self.collect_input_geometry(scene, child, rectangles)?;
+            self.collect_input_geometry(scene, child, transform, rectangles)?;
         }
         Ok(())
     }
@@ -215,6 +322,7 @@ impl Layout {
         &self,
         scene: &Scene,
         node: NodeHandle,
+        inherited: Transform2D,
         x: f64,
         y: f64,
     ) -> Result<Option<NodeHandle>, LayoutError> {
@@ -224,19 +332,23 @@ impl Layout {
         let Some(geometry) = self.geometry(node) else {
             return Ok(None);
         };
-        if x < geometry.x
-            || y < geometry.y
-            || x >= geometry.x + geometry.width
-            || y >= geometry.y + geometry.height
-        {
+        let transform = inherited.then(node_transform(scene, node, geometry)?);
+        let Some((local_x, local_y)) = transform.inverse_point(x, y) else {
+            return Ok(None);
+        };
+        let inside = local_x >= geometry.x
+            && local_y >= geometry.y
+            && local_x < geometry.x + geometry.width
+            && local_y < geometry.y + geometry.height;
+        if !inside && scene.bool_value(node, "clip")? {
             return Ok(None);
         }
         for child in scene.children(node)?.into_iter().rev() {
-            if let Some(hit) = self.hit_node(scene, child, x, y)? {
+            if let Some(hit) = self.hit_node(scene, child, transform, x, y)? {
                 return Ok(Some(hit));
             }
         }
-        Ok((scene.element(node)? == Element::MouseArea).then_some(node))
+        Ok((inside && scene.element(node)? == Element::MouseArea).then_some(node))
     }
 
     fn measure_implicit(
@@ -470,6 +582,21 @@ impl Layout {
         }
         Ok(())
     }
+}
+
+fn node_transform(
+    scene: &Scene,
+    node: NodeHandle,
+    geometry: Geometry,
+) -> Result<Transform2D, LayoutError> {
+    Ok(Transform2D::around(
+        (
+            geometry.x + geometry.width / 2.0,
+            geometry.y + geometry.height / 2.0,
+        ),
+        scene.number(node, "scale")?,
+        scene.number(node, "rotation")?,
+    ))
 }
 
 /// A layout input or constraint failure.
@@ -851,6 +978,40 @@ mod tests {
             layout.input_geometry(&scene).unwrap(),
             vec![layout.geometry(first).unwrap()]
         );
+    }
+
+    #[test]
+    fn hit_test_inverts_rotation_and_scale() {
+        let mut scene = Scene::new();
+        let area = scene.create(Element::MouseArea);
+        scene.assign(area, "x", 20.0).unwrap();
+        scene.assign(area, "y", 20.0).unwrap();
+        scene.assign(area, "width", 40.0).unwrap();
+        scene.assign(area, "height", 20.0).unwrap();
+        scene.assign(area, "rotation", 90.0).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            area,
+            Size {
+                width: 40.0,
+                height: 20.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(layout.hit_test(&scene, 20.0, -5.0).unwrap(), Some(area));
+        assert_eq!(layout.hit_test(&scene, 1.0, 1.0).unwrap(), None);
+        let input = layout.input_geometry(&scene).unwrap();
+        assert_eq!(input.len(), 1);
+        assert!((input[0].x - 10.0).abs() < 0.000_001);
+        assert!((input[0].y + 10.0).abs() < 0.000_001);
+        assert!((input[0].width - 20.0).abs() < 0.000_001);
+        assert!((input[0].height - 40.0).abs() < 0.000_001);
+
+        scene.assign(area, "scale", 0.5).unwrap();
+        assert_eq!(layout.hit_test(&scene, 20.0, 8.0).unwrap(), Some(area));
+        assert_eq!(layout.hit_test(&scene, 20.0, -5.0).unwrap(), None);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 
-use mold_layout::{Geometry, Layout, TextAlignment, TextElide};
+use mold_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D};
 use mold_scene::{Color, Element, NodeHandle, Scene, SceneError};
 
 mod gpu;
@@ -21,6 +21,8 @@ pub enum DrawCommand {
         node: NodeHandle,
         /// Logical surface bounds.
         bounds: Geometry,
+        /// Composed node and ancestor transform.
+        transform: Transform2D,
         /// Fill colour after node opacity.
         color: Color,
         /// Optional normalized gradient fill.
@@ -50,6 +52,8 @@ pub enum DrawCommand {
         node: NodeHandle,
         /// Logical surface bounds.
         bounds: Geometry,
+        /// Composed node and ancestor transform.
+        transform: Transform2D,
         /// UTF-8 text used to locate its shaped buffer.
         text: String,
         /// Font family used by the shaping cache.
@@ -73,6 +77,8 @@ pub enum DrawCommand {
         node: NodeHandle,
         /// Logical surface bounds.
         bounds: Geometry,
+        /// Composed node and ancestor transform.
+        transform: Transform2D,
         /// Image path or icon name.
         source: String,
         /// Theme name for an icon command.
@@ -88,6 +94,8 @@ pub enum DrawCommand {
         node: NodeHandle,
         /// Logical surface bounds.
         bounds: Geometry,
+        /// Composed node and ancestor transform.
+        transform: Transform2D,
         /// SVG path data in the node coordinate space.
         path: String,
         /// Fill colour after node opacity.
@@ -161,33 +169,40 @@ impl DrawCommand {
         match self {
             Self::Quad {
                 bounds,
+                transform,
                 blur,
                 shadow_blur,
                 shadow_spread,
                 shadow_offset_x,
                 shadow_offset_y,
                 ..
-            } => effect_bounds(
+            } => transform.bounds(effect_bounds(
                 *bounds,
                 *blur,
                 *shadow_blur,
                 *shadow_spread,
                 *shadow_offset_x,
                 *shadow_offset_y,
-            ),
-            Self::Text { bounds, .. } | Self::Texture { bounds, .. } => *bounds,
+            )),
+            Self::Text {
+                bounds, transform, ..
+            }
+            | Self::Texture {
+                bounds, transform, ..
+            } => transform.bounds(*bounds),
             Self::Path {
                 bounds,
+                transform,
                 stroke_width,
                 ..
             } => {
                 let half_stroke = stroke_width.max(0.0) / 2.0;
-                Geometry {
+                transform.bounds(Geometry {
                     x: bounds.x - half_stroke,
                     y: bounds.y - half_stroke,
                     width: bounds.width + stroke_width.max(0.0),
                     height: bounds.height + stroke_width.max(0.0),
-                }
+                })
             }
         }
     }
@@ -205,7 +220,14 @@ impl DrawList {
     pub fn from_scene(scene: &Scene, layout: &Layout) -> Result<Self, RenderError> {
         let mut list = Self::default();
         for root in scene.roots() {
-            append_node(scene, layout, root, 1.0, &mut list.commands)?;
+            append_node(
+                scene,
+                layout,
+                root,
+                1.0,
+                Transform2D::IDENTITY,
+                &mut list.commands,
+            )?;
         }
         Ok(list)
     }
@@ -366,6 +388,10 @@ pub struct SdfQuadInstance {
     pub gradient_points: [f32; 4],
     /// Gradient kind, center, and radius.
     pub gradient_data: [f32; 4],
+    /// Affine linear terms in column order.
+    pub transform: [f32; 4],
+    /// Affine translation in logical surface coordinates.
+    pub transform_offset: [f32; 2],
 }
 
 impl SdfQuadInstance {
@@ -373,6 +399,7 @@ impl SdfQuadInstance {
     pub fn from_command(command: &DrawCommand, scale_120: u32) -> Option<Self> {
         let DrawCommand::Quad {
             bounds,
+            transform,
             color,
             gradient,
             radii,
@@ -434,6 +461,16 @@ impl SdfQuadInstance {
             gradient_end_color,
             gradient_points,
             gradient_data,
+            transform: [
+                transform.matrix[0] as f32,
+                transform.matrix[1] as f32,
+                transform.matrix[2] as f32,
+                transform.matrix[3] as f32,
+            ],
+            transform_offset: [
+                (transform.matrix[4] * scale) as f32,
+                (transform.matrix[5] * scale) as f32,
+            ],
         })
     }
 }
@@ -469,6 +506,7 @@ fn append_node(
     layout: &Layout,
     node: NodeHandle,
     inherited_opacity: f64,
+    inherited_transform: Transform2D,
     commands: &mut Vec<DrawCommand>,
 ) -> Result<(), RenderError> {
     if !scene.bool_value(node, "visible")? {
@@ -478,10 +516,19 @@ fn append_node(
     let Some(bounds) = layout.geometry(node) else {
         return Ok(());
     };
+    let transform = inherited_transform.then(Transform2D::around(
+        (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        ),
+        scene.number(node, "scale")?,
+        scene.number(node, "rotation")?,
+    ));
     match scene.element(node)? {
         Element::Rect => commands.push(DrawCommand::Quad {
             node,
             bounds,
+            transform,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
             gradient: scene_gradient(scene, node, opacity)?,
             radii: rect_radii(scene, node)?,
@@ -497,6 +544,7 @@ fn append_node(
         Element::Text => commands.push(DrawCommand::Text {
             node,
             bounds,
+            transform,
             text: scene.string_value(node, "text")?.to_owned(),
             family: scene.string_value(node, "font_family")?.to_owned(),
             size: scene.number(node, "font_size")?,
@@ -513,6 +561,7 @@ fn append_node(
         Element::Image => commands.push(DrawCommand::Texture {
             node,
             bounds,
+            transform,
             source: scene.string_value(node, "source")?.to_owned(),
             icon_theme: None,
             opacity: opacity as f32,
@@ -521,6 +570,7 @@ fn append_node(
         Element::Icon => commands.push(DrawCommand::Texture {
             node,
             bounds,
+            transform,
             source: scene.string_value(node, "name")?.to_owned(),
             icon_theme: Some(scene.string_value(node, "theme")?.to_owned()),
             opacity: opacity as f32,
@@ -529,6 +579,7 @@ fn append_node(
         Element::Shape => commands.push(DrawCommand::Path {
             node,
             bounds,
+            transform,
             path: scene.string_value(node, "path")?.to_owned(),
             fill_color: with_opacity(scene.color_value(node, "fill_color")?, opacity),
             stroke_color: with_opacity(scene.color_value(node, "stroke_color")?, opacity),
@@ -548,7 +599,7 @@ fn append_node(
         | Element::Timer => {}
     }
     for child in scene.children(node)? {
-        append_node(scene, layout, child, opacity, commands)?;
+        append_node(scene, layout, child, opacity, transform, commands)?;
     }
     Ok(())
 }
@@ -875,6 +926,41 @@ mod tests {
     }
 
     #[test]
+    fn draw_list_composes_ancestor_transforms() {
+        let mut scene = Scene::new();
+        let parent = scene.create(Element::Item);
+        let child = scene.create(Element::Rect);
+        scene.assign(parent, "width", 100.0).unwrap();
+        scene.assign(parent, "height", 100.0).unwrap();
+        scene.assign(parent, "rotation", 90.0).unwrap();
+        scene.assign(child, "x", 10.0).unwrap();
+        scene.assign(child, "width", 20.0).unwrap();
+        scene.assign(child, "height", 10.0).unwrap();
+        scene.assign(child, "scale", 2.0).unwrap();
+        scene.reparent(child, Some(parent)).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            parent,
+            Size {
+                width: 100.0,
+                height: 100.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+        let DrawCommand::Quad { transform, .. } = &list.commands[0] else {
+            panic!("child did not emit a quad");
+        };
+        let transformed = transform.bounds(layout.geometry(child).unwrap());
+        assert!((transformed.x - 85.0).abs() < 0.000_001);
+        assert!(transformed.y.abs() < 0.000_001);
+        assert!((transformed.width - 20.0).abs() < 0.000_001);
+        assert!((transformed.height - 40.0).abs() < 0.000_001);
+    }
+
+    #[test]
     fn text_commands_preserve_wrap_and_alignment() {
         let mut scene = Scene::new();
         let text = scene.create(Element::Text);
@@ -1137,6 +1223,7 @@ mod tests {
                     height: 10.0,
                     ..Geometry::default()
                 },
+                transform: Transform2D::IDENTITY,
                 color: Color::rgba8(0, 0, 0, 255),
                 gradient: Gradient::None,
                 radii: [0.0; 4],
@@ -1175,6 +1262,7 @@ mod tests {
                 width: 40.0,
                 height: 20.0,
             },
+            transform: Transform2D::IDENTITY,
             color: Color::rgba8(255, 255, 255, 255),
             gradient: Gradient::None,
             radii: [4.0; 4],

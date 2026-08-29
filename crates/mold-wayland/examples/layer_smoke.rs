@@ -1,4 +1,4 @@
-use mold_layout::{Geometry, TextAlignment, TextElide};
+use mold_layout::{Geometry, TextAlignment, TextElide, Transform2D};
 use mold_render::{
     DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, VerticalAlignment, WgpuBackend,
 };
@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     width: client.logical_size().0 as f64,
                     height: client.logical_size().1 as f64,
                 },
+                transform: Transform2D::IDENTITY,
                 color: Color::rgba8(31, 36, 48, 255),
                 gradient: Gradient::None,
                 radii: [0.0; 4],
@@ -58,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     width: 240.0,
                     height: 24.0,
                 },
+                transform: Transform2D::IDENTITY,
                 text: "mold layer smoke".to_owned(),
                 family: "sans-serif".to_owned(),
                 size: 18.0,

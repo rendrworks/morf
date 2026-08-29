@@ -1,4 +1,4 @@
-use mold_layout::Geometry;
+use mold_layout::{Geometry, Transform2D};
 use mold_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
 use mold_scene::{Color, Element, Scene};
 use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, PopupConfig};
@@ -158,6 +158,7 @@ fn quad(
             width,
             height,
         },
+        transform: Transform2D::IDENTITY,
         color,
         gradient: Gradient::None,
         radii: [8.0; 4],

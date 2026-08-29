@@ -39,6 +39,8 @@ fn vs_main(
     @location(10) gradient_end_color: vec4<f32>,
     @location(11) gradient_points: vec4<f32>,
     @location(12) gradient_data: vec4<f32>,
+    @location(13) transform: vec4<f32>,
+    @location(14) transform_offset: vec2<f32>,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -49,7 +51,11 @@ fn vs_main(
         vec2<f32>(1.0, 1.0),
     );
     let corner = corners[vertex];
-    let pixel = bounds.xy + corner * bounds.zw;
+    let source = bounds.xy + corner * bounds.zw;
+    let pixel = vec2<f32>(
+        transform.x * source.x + transform.z * source.y,
+        transform.y * source.x + transform.w * source.y,
+    ) + transform_offset;
     let clip = vec2<f32>(
         pixel.x / viewport.size.x * 2.0 - 1.0,
         1.0 - pixel.y / viewport.size.y * 2.0,

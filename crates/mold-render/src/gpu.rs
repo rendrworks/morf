@@ -8,7 +8,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
 use mold_image::ImageCache;
-use mold_layout::{Geometry, Size, TextMeasurer, TextOptions};
+use mold_layout::{Geometry, Size, TextMeasurer, TextOptions, Transform2D};
 use mold_scene::{Element, NodeHandle};
 use mold_text::{RasterContent, TextSystem};
 
@@ -553,7 +553,9 @@ fn create_pipeline(
         9 => Float32x4,
         10 => Float32x4,
         11 => Float32x4,
-        12 => Float32x4
+        12 => Float32x4,
+        13 => Float32x4,
+        14 => Float32x2
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<SdfQuadInstance>() as u64,
@@ -668,6 +670,7 @@ fn create_path_batch(
     for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Path {
             bounds,
+            transform,
             path,
             fill_color,
             stroke_color,
@@ -681,14 +684,19 @@ fn create_path_batch(
         if path.is_empty() {
             continue;
         }
+        let transform_scale = transform.matrix[0].hypot(transform.matrix[1]);
+        let tessellation_scale = (f64::from(scale_120) * transform_scale)
+            .ceil()
+            .clamp(1.0, f64::from(u32::MAX)) as u32;
         let mesh = cache
-            .tessellate(path, *stroke_width, *even_odd, scale_120)?
+            .tessellate(path, *stroke_width, *even_odd, tessellation_scale)?
             .clone();
         append_path_mesh(
             &mut batch,
             command_index,
             &mesh.fill,
             *bounds,
+            *transform,
             *fill_color,
             scale,
         );
@@ -697,6 +705,7 @@ fn create_path_batch(
             command_index,
             &mesh.stroke,
             *bounds,
+            *transform,
             *stroke_color,
             scale,
         );
@@ -709,6 +718,7 @@ fn append_path_mesh(
     command_index: usize,
     mesh: &crate::path::Mesh,
     bounds: mold_layout::Geometry,
+    transform: mold_layout::Transform2D,
     color: mold_scene::Color,
     scale: f32,
 ) {
@@ -717,15 +727,16 @@ fn append_path_mesh(
     }
     let vertex_offset = batch.vertices.len() as u32;
     let index_start = batch.indices.len() as u32;
-    batch
-        .vertices
-        .extend(mesh.vertices.iter().map(|position| PathVertex {
-            position: [
-                (bounds.x as f32 + position[0]) * scale,
-                (bounds.y as f32 + position[1]) * scale,
-            ],
+    batch.vertices.extend(mesh.vertices.iter().map(|position| {
+        let point = transform.point(
+            bounds.x + f64::from(position[0]),
+            bounds.y + f64::from(position[1]),
+        );
+        PathVertex {
+            position: [(point.0 as f32) * scale, (point.1 as f32) * scale],
             color: [color.red, color.green, color.blue, color.alpha],
-        }));
+        }
+    }));
     batch
         .indices
         .extend(mesh.indices.iter().map(|index| index + vertex_offset));
@@ -745,9 +756,40 @@ fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 struct GlyphInstance {
-    bounds: [f32; 4],
+    origin: [f32; 2],
+    axes: [f32; 4],
     uv: [f32; 4],
     color: [f32; 4],
+}
+
+fn transformed_quad(
+    transform: Transform2D,
+    bounds: Geometry,
+    scale: f64,
+    target_size: (u32, u32),
+) -> ([f32; 2], [f32; 4]) {
+    let origin = transform.point(bounds.x, bounds.y);
+    let horizontal = transform.point(bounds.x + bounds.width, bounds.y);
+    let vertical = transform.point(bounds.x, bounds.y + bounds.height);
+    let (target_width, target_height) = target_size;
+    let clip = |point: (f64, f64)| {
+        [
+            (point.0 * scale) as f32 / target_width as f32 * 2.0 - 1.0,
+            1.0 - (point.1 * scale) as f32 / target_height as f32 * 2.0,
+        ]
+    };
+    let origin_clip = clip(origin);
+    let horizontal_clip = clip(horizontal);
+    let vertical_clip = clip(vertical);
+    (
+        origin_clip,
+        [
+            horizontal_clip[0] - origin_clip[0],
+            horizontal_clip[1] - origin_clip[1],
+            vertical_clip[0] - origin_clip[0],
+            vertical_clip[1] - origin_clip[1],
+        ],
+    )
 }
 
 struct GlyphBatch {
@@ -796,7 +838,12 @@ fn create_glyph_pipeline(
         label: Some("mold glyph shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("glyph.wgsl").into()),
     });
-    let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+    let attributes = wgpu::vertex_attr_array![
+        0 => Float32x2,
+        1 => Float32x4,
+        2 => Float32x4,
+        3 => Float32x4
+    ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<GlyphInstance>() as u64,
         step_mode: wgpu::VertexStepMode::Instance,
@@ -894,6 +941,7 @@ struct TextureBatch {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TexturePlacement {
     bounds: Geometry,
+    transform: Transform2D,
     logical_width: u32,
     logical_height: u32,
     uv: [f32; 4],
@@ -916,6 +964,7 @@ fn create_texture_batch(
     for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Texture {
             bounds,
+            transform,
             source,
             icon_theme,
             opacity,
@@ -934,7 +983,7 @@ fn create_texture_batch(
             None => cache.intrinsic_size(source).ok(),
         }
         .unwrap_or((bounds.width.ceil() as u32, bounds.height.ceil() as u32));
-        let placement = texture_placement(*bounds, intrinsic, *fill_mode);
+        let placement = texture_placement(*bounds, intrinsic, *fill_mode, *transform);
         let logical_width = placement.logical_width;
         let logical_height = placement.logical_height;
         let key = TextureKey {
@@ -1038,12 +1087,14 @@ fn texture_placement(
     bounds: Geometry,
     intrinsic: (u32, u32),
     fill_mode: ImageFillMode,
+    transform: Transform2D,
 ) -> TexturePlacement {
     let source_width = f64::from(intrinsic.0.max(1));
     let source_height = f64::from(intrinsic.1.max(1));
     match fill_mode {
         ImageFillMode::Stretch => TexturePlacement {
             bounds,
+            transform,
             logical_width: bounds.width.ceil().max(1.0) as u32,
             logical_height: bounds.height.ceil().max(1.0) as u32,
             uv: [0.0, 0.0, 1.0, 1.0],
@@ -1059,6 +1110,7 @@ fn texture_placement(
                     width,
                     height,
                 },
+                transform,
                 logical_width: width.ceil().max(1.0) as u32,
                 logical_height: height.ceil().max(1.0) as u32,
                 uv: [0.0, 0.0, 1.0, 1.0],
@@ -1072,6 +1124,7 @@ fn texture_placement(
             let uv_height = (bounds.height / height) as f32;
             TexturePlacement {
                 bounds,
+                transform,
                 logical_width: width.ceil().max(1.0) as u32,
                 logical_height: height.ceil().max(1.0) as u32,
                 uv: [
@@ -1094,16 +1147,12 @@ fn push_texture_instance(
     target_size: (u32, u32),
     scale: f64,
 ) {
-    let (target_width, target_height) = target_size;
     let bounds = placement.bounds;
+    let (origin, axes) = transformed_quad(placement.transform, bounds, scale, target_size);
     batch.command_instances[command_index] = Some(batch.instances.len() as u32);
     batch.instances.push(GlyphInstance {
-        bounds: [
-            (bounds.x * scale) as f32 / target_width as f32 * 2.0 - 1.0,
-            1.0 - (bounds.y * scale) as f32 / target_height as f32 * 2.0,
-            (bounds.width * scale) as f32 / target_width as f32 * 2.0,
-            -(bounds.height * scale) as f32 / target_height as f32 * 2.0,
-        ],
+        origin,
+        axes,
         uv: placement.uv,
         color: [1.0, 1.0, 1.0, opacity],
     });
@@ -1138,6 +1187,7 @@ fn create_glyph_batch(
         let DrawCommand::Text {
             node,
             bounds,
+            transform,
             text,
             family,
             size,
@@ -1178,7 +1228,7 @@ fn create_glyph_batch(
             scale,
         ) {
             if glyph.width > 0 && glyph.height > 0 {
-                glyphs.push((glyph, *color));
+                glyphs.push((glyph, *color, *transform));
             }
         }
         let end = glyphs.len() as u32;
@@ -1192,13 +1242,13 @@ fn create_glyph_batch(
 
     let widest = glyphs
         .iter()
-        .map(|(glyph, _)| glyph.width)
+        .map(|(glyph, _, _)| glyph.width)
         .max()
         .unwrap_or(1);
     let atlas_width = widest.max(1024).next_power_of_two();
     let mut placements = Vec::with_capacity(glyphs.len());
     let (mut x, mut y, mut row_height) = (0_u32, 0_u32, 0_u32);
-    for (glyph, _) in &glyphs {
+    for (glyph, _, _) in &glyphs {
         if x + glyph.width > atlas_width {
             x = 0;
             y += row_height;
@@ -1211,7 +1261,7 @@ fn create_glyph_batch(
     let atlas_height = (y + row_height).max(1).next_power_of_two();
     let mut pixels = vec![0_u8; atlas_width as usize * atlas_height as usize * 4];
     let mut instances = Vec::with_capacity(glyphs.len());
-    for ((glyph, color), (atlas_x, atlas_y)) in glyphs.into_iter().zip(placements) {
+    for ((glyph, color, transform), (atlas_x, atlas_y)) in glyphs.into_iter().zip(placements) {
         let pixel_count = glyph.width as usize * glyph.height as usize;
         for index in 0..pixel_count {
             let source = match glyph.content {
@@ -1242,13 +1292,20 @@ fn create_glyph_batch(
             RasterContent::Mask => [color.red, color.green, color.blue, color.alpha],
             RasterContent::Color => [1.0, 1.0, 1.0, color.alpha],
         };
+        let (origin, axes) = transformed_quad(
+            transform,
+            Geometry {
+                x: f64::from(glyph.x) / f64::from(scale),
+                y: f64::from(glyph.y) / f64::from(scale),
+                width: f64::from(glyph.width) / f64::from(scale),
+                height: f64::from(glyph.height) / f64::from(scale),
+            },
+            f64::from(scale),
+            (target_width, target_height),
+        );
         instances.push(GlyphInstance {
-            bounds: [
-                glyph.x as f32 / target_width as f32 * 2.0 - 1.0,
-                1.0 - glyph.y as f32 / target_height as f32 * 2.0,
-                glyph.width as f32 / target_width as f32 * 2.0,
-                -(glyph.height as f32 / target_height as f32 * 2.0),
-            ],
+            origin,
+            axes,
             uv: [
                 atlas_x as f32 / atlas_width as f32,
                 atlas_y as f32 / atlas_height as f32,
@@ -1553,7 +1610,12 @@ mod tests {
             width: 100.0,
             height: 100.0,
         };
-        let fit = texture_placement(bounds, (200, 100), ImageFillMode::PreserveAspectFit);
+        let fit = texture_placement(
+            bounds,
+            (200, 100),
+            ImageFillMode::PreserveAspectFit,
+            Transform2D::IDENTITY,
+        );
         assert_eq!(
             fit.bounds,
             Geometry {
@@ -1565,7 +1627,12 @@ mod tests {
         );
         assert_eq!(fit.uv, [0.0, 0.0, 1.0, 1.0]);
 
-        let crop = texture_placement(bounds, (200, 100), ImageFillMode::PreserveAspectCrop);
+        let crop = texture_placement(
+            bounds,
+            (200, 100),
+            ImageFillMode::PreserveAspectCrop,
+            Transform2D::IDENTITY,
+        );
         assert_eq!(crop.bounds, bounds);
         assert_eq!(crop.logical_width, 200);
         assert_eq!(crop.logical_height, 100);

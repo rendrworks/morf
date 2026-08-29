@@ -1,4 +1,4 @@
-use mold_layout::Geometry;
+use mold_layout::{Geometry, Transform2D};
 use mold_render::{
     DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, RenderBackend, WgpuBackend,
 };
@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     width: 304.0,
                     height: 48.0,
                 },
+                transform: Transform2D::around((60.0, 35.0), 1.0, 7.5),
                 color: Color::rgba8(38, 115, 217, 255),
                 gradient: Gradient::Linear {
                     start_color: Color::rgba8(38, 115, 217, 255),
@@ -51,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     width: 32.0,
                     height: 32.0,
                 },
+                transform: Transform2D::IDENTITY,
                 source: image_path.to_string_lossy().into_owned(),
                 icon_theme: None,
                 opacity: 1.0,
@@ -64,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     width: 28.0,
                     height: 28.0,
                 },
+                transform: Transform2D::IDENTITY,
                 path: "M14 0 L28 28 L0 28 Z".to_owned(),
                 fill_color: Color::rgba8(255, 255, 255, 220),
                 stroke_color: Color::rgba8(0, 0, 0, 255),

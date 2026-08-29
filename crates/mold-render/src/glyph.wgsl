@@ -10,9 +10,10 @@ struct VertexOutput {
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex: u32,
-    @location(0) bounds: vec4<f32>,
-    @location(1) uv_bounds: vec4<f32>,
-    @location(2) color: vec4<f32>,
+    @location(0) origin: vec2<f32>,
+    @location(1) axes: vec4<f32>,
+    @location(2) uv_bounds: vec4<f32>,
+    @location(3) color: vec4<f32>,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -24,7 +25,7 @@ fn vs_main(
     );
     let corner = corners[vertex];
     var output: VertexOutput;
-    output.position = vec4<f32>(bounds.xy + corner * bounds.zw, 0.0, 1.0);
+    output.position = vec4<f32>(origin + corner.x * axes.xy + corner.y * axes.zw, 0.0, 1.0);
     output.uv = uv_bounds.xy + corner * uv_bounds.zw;
     output.color = color;
     return output;
