@@ -507,6 +507,8 @@ impl Runtime {
         let mut ready = Vec::new();
         let mut timers = Vec::new();
         let mut dbus_signals = Vec::new();
+        let mut loaders = Vec::new();
+        let mut service_changed = false;
         {
             let mut state = self.reactive.borrow_mut();
             let mut index = 0;
@@ -518,6 +520,83 @@ impl Runtime {
                 } else {
                     index += 1;
                 }
+            }
+            let timer_definitions = state
+                .timer_callbacks
+                .iter()
+                .map(|(node, callback)| (*node, callback.clone()))
+                .collect::<Vec<_>>();
+            let mut stale_timers = Vec::new();
+            for (node, callback) in timer_definitions {
+                let Ok(running) = state.scene.bool_value(node, "running") else {
+                    stale_timers.push(node);
+                    continue;
+                };
+                let interval = state.scene.number(node, "interval").unwrap_or(0.0);
+                let repeat = state.scene.bool_value(node, "repeat").unwrap_or(false);
+                let duration = (interval.is_finite() && interval > 0.0)
+                    .then(|| Duration::from_secs_f64(interval / 1_000.0));
+                let current = state
+                    .timers
+                    .iter()
+                    .position(|timer| timer.node == Some(node));
+                if !running || duration.is_none() {
+                    if let Some(index) = current {
+                        state.timers.swap_remove(index);
+                        service_changed = true;
+                    }
+                    continue;
+                }
+                let duration = duration.expect("validated duration");
+                let matches = current.is_some_and(|index| {
+                    state.timers[index].interval == duration && state.timers[index].repeat == repeat
+                });
+                if matches {
+                    continue;
+                }
+                if let Some(index) = current {
+                    state.timers.swap_remove(index);
+                }
+                match IoTimer::every(duration) {
+                    Ok(timer) => state.timers.push(PendingTimer {
+                        timer,
+                        callback,
+                        repeat,
+                        interval: duration,
+                        node: Some(node),
+                    }),
+                    Err(error) => state.logs.push(format!("Timer: {error}")),
+                }
+                service_changed = true;
+            }
+            for node in stale_timers {
+                state.timer_callbacks.remove(&node);
+                state.timers.retain(|timer| timer.node != Some(node));
+            }
+            let loader_definitions = state
+                .loader_factories
+                .iter()
+                .map(|(node, factory)| (*node, factory.clone()))
+                .collect::<Vec<_>>();
+            let mut stale_loaders = Vec::new();
+            for (node, factory) in loader_definitions {
+                let Ok(active) = state.scene.bool_value(node, "active") else {
+                    stale_loaders.push(node);
+                    continue;
+                };
+                if active && state.loaded_loaders.insert(node) {
+                    loaders.push((node, factory));
+                } else if !active && state.loaded_loaders.remove(&node) {
+                    let children = state.scene.children(node).unwrap_or_default();
+                    for child in children {
+                        let _ = state.scene.remove(child);
+                    }
+                    service_changed = true;
+                }
+            }
+            for node in stale_loaders {
+                state.loader_factories.remove(&node);
+                state.loaded_loaders.remove(&node);
             }
             let mut index = 0;
             while index < state.timers.len() {
@@ -539,7 +618,28 @@ impl Runtime {
                 }
             }
         }
-        let changed = !ready.is_empty() || !timers.is_empty() || !dbus_signals.is_empty();
+        for (node, factory) in loaders {
+            let result = self
+                .lua
+                .enter(|ctx| execute_node_factory(ctx, &factory, self.limits));
+            match result {
+                Ok(child) => {
+                    let mut state = self.reactive.borrow_mut();
+                    if state.scene.reparent(child, Some(node)).is_ok() {
+                        service_changed = true;
+                    } else {
+                        let _ = state.scene.remove(child);
+                    }
+                }
+                Err(error) => self
+                    .reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("Loader: {error}")),
+            }
+        }
+        let changed =
+            service_changed || !ready.is_empty() || !timers.is_empty() || !dbus_signals.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;
@@ -782,6 +882,7 @@ struct PendingTimer {
     timer: IoTimer,
     callback: StashedClosure,
     repeat: bool,
+    interval: Duration,
     node: Option<NodeHandle>,
 }
 
@@ -860,6 +961,9 @@ struct ReactiveState {
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
+    timer_callbacks: HashMap<NodeHandle, StashedClosure>,
+    loader_factories: HashMap<NodeHandle, StashedClosure>,
+    loaded_loaders: HashSet<NodeHandle>,
     dbus_signals: Vec<PendingDbusSignal>,
     session_unlock_requested: bool,
 }
@@ -889,6 +993,9 @@ impl ReactiveState {
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
+            timer_callbacks: HashMap::new(),
+            loader_factories: HashMap::new(),
+            loaded_loaders: HashSet::new(),
             dbus_signals: Vec::new(),
             session_unlock_requested: false,
         }
@@ -1044,10 +1151,12 @@ fn install_reactive_api(
             };
             let timer = IoTimer::every(Duration::from_secs_f64(milliseconds / 1_000.0))
                 .map_err(|error| HostError(error.to_string()))?;
+            let interval = Duration::from_secs_f64(milliseconds / 1_000.0);
             timer_state.borrow_mut().timers.push(PendingTimer {
                 timer,
                 callback: ctx.stash(callback),
                 repeat,
+                interval,
                 node: None,
             });
             Ok(CallbackReturn::Return)
@@ -2412,6 +2521,9 @@ fn loader_constructor<'gc>(
         }
         let node = state.borrow_mut().scene.create(Element::Loader);
         configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
+        if let Some(source) = source.clone() {
+            state.borrow_mut().loader_factories.insert(node, source);
+        }
         if state
             .borrow()
             .scene
@@ -2425,6 +2537,7 @@ fn loader_constructor<'gc>(
                 .scene
                 .reparent(child, Some(node))
                 .map_err(|error| HostError(error.to_string()))?;
+            state.borrow_mut().loaded_loaders.insert(node);
         }
         stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
         Ok(CallbackReturn::Return)
@@ -2477,12 +2590,17 @@ fn timer_constructor<'gc>(
                 callback.ok_or_else(|| HostError("running Timer requires on_triggered".into()))?;
             let timer = IoTimer::every(Duration::from_secs_f64(interval / 1_000.0))
                 .map_err(|error| HostError(error.to_string()))?;
+            let interval = Duration::from_secs_f64(interval / 1_000.0);
             state.borrow_mut().timers.push(PendingTimer {
                 timer,
-                callback,
+                callback: callback.clone(),
                 repeat,
+                interval,
                 node: Some(node),
             });
+            state.borrow_mut().timer_callbacks.insert(node, callback);
+        } else if let Some(callback) = callback {
+            state.borrow_mut().timer_callbacks.insert(node, callback);
         }
         stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
         Ok(CallbackReturn::Return)
@@ -4490,6 +4608,53 @@ mod tests {
             "1"
         );
         assert!(!runtime.scene().bool_value(children[1], "running").unwrap());
+    }
+
+    #[test]
+    fn loader_and_timer_follow_dynamic_properties() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "dynamic-loader-timer.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local active = mold.signal("loader.active", false)
+                    local running = mold.signal("timer.running", false)
+                    local loader = ui.Loader {
+                      active = function() return active:get() end,
+                      source = function() return ui.Text { text = "loaded" } end,
+                    }
+                    local timer = ui.Timer {
+                      interval = 1,
+                      ["repeat"] = false,
+                      running = function() return running:get() end,
+                      on_triggered = function() end,
+                    }
+                    mold.ipc["dynamic.start"] = function()
+                      active:set(true)
+                      running:set(true)
+                    end
+                    mold.ipc["dynamic.stop"] = function() active:set(false) end
+                    ui.Item { loader, timer }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let children = runtime.scene().children(root).unwrap();
+        let loader = children[0];
+        let timer = children[1];
+        assert!(runtime.scene().children(loader).unwrap().is_empty());
+
+        runtime.call_ipc("dynamic.start", &[]).unwrap();
+        assert!(runtime.poll_services());
+        assert_eq!(runtime.scene().children(loader).unwrap().len(), 1);
+        thread::sleep(Duration::from_millis(5));
+        assert!(runtime.poll_services());
+        assert!(!runtime.scene().bool_value(timer, "running").unwrap());
+
+        runtime.call_ipc("dynamic.stop", &[]).unwrap();
+        assert!(runtime.poll_services());
+        assert!(runtime.scene().children(loader).unwrap().is_empty());
     }
 
     #[test]
