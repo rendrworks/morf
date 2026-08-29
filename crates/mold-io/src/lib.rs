@@ -14,6 +14,9 @@ use std::time::Duration;
 
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use rustix::io::Errno;
+use serde::Serialize;
+use zbus::blocking::{Connection as DbusConnection, Proxy as ZbusProxy};
+use zbus::zvariant::{DynamicDeserialize, DynamicType, OwnedValue, Value};
 
 /// One event emitted by a child process.
 #[derive(Debug)]
@@ -381,6 +384,231 @@ impl Drop for Timer {
             let _ = join.join();
         }
     }
+}
+
+/// Message bus used by a generic D-Bus proxy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Bus {
+    Session,
+    System,
+}
+
+/// Typed generic D-Bus method and property client.
+#[derive(Clone, Debug)]
+pub struct DbusProxy {
+    proxy: ZbusProxy<'static>,
+    bus: Bus,
+    destination: String,
+    path: String,
+    interface: String,
+}
+
+/// Scalar value transferable through the Lua D-Bus facade.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DbusValue {
+    Bool(bool),
+    Integer(i64),
+    Unsigned(u64),
+    Number(f64),
+    String(String),
+}
+
+impl DbusProxy {
+    /// Connects a proxy to one bus object and interface.
+    pub fn connect(
+        bus: Bus,
+        destination: impl Into<String>,
+        path: impl Into<String>,
+        interface: impl Into<String>,
+    ) -> zbus::Result<Self> {
+        let connection = match bus {
+            Bus::Session => DbusConnection::session()?,
+            Bus::System => DbusConnection::system()?,
+        };
+        let destination = destination.into();
+        let path = path.into();
+        let interface = interface.into();
+        let proxy = ZbusProxy::new_owned(
+            connection,
+            destination.clone(),
+            path.clone(),
+            interface.clone(),
+        )?;
+        Ok(Self {
+            proxy,
+            bus,
+            destination,
+            path,
+            interface,
+        })
+    }
+
+    /// Calls one method and deserializes its reply body.
+    pub fn call<B, R>(&self, method: &str, body: &B) -> zbus::Result<R>
+    where
+        B: Serialize + DynamicType,
+        R: for<'de> DynamicDeserialize<'de>,
+    {
+        self.proxy.call(method, body)
+    }
+
+    /// Reads one remote property.
+    pub fn get_property<T>(&self, property: &str) -> zbus::Result<T>
+    where
+        T: TryFrom<OwnedValue>,
+        T::Error: Into<zbus::Error>,
+    {
+        self.proxy.get_property(property)
+    }
+
+    /// Writes one remote property.
+    pub fn set_property<'value, T>(&self, property: &str, value: T) -> zbus::Result<()>
+    where
+        T: 'value + Into<Value<'value>>,
+    {
+        Ok(self.proxy.set_property(property, value)?)
+    }
+
+    /// Returns the remote object's introspection XML.
+    pub fn introspect(&self) -> zbus::Result<String> {
+        Ok(self.proxy.introspect()?)
+    }
+
+    /// Reads one scalar property for an interpreter-facing facade.
+    pub fn get_value(&self, property: &str) -> Result<DbusValue, String> {
+        let value: OwnedValue = self
+            .proxy
+            .get_property(property)
+            .map_err(|error| error.to_string())?;
+        basic_value(&value)
+    }
+
+    /// Calls a no-argument method returning one scalar value.
+    pub fn call_value(&self, method: &str) -> Result<DbusValue, String> {
+        let message = self
+            .proxy
+            .call_method(method, &())
+            .map_err(|error| error.to_string())?;
+        let body = message.body();
+        if let Ok(value) = body.deserialize::<bool>() {
+            return Ok(DbusValue::Bool(value));
+        }
+        if let Ok(value) = body.deserialize::<i16>() {
+            return Ok(DbusValue::Integer(value as i64));
+        }
+        if let Ok(value) = body.deserialize::<i32>() {
+            return Ok(DbusValue::Integer(value as i64));
+        }
+        if let Ok(value) = body.deserialize::<i64>() {
+            return Ok(DbusValue::Integer(value));
+        }
+        if let Ok(value) = body.deserialize::<u8>() {
+            return Ok(DbusValue::Unsigned(value as u64));
+        }
+        if let Ok(value) = body.deserialize::<u16>() {
+            return Ok(DbusValue::Unsigned(value as u64));
+        }
+        if let Ok(value) = body.deserialize::<u32>() {
+            return Ok(DbusValue::Unsigned(value as u64));
+        }
+        if let Ok(value) = body.deserialize::<u64>() {
+            return Ok(DbusValue::Unsigned(value));
+        }
+        if let Ok(value) = body.deserialize::<f64>() {
+            return Ok(DbusValue::Number(value));
+        }
+        if let Ok(value) = body.deserialize::<String>() {
+            return Ok(DbusValue::String(value));
+        }
+        Err("D-Bus reply is not a supported scalar".to_owned())
+    }
+
+    /// Subscribes to one signal on a dedicated bus connection.
+    pub fn subscribe(&self, signal: impl Into<String>) -> zbus::Result<DbusSignal> {
+        let connection = match self.bus {
+            Bus::Session => DbusConnection::session()?,
+            Bus::System => DbusConnection::system()?,
+        };
+        let proxy = ZbusProxy::new_owned(
+            connection.clone(),
+            self.destination.clone(),
+            self.path.clone(),
+            self.interface.clone(),
+        )?;
+        let iterator = proxy.receive_signal(signal.into())?;
+        let (tx, events) = mpsc::channel();
+        let join = thread::spawn(move || {
+            for message in iterator {
+                if tx.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(DbusSignal {
+            events,
+            connection: Some(connection),
+            join: Some(join),
+        })
+    }
+}
+
+/// Blocking receiver for a filtered D-Bus signal stream.
+pub struct DbusSignal {
+    events: mpsc::Receiver<zbus::Message>,
+    connection: Option<DbusConnection>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl DbusSignal {
+    /// Waits for the next signal message.
+    pub fn next(&self, timeout: Duration) -> Option<zbus::Message> {
+        self.events.recv_timeout(timeout).ok()
+    }
+}
+
+impl Drop for DbusSignal {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            let _ = connection.close();
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn basic_value(value: &OwnedValue) -> Result<DbusValue, String> {
+    if let Ok(value) = bool::try_from(value) {
+        return Ok(DbusValue::Bool(value));
+    }
+    if let Ok(value) = i16::try_from(value) {
+        return Ok(DbusValue::Integer(value as i64));
+    }
+    if let Ok(value) = i32::try_from(value) {
+        return Ok(DbusValue::Integer(value as i64));
+    }
+    if let Ok(value) = i64::try_from(value) {
+        return Ok(DbusValue::Integer(value));
+    }
+    if let Ok(value) = u8::try_from(value) {
+        return Ok(DbusValue::Unsigned(value as u64));
+    }
+    if let Ok(value) = u16::try_from(value) {
+        return Ok(DbusValue::Unsigned(value as u64));
+    }
+    if let Ok(value) = u32::try_from(value) {
+        return Ok(DbusValue::Unsigned(value as u64));
+    }
+    if let Ok(value) = u64::try_from(value) {
+        return Ok(DbusValue::Unsigned(value));
+    }
+    if let Ok(value) = f64::try_from(value) {
+        return Ok(DbusValue::Number(value));
+    }
+    if let Ok(value) = <&str>::try_from(value) {
+        return Ok(DbusValue::String(value.to_owned()));
+    }
+    Err("D-Bus value is not a supported scalar".to_owned())
 }
 
 #[cfg(test)]

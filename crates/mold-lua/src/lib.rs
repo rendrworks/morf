@@ -11,6 +11,7 @@ use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
     StashedClosure, Table, UserData, UserRef, Value as LuaValue,
 };
+use mold_io::{Bus, DbusProxy, DbusValue};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
     AnimationFrame, Behavior, Easing, Element, NodeHandle, Scene, Value as SceneValue,
@@ -306,6 +307,11 @@ struct NodeToken {
     handle: NodeHandle,
 }
 
+#[derive(Debug)]
+struct DbusToken {
+    proxy: DbusProxy,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -529,6 +535,53 @@ fn install_reactive_api(
         .expect("embedded variants module is valid");
         mold.set_field(ctx, "variants", variants);
 
+        let dbus_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (proxy, property): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
+            let value = proxy.proxy.get_value(&property).map_err(HostError)?;
+            stack.replace(ctx, dbus_value_to_lua(ctx, value));
+            Ok(CallbackReturn::Return)
+        });
+        let dbus_call = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (proxy, method): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
+            let value = proxy.proxy.call_value(&method).map_err(HostError)?;
+            stack.replace(ctx, dbus_value_to_lua(ctx, value));
+            Ok(CallbackReturn::Return)
+        });
+        let dbus_introspect = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let proxy: UserRef<DbusToken> = stack.consume(ctx)?;
+            let xml = proxy
+                .proxy
+                .introspect()
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, xml);
+            Ok(CallbackReturn::Return)
+        });
+        let dbus_methods = Table::new(&ctx);
+        dbus_methods.set_field(ctx, "get", dbus_get);
+        dbus_methods.set_field(ctx, "call", dbus_call);
+        dbus_methods.set_field(ctx, "introspect", dbus_introspect);
+        let dbus_metatable = Table::new(&ctx);
+        dbus_metatable.set_field(ctx, "__index", dbus_methods);
+        let dbus_metatable = ctx.stash(dbus_metatable);
+        let dbus_proxy = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (bus, destination, path, interface): (String, String, String, String) =
+                stack.consume(ctx)?;
+            let bus = match bus.as_str() {
+                "session" => Bus::Session,
+                "system" => Bus::System,
+                _ => return Err(HostError(format!("unknown D-Bus bus `{bus}`")).into()),
+            };
+            let proxy = DbusProxy::connect(bus, destination, path, interface)
+                .map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(&ctx, DbusToken { proxy });
+            userdata.set_metatable(ctx, Some(ctx.fetch(&dbus_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        let dbus = Table::new(&ctx);
+        dbus.set_field(ctx, "proxy", dbus_proxy);
+        mold.set_field(ctx, "dbus", dbus);
+
         let ui = Table::new(&ctx);
         for (name, element) in [
             ("Item", Element::Item),
@@ -583,6 +636,17 @@ fn install_reactive_api(
             }),
         );
     });
+}
+
+fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> LuaValue<'_> {
+    match value {
+        DbusValue::Bool(value) => LuaValue::Boolean(value),
+        DbusValue::Integer(value) => LuaValue::Integer(value),
+        DbusValue::Unsigned(value) if value <= i64::MAX as u64 => LuaValue::Integer(value as i64),
+        DbusValue::Unsigned(value) => LuaValue::Number(value as f64),
+        DbusValue::Number(value) => LuaValue::Number(value),
+        DbusValue::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+    }
 }
 
 fn execute_module<'gc>(

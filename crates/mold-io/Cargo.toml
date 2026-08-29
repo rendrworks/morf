@@ -8,3 +8,5 @@ repository.workspace = true
 
 [dependencies]
 rustix.workspace = true
+serde.workspace = true
+zbus.workspace = true

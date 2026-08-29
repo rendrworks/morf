@@ -203,6 +203,15 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "dbus-smoke",
+  desc = "call and introspect the session message bus",
+  run = function()
+    sh.cargo("run", "--package", "mold-io", "--example", "dbus_smoke")
+    sh.cargo("run", "--package", "mold-lua", "--example", "dbus_smoke")
+  end,
+}
+
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function()
                sh.cargo("test", "--workspace", "--all-targets", "--all-features")
