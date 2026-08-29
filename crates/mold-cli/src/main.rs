@@ -9,9 +9,7 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mold_io::{
-    FileView, IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call,
-};
+use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{IpcValue, Limits, Runtime, Screen, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
@@ -153,15 +151,15 @@ fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
     let path = Arc::new(path);
     let mut source: Arc<[u8]> = source.into();
     let (tx, rx) = mpsc::channel();
-    let watcher = FileView::new(path.as_ref().clone())
-        .watch()
-        .map_err(|error| format!("could not watch {}: {error}", path.display()))?;
+    let reload_roots = runtimepath_roots(&path);
+    let mut reload_snapshot = lua_snapshot(&reload_roots);
     let reload_tx = tx.clone();
     thread::spawn(move || {
         loop {
-            if watcher.next_event(Duration::from_secs(60)).is_some() {
-                thread::sleep(Duration::from_millis(25));
-                while watcher.next_event(Duration::ZERO).is_some() {}
+            thread::sleep(Duration::from_millis(100));
+            let next = lua_snapshot(&reload_roots);
+            if next != reload_snapshot {
+                reload_snapshot = next;
                 if reload_tx.send(SupervisorMessage::Reload).is_err() {
                     break;
                 }
@@ -268,6 +266,102 @@ fn named_screens(screens: &[ScreenInfo]) -> Result<BTreeMap<String, ScreenInfo>,
                 .ok_or_else(|| format!("output {} has no compositor name", screen.id))
         })
         .collect()
+}
+
+fn runtimepath_roots(config: &Path) -> Vec<PathBuf> {
+    let mut roots = config
+        .parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .collect::<Vec<_>>();
+    roots.extend(
+        env::var_os("MOLD_RUNTIME_PATH")
+            .into_iter()
+            .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>()),
+    );
+    if let Some(data) = env::var_os("XDG_DATA_HOME") {
+        roots.push(PathBuf::from(data).join("mold/site"));
+    } else if let Some(home) = env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".local/share/mold/site"));
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lua"));
+    let mut unique = Vec::new();
+    for root in roots {
+        if !unique.contains(&root) {
+            unique.push(root);
+        }
+    }
+    unique
+}
+
+fn execute_config(runtime: &mut Runtime, path: &Path, source: &[u8]) -> Result<(), String> {
+    let roots = runtimepath_roots(path);
+    for plugin in runtime_scripts(&roots, "plugin") {
+        let source = fs::read(&plugin)
+            .map_err(|error| format!("could not read {}: {error}", plugin.display()))?;
+        runtime
+            .execute(&plugin.to_string_lossy(), &source)
+            .map_err(|error| error.to_string())?;
+    }
+    runtime
+        .execute(&path.to_string_lossy(), source)
+        .map_err(|error| error.to_string())?;
+    for after in runtime_scripts(&roots, "after") {
+        let source = fs::read(&after)
+            .map_err(|error| format!("could not read {}: {error}", after.display()))?;
+        runtime
+            .execute(&after.to_string_lossy(), &source)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn runtime_scripts(roots: &[PathBuf], directory: &str) -> Vec<PathBuf> {
+    let mut scripts = Vec::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(root.join(directory)) else {
+            continue;
+        };
+        scripts.extend(entries.flatten().filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|value| value.to_str()) == Some("lua")).then_some(path)
+        }));
+    }
+    scripts.sort();
+    scripts
+}
+
+fn lua_snapshot(roots: &[PathBuf]) -> BTreeMap<PathBuf, (u64, SystemTime)> {
+    let mut snapshot = BTreeMap::new();
+    let mut pending = roots.to_vec();
+    while let Some(path) = pending.pop() {
+        let Ok(entries) = fs::read_dir(path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("lua") {
+                continue;
+            }
+            if let Ok(metadata) = entry.metadata() {
+                snapshot.insert(
+                    path,
+                    (
+                        metadata.len(),
+                        metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                    ),
+                );
+            }
+        }
+    }
+    snapshot
 }
 
 fn reconcile_workers(
@@ -420,9 +514,7 @@ fn handle_worker_command(
             reply,
         } => {
             let mut candidate = Runtime::for_screen(Limits::default(), screen.clone());
-            let result = candidate
-                .execute(&path.to_string_lossy(), &source)
-                .map_err(|error| error.to_string())
+            let result = execute_config(&mut candidate, &path, &source)
                 .and_then(|()| {
                     (candidate.scene().roots().len() == 1)
                         .then_some(())
@@ -487,18 +579,14 @@ fn run_surface(
         .name
         .clone()
         .ok_or_else(|| format!("output {} has no compositor name", screen.id))?;
-    let mut runtime = Runtime::for_screen(
-        Limits::default(),
-        Screen {
-            name: name.clone(),
-            width: screen.size.map(|size| size.0),
-            height: screen.size.map(|size| size.1),
-            scale: screen.scale,
-        },
-    );
-    runtime
-        .execute(&path.to_string_lossy(), source)
-        .map_err(|error| error.to_string())?;
+    let runtime_screen = Screen {
+        name: name.clone(),
+        width: screen.size.map(|size| size.0),
+        height: screen.size.map(|size| size.1),
+        scale: screen.scale,
+    };
+    let mut runtime = Runtime::for_screen(Limits::default(), runtime_screen.clone());
+    execute_config(&mut runtime, path, source)?;
     if runtime.scene().roots().len() != 1 {
         return Err("configuration must create exactly one root item".to_owned());
     }
@@ -569,16 +657,7 @@ fn run_surface(
         let next_clock = clock_text();
         let mut repaint = false;
         while let Ok(command) = commands.try_recv() {
-            let update = handle_worker_command(
-                &mut runtime,
-                &Screen {
-                    name: name.clone(),
-                    width: screen.size.map(|size| size.0),
-                    height: screen.size.map(|size| size.1),
-                    scale: screen.scale,
-                },
-                command,
-            );
+            let update = handle_worker_command(&mut runtime, &runtime_screen, command);
             repaint |= update.repaint;
             if update.reset_input {
                 hovered = None;
@@ -848,6 +927,42 @@ mod tests {
             panic!("expected config path");
         };
         assert_eq!(path, PathBuf::from("custom.lua"));
+    }
+
+    #[test]
+    fn runtimepath_snapshot_tracks_nested_lua_changes() {
+        let root = std::env::temp_dir().join(format!("mold-watch-{}", std::process::id()));
+        let module = root.join("lua/plugin/widget.lua");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, b"return 1").unwrap();
+        let before = lua_snapshot(std::slice::from_ref(&root));
+
+        fs::write(&module, b"return 200").unwrap();
+        let after = lua_snapshot(std::slice::from_ref(&root));
+
+        assert_ne!(before, after);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn config_executes_plugins_before_shell_and_after_last() {
+        let root = std::env::temp_dir().join(format!("mold-plugins-{}", std::process::id()));
+        fs::create_dir_all(root.join("plugin")).unwrap();
+        fs::create_dir_all(root.join("after")).unwrap();
+        fs::write(root.join("plugin/first.lua"), b"plugin_value = 40").unwrap();
+        fs::write(
+            root.join("after/last.lua"),
+            b"assert(shell_value == 42); after_value = 43",
+        )
+        .unwrap();
+        let shell = root.join("shell.lua");
+        let source = b"assert(plugin_value == 40); shell_value = 42; mold.ui.Item {}";
+        let mut runtime = Runtime::default();
+
+        execute_config(&mut runtime, &shell, source).unwrap();
+
+        assert_eq!(runtime.scene().roots().len(), 1);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
