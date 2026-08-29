@@ -49,6 +49,8 @@ pub struct BarConfig {
     pub height: u32,
     /// Layer-shell exclusive zone in logical pixels.
     pub exclusive_zone: i32,
+    /// Compositor output name, or all outputs when unset.
+    pub output: Option<String>,
 }
 
 /// Integer surface-local rectangle used to construct an input region.
@@ -85,6 +87,7 @@ impl Default for BarConfig {
             namespace: "mold".to_owned(),
             height: 32,
             exclusive_zone: 32,
+            output: None,
         }
     }
 }
@@ -160,42 +163,20 @@ impl LayerClient {
             .map_err(|error| WaylandError(format!("wl_compositor is unavailable: {error}")))?;
         let layer_shell = LayerShell::bind(&globals, &qh)
             .map_err(|error| WaylandError(format!("layer shell is unavailable: {error}")))?;
-        let surface = compositor.create_surface(&qh);
-        surface.set_buffer_scale(1);
-        let layer = layer_shell.create_layer_surface(
-            &qh,
-            surface,
-            Layer::Top,
-            Some(config.namespace),
-            None,
-        );
-        layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-        layer.set_size(0, config.height);
-        layer.set_exclusive_zone(config.exclusive_zone);
-
         let fractional_manager = globals
             .bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
-        let fractional_scale = fractional_manager
-            .as_ref()
-            .map(|manager| manager.get_fractional_scale(layer.wl_surface(), &qh, ()));
-        let viewport = viewporter
-            .as_ref()
-            .map(|manager| manager.get_viewport(layer.wl_surface(), &qh, ()));
-        layer.commit();
-
-        let state = LayerState {
+        let mut state = LayerState {
             registry: RegistryState::new(&globals),
             compositor,
             outputs: OutputState::new(&globals, &qh),
             seats: SeatState::new(&globals, &qh),
-            layer,
+            layer: None,
             _fractional_manager: fractional_manager,
-            fractional_scale,
+            fractional_scale: None,
             _viewporter: viewporter,
-            viewport,
+            viewport: None,
             width: 1,
             height: config.height.max(1),
             scale_120: 120,
@@ -204,6 +185,52 @@ impl LayerClient {
             keyboard: None,
             screens: Vec::new(),
         };
+        let mut queue = queue;
+        queue
+            .roundtrip(&mut state)
+            .map_err(|error| WaylandError(format!("could not read Wayland outputs: {error}")))?;
+        let output = match config.output.as_deref() {
+            Some(name) => Some(
+                state
+                    .outputs
+                    .outputs()
+                    .find(|output| {
+                        state
+                            .outputs
+                            .info(output)
+                            .and_then(|info| info.name)
+                            .as_deref()
+                            == Some(name)
+                    })
+                    .ok_or_else(|| {
+                        WaylandError(format!("Wayland output `{name}` is unavailable"))
+                    })?,
+            ),
+            None => None,
+        };
+        let surface = state.compositor.create_surface(&qh);
+        surface.set_buffer_scale(1);
+        let layer = layer_shell.create_layer_surface(
+            &qh,
+            surface,
+            Layer::Top,
+            Some(config.namespace),
+            output.as_ref(),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        layer.set_size(0, config.height);
+        layer.set_exclusive_zone(config.exclusive_zone);
+        state.fractional_scale = state
+            ._fractional_manager
+            .as_ref()
+            .map(|manager| manager.get_fractional_scale(layer.wl_surface(), &qh, ()));
+        state.viewport = state
+            ._viewporter
+            .as_ref()
+            .map(|manager| manager.get_viewport(layer.wl_surface(), &qh, ()));
+        layer.commit();
+        state.layer = Some(layer);
         Ok(Self {
             connection,
             queue,
@@ -271,18 +298,18 @@ impl LayerClient {
     /// Requests a compositor callback for the next frame.
     pub fn request_frame(&self) {
         let qh = self.queue.handle();
-        let surface = self.state.layer.wl_surface();
+        let surface = self.state.layer().wl_surface();
         surface.frame(&qh, FrameCallbackData(surface.clone()));
     }
 
     /// Commits pending surface state without attaching a buffer.
     pub fn commit(&self) {
-        self.state.layer.commit();
+        self.state.layer().commit();
     }
 
     /// Returns the underlying surface used to construct a GPU presentation target.
     pub fn surface(&self) -> &wl_surface::WlSurface {
-        self.state.layer.wl_surface()
+        self.state.layer().wl_surface()
     }
 
     /// Returns a clone of the connection backend for a raw display handle.
@@ -294,7 +321,7 @@ impl LayerClient {
     pub fn window_target(&self) -> WaylandWindowTarget {
         WaylandWindowTarget {
             backend: self.connection.backend(),
-            surface: self.state.layer.wl_surface().clone(),
+            surface: self.state.layer().wl_surface().clone(),
         }
     }
 
@@ -320,7 +347,7 @@ impl LayerClient {
 
     /// Applies the default, empty, or explicitly rectangular input region.
     pub fn set_input_region(&self, rectangles: Option<&[InputRect]>) {
-        let surface = self.state.layer.wl_surface();
+        let surface = self.state.layer().wl_surface();
         let Some(rectangles) = rectangles else {
             surface.set_input_region(None);
             return;
@@ -364,7 +391,7 @@ struct LayerState {
     compositor: CompositorState,
     outputs: OutputState,
     seats: SeatState,
-    layer: LayerSurface,
+    layer: Option<LayerSurface>,
     _fractional_manager: Option<WpFractionalScaleManagerV1>,
     fractional_scale: Option<WpFractionalScaleV1>,
     _viewporter: Option<WpViewporter>,
@@ -408,7 +435,11 @@ impl CompositorHandler for LayerState {
         surface: &wl_surface::WlSurface,
         time: u32,
     ) {
-        if surface == self.layer.wl_surface() {
+        if self
+            .layer
+            .as_ref()
+            .is_some_and(|layer| surface == layer.wl_surface())
+        {
             self.events.push_back(LayerEvent::Frame { time_ms: time });
         }
     }
@@ -555,7 +586,11 @@ impl PointerHandler for LayerState {
         events: &[PointerEvent],
     ) {
         for event in events {
-            if &event.surface != self.layer.wl_surface() {
+            if self
+                .layer
+                .as_ref()
+                .is_none_or(|layer| &event.surface != layer.wl_surface())
+            {
                 continue;
             }
             let (x, y) = event.position;
@@ -664,6 +699,12 @@ impl KeyboardHandler for LayerState {
 }
 
 impl LayerState {
+    fn layer(&self) -> &LayerSurface {
+        self.layer
+            .as_ref()
+            .expect("layer surface is initialized before client use")
+    }
+
     fn refresh_screens(&mut self) {
         let screens = self
             .outputs

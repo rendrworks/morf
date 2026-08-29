@@ -4,7 +4,11 @@ use mold_scene::{Color, Element, Scene};
 use mold_wayland::{BarConfig, LayerClient, LayerEvent};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = LayerClient::connect(BarConfig::default())?;
+    let config = BarConfig {
+        output: std::env::var("MOLD_OUTPUT").ok(),
+        ..BarConfig::default()
+    };
+    let mut client = LayerClient::connect(config)?;
     'configured: loop {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
@@ -70,12 +74,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
             if let LayerEvent::Frame { time_ms } = event {
+                let screens = client
+                    .screens()
+                    .iter()
+                    .filter_map(|screen| screen.name.as_deref())
+                    .collect::<Vec<_>>()
+                    .join(",");
                 println!(
-                    "{}x{} at {}/120, {} screens, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
-                    client.screens().len(),
+                    screens,
                     time_ms,
                     backend.info().name,
                     backend.info().backend,
