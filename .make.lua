@@ -245,6 +245,15 @@ make.recipe{ name = "test-all", desc = "the suite, with every feature on",
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--workspace", "--all-targets") end }
 
+make.recipe{
+  name = "quickshell-inventory",
+  desc = "inventory the pinned Quickshell API reference",
+  run = function()
+    assert(oslo.run{ "sh", "tools/quickshell-api-inventory.sh" }.ok,
+           "Quickshell API inventory failed")
+  end,
+}
+
 make.recipe{ name = "check-all", desc = "type-check every target, every feature",
              run = function()
                sh.cargo("check", "--workspace", "--all-targets", "--all-features")
