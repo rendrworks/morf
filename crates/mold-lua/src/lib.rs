@@ -2193,13 +2193,35 @@ fn install_reactive_api(
                 .expect("screen table accepts integer keys");
         }
         mold.set_field(ctx, "screens", screens);
-        let variants = execute_module(
-            ctx,
-            "mold.variants",
-            b"return function(items, factory) return factory(items[1]) end",
-            limits,
-        )
-        .expect("embedded variants module is valid");
+        let variants = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (items, factory): (Table, Closure) = stack.consume(ctx)?;
+            let item = items.get_value(ctx, 1);
+            let executor = Executor::start(ctx, factory.into(), Variadic(vec![item]));
+            let budget = limits.effect_fuel;
+            let mut remaining = budget;
+            loop {
+                if remaining == 0 {
+                    executor.stop(&ctx);
+                    return Err(HostError(format!(
+                        "Lua variant factory fuel exhausted after {budget} instructions"
+                    ))
+                    .into());
+                }
+                let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+                let mut fuel = Fuel::with(allowance);
+                let finished = executor.step(ctx, &mut fuel)?;
+                let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+                remaining = remaining.saturating_sub(consumed.max(1));
+                if finished {
+                    let value = executor
+                        .take_result::<LuaValue>(ctx)
+                        .map_err(|error| HostError(error.to_string()))??;
+                    stack.replace(ctx, value);
+                    break;
+                }
+            }
+            Ok(CallbackReturn::Return)
+        });
         mold.set_field(ctx, "variants", variants);
 
         let model_len = Callback::from_fn(&ctx, |ctx, _, mut stack| {
