@@ -41,8 +41,8 @@ use smithay_client_toolkit::session_lock::{
 };
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
-    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-    LayerSurfaceConfigure,
+    Anchor, KeyboardInteractivity as WlrKeyboardInteractivity, Layer, LayerShell,
+    LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
 use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::XdgShell;
@@ -92,17 +92,72 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
 
-/// Configuration for a top-anchored shell bar.
+/// Edges used to anchor a layer-shell surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LayerAnchors {
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+    pub left: bool,
+}
+
+impl Default for LayerAnchors {
+    fn default() -> Self {
+        Self {
+            top: true,
+            right: true,
+            bottom: false,
+            left: true,
+        }
+    }
+}
+
+/// Compositor layer used by a layer-shell surface.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ShellLayer {
+    Background,
+    Bottom,
+    #[default]
+    Top,
+    Overlay,
+}
+
+/// Keyboard focus policy for a layer-shell surface.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KeyboardFocus {
+    None,
+    Exclusive,
+    #[default]
+    OnDemand,
+}
+
+/// Configuration for a layer-shell surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BarConfig {
     /// Surface namespace exposed to the compositor.
     pub namespace: String,
+    /// Requested logical width, or zero for compositor-selected width.
+    pub width: u32,
     /// Requested logical height.
     pub height: u32,
     /// Layer-shell exclusive zone in logical pixels.
     pub exclusive_zone: i32,
     /// Compositor output name, or all outputs when unset.
     pub output: Option<String>,
+    /// Surface edges anchored to the output.
+    pub anchors: LayerAnchors,
+    /// Logical top margin.
+    pub margin_top: i32,
+    /// Logical right margin.
+    pub margin_right: i32,
+    /// Logical bottom margin.
+    pub margin_bottom: i32,
+    /// Logical left margin.
+    pub margin_left: i32,
+    /// Compositor layer used by the surface.
+    pub layer: ShellLayer,
+    /// Keyboard focus policy used by the surface.
+    pub keyboard_focus: KeyboardFocus,
 }
 
 /// Integer surface-local rectangle used to construct an input region.
@@ -230,9 +285,17 @@ impl Default for BarConfig {
     fn default() -> Self {
         Self {
             namespace: "mold".to_owned(),
+            width: 0,
             height: 32,
             exclusive_zone: 32,
             output: None,
+            anchors: LayerAnchors::default(),
+            margin_top: 0,
+            margin_right: 0,
+            margin_bottom: 0,
+            margin_left: 0,
+            layer: ShellLayer::default(),
+            keyboard_focus: KeyboardFocus::default(),
         }
     }
 }
@@ -487,13 +550,41 @@ impl LayerClient {
             let layer = layer_shell.create_layer_surface(
                 &qh,
                 surface,
-                Layer::Top,
+                match config.layer {
+                    ShellLayer::Background => Layer::Background,
+                    ShellLayer::Bottom => Layer::Bottom,
+                    ShellLayer::Top => Layer::Top,
+                    ShellLayer::Overlay => Layer::Overlay,
+                },
                 Some(config.namespace),
                 output.as_ref(),
             );
-            layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-            layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-            layer.set_size(0, config.height);
+            let mut anchors = Anchor::empty();
+            if config.anchors.top {
+                anchors |= Anchor::TOP;
+            }
+            if config.anchors.right {
+                anchors |= Anchor::RIGHT;
+            }
+            if config.anchors.bottom {
+                anchors |= Anchor::BOTTOM;
+            }
+            if config.anchors.left {
+                anchors |= Anchor::LEFT;
+            }
+            layer.set_anchor(anchors);
+            layer.set_keyboard_interactivity(match config.keyboard_focus {
+                KeyboardFocus::None => WlrKeyboardInteractivity::None,
+                KeyboardFocus::Exclusive => WlrKeyboardInteractivity::Exclusive,
+                KeyboardFocus::OnDemand => WlrKeyboardInteractivity::OnDemand,
+            });
+            layer.set_size(config.width, config.height);
+            layer.set_margin(
+                config.margin_top,
+                config.margin_right,
+                config.margin_bottom,
+                config.margin_left,
+            );
             layer.set_exclusive_zone(config.exclusive_zone);
             state.fractional_scale = state
                 ._fractional_manager

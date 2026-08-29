@@ -100,6 +100,60 @@ pub struct Screen {
     pub scale: i32,
 }
 
+/// Edges used to anchor a configured layer surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurfaceAnchors {
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+    pub left: bool,
+}
+
+impl Default for SurfaceAnchors {
+    fn default() -> Self {
+        Self {
+            top: true,
+            right: true,
+            bottom: false,
+            left: true,
+        }
+    }
+}
+
+/// Native layer-surface settings assigned by Lua before startup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LayerSurfaceConfig {
+    pub namespace: String,
+    pub width: u32,
+    pub height: u32,
+    pub exclusive_zone: i32,
+    pub anchors: SurfaceAnchors,
+    pub margin_top: i32,
+    pub margin_right: i32,
+    pub margin_bottom: i32,
+    pub margin_left: i32,
+    pub layer: String,
+    pub keyboard_focus: String,
+}
+
+impl Default for LayerSurfaceConfig {
+    fn default() -> Self {
+        Self {
+            namespace: "mold".to_owned(),
+            width: 0,
+            height: 32,
+            exclusive_zone: 32,
+            anchors: SurfaceAnchors::default(),
+            margin_top: 0,
+            margin_right: 0,
+            margin_bottom: 0,
+            margin_left: 0,
+            layer: "top".to_owned(),
+            keyboard_focus: "on_demand".to_owned(),
+        }
+    }
+}
+
 /// Deferred parent and anchor transition requested by Lua.
 #[derive(Clone, Debug)]
 pub struct ParentTransitionRequest {
@@ -380,6 +434,11 @@ impl Runtime {
     /// Replaces the ordered filesystem roots used for user Lua modules.
     pub fn set_module_roots(&mut self, roots: Vec<PathBuf>) {
         *self.module_roots.borrow_mut() = roots;
+    }
+
+    /// Returns the native layer-surface settings assigned by the configuration.
+    pub fn layer_surface_config(&self) -> LayerSurfaceConfig {
+        self.reactive.borrow().layer_surface.clone()
     }
 
     /// Drains non-fatal binding diagnostics produced since the previous call.
@@ -1414,6 +1473,7 @@ struct ReactiveState {
     udev_monitors: Vec<PendingUdev>,
     status_notifiers: Vec<PendingStatusNotifier>,
     session_unlock_requested: bool,
+    layer_surface: LayerSurfaceConfig,
 }
 
 impl ReactiveState {
@@ -1467,6 +1527,7 @@ impl ReactiveState {
             udev_monitors: Vec::new(),
             status_notifiers: Vec::new(),
             session_unlock_requested: false,
+            layer_surface: LayerSurfaceConfig::default(),
         }
     }
 }
@@ -1814,6 +1875,138 @@ fn install_reactive_api(
         });
 
         let mold = Table::new(&ctx);
+        let surface_read_state = Rc::clone(&state);
+        let surface_index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (_surface, key): (Table, String) = stack.consume(ctx)?;
+            let config = &surface_read_state.borrow().layer_surface;
+            let value = match key.as_str() {
+                "namespace" => LuaValue::String(ctx.intern(config.namespace.as_bytes())),
+                "width" => LuaValue::Integer(i64::from(config.width)),
+                "height" => LuaValue::Integer(i64::from(config.height)),
+                "exclusive_zone" => LuaValue::Integer(i64::from(config.exclusive_zone)),
+                "margin_top" => LuaValue::Integer(i64::from(config.margin_top)),
+                "margin_right" => LuaValue::Integer(i64::from(config.margin_right)),
+                "margin_bottom" => LuaValue::Integer(i64::from(config.margin_bottom)),
+                "margin_left" => LuaValue::Integer(i64::from(config.margin_left)),
+                "layer" => LuaValue::String(ctx.intern(config.layer.as_bytes())),
+                "keyboard_focus" => LuaValue::String(ctx.intern(config.keyboard_focus.as_bytes())),
+                "anchors" => {
+                    let anchors = Table::new(&ctx);
+                    anchors.set_field(ctx, "top", config.anchors.top);
+                    anchors.set_field(ctx, "right", config.anchors.right);
+                    anchors.set_field(ctx, "bottom", config.anchors.bottom);
+                    anchors.set_field(ctx, "left", config.anchors.left);
+                    LuaValue::Table(anchors)
+                }
+                _ => LuaValue::Nil,
+            };
+            stack.replace(ctx, value);
+            Ok(CallbackReturn::Return)
+        });
+        let surface_write_state = Rc::clone(&state);
+        let surface_new_index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (_surface, key, value): (Table, String, LuaValue) = stack.consume(ctx)?;
+            let mut state = surface_write_state.borrow_mut();
+            let config = &mut state.layer_surface;
+            match key.as_str() {
+                "namespace" => {
+                    let LuaValue::String(value) = value else {
+                        return Err(HostError("surface namespace must be a string".into()).into());
+                    };
+                    let value = value.display_lossy().to_string();
+                    if value.is_empty() || value.len() > 128 {
+                        return Err(HostError(
+                            "surface namespace must contain 1 to 128 bytes".into(),
+                        )
+                        .into());
+                    }
+                    config.namespace = value;
+                }
+                "width" | "height" => {
+                    let LuaValue::Integer(value) = value else {
+                        return Err(HostError(format!("surface {key} must be an integer")).into());
+                    };
+                    let value = u32::try_from(value)
+                        .map_err(|_| HostError(format!("surface {key} must fit u32")))?;
+                    if key == "height" && value == 0 {
+                        return Err(HostError("surface height must be positive".into()).into());
+                    }
+                    if key == "width" {
+                        config.width = value;
+                    } else {
+                        config.height = value;
+                    }
+                }
+                "exclusive_zone" | "margin_top" | "margin_right" | "margin_bottom"
+                | "margin_left" => {
+                    let LuaValue::Integer(value) = value else {
+                        return Err(HostError(format!("surface {key} must be an integer")).into());
+                    };
+                    let value = i32::try_from(value)
+                        .map_err(|_| HostError(format!("surface {key} must fit i32")))?;
+                    match key.as_str() {
+                        "exclusive_zone" => config.exclusive_zone = value,
+                        "margin_top" => config.margin_top = value,
+                        "margin_right" => config.margin_right = value,
+                        "margin_bottom" => config.margin_bottom = value,
+                        "margin_left" => config.margin_left = value,
+                        _ => unreachable!(),
+                    }
+                }
+                "anchors" => {
+                    let LuaValue::Table(value) = value else {
+                        return Err(HostError("surface anchors must be a table".into()).into());
+                    };
+                    let read = |name| match value.get_value(ctx, name) {
+                        LuaValue::Nil => Ok(false),
+                        LuaValue::Boolean(value) => Ok(value),
+                        _ => Err(HostError(format!("surface anchor {name} must be boolean"))),
+                    };
+                    config.anchors = SurfaceAnchors {
+                        top: read("top")?,
+                        right: read("right")?,
+                        bottom: read("bottom")?,
+                        left: read("left")?,
+                    };
+                }
+                "layer" => {
+                    let LuaValue::String(value) = value else {
+                        return Err(HostError("surface layer must be a string".into()).into());
+                    };
+                    let value = value.display_lossy().to_string();
+                    if !matches!(value.as_str(), "background" | "bottom" | "top" | "overlay") {
+                        return Err(HostError(
+                            "surface layer must be background, bottom, top, or overlay".into(),
+                        )
+                        .into());
+                    }
+                    config.layer = value;
+                }
+                "keyboard_focus" => {
+                    let LuaValue::String(value) = value else {
+                        return Err(
+                            HostError("surface keyboard_focus must be a string".into()).into()
+                        );
+                    };
+                    let value = value.display_lossy().to_string();
+                    if !matches!(value.as_str(), "none" | "exclusive" | "on_demand") {
+                        return Err(HostError(
+                            "surface keyboard_focus must be none, exclusive, or on_demand".into(),
+                        )
+                        .into());
+                    }
+                    config.keyboard_focus = value;
+                }
+                _ => return Err(HostError(format!("unknown surface setting `{key}`")).into()),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let surface_metatable = Table::new(&ctx);
+        surface_metatable.set_field(ctx, "__index", surface_index);
+        surface_metatable.set_field(ctx, "__newindex", surface_new_index);
+        let surface = Table::new(&ctx);
+        surface.set_metatable(ctx, Some(surface_metatable));
+        mold.set_field(ctx, "surface", surface);
         mold.set_field(ctx, "signal", signal);
         mold.set_field(ctx, "reloadable", reloadable);
         mold.set_field(ctx, "effect", effect);
@@ -5293,6 +5486,52 @@ mod tests {
                 "#,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn layer_surface_settings_are_native_and_typed() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "surface.lua",
+                br#"
+                    local mold = require("mold")
+                    mold.surface.namespace = "board"
+                    mold.surface.width = 1200
+                    mold.surface.height = 800
+                    mold.surface.exclusive_zone = 0
+                    mold.surface.anchors = { top = true, left = true }
+                    mold.surface.margin_top = 100
+                    mold.surface.margin_left = 200
+                    mold.surface.layer = "overlay"
+                    mold.surface.keyboard_focus = "none"
+                    assert(mold.surface.width == 1200)
+                    assert(mold.surface.anchors.right == false)
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            runtime.layer_surface_config(),
+            LayerSurfaceConfig {
+                namespace: "board".to_owned(),
+                width: 1200,
+                height: 800,
+                exclusive_zone: 0,
+                anchors: SurfaceAnchors {
+                    top: true,
+                    right: false,
+                    bottom: false,
+                    left: true,
+                },
+                margin_top: 100,
+                margin_right: 0,
+                margin_bottom: 0,
+                margin_left: 200,
+                layer: "overlay".to_owned(),
+                keyboard_focus: "none".to_owned(),
+            }
+        );
     }
 
     #[test]

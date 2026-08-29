@@ -18,7 +18,8 @@ use mold_lua::{
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
 use mold_wayland::{
-    BarConfig, InputRect, LayerClient, LayerEvent, OutputPowerMode, ScreenInfo, ScreencopyFormat,
+    BarConfig, InputRect, KeyboardFocus, LayerAnchors, LayerClient, LayerEvent, OutputPowerMode,
+    ScreenInfo, ScreencopyFormat, ShellLayer,
 };
 
 fn usage() -> &'static str {
@@ -1075,9 +1076,38 @@ fn run_surface(
         return Err("configuration must create exactly one root item".to_owned());
     }
 
+    let surface = runtime.layer_surface_config();
+    let layer = match surface.layer.as_str() {
+        "background" => ShellLayer::Background,
+        "bottom" => ShellLayer::Bottom,
+        "top" => ShellLayer::Top,
+        "overlay" => ShellLayer::Overlay,
+        value => return Err(format!("unsupported layer surface layer `{value}`")),
+    };
+    let keyboard_focus = match surface.keyboard_focus.as_str() {
+        "none" => KeyboardFocus::None,
+        "exclusive" => KeyboardFocus::Exclusive,
+        "on_demand" => KeyboardFocus::OnDemand,
+        value => return Err(format!("unsupported keyboard focus policy `{value}`")),
+    };
     let mut client = LayerClient::connect(BarConfig {
+        namespace: surface.namespace,
+        width: surface.width,
+        height: surface.height,
+        exclusive_zone: surface.exclusive_zone,
         output: Some(name.clone()),
-        ..BarConfig::default()
+        anchors: LayerAnchors {
+            top: surface.anchors.top,
+            right: surface.anchors.right,
+            bottom: surface.anchors.bottom,
+            left: surface.anchors.left,
+        },
+        margin_top: surface.margin_top,
+        margin_right: surface.margin_right,
+        margin_bottom: surface.margin_bottom,
+        margin_left: surface.margin_left,
+        layer,
+        keyboard_focus,
     })
     .map_err(|error| error.to_string())?;
     client.set_idle_timeouts(&runtime.idle_timeouts());
