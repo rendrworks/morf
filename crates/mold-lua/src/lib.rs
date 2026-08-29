@@ -444,6 +444,11 @@ impl Runtime {
         !callbacks.is_empty()
     }
 
+    /// Takes pending compositor output power requests.
+    pub fn take_output_power_requests(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.reactive.borrow_mut().output_power_requests)
+    }
+
     /// Runs one bounded key handler with keysym and UTF-8 text arguments.
     pub fn dispatch_key_event(
         &mut self,
@@ -1102,6 +1107,7 @@ struct ReactiveState {
     states: HashMap<NodeHandle, StateSet>,
     ipc_handlers: HashMap<String, StashedClosure>,
     idle_callbacks: HashMap<u32, Vec<StashedClosure>>,
+    output_power_requests: Vec<bool>,
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
@@ -1138,6 +1144,7 @@ impl ReactiveState {
             states: HashMap::new(),
             ipc_handlers: HashMap::new(),
             idle_callbacks: HashMap::new(),
+            output_power_requests: Vec::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
@@ -1361,6 +1368,24 @@ fn install_reactive_api(
         let idle = Table::new(&ctx);
         idle.set_field(ctx, "subscribe", idle_subscribe);
         mold.set_field(ctx, "idle", idle);
+        let output_power_state = Rc::clone(&state);
+        let output_power_set = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let mode: String = stack.consume(ctx)?;
+            let on = match mode.as_str() {
+                "off" => false,
+                "on" => true,
+                _ => return Err(HostError("output power mode must be `on` or `off`".into()).into()),
+            };
+            let mut state = output_power_state.borrow_mut();
+            if state.output_power_requests.len() >= 64 {
+                return Err(HostError("output power request limit reached".into()).into());
+            }
+            state.output_power_requests.push(on);
+            Ok(CallbackReturn::Return)
+        });
+        let output_power = Table::new(&ctx);
+        output_power.set_field(ctx, "set", output_power_set);
+        mold.set_field(ctx, "output_power", output_power);
         let timer_state = Rc::clone(&state);
         let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
@@ -4337,6 +4362,23 @@ mod tests {
             runtime.call_ipc("idle.get", &[]).unwrap(),
             [IpcValue::Boolean(true)]
         );
+    }
+
+    #[test]
+    fn output_power_requests_are_bounded_and_ordered() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "power.lua",
+                br#"
+                    mold.output_power.set("off")
+                    mold.output_power.set("on")
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(runtime.take_output_power_requests(), [false, true]);
+        assert!(runtime.take_output_power_requests().is_empty());
     }
 
     #[test]

@@ -3,7 +3,7 @@ use mold_render::{
     DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, VerticalAlignment, WgpuBackend,
 };
 use mold_scene::{Color, Element, Scene};
-use mold_wayland::{BarConfig, LayerClient, LayerEvent};
+use mold_wayland::{BarConfig, LayerClient, LayerEvent, OutputPowerMode};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = BarConfig {
@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut client = LayerClient::connect(config)?;
     let idle_notify = client.set_idle_timeouts(&[600_000]);
+    let output_power = client.set_output_power(OutputPowerMode::On);
     'configured: loop {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
@@ -99,12 +100,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], idle {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, power {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
                     screens,
                     idle_notify,
+                    output_power,
                     time_ms,
                     backend.info().name,
                     backend.info().backend,

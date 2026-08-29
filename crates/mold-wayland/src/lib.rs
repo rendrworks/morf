@@ -55,6 +55,10 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 use wayland_protocols::xdg::shell::client::xdg_positioner;
+use wayland_protocols_wlr::output_power_management::v1::client::{
+    zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
+    zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
+};
 
 /// Configuration for a top-anchored shell bar.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,6 +125,15 @@ pub struct FloatingConfig {
     pub app_id: String,
 }
 
+/// Compositor output power state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputPowerMode {
+    /// The output is powered down.
+    Off,
+    /// The output is powered on.
+    On,
+}
+
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
@@ -176,6 +189,11 @@ pub enum LayerEvent {
     },
     /// A configured seat idle threshold changed state.
     Idle { timeout_ms: u32, idle: bool },
+    /// A compositor output changed power state.
+    OutputPower {
+        output_id: u32,
+        mode: OutputPowerMode,
+    },
     /// The compositor output set changed.
     Screens(Vec<ScreenInfo>),
     /// The compositor positioned and sized the popup.
@@ -255,6 +273,9 @@ impl LayerClient {
             .ok();
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
         let idle_notifier = globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok();
+        let output_power_manager = globals
+            .bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
         let session_locks = SessionLockState::new(&globals, &qh);
         let mut state = LayerState {
             registry: RegistryState::new(&globals),
@@ -281,6 +302,10 @@ impl LayerClient {
             idle_notifier,
             idle_notifications: Vec::new(),
             idle_timeouts: Vec::new(),
+            output_power_manager,
+            output_power: Vec::new(),
+            output_power_target: None,
+            output_power_mode: None,
             screens: Vec::new(),
             session_locks,
             session_lock: None,
@@ -310,6 +335,7 @@ impl LayerClient {
                 ),
                 None => None,
             };
+            state.output_power_target = output.clone();
             let surface = state.compositor.create_surface(&qh);
             surface.set_buffer_scale(1);
             let layer = layer_shell.create_layer_surface(
@@ -400,6 +426,27 @@ impl LayerClient {
         self.state.idle_timeouts.dedup();
         self.state.refresh_idle(&self.queue.handle());
         self.state.idle_notifier.is_some()
+    }
+
+    /// Requests a power state for the configured output, or every output for a lock client.
+    pub fn set_output_power(&mut self, mode: OutputPowerMode) -> bool {
+        if self.state.output_power_manager.is_none() {
+            return false;
+        }
+        self.state.output_power_mode = Some(mode);
+        let available = self.state.outputs.outputs().collect::<Vec<_>>();
+        let outputs = match self.state.output_power_target.clone() {
+            Some(output) => available
+                .into_iter()
+                .filter(|item| *item == output)
+                .collect(),
+            None => available,
+        };
+        let qh = self.queue.handle();
+        for output in outputs {
+            self.state.apply_output_power(&output, mode, &qh);
+        }
+        true
     }
 
     /// Removes the next queued surface event.
@@ -727,10 +774,19 @@ struct LayerState {
     idle_notifier: Option<ExtIdleNotifierV1>,
     idle_notifications: Vec<ExtIdleNotificationV1>,
     idle_timeouts: Vec<u32>,
+    output_power_manager: Option<ZwlrOutputPowerManagerV1>,
+    output_power: Vec<OutputPowerControl>,
+    output_power_target: Option<wl_output::WlOutput>,
+    output_power_mode: Option<OutputPowerMode>,
     screens: Vec<ScreenInfo>,
     session_locks: SessionLockState,
     session_lock: Option<SessionLock>,
     lock_surfaces: Vec<LockSurface>,
+}
+
+struct OutputPowerControl {
+    output: wl_output::WlOutput,
+    control: ZwlrOutputPowerV1,
 }
 
 struct LockSurface {
@@ -741,6 +797,34 @@ struct LockSurface {
 }
 
 impl LayerState {
+    fn apply_output_power(
+        &mut self,
+        output: &wl_output::WlOutput,
+        mode: OutputPowerMode,
+        qh: &QueueHandle<Self>,
+    ) {
+        let Some(manager) = self.output_power_manager.clone() else {
+            return;
+        };
+        let control = self
+            .output_power
+            .iter()
+            .find(|control| control.output == *output)
+            .map(|control| control.control.clone())
+            .unwrap_or_else(|| {
+                let control = manager.get_output_power(output, qh, output.clone());
+                self.output_power.push(OutputPowerControl {
+                    output: output.clone(),
+                    control: control.clone(),
+                });
+                control
+            });
+        control.set_mode(match mode {
+            OutputPowerMode::Off => zwlr_output_power_v1::Mode::Off,
+            OutputPowerMode::On => zwlr_output_power_v1::Mode::On,
+        });
+    }
+
     fn refresh_idle(&mut self, qh: &QueueHandle<Self>) {
         for notification in self.idle_notifications.drain(..) {
             notification.destroy();
@@ -955,6 +1039,11 @@ impl OutputHandler for LayerState {
         output: wl_output::WlOutput,
     ) {
         self.refresh_screens();
+        if self.output_power_target.is_none()
+            && let Some(mode) = self.output_power_mode
+        {
+            self.apply_output_power(&output, mode, qh);
+        }
         self.create_lock_surface(output, qh);
     }
 
@@ -995,6 +1084,13 @@ impl OutputHandler for LayerState {
         output: wl_output::WlOutput,
     ) {
         self.refresh_screens();
+        if let Some(index) = self
+            .output_power
+            .iter()
+            .position(|control| control.output == output)
+        {
+            self.output_power.remove(index).control.destroy();
+        }
         if let Some(index) = self
             .lock_surfaces
             .iter()
@@ -1412,6 +1508,45 @@ impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
     }
 }
 
+impl Dispatch<ZwlrOutputPowerV1, wl_output::WlOutput> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrOutputPowerV1,
+        event: zwlr_output_power_v1::Event,
+        output: &wl_output::WlOutput,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_output_power_v1::Event::Mode { mode } => {
+                let mode = match mode {
+                    wayland_client::WEnum::Value(zwlr_output_power_v1::Mode::Off) => {
+                        OutputPowerMode::Off
+                    }
+                    wayland_client::WEnum::Value(zwlr_output_power_v1::Mode::On) => {
+                        OutputPowerMode::On
+                    }
+                    _ => return,
+                };
+                let output_id = state.outputs.info(output).map(|info| info.id).unwrap_or(0);
+                state
+                    .events
+                    .push_back(LayerEvent::OutputPower { output_id, mode });
+            }
+            zwlr_output_power_v1::Event::Failed => {
+                if let Some(index) = state
+                    .output_power
+                    .iter()
+                    .position(|control| control.control == *proxy)
+                {
+                    state.output_power.remove(index).control.destroy();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl ProvidesRegistryState for LayerState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry
@@ -1425,6 +1560,7 @@ smithay_client_toolkit::delegate_dispatch2!(LayerState);
 wayland_client::delegate_noop!(LayerState: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewporter);
 wayland_client::delegate_noop!(LayerState: ignore ExtIdleNotifierV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwlrOutputPowerManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
 

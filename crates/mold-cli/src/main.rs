@@ -14,7 +14,7 @@ use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{IpcValue, Limits, Runtime, Screen, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
-use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, ScreenInfo};
+use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, OutputPowerMode, ScreenInfo};
 
 fn usage() -> &'static str {
     "mold - reactive Wayland shell runtime\n\nusage: mold [shell.lua]\n       mold -c <name>\n       mold lock [lock.lua]\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log [--bindings]\n       mold kill\n       mold --help\n       mold --version"
@@ -172,6 +172,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
     client
         .begin_session_lock()
         .map_err(|error| error.to_string())?;
+    apply_output_power_requests(&mut runtime, &mut client);
     let mut renderers: Vec<Option<RenderEngine<WgpuBackend>>> = Vec::new();
     let mut last_frame = None;
     let mut locked = false;
@@ -185,6 +186,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
             .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
             .map_err(|error| error.to_string())?;
         let mut repaint = runtime.poll_services();
+        apply_output_power_requests(&mut runtime, &mut client);
         unlock_pending |= runtime.take_session_unlock_request();
         if locked && unlock_pending {
             client.unlock_session().map_err(|error| error.to_string())?;
@@ -251,6 +253,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 LayerEvent::Idle { timeout_ms, idle } => {
                     repaint |= runtime.dispatch_idle(timeout_ms, idle);
                 }
+                LayerEvent::OutputPower { .. } => {}
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
                 | LayerEvent::Configure { .. }
@@ -790,6 +793,16 @@ fn wire_ipc_value(value: &IpcValue) -> WireValue {
     }
 }
 
+fn apply_output_power_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    for on in runtime.take_output_power_requests() {
+        client.set_output_power(if on {
+            OutputPowerMode::On
+        } else {
+            OutputPowerMode::Off
+        });
+    }
+}
+
 fn stop_workers(workers: BTreeMap<String, Worker>) {
     for worker in workers.values() {
         worker.stop.store(true, Ordering::Release);
@@ -842,6 +855,7 @@ fn run_surface(
                 LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
                 LayerEvent::Scale(_)
                 | LayerEvent::Idle { .. }
+                | LayerEvent::OutputPower { .. }
                 | LayerEvent::Frame { .. }
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave
@@ -881,6 +895,7 @@ fn run_surface(
         .map_err(|error| error.to_string())?;
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let mut layout = paint(&runtime, &mut renderer, &client)?;
+    apply_output_power_requests(&mut runtime, &mut client);
 
     let mut last_frame = None;
     let mut hovered = None;
@@ -909,6 +924,7 @@ fn run_surface(
                 client.set_idle_timeouts(&runtime.idle_timeouts());
             }
         }
+        apply_output_power_requests(&mut runtime, &mut client);
         if next_clock != clock {
             clock = next_clock;
             runtime
@@ -937,6 +953,7 @@ fn run_surface(
                 LayerEvent::Idle { timeout_ms, idle } => {
                     repaint |= runtime.dispatch_idle(timeout_ms, idle);
                 }
+                LayerEvent::OutputPower { .. } => {}
                 LayerEvent::PointerMotion { x, y } => {
                     let hit = layout
                         .hit_test(&runtime.scene(), x, y)
