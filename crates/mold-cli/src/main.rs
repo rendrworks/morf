@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,43 +9,127 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use mold_io::{
+    FileView, IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call,
+};
 use mold_layout::{Layout, ReparentTransition, Size};
-use mold_lua::{Limits, Runtime, Screen, UiEvent};
+use mold_lua::{IpcValue, Limits, Runtime, Screen, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, ScreenInfo};
 
 fn usage() -> &'static str {
-    "mold - reactive Wayland shell runtime\n\nusage: mold <shell.lua>\n       mold --help\n       mold --version"
+    "mold - reactive Wayland shell runtime\n\nusage: mold [shell.lua]\n       mold -c <name>\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log\n       mold kill\n       mold --help\n       mold --version"
 }
 
 fn run() -> Result<(), String> {
-    let mut args = env::args_os();
-    let _program = args.next();
-    let Some(argument) = args.next() else {
-        return Err(usage().to_owned());
-    };
-    if args.next().is_some() {
-        return Err("mold accepts exactly one configuration path".to_owned());
+    let args = env::args_os().skip(1).collect::<Vec<_>>();
+    match parse_command(&args)? {
+        Command::Help => println!("{}", usage()),
+        Command::Version => println!("mold {}", env!("CARGO_PKG_VERSION")),
+        Command::Run(path) => {
+            let source = fs::read(&path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            supervise(path, source)?;
+        }
+        Command::Client(request) => {
+            let reply = ipc_call(socket_path()?, &request).map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                String::from_utf8_lossy(&reply.to_wire().map_err(|e| e.to_string())?)
+            );
+        }
     }
+    Ok(())
+}
 
-    if argument == "-h" || argument == "--help" {
-        println!("{}", usage());
-        return Ok(());
-    }
-    if argument == "-V" || argument == "--version" {
-        println!("mold {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
+enum Command {
+    Help,
+    Version,
+    Run(PathBuf),
+    Client(IpcRequest),
+}
 
-    let path = PathBuf::from(argument);
-    let source =
-        fs::read(&path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    supervise(path, source)
+fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
+    let strings = args
+        .iter()
+        .map(|value| {
+            value
+                .to_str()
+                .ok_or_else(|| "arguments must be UTF-8".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    match strings.as_slice() {
+        ["-h" | "--help"] => Ok(Command::Help),
+        ["-V" | "--version"] => Ok(Command::Version),
+        ["-c", name] => Ok(Command::Run(named_config_path(name)?)),
+        ["ipc", "verbs"] => Ok(Command::Client(IpcRequest::Verbs)),
+        ["ipc", "call", target, args @ ..] => Ok(Command::Client(IpcRequest::Call {
+            target: (*target).to_owned(),
+            args: args
+                .iter()
+                .map(|value| WireValue::String((*value).to_owned()))
+                .collect(),
+        })),
+        ["log"] => Ok(Command::Client(IpcRequest::Log)),
+        ["kill"] => Ok(Command::Client(IpcRequest::Kill)),
+        [] => Ok(Command::Run(config_root()?.join("shell.lua"))),
+        [path] => Ok(Command::Run(PathBuf::from(path))),
+        _ => Err(usage().to_owned()),
+    }
+}
+
+fn config_root() -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(path).join("mold"));
+    }
+    env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".config/mold"))
+        .ok_or_else(|| "HOME and XDG_CONFIG_HOME are unset".to_owned())
+}
+
+fn named_config_path(name: &str) -> Result<PathBuf, String> {
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        return Err("config name must be one path component".to_owned());
+    }
+    Ok(config_root()?.join(name).join("shell.lua"))
+}
+
+fn socket_path() -> Result<PathBuf, String> {
+    let runtime = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| "XDG_RUNTIME_DIR is unset".to_owned())?;
+    let display = env::var("WAYLAND_DISPLAY").map_err(|_| "WAYLAND_DISPLAY is unset".to_owned())?;
+    if display.is_empty() || display.contains('/') {
+        return Err("WAYLAND_DISPLAY must be one path component".to_owned());
+    }
+    Ok(runtime.join("mold").join(format!("{display}.sock")))
 }
 
 struct Worker {
     stop: Arc<AtomicBool>,
+    commands: mpsc::Sender<WorkerCommand>,
     join: JoinHandle<()>,
+}
+
+enum WorkerCommand {
+    Call {
+        target: String,
+        args: Vec<IpcValue>,
+        reply: mpsc::SyncSender<Result<Vec<IpcValue>, String>>,
+    },
+    Verbs(mpsc::SyncSender<Vec<String>>),
+    Logs(mpsc::SyncSender<Vec<String>>),
+    Reload {
+        path: Arc<PathBuf>,
+        source: Arc<[u8]>,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
+}
+
+enum SupervisorMessage {
+    Worker(WorkerMessage),
+    Ipc(IpcIncoming),
+    Reload,
 }
 
 enum WorkerMessage {
@@ -66,9 +151,40 @@ fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
         return Err("compositor advertised no named outputs".to_owned());
     }
     let path = Arc::new(path);
-    let source: Arc<[u8]> = source.into();
+    let mut source: Arc<[u8]> = source.into();
     let (tx, rx) = mpsc::channel();
+    let watcher = FileView::new(path.as_ref().clone())
+        .watch()
+        .map_err(|error| format!("could not watch {}: {error}", path.display()))?;
+    let reload_tx = tx.clone();
+    thread::spawn(move || {
+        loop {
+            if watcher.next_event(Duration::from_secs(60)).is_some() {
+                thread::sleep(Duration::from_millis(25));
+                while watcher.next_event(Duration::ZERO).is_some() {}
+                if reload_tx.send(SupervisorMessage::Reload).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    let (ipc_tx, ipc_rx) = mpsc::channel();
+    let socket = socket_path()?;
+    let server = IpcServer::bind(&socket, ipc_tx)
+        .map_err(|error| format!("could not bind IPC socket {}: {error}", socket.display()))?;
+    let owner = fs::metadata(&socket)
+        .map_err(|error| format!("could not inspect IPC socket: {error}"))?
+        .uid();
+    let forward = tx.clone();
+    thread::spawn(move || {
+        while let Ok(request) = ipc_rx.recv() {
+            if forward.send(SupervisorMessage::Ipc(request)).is_err() {
+                break;
+            }
+        }
+    });
     let mut workers = BTreeMap::new();
+    let mut daemon_logs = Vec::new();
     reconcile_workers(
         &mut workers,
         &desired,
@@ -79,7 +195,9 @@ fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
 
     loop {
         match rx.recv() {
-            Ok(WorkerMessage::Screens { output, screens }) if workers.contains_key(&output) => {
+            Ok(SupervisorMessage::Worker(WorkerMessage::Screens { output, screens }))
+                if workers.contains_key(&output) =>
+            {
                 desired = named_screens(&screens)?;
                 reconcile_workers(
                     &mut workers,
@@ -89,11 +207,51 @@ fn supervise(path: PathBuf, source: Vec<u8>) -> Result<(), String> {
                     &tx,
                 );
             }
-            Ok(WorkerMessage::Screens { .. }) => {}
-            Ok(WorkerMessage::Failed { output, error }) => {
+            Ok(SupervisorMessage::Worker(WorkerMessage::Screens { .. })) => {}
+            Ok(SupervisorMessage::Worker(WorkerMessage::Failed { output, error })) => {
                 stop_workers(workers);
                 return Err(format!("output {output}: {error}"));
             }
+            Ok(SupervisorMessage::Ipc(incoming)) => {
+                if incoming.peer.uid != owner {
+                    incoming.reply(IpcReply::refused("peer uid does not own the shell"));
+                    continue;
+                }
+                let kill = matches!(incoming.request, IpcRequest::Kill);
+                let reply = handle_ipc(&workers, &mut daemon_logs, &incoming.request);
+                incoming.reply(reply);
+                if kill {
+                    stop_workers(workers);
+                    drop(server);
+                    return Ok(());
+                }
+            }
+            Ok(SupervisorMessage::Reload) => match fs::read(path.as_ref()) {
+                Ok(bytes) => {
+                    source = Arc::from(bytes);
+                    for (output, worker) in &workers {
+                        let (reply, result) = mpsc::sync_channel(1);
+                        if worker
+                            .commands
+                            .send(WorkerCommand::Reload {
+                                path: Arc::clone(&path),
+                                source: Arc::clone(&source),
+                                reply,
+                            })
+                            .is_err()
+                        {
+                            daemon_logs.push(format!("reload {output}: output stopped"));
+                            continue;
+                        }
+                        match result.recv_timeout(Duration::from_secs(2)) {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => daemon_logs.push(format!("reload {output}: {error}")),
+                            Err(_) => daemon_logs.push(format!("reload {output}: timed out")),
+                        }
+                    }
+                }
+                Err(error) => daemon_logs.push(format!("reload: {error}")),
+            },
             Err(_) => return Err("all output workers stopped".to_owned()),
         }
     }
@@ -117,7 +275,7 @@ fn reconcile_workers(
     desired: &BTreeMap<String, ScreenInfo>,
     path: Arc<PathBuf>,
     source: Arc<[u8]>,
-    tx: &mpsc::Sender<WorkerMessage>,
+    tx: &mpsc::Sender<SupervisorMessage>,
 ) {
     let stale = workers
         .keys()
@@ -140,14 +298,171 @@ fn reconcile_workers(
         let tx = tx.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let (commands, command_rx) = mpsc::channel();
         let join = thread::spawn(move || {
-            if let Err(error) = run_surface(&path, &source, screen, &tx, &worker_stop)
+            if let Err(error) = run_surface(&path, &source, screen, &tx, &worker_stop, &command_rx)
                 && !worker_stop.load(Ordering::Acquire)
             {
-                let _ = tx.send(WorkerMessage::Failed { output, error });
+                let _ = tx.send(SupervisorMessage::Worker(WorkerMessage::Failed {
+                    output,
+                    error,
+                }));
             }
         });
-        workers.insert(name.clone(), Worker { stop, join });
+        workers.insert(
+            name.clone(),
+            Worker {
+                stop,
+                commands,
+                join,
+            },
+        );
+    }
+}
+
+fn handle_ipc(
+    workers: &BTreeMap<String, Worker>,
+    daemon_logs: &mut Vec<String>,
+    request: &IpcRequest,
+) -> IpcReply {
+    match request {
+        IpcRequest::Call { target, args } => {
+            let Some(worker) = workers.values().next() else {
+                return IpcReply::refused("shell has no active output");
+            };
+            let args = args.iter().map(lua_ipc_value).collect::<Vec<_>>();
+            let (tx, rx) = mpsc::sync_channel(1);
+            if worker
+                .commands
+                .send(WorkerCommand::Call {
+                    target: target.clone(),
+                    args,
+                    reply: tx,
+                })
+                .is_err()
+            {
+                return IpcReply::refused("shell output stopped");
+            }
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(Ok(values)) => IpcReply::success(values.iter().map(wire_ipc_value).collect()),
+                Ok(Err(error)) => IpcReply::refused(error),
+                Err(_) => IpcReply::refused("shell output timed out"),
+            }
+        }
+        IpcRequest::Verbs => {
+            let mut verbs = Vec::new();
+            for worker in workers.values() {
+                let (tx, rx) = mpsc::sync_channel(1);
+                if worker.commands.send(WorkerCommand::Verbs(tx)).is_ok()
+                    && let Ok(found) = rx.recv_timeout(Duration::from_secs(1))
+                {
+                    verbs.extend(found);
+                }
+            }
+            verbs.sort();
+            verbs.dedup();
+            IpcReply::success(verbs.into_iter().map(WireValue::String).collect())
+        }
+        IpcRequest::Log => {
+            let mut logs = std::mem::take(daemon_logs);
+            for worker in workers.values() {
+                let (tx, rx) = mpsc::sync_channel(1);
+                if worker.commands.send(WorkerCommand::Logs(tx)).is_ok()
+                    && let Ok(found) = rx.recv_timeout(Duration::from_secs(1))
+                {
+                    logs.extend(found);
+                }
+            }
+            IpcReply::success(logs.into_iter().map(WireValue::String).collect())
+        }
+        IpcRequest::Kill => IpcReply::success(Vec::new()),
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct WorkerUpdate {
+    repaint: bool,
+    reset_input: bool,
+}
+
+fn handle_worker_command(
+    runtime: &mut Runtime,
+    screen: &Screen,
+    command: WorkerCommand,
+) -> WorkerUpdate {
+    match command {
+        WorkerCommand::Call {
+            target,
+            args,
+            reply,
+        } => {
+            let result = runtime
+                .call_ipc(&target, &args)
+                .map_err(|error| error.to_string());
+            let repaint = result.is_ok();
+            let _ = reply.send(result);
+            WorkerUpdate {
+                repaint,
+                reset_input: false,
+            }
+        }
+        WorkerCommand::Verbs(reply) => {
+            let _ = reply.send(runtime.ipc_verbs());
+            WorkerUpdate::default()
+        }
+        WorkerCommand::Logs(reply) => {
+            let _ = reply.send(runtime.take_logs());
+            WorkerUpdate::default()
+        }
+        WorkerCommand::Reload {
+            path,
+            source,
+            reply,
+        } => {
+            let mut candidate = Runtime::for_screen(Limits::default(), screen.clone());
+            let result = candidate
+                .execute(&path.to_string_lossy(), &source)
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    (candidate.scene().roots().len() == 1)
+                        .then_some(())
+                        .ok_or_else(|| "configuration must create exactly one root item".to_owned())
+                })
+                .and_then(|()| {
+                    candidate
+                        .update_clock(clock_text())
+                        .map_err(|error| error.to_string())
+                });
+            if result.is_ok() {
+                *runtime = candidate;
+            }
+            let repaint = result.is_ok();
+            let _ = reply.send(result);
+            WorkerUpdate {
+                repaint,
+                reset_input: repaint,
+            }
+        }
+    }
+}
+
+fn lua_ipc_value(value: &WireValue) -> IpcValue {
+    match value {
+        WireValue::Nil => IpcValue::Nil,
+        WireValue::Boolean(value) => IpcValue::Boolean(*value),
+        WireValue::Integer(value) => IpcValue::Integer(*value),
+        WireValue::Number(value) => IpcValue::Number(*value),
+        WireValue::String(value) => IpcValue::String(value.clone()),
+    }
+}
+
+fn wire_ipc_value(value: &IpcValue) -> WireValue {
+    match value {
+        IpcValue::Nil => WireValue::Nil,
+        IpcValue::Boolean(value) => WireValue::Boolean(*value),
+        IpcValue::Integer(value) => WireValue::Integer(*value),
+        IpcValue::Number(value) => WireValue::Number(*value),
+        IpcValue::String(value) => WireValue::String(value.clone()),
     }
 }
 
@@ -164,8 +479,9 @@ fn run_surface(
     path: &Path,
     source: &[u8],
     screen: ScreenInfo,
-    tx: &mpsc::Sender<WorkerMessage>,
+    tx: &mpsc::Sender<SupervisorMessage>,
     stop: &AtomicBool,
+    commands: &mpsc::Receiver<WorkerCommand>,
 ) -> Result<(), String> {
     let name = screen
         .name
@@ -192,10 +508,10 @@ fn run_surface(
         ..BarConfig::default()
     })
     .map_err(|error| error.to_string())?;
-    tx.send(WorkerMessage::Screens {
+    tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
         output: name.clone(),
         screens: client.screens().to_vec(),
-    })
+    }))
     .map_err(|_| "output supervisor stopped".to_owned())?;
     'configured: loop {
         client.dispatch().map_err(|error| error.to_string())?;
@@ -248,6 +564,24 @@ fn run_surface(
             .map_err(|error| error.to_string())?;
         let next_clock = clock_text();
         let mut repaint = false;
+        while let Ok(command) = commands.try_recv() {
+            let update = handle_worker_command(
+                &mut runtime,
+                &Screen {
+                    name: name.clone(),
+                    width: screen.size.map(|size| size.0),
+                    height: screen.size.map(|size| size.1),
+                    scale: screen.scale,
+                },
+                command,
+            );
+            repaint |= update.repaint;
+            if update.reset_input {
+                hovered = None;
+                pressed = None;
+                focused = None;
+            }
+        }
         if next_clock != clock {
             clock = next_clock;
             runtime
@@ -337,10 +671,10 @@ fn run_surface(
                 | LayerEvent::FloatingFrame { .. }
                 | LayerEvent::FloatingClose => {}
                 LayerEvent::Screens(screens) => {
-                    tx.send(WorkerMessage::Screens {
+                    tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
                         output: name.clone(),
                         screens,
-                    })
+                    }))
                     .map_err(|_| "output supervisor stopped".to_owned())?;
                 }
             }
@@ -483,5 +817,114 @@ mod tests {
 
         assert_eq!(names.keys().cloned().collect::<Vec<_>>(), ["DP-2", "eDP-1"]);
         assert_eq!(names["DP-2"].id, 9);
+    }
+
+    #[test]
+    fn command_parser_exposes_ipc_and_legacy_config_path() {
+        let args = ["ipc", "call", "launcher.toggle", "one", "two"].map(std::ffi::OsString::from);
+        let Command::Client(IpcRequest::Call { target, args }) = parse_command(&args).unwrap()
+        else {
+            panic!("expected IPC call");
+        };
+        assert_eq!(target, "launcher.toggle");
+        assert_eq!(
+            args,
+            [
+                WireValue::String("one".into()),
+                WireValue::String("two".into())
+            ]
+        );
+
+        let args = [std::ffi::OsString::from("custom.lua")];
+        let Command::Run(path) = parse_command(&args).unwrap() else {
+            panic!("expected config path");
+        };
+        assert_eq!(path, PathBuf::from("custom.lua"));
+    }
+
+    #[test]
+    fn supervisor_dispatches_registered_ipc_handler() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let (commands, rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let mut runtime = Runtime::default();
+            runtime
+                .execute(
+                    "ipc.lua",
+                    b"mold.ipc.echo = function(value) return value, 2 end",
+                )
+                .unwrap();
+            while !worker_stop.load(Ordering::Acquire) {
+                if let Ok(command) = rx.recv_timeout(Duration::from_millis(10)) {
+                    handle_worker_command(
+                        &mut runtime,
+                        &Screen {
+                            name: "test".into(),
+                            width: None,
+                            height: None,
+                            scale: 1,
+                        },
+                        command,
+                    );
+                }
+            }
+        });
+        let workers = BTreeMap::from([(
+            "test".to_owned(),
+            Worker {
+                stop,
+                commands,
+                join,
+            },
+        )]);
+
+        let reply = handle_ipc(
+            &workers,
+            &mut Vec::new(),
+            &IpcRequest::Call {
+                target: "echo".into(),
+                args: vec![WireValue::String("ready".into())],
+            },
+        );
+        assert_eq!(
+            reply,
+            IpcReply::success(vec![
+                WireValue::String("ready".into()),
+                WireValue::Integer(2)
+            ])
+        );
+
+        let (reload, result) = mpsc::sync_channel(1);
+        workers["test"]
+            .commands
+            .send(WorkerCommand::Reload {
+                path: Arc::new(PathBuf::from("shell.lua")),
+                source: Arc::from(&b"this is not lua"[..]),
+                reply: reload,
+            })
+            .unwrap();
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .is_err()
+        );
+        let reply = handle_ipc(
+            &workers,
+            &mut Vec::new(),
+            &IpcRequest::Call {
+                target: "echo".into(),
+                args: vec![WireValue::String("last-good".into())],
+            },
+        );
+        assert_eq!(
+            reply,
+            IpcReply::success(vec![
+                WireValue::String("last-good".into()),
+                WireValue::Integer(2)
+            ])
+        );
+        stop_workers(workers);
     }
 }

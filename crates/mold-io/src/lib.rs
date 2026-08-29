@@ -398,6 +398,10 @@ impl IpcReply {
             error: Some(error.into()),
         }
     }
+
+    pub fn to_wire(&self) -> io::Result<Vec<u8>> {
+        encode_ipc_reply(self)
+    }
 }
 
 /// Request handed from socket workers to the shell event loop.
