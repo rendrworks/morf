@@ -371,6 +371,21 @@ impl SocketServer {
     pub fn accept(&self) -> io::Result<Socket> {
         self.0.accept().map(|(stream, _)| Socket(stream))
     }
+
+    /// Accepts one pending client without blocking the caller.
+    pub fn try_accept(&self) -> io::Result<Option<Socket>> {
+        self.0.set_nonblocking(true)?;
+        let result = match self.0.accept() {
+            Ok((stream, _)) => Ok(Some(Socket(stream))),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        };
+        let reset = self.0.set_nonblocking(false);
+        match (result, reset) {
+            (Ok(socket), Ok(())) => Ok(socket),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
 }
 
 const IPC_MAX_CONNECTIONS: usize = 32;
@@ -1155,6 +1170,16 @@ mod tests {
     fn split_parser_handles_multibyte_delimiters() {
         let mut parser = SplitParser::new(b"--".to_vec()).unwrap();
         assert_eq!(parser.push(b"a-b--c--"), [b"a-b".to_vec(), b"c".to_vec()]);
+    }
+
+    #[test]
+    fn socket_server_accepts_without_blocking() {
+        let path = std::env::temp_dir().join(format!("mold-io-server-{}", std::process::id()));
+        let server = SocketServer::bind(&path).unwrap();
+        assert!(server.try_accept().unwrap().is_none());
+        let _client = Socket::connect(&path).unwrap();
+        assert!(server.try_accept().unwrap().is_some());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

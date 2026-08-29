@@ -14,8 +14,8 @@ use luna::{
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
 use mold_io::{
-    Bus, DbusProxy, DbusSignal, DbusValue, FileEvent, FileView, FileWatcher, Process, ProcessEvent,
-    Socket, Timer as IoTimer,
+    Bus, DbusProxy, DbusSignal, DbusValue, FileEvent, FileView, FileWatcher, LineParser, Process,
+    ProcessEvent, Socket, SocketServer, SplitParser, Timer as IoTimer,
 };
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
@@ -678,6 +678,18 @@ struct FileWatcherToken {
 
 struct SocketToken {
     socket: RefCell<Socket>,
+}
+
+struct SocketServerToken {
+    server: SocketServer,
+}
+
+struct LineParserToken {
+    parser: RefCell<LineParser>,
+}
+
+struct SplitParserToken {
+    parser: RefCell<SplitParser>,
 }
 
 struct ListModelToken {
@@ -1540,6 +1552,41 @@ fn install_reactive_api(
         let socket_metatable = Table::new(&ctx);
         socket_metatable.set_field(ctx, "__index", socket_methods);
         let socket_metatable = ctx.stash(socket_metatable);
+        let accepted_socket_metatable = socket_metatable.clone();
+        let server_accept = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let server: UserRef<SocketServerToken> = stack.consume(ctx)?;
+            let Some(socket) = server
+                .server
+                .try_accept()
+                .map_err(|error| HostError(error.to_string()))?
+            else {
+                stack.replace(ctx, LuaValue::Nil);
+                return Ok(CallbackReturn::Return);
+            };
+            let userdata = UserData::new_static(
+                &ctx,
+                SocketToken {
+                    socket: RefCell::new(socket),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&accepted_socket_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        let server_methods = Table::new(&ctx);
+        server_methods.set_field(ctx, "accept", server_accept);
+        let server_metatable = Table::new(&ctx);
+        server_metatable.set_field(ctx, "__index", server_methods);
+        let server_metatable = ctx.stash(server_metatable);
+        let socket_server = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let path: String = stack.consume(ctx)?;
+            let server = SocketServer::bind(path).map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(&ctx, SocketServerToken { server });
+            userdata.set_metatable(ctx, Some(ctx.fetch(&server_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "socket_server", socket_server);
         let socket = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let path: String = stack.consume(ctx)?;
             let socket = Socket::connect(path).map_err(|error| HostError(error.to_string()))?;
@@ -1554,6 +1601,80 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "socket", socket);
+
+        let line_push = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (parser, chunk): (UserRef<LineParserToken>, String) = stack.consume(ctx)?;
+            let values = parser.parser.borrow_mut().push(chunk.as_bytes());
+            stack.replace(ctx, string_table(ctx, values));
+            Ok(CallbackReturn::Return)
+        });
+        let line_finish = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let parser: UserRef<LineParserToken> = stack.consume(ctx)?;
+            match parser.parser.borrow_mut().finish() {
+                Some(value) => stack.replace(ctx, value),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let line_methods = Table::new(&ctx);
+        line_methods.set_field(ctx, "push", line_push);
+        line_methods.set_field(ctx, "finish", line_finish);
+        let line_metatable = Table::new(&ctx);
+        line_metatable.set_field(ctx, "__index", line_methods);
+        let line_metatable = ctx.stash(line_metatable);
+        let line_parser = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let userdata = UserData::new_static(
+                &ctx,
+                LineParserToken {
+                    parser: RefCell::new(LineParser::default()),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&line_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "line_parser", line_parser);
+
+        let split_push = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (parser, chunk): (UserRef<SplitParserToken>, String) = stack.consume(ctx)?;
+            let values = parser
+                .parser
+                .borrow_mut()
+                .push(chunk.as_bytes())
+                .into_iter()
+                .map(|value| String::from_utf8_lossy(&value).into_owned());
+            stack.replace(ctx, string_table(ctx, values));
+            Ok(CallbackReturn::Return)
+        });
+        let split_finish = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let parser: UserRef<SplitParserToken> = stack.consume(ctx)?;
+            match parser.parser.borrow_mut().finish() {
+                Some(value) => stack.replace(ctx, String::from_utf8_lossy(&value).as_ref()),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let split_methods = Table::new(&ctx);
+        split_methods.set_field(ctx, "push", split_push);
+        split_methods.set_field(ctx, "finish", split_finish);
+        let split_metatable = Table::new(&ctx);
+        split_metatable.set_field(ctx, "__index", split_methods);
+        let split_metatable = ctx.stash(split_metatable);
+        let split_parser = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let delimiter: String = stack.consume(ctx)?;
+            let parser = SplitParser::new(delimiter.into_bytes())
+                .map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                SplitParserToken {
+                    parser: RefCell::new(parser),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&split_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "split_parser", split_parser);
 
         let dbus_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, property): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
@@ -2813,6 +2934,16 @@ fn table_string_array<'gc>(
     Ok(values.into_iter().map(|(_, value)| value).collect())
 }
 
+fn string_table<'gc>(ctx: Context<'gc>, values: impl IntoIterator<Item = String>) -> Table<'gc> {
+    let table = Table::new(&ctx);
+    for (index, value) in values.into_iter().enumerate() {
+        table
+            .set(ctx, index as i64 + 1, value)
+            .expect("string table accepts integer keys");
+    }
+    table
+}
+
 fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
     u64::try_from(milliseconds)
         .ok()
@@ -3991,6 +4122,38 @@ mod tests {
         runtime.execute("socket.lua", source.as_bytes()).unwrap();
 
         server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn lua_exposes_stream_parsers_and_socket_servers() {
+        let path = std::env::temp_dir().join(format!("mold-lua-server-{}", std::process::id()));
+        let source = format!(
+            r#"
+                local mold = require("mold")
+                local lines = mold.line_parser()
+                local first = lines:push("one\ntw")
+                assert(#first == 1 and first[1] == "one")
+                local second = lines:push("o\r\nlast")
+                assert(#second == 1 and second[1] == "two")
+                assert(lines:finish() == "last")
+
+                local split = mold.split_parser("--")
+                local parts = split:push("a-b--c--tail")
+                assert(#parts == 2 and parts[1] == "a-b" and parts[2] == "c")
+                assert(split:finish() == "tail")
+
+                local server = mold.socket_server("{}")
+                assert(server:accept() == nil)
+            "#,
+            path.display()
+        );
+        let mut runtime = Runtime::default();
+
+        runtime
+            .execute("io-surfaces.lua", source.as_bytes())
+            .unwrap();
+
         std::fs::remove_file(path).unwrap();
     }
 
