@@ -14,8 +14,8 @@ use luna::{
 use mold_io::{Bus, DbusProxy, DbusValue};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
-    AnimationFrame, Behavior, Easing, Element, ListModel, NodeHandle, Physics, Scene,
-    Value as SceneValue, ViewTransition, VirtualList,
+    AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
+    NodeHandle, Physics, Scene, Value as SceneValue, ViewTransition, VirtualList,
 };
 use mold_services::PipeWire;
 
@@ -409,6 +409,17 @@ struct VirtualListToken {
     view: RefCell<VirtualList>,
 }
 
+struct LuaVirtualView {
+    model: Rc<RefCell<ListModel>>,
+    view: VirtualList,
+    delegate: StashedClosure,
+    active: HashMap<ModelId, NodeHandle>,
+}
+
+struct FlickToken {
+    state: RefCell<FlickState>,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -476,6 +487,7 @@ struct ReactiveState {
     parent_transitions: Vec<ParentTransitionRequest>,
     states: HashMap<NodeHandle, StateSet>,
     ipc_handlers: HashMap<String, StashedClosure>,
+    views: HashMap<NodeHandle, LuaVirtualView>,
 }
 
 impl ReactiveState {
@@ -500,6 +512,7 @@ impl ReactiveState {
             parent_transitions: Vec::new(),
             states: HashMap::new(),
             ipc_handlers: HashMap::new(),
+            views: HashMap::new(),
         }
     }
 }
@@ -861,6 +874,103 @@ fn install_reactive_api(
         });
         mold.set_field(ctx, "virtual_list", virtual_list);
 
+        let sync_state = Rc::clone(&state);
+        let sync_view = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (node, offset): (UserRef<NodeToken>, f64) = stack.consume(ctx)?;
+            let mut view = sync_state
+                .borrow_mut()
+                .views
+                .remove(&node.handle)
+                .ok_or_else(|| HostError("node is not a ListView".to_owned()))?;
+            let result =
+                reconcile_lua_view(&sync_state, ctx, limits, node.handle, offset, &mut view);
+            sync_state.borrow_mut().views.insert(node.handle, view);
+            let transitions = result.map_err(HostError)?;
+            let values = Table::new(&ctx);
+            for (index, transition) in transitions.into_iter().enumerate() {
+                values
+                    .set(
+                        ctx,
+                        index as i64 + 1,
+                        view_transition_to_lua(ctx, transition),
+                    )
+                    .expect("view-transition table accepts integer keys");
+            }
+            stack.replace(ctx, values);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "sync_view", sync_view);
+
+        let flick_drag = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (flick, delta): (UserRef<FlickToken>, f64) = stack.consume(ctx)?;
+            flick.state.borrow_mut().drag_by(delta);
+            stack.replace(ctx, flick.state.borrow().offset);
+            Ok(CallbackReturn::Return)
+        });
+        let flick_release = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (flick, velocity): (UserRef<FlickToken>, f64) = stack.consume(ctx)?;
+            flick.state.borrow_mut().release(velocity);
+            Ok(CallbackReturn::Return)
+        });
+        let flick_tick = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (flick, milliseconds): (UserRef<FlickToken>, f64) = stack.consume(ctx)?;
+            if !milliseconds.is_finite() || milliseconds < 0.0 {
+                return Err(HostError("flick delta must be finite and non-negative".into()).into());
+            }
+            let active = flick
+                .state
+                .borrow_mut()
+                .tick(Duration::from_secs_f64(milliseconds / 1_000.0));
+            stack.replace(ctx, (flick.state.borrow().offset, active));
+            Ok(CallbackReturn::Return)
+        });
+        let flick_position = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let flick: UserRef<FlickToken> = stack.consume(ctx)?;
+            stack.replace(ctx, flick.state.borrow().offset);
+            Ok(CallbackReturn::Return)
+        });
+        let flick_methods = Table::new(&ctx);
+        flick_methods.set_field(ctx, "drag_by", flick_drag);
+        flick_methods.set_field(ctx, "release", flick_release);
+        flick_methods.set_field(ctx, "tick", flick_tick);
+        flick_methods.set_field(ctx, "position", flick_position);
+        let flick_metatable = Table::new(&ctx);
+        flick_metatable.set_field(ctx, "__index", flick_methods);
+        let flick_metatable = ctx.stash(flick_metatable);
+        let flickable = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let offset = table_number(ctx, options, "offset", 0.0).map_err(HostError)?;
+            let minimum = table_number(ctx, options, "minimum", 0.0).map_err(HostError)?;
+            let maximum = table_number(ctx, options, "maximum", 0.0).map_err(HostError)?;
+            let deceleration =
+                table_number(ctx, options, "deceleration", 2_500.0).map_err(HostError)?;
+            if !offset.is_finite()
+                || !minimum.is_finite()
+                || !maximum.is_finite()
+                || !deceleration.is_finite()
+                || minimum > maximum
+                || deceleration < 0.0
+            {
+                return Err(HostError("invalid flickable state".into()).into());
+            }
+            let userdata = UserData::new_static(
+                &ctx,
+                FlickToken {
+                    state: RefCell::new(FlickState {
+                        offset: offset.clamp(minimum, maximum),
+                        velocity: 0.0,
+                        minimum,
+                        maximum,
+                        deceleration,
+                    }),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&flick_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "flickable", flickable);
+
         let transition_state = Rc::clone(&state);
         let transition_parent = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (node, parent, options): (UserRef<NodeToken>, UserRef<NodeToken>, Table) =
@@ -1038,6 +1148,21 @@ fn install_reactive_api(
                 element_constructor(ctx, Rc::clone(&state), limits, element),
             );
         }
+        ui.set_field(
+            ctx,
+            "Repeater",
+            view_constructor(ctx, Rc::clone(&state), limits, false),
+        );
+        ui.set_field(
+            ctx,
+            "ListView",
+            view_constructor(ctx, Rc::clone(&state), limits, true),
+        );
+        ui.set_field(
+            ctx,
+            "Flickable",
+            element_constructor(ctx, Rc::clone(&state), limits, Element::Flickable),
+        );
         ui.set_field(
             ctx,
             "component",
@@ -1295,6 +1420,229 @@ fn element_constructor<'gc>(
         stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
         Ok(CallbackReturn::Return)
     })
+}
+
+fn view_constructor<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+    virtualized: bool,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let properties: Table = stack.consume(ctx)?;
+        let model = match properties.get_value(ctx, "model") {
+            LuaValue::UserData(model) => model
+                .downcast_static::<ListModelToken>()
+                .map_err(|_| HostError("view model must be a mold list model".to_owned()))?,
+            _ => return Err(HostError("view model must be a mold list model".to_owned()).into()),
+        };
+        let delegate = match properties.get_value(ctx, "delegate") {
+            LuaValue::Function(Function::Closure(delegate)) => ctx.stash(delegate),
+            _ => return Err(HostError("view delegate must be a function".to_owned()).into()),
+        };
+        let clean = Table::new(&ctx);
+        for (key, value) in properties.iter(ctx) {
+            let special = matches!(
+                key,
+                LuaValue::String(name)
+                    if matches!(
+                        name.display_lossy().to_string().as_str(),
+                        "model" | "delegate" | "item_extent" | "overscan" | "content_y"
+                    )
+            );
+            if !special {
+                clean
+                    .set(ctx, key, value)
+                    .map_err(|error| HostError(error.to_string()))?;
+            }
+        }
+        if virtualized {
+            clean.set_field(ctx, "clip", true);
+        }
+        let node = state.borrow_mut().scene.create(Element::Item);
+        configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
+        let model_handle = Rc::clone(&model.model);
+        let model = model_handle.borrow();
+        let mut configured_view = None;
+        let (range, item_extent, offset) = if virtualized {
+            let item_extent =
+                table_number(ctx, properties, "item_extent", 1.0).map_err(HostError)?;
+            let height = table_number(ctx, properties, "height", 0.0).map_err(HostError)?;
+            let offset = table_number(ctx, properties, "content_y", 0.0).map_err(HostError)?;
+            let overscan = table_number(ctx, properties, "overscan", 1.0).map_err(HostError)?;
+            if item_extent <= 0.0 || height < 0.0 || offset < 0.0 || overscan < 0.0 {
+                return Err(HostError("invalid ListView dimensions".to_owned()).into());
+            }
+            let mut view = VirtualList::new(item_extent, height, overscan as usize)
+                .ok_or_else(|| HostError("invalid ListView dimensions".to_owned()))?;
+            view.set_offset(offset);
+            let range = view.visible_range(model.len());
+            configured_view = Some(view);
+            (range, item_extent, offset)
+        } else {
+            (0..model.len(), 0.0, 0.0)
+        };
+        let mut active = HashMap::new();
+        for index in range {
+            let (id, item) = model
+                .get(index)
+                .expect("view range contains live model indexes");
+            let child = execute_delegate(ctx, &delegate, item, index, limits).map_err(HostError)?;
+            if virtualized {
+                state
+                    .borrow_mut()
+                    .scene
+                    .assign(child, "y", index as f64 * item_extent - offset)
+                    .map_err(|error| HostError(error.to_string()))?;
+            }
+            state
+                .borrow_mut()
+                .scene
+                .reparent(child, Some(node))
+                .map_err(|error| HostError(error.to_string()))?;
+            active.insert(id, child);
+        }
+        drop(model);
+        if let Some(mut view) = configured_view {
+            let _ = view.sync(&model_handle.borrow(), &[]);
+            state.borrow_mut().views.insert(
+                node,
+                LuaVirtualView {
+                    model: model_handle,
+                    view,
+                    delegate,
+                    active,
+                },
+            );
+        }
+        stack.replace(ctx, UserData::new_static(&ctx, NodeToken { handle: node }));
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn execute_delegate(
+    ctx: Context<'_>,
+    delegate: &StashedClosure,
+    item: &SceneValue,
+    index: usize,
+    limits: Limits,
+) -> Result<NodeHandle, String> {
+    let args = Variadic(vec![
+        scene_to_lua(ctx, item)?,
+        LuaValue::Integer(index as i64 + 1),
+    ]);
+    let executor = Executor::start(ctx, ctx.fetch(delegate).into(), args);
+    let budget = limits.effect_fuel;
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua delegate fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            break;
+        }
+    }
+    match executor.take_result::<UserRef<NodeToken>>(ctx) {
+        Ok(Ok(node)) => Ok(node.handle),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn reconcile_lua_view(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'_>,
+    limits: Limits,
+    parent: NodeHandle,
+    offset: f64,
+    view: &mut LuaVirtualView,
+) -> Result<Vec<ViewTransition>, String> {
+    if !offset.is_finite() || offset < 0.0 {
+        return Err("ListView offset must be finite and non-negative".to_owned());
+    }
+    view.view.set_offset(offset);
+    let changes = view.model.borrow_mut().take_changes();
+    let updated = changes
+        .iter()
+        .filter_map(|change| match change {
+            ListChange::Updated { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let model = view.model.borrow();
+    let transitions = view.view.sync(&model, &changes);
+    let visible = view
+        .view
+        .visible_range(model.len())
+        .filter_map(|index| {
+            model
+                .get(index)
+                .map(|(id, value)| (id, index, value.clone()))
+        })
+        .collect::<Vec<_>>();
+    drop(model);
+    let visible_ids = visible.iter().map(|(id, _, _)| *id).collect::<HashSet<_>>();
+    let mut created = Vec::new();
+    for (id, index, item) in &visible {
+        if !view.active.contains_key(id) || updated.contains(id) {
+            match execute_delegate(ctx, &view.delegate, item, *index, limits) {
+                Ok(node) => created.push((*id, *index, node)),
+                Err(error) => {
+                    for (_, _, node) in created {
+                        let _ = state.borrow_mut().scene.remove(node);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+    let removed = view
+        .active
+        .iter()
+        .filter(|(id, _)| !visible_ids.contains(id) || updated.contains(id))
+        .map(|(id, node)| (*id, *node))
+        .collect::<Vec<_>>();
+    for (id, node) in removed {
+        state
+            .borrow_mut()
+            .scene
+            .remove(node)
+            .map_err(|error| error.to_string())?;
+        view.active.remove(&id);
+    }
+    for (id, index, node) in created {
+        state
+            .borrow_mut()
+            .scene
+            .assign(node, "y", index as f64 * view.view.item_extent() - offset)
+            .map_err(|error| error.to_string())?;
+        state
+            .borrow_mut()
+            .scene
+            .reparent(node, Some(parent))
+            .map_err(|error| error.to_string())?;
+        view.active.insert(id, node);
+    }
+    for (id, index, _) in visible {
+        if let Some(node) = view.active.get(&id) {
+            state
+                .borrow_mut()
+                .scene
+                .assign(*node, "y", index as f64 * view.view.item_extent() - offset)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(transitions)
 }
 
 fn configure_element<'gc>(
@@ -2635,6 +2983,91 @@ mod tests {
                     assert(moved and displaced)
                     view:set_offset(4000)
                     assert(view:visible()[1].index == 100)
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn list_view_builds_only_visible_lua_delegates() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "list-view.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local items = {}
+                    for index = 1, 500 do items[index] = "app" .. index end
+                    local model = mold.list_model(items)
+                    local view = ui.ListView {
+                        model = model,
+                        height = 400,
+                        item_extent = 40,
+                        overscan = 1,
+                        content_y = 4000,
+                        delegate = function(item, index)
+                            return ui.Text { text = item, width = 100, height = 40 }
+                        end,
+                    }
+                    model:set(100, "changed")
+                    mold.sync_view(view, 4000)
+                    mold.sync_view(view, 8000)
+                "#,
+            )
+            .unwrap();
+        let scene = runtime.scene();
+        let root = scene.roots()[0];
+        let children = scene.children(root).unwrap();
+
+        assert_eq!(children.len(), 13);
+        assert_eq!(scene.string_value(children[0], "text").unwrap(), "app200");
+        assert_eq!(scene.number(children[0], "y").unwrap(), -40.0);
+        assert!(scene.bool_value(root, "clip").unwrap());
+    }
+
+    #[test]
+    fn repeater_builds_one_delegate_per_model_entry() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "repeater.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local model = mold.list_model({ "one", "two", "three" })
+                    ui.Repeater {
+                        model = model,
+                        delegate = function(item) return ui.Text { text = item } end,
+                    }
+                "#,
+            )
+            .unwrap();
+        let scene = runtime.scene();
+        let children = scene.children(scene.roots()[0]).unwrap();
+
+        assert_eq!(children.len(), 3);
+        assert_eq!(scene.string_value(children[2], "text").unwrap(), "three");
+    }
+
+    #[test]
+    fn flickable_state_drags_and_ticks_in_rust() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "flickable.lua",
+                br#"
+                    local mold = require("mold")
+                    local flick = mold.flickable {
+                        offset = 100,
+                        minimum = 0,
+                        maximum = 500,
+                        deceleration = 100,
+                    }
+                    assert(flick:drag_by(25) == 125)
+                    flick:release(200)
+                    local offset, active = flick:tick(100)
+                    assert(offset == 145 and active)
                 "#,
             )
             .unwrap();

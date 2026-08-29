@@ -234,7 +234,7 @@ impl Layout {
                     .fold(0.0, f64::max),
                 height: sum_with_spacing(&child_sizes, scene.number(node, "spacing")?, false),
             },
-            Element::Item | Element::Rect | Element::MouseArea => {
+            Element::Item | Element::Rect | Element::MouseArea | Element::Flickable => {
                 let mut bounds = Size::default();
                 for (child, size) in children.iter().zip(child_sizes) {
                     bounds.width = bounds.width.max(scene.number(*child, "x")? + size.width);
@@ -294,6 +294,10 @@ impl Layout {
             }
             geometry.x += parent_geometry.x;
             geometry.y += parent_geometry.y;
+            if parent_element == Element::Flickable {
+                geometry.x -= scene.number(parent, "content_x")?;
+                geometry.y -= scene.number(parent, "content_y")?;
+            }
             geometry.x += scene.number(child, "transition_x")?;
             geometry.y += scene.number(child, "transition_y")?;
             self.geometry.insert(child, geometry);
@@ -570,6 +574,34 @@ mod tests {
             layout.input_geometry(&scene).unwrap(),
             vec![layout.geometry(first).unwrap()]
         );
+    }
+
+    #[test]
+    fn flickable_offsets_content_inside_its_viewport() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Flickable);
+        let child = scene.create(Element::Rect);
+        scene.assign(root, "content_x", 25.0).unwrap();
+        scene.assign(root, "content_y", 80.0).unwrap();
+        scene.assign(child, "x", 40.0).unwrap();
+        scene.assign(child, "y", 120.0).unwrap();
+        scene.assign(child, "width", 10.0).unwrap();
+        scene.assign(child, "height", 10.0).unwrap();
+        scene.reparent(child, Some(root)).unwrap();
+
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 100.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(layout.geometry(child).unwrap().x, 15.0);
+        assert_eq!(layout.geometry(child).unwrap().y, 40.0);
     }
 
     #[test]

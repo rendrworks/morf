@@ -197,6 +197,11 @@ impl VirtualList {
         }
     }
 
+    /// Returns the fixed logical extent assigned to every delegate.
+    pub fn item_extent(&self) -> f64 {
+        self.item_extent
+    }
+
     /// Returns indexes requiring live delegates.
     pub fn visible_range(&self, item_count: usize) -> Range<usize> {
         let maximum = (item_count as f64 * self.item_extent - self.viewport_extent).max(0.0);

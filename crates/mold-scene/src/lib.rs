@@ -37,6 +37,8 @@ pub enum Element {
     Row,
     /// Sequential vertical positioner.
     Column,
+    /// Clipped viewport over movable content.
+    Flickable,
 }
 
 impl Element {
@@ -48,6 +50,7 @@ impl Element {
             Self::MouseArea => "MouseArea",
             Self::Row => "Row",
             Self::Column => "Column",
+            Self::Flickable => "Flickable",
         }
     }
 }
@@ -1129,6 +1132,14 @@ fn schema(element: Element) -> Vec<PropertySpec> {
     ];
     match element {
         Element::Item | Element::MouseArea => {}
+        Element::Flickable => {
+            properties.extend([
+                number("content_x", 0.0),
+                number("content_y", 0.0),
+                number("content_width", 0.0),
+                number("content_height", 0.0),
+            ]);
+        }
         Element::Rect => {
             properties.extend([
                 color("color", Color::rgba8(255, 255, 255, 255)),
