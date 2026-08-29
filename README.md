@@ -1,11 +1,13 @@
 # mold
 
-mold is a Wayland shell runtime with a reactive scene graph configured in Lua and
-rendered on the GPU. The implementation follows [PLAN.md](PLAN.md).
+mold is a Wayland rendering and shell engine implemented in Rust. It exposes
+native scene, layout, rendering, input, surface, IO, and service primitives
+through Rust and Lua APIs. Widgets and complete shells are downstream projects.
+The implementation follows [PLAN.md](PLAN.md).
 
-The repository is an incremental workspace. The first runnable milestone embeds
-[Luna](https://github.com/onix-os/luna) behind `mold-lua` and executes bounded Lua
-configuration through the `mold` CLI.
+The `mold-lua` crate embeds [Luna](https://github.com/onix-os/luna) as a bounded
+configuration and extension interface. Built-in engine modules are preloaded by
+Rust; mold does not ship a Lua implementation tree.
 
 ```sh
 oslo make build

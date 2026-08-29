@@ -272,6 +272,21 @@ make.recipe{ name = "fmt", desc = "format the workspace",
 make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
              run = function() sh.cargo("fmt", "--all", "--", "--check") end }
 
+make.recipe{
+  name = "boundary-check",
+  desc = "enforce the engine-only repository boundary",
+  run = function()
+    assert(not oslo.fs.stat("runtime"), "runtime/ must not contain engine implementations")
+    assert(not oslo.fs.stat("crates/mold-widgets"), "widgets belong downstream")
+    assert(not oslo.fs.stat("crates/patin"), "patin belongs downstream")
+    local scan = oslo.run{
+      "grep", "-RIl", "--exclude-dir=target", "-E", "patin|mold-widgets",
+      "crates", "tests", "examples", capture = true,
+    }
+    assert(not scan.ok, "downstream widget or shell ownership leaked into mold")
+  end,
+}
+
 make.recipe{ name = "clean", desc = "remove every build output",
              run = function() sh.cargo("clean") end }
 
@@ -281,6 +296,7 @@ make.alias("c", "compile")
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc" },
+  deps = { "boundary-check", "fmt-check", "check", "test", "check-all", "test-all",
+           "clippy", "rustdoc" },
 }
 make.alias("v", "verify")

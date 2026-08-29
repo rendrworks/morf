@@ -1,6 +1,5 @@
 local mold = require("mold")
 local ui = require("mold.ui")
-local Button = require("patin.widgets.button")
 local clicks = mold.signal("clicks", 0)
 
 mold.variants(mold.screens, function(screen)
@@ -13,11 +12,26 @@ mold.variants(mold.screens, function(screen)
       color = "#ffffff",
       font_size = 18,
     },
-    Button {
+    ui.Item {
       x = 220,
       y = 2,
-      text = function() return "Clicks " .. clicks:get() end,
-      on_clicked = function() clicks:set(clicks:get() + 1) end,
+      width = 100,
+      height = 28,
+      ui.Rect {
+        anchors = { fill = true },
+        radius = 6,
+        color = "#3b4252",
+        ui.Text {
+          x = 10,
+          y = 5,
+          text = function() return "Clicks " .. clicks:get() end,
+          color = "#eceff4",
+        },
+      },
+      ui.MouseArea {
+        anchors = { fill = true },
+        on_clicked = function() clicks:set(clicks:get() + 1) end,
+      },
     },
   }
 end)

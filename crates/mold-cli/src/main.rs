@@ -543,7 +543,6 @@ fn runtimepath_roots(config: &Path) -> Vec<PathBuf> {
     } else if let Some(home) = env::var_os("HOME") {
         roots.push(PathBuf::from(home).join(".local/share/mold/site"));
     }
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lua"));
     let mut unique = Vec::new();
     for root in roots {
         if !unique.contains(&root) {

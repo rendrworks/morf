@@ -3188,14 +3188,6 @@ fn install_reactive_api(
             "Timer",
             timer_constructor(ctx, Rc::clone(&state), limits),
         );
-        let component = execute_module(
-            ctx,
-            "mold.component",
-            include_bytes!("../../../runtime/lua/mold/component.lua"),
-            limits,
-        )
-        .expect("engine component module must load");
-        ui.set_field(ctx, "component", component);
         for kind in ["spring", "smoothed"] {
             ui.set_field(
                 ctx,
@@ -3211,6 +3203,13 @@ fn install_reactive_api(
         mold.set_field(ctx, "ui", ui);
         ctx.set_global("mold", mold);
 
+        let loaded = Table::new(&ctx);
+        loaded.set_field(ctx, "mold", mold);
+        loaded.set_field(ctx, "mold.ui", ui);
+        let package = Table::new(&ctx);
+        package.set_field(ctx, "loaded", loaded);
+        ctx.set_global("package", package);
+
         let mold = ctx.stash(mold);
         let ui = ctx.stash(ui);
         ctx.set_global(
@@ -3220,76 +3219,6 @@ fn install_reactive_api(
                 match name.as_str() {
                     "mold" => stack.replace(ctx, ctx.fetch(&mold)),
                     "mold.ui" => stack.replace(ctx, ctx.fetch(&ui)),
-                    "patin.widgets.button" => {
-                        let module = execute_module(
-                            ctx,
-                            "patin.widgets.button",
-                            include_bytes!("../../../runtime/lua/patin/widgets/button.lua"),
-                            limits,
-                        )
-                        .map_err(HostError)?;
-                        stack.replace(ctx, module);
-                    }
-                    "patin.services.upower" => {
-                        let module = execute_module(
-                            ctx,
-                            "patin.services.upower",
-                            include_bytes!("../../../runtime/lua/patin/services/upower.lua"),
-                            limits,
-                        )
-                        .map_err(HostError)?;
-                        stack.replace(ctx, module);
-                    }
-                    "patin.services.network" => {
-                        let module = execute_module(
-                            ctx,
-                            "patin.services.network",
-                            include_bytes!("../../../runtime/lua/patin/services/network.lua"),
-                            limits,
-                        )
-                        .map_err(HostError)?;
-                        stack.replace(ctx, module);
-                    }
-                    "patin.services.volume" => {
-                        let module = execute_module(
-                            ctx,
-                            "patin.services.volume",
-                            include_bytes!("../../../runtime/lua/patin/services/volume.lua"),
-                            limits,
-                        )
-                        .map_err(HostError)?;
-                        stack.replace(ctx, module);
-                    }
-                    "patin.indicators.battery" => {
-                        let module = execute_module(
-                            ctx,
-                            "patin.indicators.battery",
-                            include_bytes!("../../../runtime/lua/patin/indicators/battery.lua"),
-                            limits,
-                        )
-                        .map_err(HostError)?;
-                        stack.replace(ctx, module);
-                    }
-                    "patin.indicators.network" => {
-                        let module = execute_module(
-                            ctx,
-                            "patin.indicators.network",
-                            include_bytes!("../../../runtime/lua/patin/indicators/network.lua"),
-                            limits,
-                        )
-                        .map_err(HostError)?;
-                        stack.replace(ctx, module);
-                    }
-                    "patin.indicators.volume" => {
-                        let module = execute_module(
-                            ctx,
-                            "patin.indicators.volume",
-                            include_bytes!("../../../runtime/lua/patin/indicators/volume.lua"),
-                            limits,
-                        )
-                        .map_err(HostError)?;
-                        stack.replace(ctx, module);
-                    }
                     _ => {
                         let source = load_runtime_module(&module_roots.borrow(), &name)
                             .map_err(HostError)?;
@@ -3305,17 +3234,10 @@ fn install_reactive_api(
 }
 
 fn default_module_roots() -> Vec<PathBuf> {
-    let mut roots = std::env::var_os("MOLD_RUNTIME_PATH")
+    std::env::var_os("MOLD_RUNTIME_PATH")
         .into_iter()
         .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .collect::<Vec<_>>();
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lua"));
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(prefix) = executable.parent().and_then(Path::parent)
-    {
-        roots.push(prefix.join("share/mold/runtime/lua"));
-    }
-    roots
+        .collect()
 }
 
 fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String> {
@@ -5291,6 +5213,37 @@ mod tests {
     }
 
     #[test]
+    fn engine_modules_are_preloaded_by_rust() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "native-modules.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    assert(package.loaded["mold"] == mold)
+                    assert(package.loaded["mold.ui"] == ui)
+                    assert(type(ui.Item) == "function")
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn downstream_modules_are_not_embedded() {
+        let mut runtime = Runtime::default();
+        let error = runtime
+            .execute("downstream.lua", b"require('consumer.widgets.button')")
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("module `consumer.widgets.button` is not available")
+        );
+    }
+
+    #[test]
     fn runtimepath_loads_user_modules_without_rust_registration() {
         let root = std::env::temp_dir().join(format!("mold-runtime-{}", std::process::id()));
         let module = root.join("lua/user/widget.lua");
@@ -5662,90 +5615,6 @@ mod tests {
     }
 
     #[test]
-    fn pure_lua_system_service_modules_load() {
-        let mut runtime = Runtime::default();
-        runtime
-            .execute(
-                "services.lua",
-                br#"
-                    local UPower = require("patin.services.upower")
-                    local Network = require("patin.services.network")
-                    local Volume = require("patin.services.volume")
-                    local Brightness = require("patin.services.brightness")
-                    local Logind = require("patin.services.logind")
-                    local Mpris = require("patin.services.mpris")
-                    local Oxin = require("patin.services.oxin")
-                    local BatteryIndicator = require("patin.indicators.battery")
-                    local BrightnessIndicator = require("patin.indicators.brightness")
-                    local CellularIndicator = require("patin.indicators.cellular")
-                    local ClockIndicator = require("patin.indicators.clock")
-                    local NetworkIndicator = require("patin.indicators.network")
-                    local VolumeIndicator = require("patin.indicators.volume")
-                    assert(type(UPower.new) == "function")
-                    assert(type(Network.new) == "function")
-                    assert(type(Volume.new) == "function")
-                    assert(type(Brightness.new) == "function")
-                    assert(type(Logind.new) == "function")
-                    assert(type(Mpris.new) == "function")
-                    assert(type(Oxin.new) == "function")
-                    assert(type(mold.greetd.connect) == "function")
-                    assert(type(mold.udev.subscribe) == "function")
-                    mold.udev.subscribe("input", function(event)
-                      assert(event.subsystem == "input")
-                    end)
-                    assert(type(BatteryIndicator) == "function")
-                    assert(type(NetworkIndicator) == "function")
-                    assert(type(VolumeIndicator) == "function")
-
-                    BatteryIndicator {
-                      service = { percentage = function() return 72 end },
-                    }
-                    NetworkIndicator {
-                      service = {
-                        networking_enabled = function() return true end,
-                        wireless_enabled = function() return true end,
-                      },
-                    }
-                    VolumeIndicator {
-                      service = {
-                        level = function() return 0.42 end,
-                        muted = function() return false end,
-                      },
-                    }
-                    BrightnessIndicator {
-                      service = { level = function() return 0.65 end },
-                    }
-                    CellularIndicator {
-                      service = { state = function() return 70 end },
-                    }
-                    ClockIndicator {}
-                "#,
-            )
-            .unwrap();
-        let roots = runtime.scene().roots();
-        assert_eq!(
-            runtime.scene().string_value(roots[0], "text").unwrap(),
-            "72%"
-        );
-        assert_eq!(
-            runtime.scene().string_value(roots[1], "text").unwrap(),
-            "wifi"
-        );
-        assert_eq!(
-            runtime.scene().string_value(roots[2], "text").unwrap(),
-            "42%"
-        );
-        assert_eq!(
-            runtime.scene().string_value(roots[3], "text").unwrap(),
-            "65%"
-        );
-        assert_eq!(
-            runtime.scene().string_value(roots[4], "text").unwrap(),
-            "cell"
-        );
-    }
-
-    #[test]
     fn lua_greetd_client_handles_authentication_prompts() {
         let path = std::env::temp_dir().join(format!("mold-greetd-{}.sock", std::process::id()));
         let _ = fs::remove_file(&path);
@@ -5782,59 +5651,6 @@ mod tests {
         runtime.execute("greetd.lua", source.as_bytes()).unwrap();
         server.join().unwrap();
         fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn pure_lua_patin_builds_complete_phone_shell() {
-        let mut runtime = Runtime::default();
-        runtime
-            .execute(
-                "phone.lua",
-                br#"
-                    local mold = require("mold")
-                    local patin = require("patin")
-                    local apps = {}
-                    for index = 1, 500 do apps[index] = "App " .. index end
-                    patin.shells.Phone {
-                        width = 720,
-                        height = 1280,
-                        apps = mold.list_model(apps),
-                        notifications = mold.list_model({ "Ready" }),
-                        launcher_visible = true,
-                        locked = false,
-                    }
-                "#,
-            )
-            .unwrap();
-        let scene = runtime.scene();
-        let root = scene.roots()[0];
-
-        assert_eq!(scene.number(root, "width").unwrap(), 720.0);
-        assert_eq!(scene.children(root).unwrap().len(), 6);
-        assert!(scene.roots().len() == 1);
-    }
-
-    #[test]
-    fn patin_lock_routes_keys_through_native_pam() {
-        let mut runtime = Runtime::default();
-        runtime
-            .execute(
-                "lock.lua",
-                br#"
-                    local Lock = require("patin.shells.lock")
-                    Lock { pam_service = "mold\0test", username = "user" }
-                "#,
-            )
-            .unwrap();
-        let target = runtime.first_key_target().unwrap();
-        assert!(runtime.dispatch_key_event(target, 65, Some("a")));
-        assert!(runtime.dispatch_key_event(target, 65293, None));
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while !runtime.poll_services() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
-        assert!(!runtime.take_session_unlock_request());
     }
 
     #[test]
@@ -6098,7 +5914,7 @@ mod tests {
     }
 
     #[test]
-    fn component_mouse_area_emits_clicked() {
+    fn mouse_area_emits_clicked() {
         let mut runtime = Runtime::default();
         runtime
             .execute(
@@ -6107,17 +5923,14 @@ mod tests {
                     local mold = require("mold")
                     local ui = require("mold.ui")
                     local count = mold.signal("count", 0)
-                    local Button = ui.component(function(props)
-                        return ui.MouseArea {
+                    ui.Item {
+                        ui.Text { text = function() return "" .. count:get() end },
+                        ui.MouseArea {
                             width = 80,
                             height = 24,
                             accepted_buttons = { "right", 274 },
-                            on_clicked = props.on_clicked,
-                        }
-                    end)
-                    ui.Item {
-                        ui.Text { text = function() return "" .. count:get() end },
-                        Button { on_clicked = function() count:set(count:get() + 1) end },
+                            on_clicked = function() count:set(count:get() + 1) end,
+                        },
                     }
                 "#,
             )
@@ -6613,103 +6426,6 @@ mod tests {
         assert_eq!(
             runtime.scene().string_value(text, "text").unwrap(),
             "20:30:9:12"
-        );
-    }
-
-    #[test]
-    fn pure_lua_button_accepts_binding_and_emits_clicked() {
-        let mut runtime = Runtime::default();
-        runtime
-            .execute(
-                "patin-button.lua",
-                br#"
-                    local mold = require("mold")
-                    local Button = require("patin.widgets.button")
-                    local count = mold.signal("count", 0)
-                    Button {
-                        text = function() return "Clicks " .. count:get() end,
-                        on_clicked = function() count:set(count:get() + 1) end,
-                    }
-                "#,
-            )
-            .unwrap();
-        let button = runtime.scene().roots()[0];
-        let children = runtime.scene().children(button).unwrap();
-        let rect_children = runtime.scene().children(children[0]).unwrap();
-
-        assert!(runtime.dispatch_ui_event(children[1], UiEvent::Clicked));
-
-        assert_eq!(
-            runtime
-                .scene()
-                .string_value(rect_children[0], "text")
-                .unwrap(),
-            "Clicks 1"
-        );
-    }
-
-    #[test]
-    fn declared_components_validate_properties_and_default_slots() {
-        let mut runtime = Runtime::default();
-        runtime
-            .execute(
-                "declared-component.lua",
-                br#"
-                    local mold = require("mold")
-                    local ui = require("mold.ui")
-                    local count = mold.signal("component.count", 0)
-                    local Label = ui.component {
-                      name = "Label",
-                      properties = {
-                        text = { type = "string", default = "empty" },
-                        content = { type = "table", default = {} },
-                      },
-                      signals = { "activated" },
-                      default_slot = "content",
-                      build = function(self)
-                        return ui.Item {
-                          ui.Text { text = self:binding("text") },
-                          table.unpack(self.content),
-                          ui.MouseArea { on_clicked = function() self:emit("activated") end },
-                        }
-                      end,
-                    }
-                    Label {
-                      text = function() return "Count " .. count:get() end,
-                      on_activated = function() count:set(count:get() + 1) end,
-                      ui.Rect { width = 4, height = 4 },
-                    }
-                "#,
-            )
-            .unwrap();
-        let root = runtime.scene().roots()[0];
-        let children = runtime.scene().children(root).unwrap();
-
-        assert_eq!(runtime.scene().element(children[1]).unwrap(), Element::Rect);
-        assert!(runtime.dispatch_ui_event(children[2], UiEvent::Clicked));
-        assert_eq!(
-            runtime.scene().string_value(children[0], "text").unwrap(),
-            "Count 1"
-        );
-
-        let error = runtime
-            .execute(
-                "bad-component.lua",
-                br#"
-                    local ui = require("mold.ui")
-                    local Typed = ui.component {
-                      name = "Typed",
-                      properties = { count = { type = "number", default = 0 } },
-                      build = function() return ui.Item {} end,
-                    }
-                    Typed { count = "wrong" }
-                "#,
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Typed property `count` expects number")
         );
     }
 

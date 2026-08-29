@@ -31,10 +31,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
               "org.freedesktop.DBus"
             )
             assert(string.find(proxy:introspect(), "org.freedesktop.DBus", 1, true))
-            local battery = require("patin.services.upower").new()
-            assert(type(battery:percentage()) == "number")
-            local network = require("patin.services.network").new()
-            assert(type(network:state()) == "number")
         "#,
     )?;
     let mut signals = 0;
@@ -49,6 +45,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         thread::sleep(Duration::from_millis(10));
     }
     assert!(signals > 0, "D-Bus signal callback did not run");
-    println!("Lua D-Bus, UPower, and NetworkManager passed");
+    println!("Lua D-Bus call and signal handling passed");
     Ok(())
 }

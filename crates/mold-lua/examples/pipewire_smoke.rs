@@ -5,16 +5,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute(
         "pipewire-smoke.lua",
         br#"
-            local volume = require("patin.services.volume").new()
-            local level = volume.level()
-            local muted = volume.muted()
-            volume:set_level(level)
-            volume:set_muted(muted)
-            assert(type(volume.node.description) == "string")
-            assert(type(level) == "number")
-            assert(type(muted) == "boolean")
+            local mold = require("mold")
+            local pipewire = mold.pipewire.connect()
+            assert(type(pipewire:nodes()) == "table")
         "#,
     )?;
-    println!("pure-Lua volume service round-trip passed");
+    println!("native PipeWire graph binding passed");
     Ok(())
 }
