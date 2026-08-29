@@ -8,7 +8,7 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mold_layout::{Layout, Size};
+use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{Limits, Runtime, Screen, UiEvent};
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, ScreenInfo};
@@ -232,6 +232,7 @@ fn run_surface(
     runtime
         .update_clock(&clock)
         .map_err(|error| error.to_string())?;
+    apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let mut layout = paint(&runtime, &mut renderer, &client)?;
 
     let mut last_frame = None;
@@ -345,9 +346,43 @@ fn run_surface(
             }
         }
         if repaint {
+            apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;
         }
     }
+}
+
+fn apply_parent_transitions(
+    runtime: &mut Runtime,
+    renderer: &mut RenderEngine<WgpuBackend>,
+    client: &LayerClient,
+) -> Result<(), String> {
+    let transitions = runtime.take_parent_transitions();
+    if transitions.is_empty() {
+        return Ok(());
+    }
+    let root = runtime.scene().roots()[0];
+    let (width, height) = client.logical_size();
+    let available = Size {
+        width: width as f64,
+        height: height as f64,
+    };
+    for transition in transitions {
+        Layout::transition_reparent(
+            &mut runtime.scene_mut(),
+            renderer.backend_mut().text_mut(),
+            ReparentTransition {
+                root,
+                node: transition.node,
+                new_parent: transition.parent,
+                anchors: transition.anchors,
+                available,
+                behavior: transition.behavior,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn paint(

@@ -1,6 +1,6 @@
 //! Sandboxed execution of mold configuration code.
 
-use std::cell::{Ref, RefCell};
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
@@ -89,6 +89,15 @@ pub struct Screen {
     pub height: Option<i32>,
     /// Integer fallback scale advertised by wl_output.
     pub scale: i32,
+}
+
+/// Deferred parent and anchor transition requested by Lua.
+#[derive(Clone, Debug)]
+pub struct ParentTransitionRequest {
+    pub node: NodeHandle,
+    pub parent: NodeHandle,
+    pub anchors: Option<std::collections::BTreeMap<String, SceneValue>>,
+    pub behavior: Behavior,
 }
 
 /// Event name accepted by Lua element handlers.
@@ -199,6 +208,16 @@ impl Runtime {
     /// Borrows the scene produced by executed configuration code.
     pub fn scene(&self) -> Ref<'_, Scene> {
         Ref::map(self.reactive.borrow(), |state| &state.scene)
+    }
+
+    /// Mutably borrows the scene for frame-pipeline structural operations.
+    pub fn scene_mut(&mut self) -> RefMut<'_, Scene> {
+        RefMut::map(self.reactive.borrow_mut(), |state| &mut state.scene)
+    }
+
+    /// Drains parent transitions queued by Lua handlers.
+    pub fn take_parent_transitions(&mut self) -> Vec<ParentTransitionRequest> {
+        std::mem::take(&mut self.reactive.borrow_mut().parent_transitions)
     }
 
     /// Advances the pure-Rust animation driver.
@@ -357,6 +376,7 @@ struct ReactiveState {
     effect_runs: u64,
     clock: SignalId,
     handlers: HashMap<(NodeHandle, UiEvent), StashedClosure>,
+    parent_transitions: Vec<ParentTransitionRequest>,
 }
 
 impl ReactiveState {
@@ -378,6 +398,7 @@ impl ReactiveState {
             effect_runs: 0,
             clock,
             handlers: HashMap::new(),
+            parent_transitions: Vec::new(),
         }
     }
 }
@@ -709,6 +730,40 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "virtual_list", virtual_list);
+
+        let transition_state = Rc::clone(&state);
+        let transition_parent = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (node, parent, options): (UserRef<NodeToken>, UserRef<NodeToken>, Table) =
+                stack.consume(ctx)?;
+            let duration = table_number(ctx, options, "duration", 250.0).map_err(HostError)?;
+            if duration < 0.0 {
+                return Err(
+                    HostError("parent-transition duration cannot be negative".into()).into(),
+                );
+            }
+            let easing = parse_easing(options.get_value(ctx, "easing")).map_err(HostError)?;
+            let anchors = match options.get_value(ctx, "anchors") {
+                LuaValue::Nil => None,
+                value => match lua_to_scene(ctx, value, 0).map_err(HostError)? {
+                    SceneValue::Map(anchors) => Some(anchors),
+                    _ => return Err(HostError("transition anchors must be a table".into()).into()),
+                },
+            };
+            transition_state
+                .borrow_mut()
+                .parent_transitions
+                .push(ParentTransitionRequest {
+                    node: node.handle,
+                    parent: parent.handle,
+                    anchors,
+                    behavior: Behavior {
+                        duration: Duration::from_secs_f64(duration / 1_000.0),
+                        easing,
+                    },
+                });
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "transition_parent", transition_parent);
 
         let dbus_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, property): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
@@ -1266,17 +1321,7 @@ fn configure_behaviors<'gc>(
         if duration < 0.0 {
             return Err("behavior duration cannot be negative".to_owned());
         }
-        let easing = match behavior.get_value(ctx, "easing") {
-            LuaValue::Nil => Easing::Linear,
-            LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
-                "linear" => Easing::Linear,
-                "in_cubic" => Easing::InCubic,
-                "out_cubic" => Easing::OutCubic,
-                "in_out_cubic" => Easing::InOutCubic,
-                name => return Err(format!("unknown easing `{name}`")),
-            },
-            _ => return Err("behavior easing must be a string".to_owned()),
-        };
+        let easing = parse_easing(behavior.get_value(ctx, "easing"))?;
         state
             .borrow_mut()
             .scene
@@ -1304,6 +1349,20 @@ fn table_number<'gc>(
         LuaValue::Integer(value) => Ok(value as f64),
         LuaValue::Number(value) if value.is_finite() => Ok(value),
         _ => Err(format!("{field} must be a finite number")),
+    }
+}
+
+fn parse_easing(value: LuaValue<'_>) -> Result<Easing, String> {
+    match value {
+        LuaValue::Nil => Ok(Easing::Linear),
+        LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
+            "linear" => Ok(Easing::Linear),
+            "in_cubic" => Ok(Easing::InCubic),
+            "out_cubic" => Ok(Easing::OutCubic),
+            "in_out_cubic" => Ok(Easing::InOutCubic),
+            name => Err(format!("unknown easing `{name}`")),
+        },
+        _ => Err("easing must be a string".to_owned()),
     }
 }
 
@@ -2050,5 +2109,37 @@ mod tests {
                 "#,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn lua_queues_parent_and_anchor_transition() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "parent.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local tile = ui.Rect { width = 20, height = 20 }
+                    local left = ui.Item { x = 10, width = 100, height = 100, tile }
+                    local right = ui.Item { x = 200, width = 100, height = 100 }
+                    ui.Item { left, right }
+                    mold.transition_parent(tile, right, {
+                      duration = 300,
+                      easing = "out_cubic",
+                      anchors = { center_in = true },
+                    })
+                "#,
+            )
+            .unwrap();
+
+        let transitions = runtime.take_parent_transitions();
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].behavior.duration, Duration::from_millis(300));
+        assert_eq!(transitions[0].behavior.easing, Easing::OutCubic);
+        assert_eq!(
+            transitions[0].anchors.as_ref().unwrap().get("center_in"),
+            Some(&SceneValue::Bool(true))
+        );
     }
 }
