@@ -555,21 +555,27 @@ fn runtimepath_roots(config: &Path) -> Vec<PathBuf> {
 fn execute_config(runtime: &mut Runtime, path: &Path, source: &[u8]) -> Result<(), String> {
     let roots = runtimepath_roots(path);
     for plugin in runtime_scripts(&roots, "plugin") {
-        let source = fs::read(&plugin)
-            .map_err(|error| format!("could not read {}: {error}", plugin.display()))?;
-        runtime
-            .execute(&plugin.to_string_lossy(), &source)
-            .map_err(|error| error.to_string())?;
+        match fs::read(&plugin) {
+            Ok(source) => {
+                if let Err(error) = runtime.execute(&plugin.to_string_lossy(), &source) {
+                    eprintln!("mold: plugin {}: {error}", plugin.display());
+                }
+            }
+            Err(error) => eprintln!("mold: plugin {}: {error}", plugin.display()),
+        }
     }
     runtime
         .execute(&path.to_string_lossy(), source)
         .map_err(|error| error.to_string())?;
-    for after in runtime_scripts(&roots, "after") {
-        let source = fs::read(&after)
-            .map_err(|error| format!("could not read {}: {error}", after.display()))?;
-        runtime
-            .execute(&after.to_string_lossy(), &source)
-            .map_err(|error| error.to_string())?;
+    for after in runtime_scripts(&roots, "after/plugin") {
+        match fs::read(&after) {
+            Ok(source) => {
+                if let Err(error) = runtime.execute(&after.to_string_lossy(), &source) {
+                    eprintln!("mold: after plugin {}: {error}", after.display());
+                }
+            }
+            Err(error) => eprintln!("mold: after plugin {}: {error}", after.display()),
+        }
     }
     Ok(())
 }
@@ -577,16 +583,30 @@ fn execute_config(runtime: &mut Runtime, path: &Path, source: &[u8]) -> Result<(
 fn runtime_scripts(roots: &[PathBuf], directory: &str) -> Vec<PathBuf> {
     let mut scripts = Vec::new();
     for root in roots {
-        let Ok(entries) = fs::read_dir(root.join(directory)) else {
-            continue;
-        };
-        scripts.extend(entries.flatten().filter_map(|entry| {
-            let path = entry.path();
-            (path.extension().and_then(|value| value.to_str()) == Some("lua")).then_some(path)
-        }));
+        let mut found = Vec::new();
+        collect_lua_scripts(&root.join(directory), &mut found);
+        found.sort();
+        for path in found {
+            if !scripts.contains(&path) {
+                scripts.push(path);
+            }
+        }
     }
-    scripts.sort();
     scripts
+}
+
+fn collect_lua_scripts(path: &Path, scripts: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_lua_scripts(&path, scripts);
+        } else if path.extension().and_then(|value| value.to_str()) == Some("lua") {
+            scripts.push(path);
+        }
+    }
 }
 
 fn lua_snapshot(roots: &[PathBuf]) -> BTreeMap<PathBuf, (u64, SystemTime)> {
@@ -1522,10 +1542,10 @@ mod tests {
     fn config_executes_plugins_before_shell_and_after_last() {
         let root = std::env::temp_dir().join(format!("mold-plugins-{}", std::process::id()));
         fs::create_dir_all(root.join("plugin")).unwrap();
-        fs::create_dir_all(root.join("after")).unwrap();
+        fs::create_dir_all(root.join("after/plugin/nested")).unwrap();
         fs::write(root.join("plugin/first.lua"), b"plugin_value = 40").unwrap();
         fs::write(
-            root.join("after/last.lua"),
+            root.join("after/plugin/nested/last.lua"),
             b"assert(shell_value == 42); after_value = 43",
         )
         .unwrap();
@@ -1537,6 +1557,43 @@ mod tests {
 
         assert_eq!(runtime.scene().roots().len(), 1);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plugin_failures_do_not_stop_later_plugins() {
+        let root = std::env::temp_dir().join(format!("mold-plugin-errors-{}", std::process::id()));
+        fs::create_dir_all(root.join("plugin")).unwrap();
+        fs::write(root.join("plugin/01-broken.lua"), b"error('broken')").unwrap();
+        fs::write(root.join("plugin/02-working.lua"), b"plugin_value = 42").unwrap();
+        let shell = root.join("shell.lua");
+        let mut runtime = Runtime::default();
+
+        execute_config(
+            &mut runtime,
+            &shell,
+            b"assert(plugin_value == 42); mold.ui.Item {}",
+        )
+        .unwrap();
+
+        assert_eq!(runtime.scene().roots().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plugin_path_preserves_root_order() {
+        let base = std::env::temp_dir().join(format!("mold-plugin-order-{}", std::process::id()));
+        let first = base.join("z-first/plugin");
+        let second = base.join("a-second/plugin");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("entry.lua"), b"").unwrap();
+        fs::write(second.join("entry.lua"), b"").unwrap();
+
+        let scripts = runtime_scripts(&[base.join("z-first"), base.join("a-second")], "plugin");
+
+        assert!(scripts[0].starts_with(base.join("z-first")));
+        assert!(scripts[1].starts_with(base.join("a-second")));
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
