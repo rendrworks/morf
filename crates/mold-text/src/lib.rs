@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap};
+use cosmic_text::{
+    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
+};
 use mold_layout::{Size, TextMeasurer};
 use mold_scene::NodeHandle;
 
@@ -24,6 +26,32 @@ pub struct TextSystem {
     fonts: FontSystem,
     glyphs: SwashCache,
     buffers: HashMap<NodeHandle, CachedBuffer>,
+}
+
+/// Pixel format of one rasterized glyph image.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RasterContent {
+    /// One alpha byte per pixel.
+    Mask,
+    /// Four RGBA bytes per pixel.
+    Color,
+}
+
+/// Positioned glyph bitmap ready for atlas upload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RasterGlyph {
+    /// Physical left edge relative to the render target.
+    pub x: i32,
+    /// Physical top edge relative to the render target.
+    pub y: i32,
+    /// Bitmap width in physical pixels.
+    pub width: u32,
+    /// Bitmap height in physical pixels.
+    pub height: u32,
+    /// Bitmap pixel format.
+    pub content: RasterContent,
+    /// Tightly packed bitmap bytes.
+    pub data: Vec<u8>,
 }
 
 impl Default for TextSystem {
@@ -55,6 +83,49 @@ impl TextSystem {
     /// Drops the shaped buffer belonging to a removed scene node.
     pub fn remove(&mut self, node: NodeHandle) {
         self.buffers.remove(&node);
+    }
+
+    /// Rasterizes one cached text node at a physical origin and scale.
+    pub fn rasterize(
+        &mut self,
+        node: NodeHandle,
+        origin: (f32, f32),
+        scale: f32,
+    ) -> Vec<RasterGlyph> {
+        let Some(buffer) = self.buffers.get(&node) else {
+            return Vec::new();
+        };
+        let physical: Vec<_> = buffer
+            .buffer
+            .layout_runs()
+            .flat_map(|run| {
+                run.glyphs.iter().map(move |glyph| {
+                    glyph.physical((origin.0, origin.1 + run.line_y * scale), scale)
+                })
+            })
+            .collect();
+        physical
+            .into_iter()
+            .filter_map(|glyph| {
+                let image = self
+                    .glyphs
+                    .get_image(&mut self.fonts, glyph.cache_key)
+                    .clone()?;
+                let content = match image.content {
+                    SwashContent::Mask => RasterContent::Mask,
+                    SwashContent::Color => RasterContent::Color,
+                    SwashContent::SubpixelMask => RasterContent::Mask,
+                };
+                Some(RasterGlyph {
+                    x: glyph.x + image.placement.left,
+                    y: glyph.y - image.placement.top,
+                    width: image.placement.width,
+                    height: image.placement.height,
+                    content,
+                    data: image.data,
+                })
+            })
+            .collect()
     }
 }
 
@@ -144,5 +215,23 @@ mod tests {
 
         assert!(wrapped.width <= 80.0);
         assert!(wrapped.height > unwrapped.height);
+    }
+
+    #[test]
+    fn rasterizes_cached_text_at_fractional_scale() {
+        let mut scene = Scene::new();
+        let node = scene.create(Element::Text);
+        let mut text = TextSystem::new();
+        text.measure(node, "mold", "sans-serif", 16.0, None);
+
+        let glyphs = text.rasterize(node, (5.0, 7.0), 1.25);
+
+        assert!(!glyphs.is_empty());
+        assert!(
+            glyphs
+                .iter()
+                .all(|glyph| glyph.width > 0 && glyph.height > 0)
+        );
+        assert!(glyphs.iter().all(|glyph| !glyph.data.is_empty()));
     }
 }

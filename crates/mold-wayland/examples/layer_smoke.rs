@@ -16,20 +16,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))?;
     let mut scene = Scene::new();
     let node = scene.create(Element::Rect);
+    let text_node = scene.create(Element::Text);
     let list = DrawList {
-        commands: vec![DrawCommand::Quad {
-            node,
-            bounds: Geometry {
-                x: 0.0,
-                y: 0.0,
-                width: client.logical_size().0 as f64,
-                height: client.logical_size().1 as f64,
+        commands: vec![
+            DrawCommand::Quad {
+                node,
+                bounds: Geometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: client.logical_size().0 as f64,
+                    height: client.logical_size().1 as f64,
+                },
+                color: Color::rgba8(31, 36, 48, 255),
+                radius: 0.0,
+                border_width: 0.0,
+                border_color: Color::rgba8(0, 0, 0, 0),
             },
-            color: Color::rgba8(31, 36, 48, 255),
-            radius: 0.0,
-            border_width: 0.0,
-            border_color: Color::rgba8(0, 0, 0, 0),
-        }],
+            DrawCommand::Text {
+                node: text_node,
+                bounds: Geometry {
+                    x: 12.0,
+                    y: 4.0,
+                    width: 240.0,
+                    height: 24.0,
+                },
+                text: "mold layer smoke".to_owned(),
+                family: "sans-serif".to_owned(),
+                size: 18.0,
+                color: Color::rgba8(255, 255, 255, 255),
+            },
+        ],
     };
     client.request_frame();
     client

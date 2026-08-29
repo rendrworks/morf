@@ -5,7 +5,10 @@ use std::mem;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
-use crate::{DamageRect, DrawList, RenderBackend, SdfQuadInstance};
+use mold_layout::TextMeasurer;
+use mold_text::{RasterContent, TextSystem};
+
+use crate::{DamageRect, DrawCommand, DrawList, RenderBackend, SdfQuadInstance};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -44,6 +47,12 @@ pub struct WgpuBackend {
     viewport_bind_group: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
+    glyph_pipeline: wgpu::RenderPipeline,
+    glyph_layout: wgpu::BindGroupLayout,
+    glyph_sampler: wgpu::Sampler,
+    glyph_buffer: wgpu::Buffer,
+    glyph_capacity: usize,
+    text: TextSystem,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     surface: Option<SurfaceState>,
@@ -143,8 +152,11 @@ impl WgpuBackend {
         });
         let pipeline = create_pipeline(&device, &pipeline_layout, &shader, true);
         let clear_pipeline = create_pipeline(&device, &pipeline_layout, &clear_shader, false);
+        let (glyph_pipeline, glyph_layout, glyph_sampler) = create_glyph_pipeline(&device);
         let instance_capacity = 1;
         let instance_buffer = create_instance_buffer(&device, instance_capacity);
+        let glyph_capacity = 1;
+        let glyph_buffer = create_glyph_buffer(&device, glyph_capacity);
         let (texture, view) = create_target(&device, width, height);
         let surface = surface
             .map(|surface| create_surface_state(&device, &adapter, surface, &view, width, height))
@@ -159,6 +171,12 @@ impl WgpuBackend {
             viewport_bind_group,
             instance_buffer,
             instance_capacity,
+            glyph_pipeline,
+            glyph_layout,
+            glyph_sampler,
+            glyph_buffer,
+            glyph_capacity,
+            text: TextSystem::new(),
             texture,
             view,
             surface,
@@ -204,12 +222,25 @@ impl WgpuBackend {
         &self.texture
     }
 
+    /// Returns the shaping cache used by layout and glyph rendering.
+    pub fn text_mut(&mut self) -> &mut TextSystem {
+        &mut self.text
+    }
+
     fn ensure_instances(&mut self, required: usize) {
         if required <= self.instance_capacity {
             return;
         }
         self.instance_capacity = required.next_power_of_two();
         self.instance_buffer = create_instance_buffer(&self.device, self.instance_capacity);
+    }
+
+    fn ensure_glyphs(&mut self, required: usize) {
+        if required <= self.glyph_capacity {
+            return;
+        }
+        self.glyph_capacity = required.next_power_of_two();
+        self.glyph_buffer = create_glyph_buffer(&self.device, self.glyph_capacity);
     }
 }
 
@@ -227,10 +258,34 @@ impl RenderBackend for WgpuBackend {
             .iter()
             .filter_map(|command| SdfQuadInstance::from_command(command, scale_120))
             .collect();
+        let glyph_batch = create_glyph_batch(
+            GlyphBatchContext {
+                device: &self.device,
+                queue: &self.queue,
+                layout: &self.glyph_layout,
+                sampler: &self.glyph_sampler,
+                target_size: (self.width, self.height),
+            },
+            &mut self.text,
+            list,
+            scale_120,
+        );
         self.ensure_instances(instances.len().max(1));
+        self.ensure_glyphs(
+            glyph_batch
+                .as_ref()
+                .map_or(1, |batch| batch.instances.len().max(1)),
+        );
         if !instances.is_empty() {
             self.queue
                 .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+        }
+        if let Some(batch) = &glyph_batch {
+            self.queue.write_buffer(
+                &self.glyph_buffer,
+                0,
+                bytemuck::cast_slice(&batch.instances),
+            );
         }
         let mut encoder = self
             .device
@@ -264,6 +319,12 @@ impl RenderBackend for WgpuBackend {
                     pass.set_pipeline(&self.pipeline);
                     pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
                     pass.draw(0..6, 0..instances.len() as u32);
+                }
+                if let Some(batch) = &glyph_batch {
+                    pass.set_pipeline(&self.glyph_pipeline);
+                    pass.set_bind_group(0, &batch.bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
+                    pass.draw(0..6, 0..batch.instances.len() as u32);
                 }
             }
         }
@@ -361,6 +422,275 @@ fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
         size: (capacity * mem::size_of::<SdfQuadInstance>()) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
+    })
+}
+
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+struct GlyphInstance {
+    bounds: [f32; 4],
+    uv: [f32; 4],
+    color: [f32; 4],
+}
+
+struct GlyphBatch {
+    instances: Vec<GlyphInstance>,
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
+fn create_glyph_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
+    let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("mold glyph texture layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("mold glyph sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("mold glyph pipeline layout"),
+        bind_group_layouts: &[Some(&texture_layout)],
+        immediate_size: 0,
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("mold glyph shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("glyph.wgsl").into()),
+    });
+    let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+    let buffers = [Some(wgpu::VertexBufferLayout {
+        array_stride: mem::size_of::<GlyphInstance>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &attributes,
+    })];
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("mold glyph pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &buffers,
+            compilation_options: Default::default(),
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: FORMAT,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, texture_layout, sampler)
+}
+
+fn create_glyph_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("mold glyph instances"),
+        size: (capacity * mem::size_of::<GlyphInstance>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+struct GlyphBatchContext<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    layout: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+    target_size: (u32, u32),
+}
+
+fn create_glyph_batch(
+    context: GlyphBatchContext<'_>,
+    text_system: &mut TextSystem,
+    list: &DrawList,
+    scale_120: u32,
+) -> Option<GlyphBatch> {
+    let GlyphBatchContext {
+        device,
+        queue,
+        layout,
+        sampler,
+        target_size: (target_width, target_height),
+    } = context;
+    let scale = scale_120.max(1) as f32 / 120.0;
+    let mut glyphs = Vec::new();
+    for command in &list.commands {
+        let DrawCommand::Text {
+            node,
+            bounds,
+            text,
+            family,
+            size,
+            color,
+        } = command
+        else {
+            continue;
+        };
+        text_system.measure(*node, text, family, *size, Some(bounds.width));
+        for glyph in text_system.rasterize(
+            *node,
+            (bounds.x as f32 * scale, bounds.y as f32 * scale),
+            scale,
+        ) {
+            if glyph.width > 0 && glyph.height > 0 {
+                glyphs.push((glyph, *color));
+            }
+        }
+    }
+    if glyphs.is_empty() {
+        return None;
+    }
+
+    let widest = glyphs
+        .iter()
+        .map(|(glyph, _)| glyph.width)
+        .max()
+        .unwrap_or(1);
+    let atlas_width = widest.max(1024).next_power_of_two();
+    let mut placements = Vec::with_capacity(glyphs.len());
+    let (mut x, mut y, mut row_height) = (0_u32, 0_u32, 0_u32);
+    for (glyph, _) in &glyphs {
+        if x + glyph.width > atlas_width {
+            x = 0;
+            y += row_height;
+            row_height = 0;
+        }
+        placements.push((x, y));
+        x += glyph.width;
+        row_height = row_height.max(glyph.height);
+    }
+    let atlas_height = (y + row_height).max(1).next_power_of_two();
+    let mut pixels = vec![0_u8; atlas_width as usize * atlas_height as usize * 4];
+    let mut instances = Vec::with_capacity(glyphs.len());
+    for ((glyph, color), (atlas_x, atlas_y)) in glyphs.into_iter().zip(placements) {
+        let pixel_count = glyph.width as usize * glyph.height as usize;
+        for index in 0..pixel_count {
+            let source = match glyph.content {
+                RasterContent::Mask if glyph.data.len() >= pixel_count * 3 => {
+                    let at = index * 3;
+                    [
+                        255,
+                        255,
+                        255,
+                        glyph.data[at..at + 3].iter().copied().max().unwrap_or(0),
+                    ]
+                }
+                RasterContent::Mask => [255, 255, 255, glyph.data[index]],
+                RasterContent::Color => {
+                    let at = index * 4;
+                    glyph.data[at..at + 4].try_into().unwrap()
+                }
+            };
+            let source_x = index % glyph.width as usize;
+            let source_y = index / glyph.width as usize;
+            let destination = ((atlas_y as usize + source_y) * atlas_width as usize
+                + atlas_x as usize
+                + source_x)
+                * 4;
+            pixels[destination..destination + 4].copy_from_slice(&source);
+        }
+        let tint = match glyph.content {
+            RasterContent::Mask => [color.red, color.green, color.blue, color.alpha],
+            RasterContent::Color => [1.0, 1.0, 1.0, color.alpha],
+        };
+        instances.push(GlyphInstance {
+            bounds: [
+                glyph.x as f32 / target_width as f32 * 2.0 - 1.0,
+                1.0 - glyph.y as f32 / target_height as f32 * 2.0,
+                glyph.width as f32 / target_width as f32 * 2.0,
+                -(glyph.height as f32 / target_height as f32 * 2.0),
+            ],
+            uv: [
+                atlas_x as f32 / atlas_width as f32,
+                atlas_y as f32 / atlas_height as f32,
+                glyph.width as f32 / atlas_width as f32,
+                glyph.height as f32 / atlas_height as f32,
+            ],
+            color: tint,
+        });
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("mold glyph atlas"),
+        size: wgpu::Extent3d {
+            width: atlas_width,
+            height: atlas_height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(atlas_width * 4),
+            rows_per_image: Some(atlas_height),
+        },
+        wgpu::Extent3d {
+            width: atlas_width,
+            height: atlas_height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("mold glyph atlas bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    Some(GlyphBatch {
+        instances,
+        _texture: texture,
+        bind_group,
     })
 }
 

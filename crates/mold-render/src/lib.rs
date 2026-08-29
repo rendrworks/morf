@@ -37,6 +37,10 @@ pub enum DrawCommand {
         bounds: Geometry,
         /// UTF-8 text used to locate its shaped buffer.
         text: String,
+        /// Font family used by the shaping cache.
+        family: String,
+        /// Logical font size.
+        size: f64,
         /// Glyph colour after node opacity.
         color: Color,
     },
@@ -286,6 +290,8 @@ fn append_node(
             node,
             bounds,
             text: scene.string_value(node, "text")?.to_owned(),
+            family: scene.string_value(node, "font_family")?.to_owned(),
+            size: scene.number(node, "font_size")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
         }),
         Element::Item | Element::Row | Element::Column => {}
