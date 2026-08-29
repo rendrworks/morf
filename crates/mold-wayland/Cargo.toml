@@ -10,3 +10,12 @@ repository.workspace = true
 mold-layout.workspace = true
 mold-render.workspace = true
 mold-scene.workspace = true
+raw-window-handle.workspace = true
+smithay-client-toolkit.workspace = true
+wayland-backend.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
