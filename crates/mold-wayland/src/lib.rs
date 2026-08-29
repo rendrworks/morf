@@ -69,6 +69,10 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 use wayland_protocols::xdg::shell::client::xdg_positioner;
+use wayland_protocols_misc::zwp_input_method_v2::client::{
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+    zwp_input_method_v2::{self, ZwpInputMethodV2},
+};
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
     zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
@@ -152,6 +156,21 @@ pub enum OutputPowerMode {
     On,
 }
 
+/// Atomically committed input-method context.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct InputMethodState {
+    /// Whether a focused text input requested this input method.
+    pub active: bool,
+    /// UTF-8 text around the application cursor when supported.
+    pub surrounding_text: Option<String>,
+    /// Byte offset of the cursor in surrounding text.
+    pub cursor: u32,
+    /// Byte offset of the selection anchor in surrounding text.
+    pub anchor: u32,
+    /// Number of compositor done events received.
+    pub serial: u32,
+}
+
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
@@ -214,6 +233,8 @@ pub enum LayerEvent {
     },
     /// The compositor clipboard selection changed.
     Clipboard { text: Option<String> },
+    /// A focused text input committed a new input-method context.
+    InputMethod(InputMethodState),
     /// The compositor output set changed.
     Screens(Vec<ScreenInfo>),
     /// The compositor positioned and sized the popup.
@@ -297,6 +318,9 @@ impl LayerClient {
         let virtual_keyboard_manager = globals
             .bind::<ZwpVirtualKeyboardManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
+        let input_method_manager = globals
+            .bind::<ZwpInputMethodManagerV2, _, _>(&qh, 1..=1, ())
+            .ok();
         let output_power_manager = globals
             .bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
@@ -341,6 +365,10 @@ impl LayerClient {
             virtual_keyboard_keymap: default_keymap(),
             virtual_keyboard_keymap_file: None,
             virtual_keyboard_clock: Instant::now(),
+            input_method_manager,
+            input_method: None,
+            input_method_pending: InputMethodState::default(),
+            input_method_state: InputMethodState::default(),
             output_power_manager,
             output_power: Vec::new(),
             output_power_target: None,
@@ -563,6 +591,56 @@ impl LayerClient {
         self.state.virtual_keyboard_manager.is_some()
             && self.state.seats.seats().next().is_some()
             && self.state.virtual_keyboard_keymap.is_some()
+    }
+
+    /// Claims the compositor input-method role for the current seat.
+    pub fn enable_input_method(&mut self) -> bool {
+        if self.state.input_method.is_some() {
+            return true;
+        }
+        let Some(manager) = &self.state.input_method_manager else {
+            return false;
+        };
+        let Some(seat) = self.state.seats.seats().next() else {
+            return false;
+        };
+        self.state.input_method = Some(manager.get_input_method(&seat, &self.queue.handle(), ()));
+        true
+    }
+
+    /// Returns whether the compositor exposes input-method-v2 for a seat.
+    pub fn supports_input_method(&self) -> bool {
+        self.state.input_method_manager.is_some() && self.state.seats.seats().next().is_some()
+    }
+
+    /// Commits UTF-8 text through the active input-method context.
+    pub fn input_method_commit(&self, text: &str) -> bool {
+        let Some(input_method) = &self.state.input_method else {
+            return false;
+        };
+        input_method.commit_string(text.to_owned());
+        input_method.commit(self.state.input_method_state.serial);
+        true
+    }
+
+    /// Replaces the active preedit string and cursor range.
+    pub fn input_method_preedit(&self, text: &str, begin: i32, end: i32) -> bool {
+        let Some(input_method) = &self.state.input_method else {
+            return false;
+        };
+        input_method.set_preedit_string(text.to_owned(), begin, end);
+        input_method.commit(self.state.input_method_state.serial);
+        true
+    }
+
+    /// Deletes byte ranges around the application cursor.
+    pub fn input_method_delete(&self, before: u32, after: u32) -> bool {
+        let Some(input_method) = &self.state.input_method else {
+            return false;
+        };
+        input_method.delete_surrounding_text(before, after);
+        input_method.commit(self.state.input_method_state.serial);
+        true
     }
 
     /// Removes the next queued surface event.
@@ -907,6 +985,10 @@ struct LayerState {
     virtual_keyboard_keymap: Option<String>,
     virtual_keyboard_keymap_file: Option<File>,
     virtual_keyboard_clock: Instant,
+    input_method_manager: Option<ZwpInputMethodManagerV2>,
+    input_method: Option<ZwpInputMethodV2>,
+    input_method_pending: InputMethodState,
+    input_method_state: InputMethodState,
     output_power_manager: Option<ZwlrOutputPowerManagerV1>,
     output_power: Vec<OutputPowerControl>,
     output_power_target: Option<wl_output::WlOutput>,
@@ -1937,6 +2019,57 @@ impl Dispatch<ZwlrOutputPowerV1, wl_output::WlOutput> for LayerState {
     }
 }
 
+impl Dispatch<ZwpInputMethodV2, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwpInputMethodV2,
+        event: zwp_input_method_v2::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_input_method_v2::Event::Activate => {
+                state.input_method_pending = InputMethodState {
+                    active: true,
+                    serial: state.input_method_state.serial,
+                    ..InputMethodState::default()
+                };
+            }
+            zwp_input_method_v2::Event::Deactivate => {
+                state.input_method_pending.active = false;
+            }
+            zwp_input_method_v2::Event::SurroundingText {
+                text,
+                cursor,
+                anchor,
+            } => {
+                state.input_method_pending.surrounding_text = Some(text);
+                state.input_method_pending.cursor = cursor;
+                state.input_method_pending.anchor = anchor;
+            }
+            zwp_input_method_v2::Event::Done => {
+                state.input_method_pending.serial = state.input_method_state.serial.wrapping_add(1);
+                state.input_method_state = state.input_method_pending.clone();
+                state
+                    .events
+                    .push_back(LayerEvent::InputMethod(state.input_method_state.clone()));
+            }
+            zwp_input_method_v2::Event::Unavailable => {
+                if state.input_method.as_ref() == Some(proxy) {
+                    state.input_method = None;
+                }
+                state.input_method_state.active = false;
+                state
+                    .events
+                    .push_back(LayerEvent::InputMethod(state.input_method_state.clone()));
+                proxy.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+
 impl ProvidesRegistryState for LayerState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry
@@ -1953,6 +2086,7 @@ wayland_client::delegate_noop!(LayerState: ignore ExtIdleNotifierV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwlrOutputPowerManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwpInputMethodManagerV2);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
 

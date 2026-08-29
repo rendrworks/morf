@@ -133,6 +133,17 @@ pub enum VirtualKeyboardRequest {
     },
 }
 
+/// Deferred input-method-v2 request produced by Lua.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InputMethodRequest {
+    /// Inserts committed UTF-8 text.
+    Commit(String),
+    /// Replaces the preedit string and cursor range.
+    Preedit { text: String, begin: i32, end: i32 },
+    /// Deletes byte ranges around the cursor.
+    Delete { before: u32, after: u32 },
+}
+
 impl IpcValue {
     fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
         match self {
@@ -488,6 +499,47 @@ impl Runtime {
     /// Takes pending virtual keyboard protocol requests.
     pub fn take_virtual_keyboard_requests(&mut self) -> Vec<VirtualKeyboardRequest> {
         std::mem::take(&mut self.reactive.borrow_mut().virtual_keyboard_requests)
+    }
+
+    /// Takes whether Lua requested the compositor input-method role.
+    pub fn take_input_method_enable_request(&mut self) -> bool {
+        std::mem::take(&mut self.reactive.borrow_mut().input_method_enable_requested)
+    }
+
+    /// Takes pending input-method protocol requests.
+    pub fn take_input_method_requests(&mut self) -> Vec<InputMethodRequest> {
+        std::mem::take(&mut self.reactive.borrow_mut().input_method_requests)
+    }
+
+    /// Dispatches an atomically committed input-method context to Lua.
+    pub fn dispatch_input_method(
+        &mut self,
+        active: bool,
+        surrounding_text: Option<String>,
+        cursor: u32,
+        anchor: u32,
+        serial: u32,
+    ) -> bool {
+        let callbacks = self.reactive.borrow().input_method_callbacks.clone();
+        let args = [
+            IpcValue::Boolean(active),
+            surrounding_text.map_or(IpcValue::Nil, IpcValue::String),
+            IpcValue::Integer(i64::from(cursor)),
+            IpcValue::Integer(i64::from(anchor)),
+            IpcValue::Integer(i64::from(serial)),
+        ];
+        for callback in &callbacks {
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("input method callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
     }
 
     /// Runs one bounded key handler with keysym and UTF-8 text arguments.
@@ -1152,6 +1204,9 @@ struct ReactiveState {
     clipboard_requests: Vec<String>,
     clipboard_callbacks: Vec<StashedClosure>,
     virtual_keyboard_requests: Vec<VirtualKeyboardRequest>,
+    input_method_enable_requested: bool,
+    input_method_requests: Vec<InputMethodRequest>,
+    input_method_callbacks: Vec<StashedClosure>,
     views: HashMap<NodeHandle, LuaVirtualView>,
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
@@ -1192,6 +1247,9 @@ impl ReactiveState {
             clipboard_requests: Vec::new(),
             clipboard_callbacks: Vec::new(),
             virtual_keyboard_requests: Vec::new(),
+            input_method_enable_requested: false,
+            input_method_requests: Vec::new(),
+            input_method_callbacks: Vec::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
             timers: Vec::new(),
@@ -1499,6 +1557,73 @@ fn install_reactive_api(
         virtual_keyboard.set_field(ctx, "key", virtual_key);
         virtual_keyboard.set_field(ctx, "modifiers", virtual_modifiers);
         mold.set_field(ctx, "virtual_keyboard", virtual_keyboard);
+        let input_method_subscribe_state = Rc::clone(&state);
+        let input_method_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let callback: Closure = stack.consume(ctx)?;
+            let mut state = input_method_subscribe_state.borrow_mut();
+            if state.input_method_callbacks.len() >= 64 {
+                return Err(HostError("input method callback limit reached".into()).into());
+            }
+            state.input_method_callbacks.push(ctx.stash(callback));
+            state.input_method_enable_requested = true;
+            Ok(CallbackReturn::Return)
+        });
+        let input_method_commit_state = Rc::clone(&state);
+        let input_method_commit = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let text: String = stack.consume(ctx)?;
+            if text.len() > 4_000 {
+                return Err(HostError("input method text limit reached".into()).into());
+            }
+            let mut state = input_method_commit_state.borrow_mut();
+            if state.input_method_requests.len() >= 256 {
+                return Err(HostError("input method request limit reached".into()).into());
+            }
+            state
+                .input_method_requests
+                .push(InputMethodRequest::Commit(text));
+            Ok(CallbackReturn::Return)
+        });
+        let input_method_preedit_state = Rc::clone(&state);
+        let input_method_preedit = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (text, begin, end): (String, i64, i64) = stack.consume(ctx)?;
+            if text.len() > 4_000 {
+                return Err(HostError("input method text limit reached".into()).into());
+            }
+            let begin = i32::try_from(begin)
+                .map_err(|_| HostError("preedit cursor start must fit i32".into()))?;
+            let end = i32::try_from(end)
+                .map_err(|_| HostError("preedit cursor end must fit i32".into()))?;
+            let mut state = input_method_preedit_state.borrow_mut();
+            if state.input_method_requests.len() >= 256 {
+                return Err(HostError("input method request limit reached".into()).into());
+            }
+            state
+                .input_method_requests
+                .push(InputMethodRequest::Preedit { text, begin, end });
+            Ok(CallbackReturn::Return)
+        });
+        let input_method_delete_state = Rc::clone(&state);
+        let input_method_delete = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (before, after): (i64, i64) = stack.consume(ctx)?;
+            let before = u32::try_from(before)
+                .map_err(|_| HostError("delete before length must fit u32".into()))?;
+            let after = u32::try_from(after)
+                .map_err(|_| HostError("delete after length must fit u32".into()))?;
+            let mut state = input_method_delete_state.borrow_mut();
+            if state.input_method_requests.len() >= 256 {
+                return Err(HostError("input method request limit reached".into()).into());
+            }
+            state
+                .input_method_requests
+                .push(InputMethodRequest::Delete { before, after });
+            Ok(CallbackReturn::Return)
+        });
+        let input_method = Table::new(&ctx);
+        input_method.set_field(ctx, "subscribe", input_method_subscribe);
+        input_method.set_field(ctx, "commit", input_method_commit);
+        input_method.set_field(ctx, "preedit", input_method_preedit);
+        input_method.set_field(ctx, "delete", input_method_delete);
+        mold.set_field(ctx, "input_method", input_method);
         let timer_state = Rc::clone(&state);
         let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
@@ -4554,6 +4679,46 @@ mod tests {
                     pressed: false,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn input_method_bridges_context_and_edits() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "input-method.lua",
+                br#"
+                    local active = mold.signal("input.active", false)
+                    mold.input_method.subscribe(function(value) active:set(value) end)
+                    mold.input_method.preedit("hel", 3, 3)
+                    mold.input_method.commit("hello")
+                    mold.input_method.delete(1, 2)
+                    mold.ipc["input.active"] = function() return active:get() end
+                "#,
+            )
+            .unwrap();
+
+        assert!(runtime.take_input_method_enable_request());
+        assert_eq!(
+            runtime.take_input_method_requests(),
+            [
+                InputMethodRequest::Preedit {
+                    text: "hel".to_owned(),
+                    begin: 3,
+                    end: 3,
+                },
+                InputMethodRequest::Commit("hello".to_owned()),
+                InputMethodRequest::Delete {
+                    before: 1,
+                    after: 2,
+                },
+            ]
+        );
+        assert!(runtime.dispatch_input_method(true, Some("hello".to_owned()), 5, 5, 1));
+        assert_eq!(
+            runtime.call_ipc("input.active", &[]).unwrap(),
+            [IpcValue::Boolean(true)]
         );
     }
 

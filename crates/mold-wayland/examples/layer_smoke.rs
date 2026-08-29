@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_power = client.set_output_power(OutputPowerMode::On);
     let clipboard = client.supports_clipboard();
     let virtual_keyboard = client.supports_virtual_keyboard();
+    let input_method = client.supports_input_method();
     'configured: loop {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
@@ -102,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
@@ -111,6 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     output_power,
                     clipboard,
                     virtual_keyboard,
+                    input_method,
                     time_ms,
                     backend.info().name,
                     backend.info().backend,
