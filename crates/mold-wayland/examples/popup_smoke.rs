@@ -161,6 +161,7 @@ fn quad(
         transform: Transform2D::IDENTITY,
         clip: None,
         color,
+        color_overlay: Color::rgba8(0, 0, 0, 0),
         gradient: Gradient::None,
         radii: [8.0; 4],
         border_width: 1.0,

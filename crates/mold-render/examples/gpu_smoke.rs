@@ -34,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     height: 56.0,
                 }),
                 color: Color::rgba8(38, 115, 217, 255),
+                color_overlay: Color::rgba8(0, 0, 0, 0),
                 gradient: Gradient::Linear {
                     start_color: Color::rgba8(38, 115, 217, 255),
                     end_color: Color::rgba8(124, 58, 237, 255),
@@ -63,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 source: image_path.to_string_lossy().into_owned(),
                 icon_theme: None,
                 opacity: 1.0,
+                color_overlay: Color::rgba8(0, 0, 0, 0),
                 fill_mode: ImageFillMode::PreserveAspectFit,
             },
             DrawCommand::Path {

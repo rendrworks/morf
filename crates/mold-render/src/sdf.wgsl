@@ -21,6 +21,7 @@ struct VertexOutput {
     @location(11) gradient_end_color: vec4<f32>,
     @location(12) gradient_points: vec4<f32>,
     @location(13) gradient_data: vec4<f32>,
+    @location(14) color_overlay: vec4<f32>,
 }
 
 @vertex
@@ -39,8 +40,9 @@ fn vs_main(
     @location(10) gradient_end_color: vec4<f32>,
     @location(11) gradient_points: vec4<f32>,
     @location(12) gradient_data: vec4<f32>,
-    @location(13) transform: vec4<f32>,
-    @location(14) transform_offset: vec2<f32>,
+    @location(13) color_overlay: vec4<f32>,
+    @location(14) transform: vec4<f32>,
+    @location(15) transform_offset: vec2<f32>,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -76,6 +78,7 @@ fn vs_main(
     output.gradient_end_color = gradient_end_color;
     output.gradient_points = gradient_points;
     output.gradient_data = gradient_data;
+    output.color_overlay = color_overlay;
     return output;
 }
 
@@ -128,5 +131,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let shadow_softness = max(input.effects.y, 0.5);
     let shadow_alpha = input.shadow_color.a * smoothstep(shadow_softness, -shadow_softness, shadow_distance);
     let shadow_layer = vec4<f32>(input.shadow_color.rgb * shadow_alpha, shadow_alpha);
-    return shape + shadow_layer * (1.0 - shape.a);
+    let result = shape + shadow_layer * (1.0 - shape.a);
+    return vec4<f32>(
+        mix(result.rgb, input.color_overlay.rgb * result.a, input.color_overlay.a),
+        result.a,
+    );
 }

@@ -27,6 +27,8 @@ pub enum DrawCommand {
         clip: Option<Geometry>,
         /// Fill colour after node opacity.
         color: Color,
+        /// Inherited colour overlay.
+        color_overlay: Color,
         /// Optional normalized gradient fill.
         gradient: Gradient,
         /// Corner radii in top-left clockwise order.
@@ -66,6 +68,8 @@ pub enum DrawCommand {
         size: f64,
         /// Glyph colour after node opacity.
         color: Color,
+        /// Inherited colour overlay.
+        color_overlay: Color,
         /// Whether lines wrap at the resolved width.
         wrap: bool,
         /// Ellipsis placement for an overflowing unwrapped line.
@@ -91,6 +95,8 @@ pub enum DrawCommand {
         icon_theme: Option<String>,
         /// Effective node opacity.
         opacity: f32,
+        /// Inherited colour overlay.
+        color_overlay: Color,
         /// Aspect-ratio policy inside the resolved bounds.
         fill_mode: ImageFillMode,
     },
@@ -243,9 +249,12 @@ impl DrawList {
                 scene,
                 layout,
                 root,
-                1.0,
-                Transform2D::IDENTITY,
-                None,
+                PaintContext {
+                    opacity: 1.0,
+                    transform: Transform2D::IDENTITY,
+                    clip: None,
+                    overlay: Color::rgba8(0, 0, 0, 0),
+                },
                 &mut list.commands,
             )?;
         }
@@ -408,6 +417,8 @@ pub struct SdfQuadInstance {
     pub gradient_points: [f32; 4],
     /// Gradient kind, center, and radius.
     pub gradient_data: [f32; 4],
+    /// RGBA colour overlay.
+    pub color_overlay: [f32; 4],
     /// Affine linear terms in column order.
     pub transform: [f32; 4],
     /// Affine translation in logical surface coordinates.
@@ -421,6 +432,7 @@ impl SdfQuadInstance {
             bounds,
             transform,
             color,
+            color_overlay,
             gradient,
             radii,
             border_width,
@@ -481,6 +493,7 @@ impl SdfQuadInstance {
             gradient_end_color,
             gradient_points,
             gradient_data,
+            color_overlay: color_array(*color_overlay),
             transform: [
                 transform.matrix[0] as f32,
                 transform.matrix[1] as f32,
@@ -521,23 +534,31 @@ impl From<SceneError> for RenderError {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PaintContext {
+    opacity: f64,
+    transform: Transform2D,
+    clip: Option<Geometry>,
+    overlay: Color,
+}
+
 fn append_node(
     scene: &Scene,
     layout: &Layout,
     node: NodeHandle,
-    inherited_opacity: f64,
-    inherited_transform: Transform2D,
-    inherited_clip: Option<Geometry>,
+    inherited: PaintContext,
     commands: &mut Vec<DrawCommand>,
 ) -> Result<(), RenderError> {
     if !scene.bool_value(node, "visible")? {
         return Ok(());
     }
-    let opacity = inherited_opacity * scene.number(node, "opacity")?.clamp(0.0, 1.0);
+    let opacity = inherited.opacity * scene.number(node, "opacity")?.clamp(0.0, 1.0);
+    let color_overlay =
+        compose_overlay(inherited.overlay, scene.color_value(node, "color_overlay")?);
     let Some(bounds) = layout.geometry(node) else {
         return Ok(());
     };
-    let transform = inherited_transform.then(Transform2D::around(
+    let transform = inherited.transform.then(Transform2D::around(
         (
             bounds.x + bounds.width / 2.0,
             bounds.y + bounds.height / 2.0,
@@ -547,9 +568,13 @@ fn append_node(
     ));
     let clip = if scene.bool_value(node, "clip")? {
         let bounds = transform.bounds(bounds);
-        Some(inherited_clip.map_or(bounds, |inherited| intersect_geometry(inherited, bounds)))
+        Some(
+            inherited
+                .clip
+                .map_or(bounds, |inherited| intersect_geometry(inherited, bounds)),
+        )
     } else {
-        inherited_clip
+        inherited.clip
     };
     match scene.element(node)? {
         Element::Rect => commands.push(DrawCommand::Quad {
@@ -558,6 +583,7 @@ fn append_node(
             transform,
             clip,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
+            color_overlay,
             gradient: scene_gradient(scene, node, opacity)?,
             radii: rect_radii(scene, node)?,
             border_width: scene.number(node, "border_width")?,
@@ -578,6 +604,7 @@ fn append_node(
             family: scene.string_value(node, "font_family")?.to_owned(),
             size: scene.number(node, "font_size")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
+            color_overlay,
             wrap: scene.bool_value(node, "wrap")?,
             elide: render_text_elide(scene.string_value(node, "elide")?)?,
             horizontal_alignment: render_text_alignment(
@@ -595,6 +622,7 @@ fn append_node(
             source: scene.string_value(node, "source")?.to_owned(),
             icon_theme: None,
             opacity: opacity as f32,
+            color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
         }),
         Element::Icon => commands.push(DrawCommand::Texture {
@@ -605,6 +633,7 @@ fn append_node(
             source: scene.string_value(node, "name")?.to_owned(),
             icon_theme: Some(scene.string_value(node, "theme")?.to_owned()),
             opacity: opacity as f32,
+            color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
         }),
         Element::Shape => commands.push(DrawCommand::Path {
@@ -613,8 +642,14 @@ fn append_node(
             transform,
             clip,
             path: scene.string_value(node, "path")?.to_owned(),
-            fill_color: with_opacity(scene.color_value(node, "fill_color")?, opacity),
-            stroke_color: with_opacity(scene.color_value(node, "stroke_color")?, opacity),
+            fill_color: apply_overlay(
+                with_opacity(scene.color_value(node, "fill_color")?, opacity),
+                color_overlay,
+            ),
+            stroke_color: apply_overlay(
+                with_opacity(scene.color_value(node, "stroke_color")?, opacity),
+                color_overlay,
+            ),
             stroke_width: scene.number(node, "stroke_width")?.max(0.0),
             even_odd: scene.string_value(node, "fill_rule")? == "even_odd",
         }),
@@ -631,9 +666,42 @@ fn append_node(
         | Element::Timer => {}
     }
     for child in scene.children(node)? {
-        append_node(scene, layout, child, opacity, transform, clip, commands)?;
+        append_node(
+            scene,
+            layout,
+            child,
+            PaintContext {
+                opacity,
+                transform,
+                clip,
+                overlay: color_overlay,
+            },
+            commands,
+        )?;
     }
     Ok(())
+}
+
+fn compose_overlay(under: Color, over: Color) -> Color {
+    let alpha = over.alpha + under.alpha * (1.0 - over.alpha);
+    if alpha <= f32::EPSILON {
+        return Color::rgba8(0, 0, 0, 0);
+    }
+    Color {
+        red: (over.red * over.alpha + under.red * under.alpha * (1.0 - over.alpha)) / alpha,
+        green: (over.green * over.alpha + under.green * under.alpha * (1.0 - over.alpha)) / alpha,
+        blue: (over.blue * over.alpha + under.blue * under.alpha * (1.0 - over.alpha)) / alpha,
+        alpha,
+    }
+}
+
+fn apply_overlay(color: Color, overlay: Color) -> Color {
+    Color {
+        red: color.red * (1.0 - overlay.alpha) + overlay.red * overlay.alpha,
+        green: color.green * (1.0 - overlay.alpha) + overlay.green * overlay.alpha,
+        blue: color.blue * (1.0 - overlay.alpha) + overlay.blue * overlay.alpha,
+        alpha: color.alpha,
+    }
 }
 
 fn intersect_geometry(left: Geometry, right: Geometry) -> Geometry {
@@ -968,6 +1036,40 @@ mod tests {
 
         assert_eq!(list.commands[0].node(), first);
         assert_eq!(list.commands[1].node(), second);
+    }
+
+    #[test]
+    fn color_overlay_propagates_through_a_subtree() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let child = scene.create(Element::Rect);
+        let overlay = Color::rgba8(255, 0, 0, 128);
+        scene.assign(root, "color_overlay", "#ff000080").unwrap();
+        scene.assign(child, "width", 20.0).unwrap();
+        scene.assign(child, "height", 10.0).unwrap();
+        scene.reparent(child, Some(root)).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 20.0,
+                height: 10.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+        let DrawCommand::Quad { color_overlay, .. } = &list.commands[0] else {
+            panic!("child did not emit a quad");
+        };
+        assert_eq!(*color_overlay, overlay);
+        assert_eq!(
+            SdfQuadInstance::from_command(&list.commands[0], 120)
+                .unwrap()
+                .color_overlay,
+            color_array(overlay)
+        );
     }
 
     #[test]
@@ -1313,6 +1415,7 @@ mod tests {
                 transform: Transform2D::IDENTITY,
                 clip: None,
                 color: Color::rgba8(0, 0, 0, 255),
+                color_overlay: Color::rgba8(0, 0, 0, 0),
                 gradient: Gradient::None,
                 radii: [0.0; 4],
                 border_width: 0.0,
@@ -1353,6 +1456,7 @@ mod tests {
             transform: Transform2D::IDENTITY,
             clip: None,
             color: Color::rgba8(255, 255, 255, 255),
+            color_overlay: Color::rgba8(0, 0, 0, 0),
             gradient: Gradient::None,
             radii: [4.0; 4],
             border_width: 0.0,

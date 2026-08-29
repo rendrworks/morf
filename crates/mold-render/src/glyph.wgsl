@@ -2,6 +2,7 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) color_overlay: vec4<f32>,
 }
 
 @group(0) @binding(0) var atlas: texture_2d<f32>;
@@ -14,6 +15,7 @@ fn vs_main(
     @location(1) axes: vec4<f32>,
     @location(2) uv_bounds: vec4<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) color_overlay: vec4<f32>,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -28,6 +30,7 @@ fn vs_main(
     output.position = vec4<f32>(origin + corner.x * axes.xy + corner.y * axes.zw, 0.0, 1.0);
     output.uv = uv_bounds.xy + corner * uv_bounds.zw;
     output.color = color;
+    output.color_overlay = color_overlay;
     return output;
 }
 
@@ -35,5 +38,6 @@ fn vs_main(
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sampled = textureSample(atlas, atlas_sampler, input.uv);
     let alpha = sampled.a * input.color.a;
-    return vec4<f32>(sampled.rgb * input.color.rgb * alpha, alpha);
+    let color = sampled.rgb * input.color.rgb;
+    return vec4<f32>(mix(color, input.color_overlay.rgb, input.color_overlay.a) * alpha, alpha);
 }

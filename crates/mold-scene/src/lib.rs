@@ -1132,8 +1132,35 @@ fn property_class(property: &str) -> PropertyClass {
         "x" | "y" | "scale" | "rotation" | "opacity" | "transition_x" | "transition_y" => {
             PropertyClass::Transform
         }
-        "color" | "radius" | "border_width" | "border_color" | "path" | "fill_color"
-        | "stroke_color" | "stroke_width" => PropertyClass::Paint,
+        "color"
+        | "color_overlay"
+        | "radius"
+        | "top_left_radius"
+        | "top_right_radius"
+        | "bottom_right_radius"
+        | "bottom_left_radius"
+        | "border_width"
+        | "border_color"
+        | "gradient_start_color"
+        | "gradient_end_color"
+        | "gradient_start_x"
+        | "gradient_start_y"
+        | "gradient_end_x"
+        | "gradient_end_y"
+        | "gradient_center_x"
+        | "gradient_center_y"
+        | "gradient_radius"
+        | "gradient_angle"
+        | "blur"
+        | "shadow_color"
+        | "shadow_blur"
+        | "shadow_spread"
+        | "shadow_offset_x"
+        | "shadow_offset_y"
+        | "path"
+        | "fill_color"
+        | "stroke_color"
+        | "stroke_width" => PropertyClass::Paint,
         _ => PropertyClass::Layout,
     }
 }
@@ -1167,6 +1194,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         any("anchors", Value::Map(BTreeMap::new())),
         boolean("visible", true),
         number("opacity", 1.0),
+        color("color_overlay", Color::rgba8(0, 0, 0, 0)),
         number("z", 0.0),
         boolean("clip", false),
         number("rotation", 0.0),

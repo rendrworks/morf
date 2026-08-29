@@ -9,13 +9,13 @@ use wgpu::util::DeviceExt;
 
 use mold_image::ImageCache;
 use mold_layout::{Geometry, Size, TextMeasurer, TextOptions, Transform2D};
-use mold_scene::{Element, NodeHandle};
+use mold_scene::{Color, Element, NodeHandle};
 use mold_text::{RasterContent, TextSystem};
 
 use crate::path::PathCache;
 use crate::{
     DamageRect, DrawCommand, DrawList, ImageFillMode, RenderBackend, SdfQuadInstance,
-    VerticalAlignment, physical_damage,
+    VerticalAlignment, color_array, physical_damage,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -572,7 +572,8 @@ fn create_pipeline(
         11 => Float32x4,
         12 => Float32x4,
         13 => Float32x4,
-        14 => Float32x2
+        14 => Float32x4,
+        15 => Float32x2
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<SdfQuadInstance>() as u64,
@@ -777,6 +778,7 @@ struct GlyphInstance {
     axes: [f32; 4],
     uv: [f32; 4],
     color: [f32; 4],
+    color_overlay: [f32; 4],
 }
 
 fn transformed_quad(
@@ -859,7 +861,8 @@ fn create_glyph_pipeline(
         0 => Float32x2,
         1 => Float32x4,
         2 => Float32x4,
-        3 => Float32x4
+        3 => Float32x4,
+        4 => Float32x4
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<GlyphInstance>() as u64,
@@ -964,6 +967,12 @@ struct TexturePlacement {
     uv: [f32; 4],
 }
 
+#[derive(Clone, Copy)]
+struct TextureTint {
+    opacity: f32,
+    overlay: Color,
+}
+
 type TextureBatchContext<'a> = GlyphBatchContext<'a>;
 
 fn create_texture_batch(
@@ -985,6 +994,7 @@ fn create_texture_batch(
             source,
             icon_theme,
             opacity,
+            color_overlay,
             fill_mode,
             ..
         } = command
@@ -1016,7 +1026,10 @@ fn create_texture_batch(
                 command_index,
                 image.clone(),
                 placement,
-                *opacity,
+                TextureTint {
+                    opacity: *opacity,
+                    overlay: *color_overlay,
+                },
                 context.target_size,
                 scale,
             );
@@ -1092,7 +1105,10 @@ fn create_texture_batch(
             command_index,
             texture_image,
             placement,
-            *opacity,
+            TextureTint {
+                opacity: *opacity,
+                overlay: *color_overlay,
+            },
             (target_width, target_height),
             scale,
         );
@@ -1160,7 +1176,7 @@ fn push_texture_instance(
     command_index: usize,
     image: TextureImage,
     placement: TexturePlacement,
-    opacity: f32,
+    tint: TextureTint,
     target_size: (u32, u32),
     scale: f64,
 ) {
@@ -1171,7 +1187,8 @@ fn push_texture_instance(
         origin,
         axes,
         uv: placement.uv,
-        color: [1.0, 1.0, 1.0, opacity],
+        color: [1.0, 1.0, 1.0, tint.opacity],
+        color_overlay: color_array(tint.overlay),
     });
     batch.images.push(image);
 }
@@ -1209,6 +1226,7 @@ fn create_glyph_batch(
             family,
             size,
             color,
+            color_overlay,
             wrap,
             elide,
             horizontal_alignment,
@@ -1246,7 +1264,7 @@ fn create_glyph_batch(
             scale,
         ) {
             if glyph.width > 0 && glyph.height > 0 {
-                glyphs.push((glyph, *color, *transform));
+                glyphs.push((glyph, *color, *color_overlay, *transform));
             }
         }
         let end = glyphs.len() as u32;
@@ -1260,13 +1278,13 @@ fn create_glyph_batch(
 
     let widest = glyphs
         .iter()
-        .map(|(glyph, _, _)| glyph.width)
+        .map(|(glyph, _, _, _)| glyph.width)
         .max()
         .unwrap_or(1);
     let atlas_width = widest.max(1024).next_power_of_two();
     let mut placements = Vec::with_capacity(glyphs.len());
     let (mut x, mut y, mut row_height) = (0_u32, 0_u32, 0_u32);
-    for (glyph, _, _) in &glyphs {
+    for (glyph, _, _, _) in &glyphs {
         if x + glyph.width > atlas_width {
             x = 0;
             y += row_height;
@@ -1279,7 +1297,9 @@ fn create_glyph_batch(
     let atlas_height = (y + row_height).max(1).next_power_of_two();
     let mut pixels = vec![0_u8; atlas_width as usize * atlas_height as usize * 4];
     let mut instances = Vec::with_capacity(glyphs.len());
-    for ((glyph, color, transform), (atlas_x, atlas_y)) in glyphs.into_iter().zip(placements) {
+    for ((glyph, color, color_overlay, transform), (atlas_x, atlas_y)) in
+        glyphs.into_iter().zip(placements)
+    {
         let pixel_count = glyph.width as usize * glyph.height as usize;
         for index in 0..pixel_count {
             let source = match glyph.content {
@@ -1331,6 +1351,7 @@ fn create_glyph_batch(
                 glyph.height as f32 / atlas_height as f32,
             ],
             color: tint,
+            color_overlay: color_array(color_overlay),
         });
     }
     let texture = device.create_texture(&wgpu::TextureDescriptor {
