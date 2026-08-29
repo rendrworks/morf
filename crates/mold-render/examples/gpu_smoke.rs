@@ -90,6 +90,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             parent: None,
             opacity: 0.8,
             blur: 6.0,
+            shadow_color: Color::rgba8(0, 0, 0, 160),
+            shadow_blur: 8.0,
+            shadow_offset: [3.0, 4.0],
             bounds: Geometry {
                 x: 0.0,
                 y: 0.0,

@@ -415,6 +415,17 @@ impl RenderBackend for WgpuBackend {
                     (layer.blur * scale as f32 / 4.0).max(0.5),
                 )
             });
+            let shadow = (layer.shadow_color.alpha > 0.0 && layer.shadow_blur > 0.0).then(|| {
+                create_blur_chain(
+                    &self.device,
+                    &self.blur_layout,
+                    &self.blur_sampler,
+                    &view,
+                    self.width,
+                    self.height,
+                    (layer.shadow_blur * scale as f32 / 4.0).max(0.5),
+                )
+            });
             let composite_view = blur.as_ref().map_or(&view, |chain| &chain.views[3]);
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("mold layer bind group"),
@@ -429,6 +440,51 @@ impl RenderBackend for WgpuBackend {
                         resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
                     },
                 ],
+            });
+            let shadow_bind_group = (layer.shadow_color.alpha > 0.0).then(|| {
+                let shadow_view = shadow.as_ref().map_or(&view, |chain| &chain.views[3]);
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("mold layer shadow bind group"),
+                    layout: &self.glyph_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(shadow_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
+                        },
+                    ],
+                })
+            });
+            let shadow_instance = shadow_bind_group.as_ref().map(|_| {
+                let instance = texture_batch.instances.len() as u32;
+                let (origin, axes) = transformed_quad(
+                    Transform2D::IDENTITY,
+                    Geometry {
+                        x: layer.shadow_offset[0] as f64,
+                        y: layer.shadow_offset[1] as f64,
+                        width: self.width as f64 / scale,
+                        height: self.height as f64 / scale,
+                    },
+                    scale,
+                    (self.width, self.height),
+                );
+                texture_batch.instances.push(GlyphInstance {
+                    origin,
+                    axes,
+                    uv: [0.0, 0.0, 1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, layer.shadow_color.alpha * layer.opacity],
+                    color_overlay: [
+                        layer.shadow_color.red,
+                        layer.shadow_color.green,
+                        layer.shadow_color.blue,
+                        1.0,
+                    ],
+                    mode: [0.0; 4],
+                });
+                instance
             });
             let instance = texture_batch.instances.len() as u32;
             let (origin, axes) = transformed_quad(
@@ -456,6 +512,9 @@ impl RenderBackend for WgpuBackend {
                 bind_group,
                 instance,
                 blur,
+                shadow_bind_group,
+                shadow_instance,
+                shadow,
             });
         }
         let path_batch = create_path_batch(&mut self.paths, list, scale_120)
@@ -569,6 +628,13 @@ impl RenderBackend for WgpuBackend {
                     let target = &layer_targets[layer_index];
                     $pass.set_scissor_rect(x, y, width, height);
                     $pass.set_pipeline(&self.glyph_pipeline);
+                    if let (Some(bind_group), Some(instance)) =
+                        (&target.shadow_bind_group, target.shadow_instance)
+                    {
+                        $pass.set_bind_group(0, bind_group, &[]);
+                        $pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
+                        $pass.draw(0..6, instance..instance + 1);
+                    }
                     $pass.set_bind_group(0, &target.bind_group, &[]);
                     $pass.set_vertex_buffer(0, self.texture_buffer.slice(..));
                     $pass.draw(0..6, target.instance..target.instance + 1);
@@ -618,7 +684,11 @@ impl RenderBackend for WgpuBackend {
                     }
                 }
             }
-            if let Some(blur) = &layer_targets[layer_index].blur {
+            let target = &layer_targets[layer_index];
+            for blur in [target.blur.as_ref(), target.shadow.as_ref()]
+                .into_iter()
+                .flatten()
+            {
                 for (pass_index, blur_pass) in blur.passes.iter().enumerate() {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("mold dual-kawase pass"),
@@ -1187,6 +1257,9 @@ struct LayerTarget {
     bind_group: wgpu::BindGroup,
     instance: u32,
     blur: Option<BlurChain>,
+    shadow_bind_group: Option<wgpu::BindGroup>,
+    shadow_instance: Option<u32>,
+    shadow: Option<BlurChain>,
 }
 
 struct BlurChain {

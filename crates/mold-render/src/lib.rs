@@ -256,6 +256,12 @@ pub struct Layer {
     pub opacity: f32,
     /// Logical dual-kawase blur radius.
     pub blur: f32,
+    /// Colour applied to the blurred subtree alpha behind the layer.
+    pub shadow_color: Color,
+    /// Logical dual-kawase shadow radius.
+    pub shadow_blur: f32,
+    /// Logical shadow displacement.
+    pub shadow_offset: [f32; 2],
     /// Logical bounds affected by this layer.
     pub bounds: Geometry,
 }
@@ -588,18 +594,22 @@ fn append_node(
     }
     let node_opacity = scene.number(node, "opacity")?.clamp(0.0, 1.0);
     let rotation = scene.number(node, "rotation")?;
-    let (explicit_layer, configured_blur) = layer_config(scene, node)?;
+    let layer_config = layer_config(scene, node)?;
     let rect_blur = if scene.element(node)? == Element::Rect {
         scene.number(node, "blur")?.max(0.0)
     } else {
         0.0
     };
-    let layer_blur = configured_blur.max(rect_blur);
+    let layer_blur = layer_config.blur.max(rect_blur);
     let rounded_clip = scene.bool_value(node, "clip")?
         && scene.element(node)? == Element::Rect
         && rect_radii(scene, node)?.iter().any(|radius| *radius > 0.0);
-    let creates_layer =
-        explicit_layer || node_opacity < 1.0 || rotation != 0.0 || rounded_clip || layer_blur > 0.0;
+    let creates_layer = layer_config.enabled
+        || node_opacity < 1.0
+        || rotation != 0.0
+        || rounded_clip
+        || layer_blur > 0.0
+        || layer_config.shadow_color.alpha > 0.0;
     let layer = creates_layer.then(|| {
         let index = list.layers.len();
         list.layers.push(Layer {
@@ -608,6 +618,12 @@ fn append_node(
             parent: inherited.layer,
             opacity: node_opacity as f32,
             blur: layer_blur as f32,
+            shadow_color: layer_config.shadow_color,
+            shadow_blur: layer_config.shadow_blur as f32,
+            shadow_offset: [
+                layer_config.shadow_offset_x as f32,
+                layer_config.shadow_offset_y as f32,
+            ],
             bounds: Geometry::default(),
         });
         index
@@ -750,12 +766,34 @@ fn append_node(
         list.layers[layer].commands.end = end;
         let bounds =
             command_union(&list.commands[start..end]).unwrap_or_else(|| transform.bounds(bounds));
-        list.layers[layer].bounds = expand_geometry(bounds, layer_blur * 2.0);
+        let blurred = expand_geometry(bounds, layer_blur * 2.0);
+        list.layers[layer].bounds = if layer_config.shadow_color.alpha > 0.0 {
+            union_geometry(
+                blurred,
+                offset_geometry(
+                    expand_geometry(bounds, layer_config.shadow_blur * 2.0),
+                    layer_config.shadow_offset_x,
+                    layer_config.shadow_offset_y,
+                ),
+            )
+        } else {
+            blurred
+        };
     }
     Ok(())
 }
 
-fn layer_config(scene: &Scene, node: NodeHandle) -> Result<(bool, f64), RenderError> {
+#[derive(Clone, Copy)]
+struct LayerConfig {
+    enabled: bool,
+    blur: f64,
+    shadow_color: Color,
+    shadow_blur: f64,
+    shadow_offset_x: f64,
+    shadow_offset_y: f64,
+}
+
+fn layer_config(scene: &Scene, node: NodeHandle) -> Result<LayerConfig, RenderError> {
     let Value::Map(layer) = scene.current(node, "layer")? else {
         return Err(RenderError::Scene(
             "layer must be a property map".to_owned(),
@@ -770,16 +808,33 @@ fn layer_config(scene: &Scene, node: NodeHandle) -> Result<(bool, f64), RenderEr
             ));
         }
     };
-    let blur = match layer.get("blur") {
-        None => 0.0,
-        Some(Value::Number(blur)) if blur.is_finite() && *blur >= 0.0 => *blur,
+    let number = |name: &str, non_negative: bool| match layer.get(name) {
+        None => Ok(0.0),
+        Some(Value::Number(value)) if value.is_finite() && (!non_negative || *value >= 0.0) => {
+            Ok(*value)
+        }
+        Some(_) => Err(RenderError::Scene(format!(
+            "layer.{name} must be a {}finite number",
+            if non_negative { "non-negative " } else { "" }
+        ))),
+    };
+    let shadow_color = match layer.get("shadow_color") {
+        None => Color::rgba8(0, 0, 0, 0),
+        Some(Value::Color(color)) => *color,
         Some(_) => {
             return Err(RenderError::Scene(
-                "layer.blur must be a non-negative finite number".to_owned(),
+                "layer.shadow_color must be a color".to_owned(),
             ));
         }
     };
-    Ok((enabled, blur))
+    Ok(LayerConfig {
+        enabled,
+        blur: number("blur", true)?,
+        shadow_color,
+        shadow_blur: number("shadow_blur", true)?,
+        shadow_offset_x: number("shadow_offset_x", false)?,
+        shadow_offset_y: number("shadow_offset_y", false)?,
+    })
 }
 
 fn command_union(commands: &[DrawCommand]) -> Option<Geometry> {
@@ -808,6 +863,14 @@ fn expand_geometry(bounds: Geometry, amount: f64) -> Geometry {
         y: bounds.y - amount,
         width: bounds.width + amount * 2.0,
         height: bounds.height + amount * 2.0,
+    }
+}
+
+fn offset_geometry(bounds: Geometry, x: f64, y: f64) -> Geometry {
+    Geometry {
+        x: bounds.x + x,
+        y: bounds.y + y,
+        ..bounds
     }
 }
 
@@ -1232,10 +1295,12 @@ mod tests {
         assert_eq!(list.layers[0].parent, None);
         assert_eq!(list.layers[0].opacity, 0.5);
         assert_eq!(list.layers[0].blur, 0.0);
+        assert_eq!(list.layers[0].shadow_color.alpha, 0.0);
         assert_eq!(list.layers[1].commands, 0..1);
         assert_eq!(list.layers[1].parent, Some(0));
         assert_eq!(list.layers[1].opacity, 0.25);
         assert_eq!(list.layers[1].blur, 0.0);
+        assert_eq!(list.layers[1].shadow_color.alpha, 0.0);
         let DrawCommand::Quad { color, .. } = list.commands[0] else {
             panic!("child did not emit a quad");
         };
@@ -1253,6 +1318,13 @@ mod tests {
                 Value::Map(BTreeMap::from([
                     ("enabled".to_owned(), Value::Bool(true)),
                     ("blur".to_owned(), Value::Number(8.0)),
+                    (
+                        "shadow_color".to_owned(),
+                        Value::Color(Color::rgba8(8, 16, 24, 128)),
+                    ),
+                    ("shadow_blur".to_owned(), Value::Number(10.0)),
+                    ("shadow_offset_x".to_owned(), Value::Number(12.0)),
+                    ("shadow_offset_y".to_owned(), Value::Number(8.0)),
                 ])),
             )
             .unwrap();
@@ -1275,13 +1347,16 @@ mod tests {
         assert_eq!(list.layers[0].commands, 0..1);
         assert_eq!(list.layers[0].opacity, 1.0);
         assert_eq!(list.layers[0].blur, 8.0);
+        assert_eq!(list.layers[0].shadow_color, Color::rgba8(8, 16, 24, 128));
+        assert_eq!(list.layers[0].shadow_blur, 10.0);
+        assert_eq!(list.layers[0].shadow_offset, [12.0, 8.0]);
         assert_eq!(
             list.layers[0].bounds,
             Geometry {
                 x: -16.0,
                 y: -16.0,
-                width: 52.0,
-                height: 42.0,
+                width: 68.0,
+                height: 54.0,
             }
         );
         let DrawCommand::Quad { blur, .. } = list.commands[0] else {
@@ -1463,6 +1538,7 @@ mod tests {
         assert_eq!(list.layers.len(), 1);
         assert_eq!(list.layers[0].opacity, 0.5);
         assert_eq!(list.layers[0].blur, 0.0);
+        assert_eq!(list.layers[0].shadow_color.alpha, 0.0);
         let instance = SdfQuadInstance::from_command(&list.commands[0], 120).unwrap();
         assert_eq!(instance.gradient_data[0], 1.0);
         assert_eq!(instance.gradient_points, [0.0, 0.0, 1.0, 1.0]);
