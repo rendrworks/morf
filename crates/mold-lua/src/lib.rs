@@ -15,8 +15,8 @@ use luna::{
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
 use mold_io::{
-    Bus, DbusProxy, DbusSignal, DbusValue, FileEvent, FileView, FileWatcher, LineParser, Process,
-    ProcessEvent, Socket, SocketServer, SplitParser, Timer as IoTimer,
+    Bus, DbusProxy, DbusSignal, DbusValue, FileDocument, FileEvent, FileView, FileWatcher,
+    LineParser, Process, ProcessEvent, Socket, SocketServer, SplitParser, Timer as IoTimer,
 };
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_scene::{
@@ -1298,6 +1298,10 @@ struct FileToken {
 
 struct FileWatcherToken {
     watcher: FileWatcher,
+}
+
+struct FileDocumentToken {
+    file: RefCell<FileDocument>,
 }
 
 struct SocketToken {
@@ -2983,6 +2987,184 @@ fn install_reactive_api(
         });
         mold.set_field(ctx, "file", file_view);
 
+        let document_path = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            stack.replace(ctx, file.file.borrow().path().to_string_lossy().as_ref());
+            Ok(CallbackReturn::Return)
+        });
+        let document_set_path = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (file, path, preload): (UserRef<FileDocumentToken>, String, LuaValue) =
+                stack.consume(ctx)?;
+            let preload = match preload {
+                LuaValue::Nil => true,
+                LuaValue::Boolean(value) => value,
+                _ => return Err(HostError("preload must be boolean".into()).into()),
+            };
+            let mut file = file.file.borrow_mut();
+            file.set_path(path);
+            let loaded = !preload || file.reload();
+            stack.replace(ctx, loaded);
+            Ok(CallbackReturn::Return)
+        });
+        let document_reload = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            let loaded = file.file.borrow_mut().reload();
+            stack.replace(ctx, loaded);
+            Ok(CallbackReturn::Return)
+        });
+        let document_loaded = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            stack.replace(ctx, file.file.borrow().loaded());
+            Ok(CallbackReturn::Return)
+        });
+        let document_exists = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            stack.replace(ctx, file.file.borrow().exists());
+            Ok(CallbackReturn::Return)
+        });
+        let document_error = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            match file.file.borrow().error() {
+                Some(error) => stack.replace(ctx, error.as_str()),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let document_text = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            match file.file.borrow().text() {
+                Some(text) => stack.replace(ctx, text),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let document_data = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            match file.file.borrow().data() {
+                Some(data) => stack.replace(ctx, ctx.intern(data)),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let document_set_data = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (file, data): (UserRef<FileDocumentToken>, String) = stack.consume(ctx)?;
+            let saved = file.file.borrow_mut().set_data(data.as_bytes());
+            stack.replace(ctx, saved);
+            Ok(CallbackReturn::Return)
+        });
+        let document_atomic = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            stack.replace(ctx, file.file.borrow().atomic_writes());
+            Ok(CallbackReturn::Return)
+        });
+        let document_set_atomic = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (file, atomic): (UserRef<FileDocumentToken>, bool) = stack.consume(ctx)?;
+            file.file.borrow_mut().set_atomic_writes(atomic);
+            Ok(CallbackReturn::Return)
+        });
+        let document_watching = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            stack.replace(ctx, file.file.borrow().watch_changes());
+            Ok(CallbackReturn::Return)
+        });
+        let document_set_watching = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (file, enabled): (UserRef<FileDocumentToken>, bool) = stack.consume(ctx)?;
+            file.file
+                .borrow_mut()
+                .set_watch_changes(enabled)
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let document_next_change = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (file, timeout_ms): (UserRef<FileDocumentToken>, i64) = stack.consume(ctx)?;
+            let timeout = bounded_timeout(timeout_ms).map_err(HostError)?;
+            match file.file.borrow().next_change(timeout) {
+                Some(FileEvent::Changed) => stack.replace(ctx, "changed"),
+                Some(FileEvent::Moved) => stack.replace(ctx, "moved"),
+                Some(FileEvent::Deleted) => stack.replace(ctx, "deleted"),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let document_methods = Table::new(&ctx);
+        document_methods.set_field(ctx, "path", document_path);
+        document_methods.set_field(ctx, "set_path", document_set_path);
+        document_methods.set_field(ctx, "reload", document_reload);
+        document_methods.set_field(ctx, "loaded", document_loaded);
+        document_methods.set_field(ctx, "exists", document_exists);
+        document_methods.set_field(ctx, "error", document_error);
+        document_methods.set_field(ctx, "text", document_text);
+        document_methods.set_field(ctx, "data", document_data);
+        document_methods.set_field(ctx, "set_text", document_set_data);
+        document_methods.set_field(ctx, "set_data", document_set_data);
+        document_methods.set_field(ctx, "atomic_writes", document_atomic);
+        document_methods.set_field(ctx, "set_atomic_writes", document_set_atomic);
+        document_methods.set_field(ctx, "watch_changes", document_watching);
+        document_methods.set_field(ctx, "set_watch_changes", document_set_watching);
+        document_methods.set_field(ctx, "next_change", document_next_change);
+        let document_metatable = Table::new(&ctx);
+        document_metatable.set_field(ctx, "__index", document_methods);
+        let document_metatable = ctx.stash(document_metatable);
+        let file_document = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let path = match options.get_value(ctx, "path") {
+                LuaValue::String(path) => path.display_lossy().to_string(),
+                _ => return Err(HostError("file_view path must be a string".into()).into()),
+            };
+            let preload = match options.get_value(ctx, "preload") {
+                LuaValue::Nil => true,
+                LuaValue::Boolean(value) => value,
+                _ => return Err(HostError("file_view preload must be boolean".into()).into()),
+            };
+            let watch_changes = match options.get_value(ctx, "watch_changes") {
+                LuaValue::Nil => false,
+                LuaValue::Boolean(value) => value,
+                _ => {
+                    return Err(HostError("file_view watch_changes must be boolean".into()).into());
+                }
+            };
+            let atomic_writes = match options.get_value(ctx, "atomic_writes") {
+                LuaValue::Nil => true,
+                LuaValue::Boolean(value) => value,
+                _ => {
+                    return Err(HostError("file_view atomic_writes must be boolean".into()).into());
+                }
+            };
+            let maximum = match options.get_value(ctx, "maximum_bytes") {
+                LuaValue::Nil => 1024 * 1024,
+                LuaValue::Integer(value) => usize::try_from(value)
+                    .ok()
+                    .filter(|value| (1..=16 * 1024 * 1024).contains(value))
+                    .ok_or_else(|| {
+                        HostError("file_view maximum_bytes must be 1..16777216".into())
+                    })?,
+                _ => {
+                    return Err(
+                        HostError("file_view maximum_bytes must be an integer".into()).into(),
+                    );
+                }
+            };
+            let mut file = FileDocument::new(path, maximum);
+            file.set_atomic_writes(atomic_writes);
+            if preload {
+                file.reload();
+            }
+            if watch_changes {
+                file.set_watch_changes(true)
+                    .map_err(|error| HostError(error.to_string()))?;
+            }
+            let userdata = UserData::new_static(
+                &ctx,
+                FileDocumentToken {
+                    file: RefCell::new(file),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&document_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "file_view", file_document);
+
         let socket_send = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (socket, bytes): (UserRef<SocketToken>, String) = stack.consume(ctx)?;
             if bytes.len() > 64 * 1024 {
@@ -3658,6 +3840,7 @@ fn install_reactive_api(
         for name in [
             "process",
             "file",
+            "file_view",
             "socket_server",
             "socket",
             "line_parser",
@@ -6022,6 +6205,37 @@ mod tests {
                 "#,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn file_view_tracks_state_and_atomic_writes() {
+        let path = std::env::temp_dir().join(format!("mold-lua-file-{}", std::process::id()));
+        let source = format!(
+            r#"
+                local io = require("mold.io")
+                local file = io.file_view {{ path = {:?}, preload = false }}
+                assert(file:path() == {:?})
+                assert(file:loaded() == false)
+                assert(file:exists() == false)
+                assert(file:set_text("hello"))
+                assert(file:loaded())
+                assert(file:exists())
+                assert(file:text() == "hello")
+                assert(file:data() == "hello")
+                assert(file:error() == nil)
+                file:set_atomic_writes(false)
+                assert(file:atomic_writes() == false)
+                assert(file:set_text("world"))
+                assert(file:reload())
+                assert(file:text() == "world")
+            "#,
+            path.to_string_lossy(),
+            path.to_string_lossy(),
+        );
+        let mut runtime = Runtime::default();
+        runtime.execute("file-view.lua", source.as_bytes()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"world");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

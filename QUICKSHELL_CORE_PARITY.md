@@ -70,7 +70,10 @@ behavioral reductions do not count as parity.
 ### `mold.io`
 
 - streaming processes;
-- watched files;
+- bounded stateful file views with preload, reload, atomic writes, stable error
+  categories, and change watching;
+- native JSON encoding and decoding with preserved array, object, and null
+  values;
 - Unix sockets and socket servers;
 - line and delimiter parsers.
 

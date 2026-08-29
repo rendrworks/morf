@@ -218,6 +218,14 @@ impl FileView {
         fs::read(&self.path)
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn exists(&self) -> bool {
+        self.path.exists()
+    }
+
     /// Reads a file only when its current size fits the supplied bound.
     pub fn read_bounded(&self, maximum: usize) -> io::Result<Vec<u8>> {
         let length = fs::metadata(&self.path)?.len();
@@ -231,6 +239,13 @@ impl FileView {
     }
 
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        self.write_with_mode(bytes, true)
+    }
+
+    pub fn write_with_mode(&self, bytes: &[u8], atomic: bool) -> io::Result<()> {
+        if !atomic {
+            return fs::write(&self.path, bytes);
+        }
         let mut temporary = self.path.clone();
         let extension = self
             .path
@@ -247,6 +262,156 @@ impl FileView {
 
     pub fn watch(&self) -> io::Result<FileWatcher> {
         FileWatcher::new(&self.path)
+    }
+}
+
+/// Stable error category for a file load or save operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileViewError {
+    FileNotFound,
+    NotAFile,
+    PermissionDenied,
+    TooLarge,
+    Unknown,
+}
+
+impl FileViewError {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FileNotFound => "file_not_found",
+            Self::NotAFile => "not_a_file",
+            Self::PermissionDenied => "permission_denied",
+            Self::TooLarge => "too_large",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+fn classify_file_error(error: &io::Error) -> FileViewError {
+    match error.kind() {
+        io::ErrorKind::NotFound => FileViewError::FileNotFound,
+        io::ErrorKind::PermissionDenied => FileViewError::PermissionDenied,
+        io::ErrorKind::InvalidData if error.to_string() == "file exceeds read limit" => {
+            FileViewError::TooLarge
+        }
+        io::ErrorKind::IsADirectory => FileViewError::NotAFile,
+        _ => FileViewError::Unknown,
+    }
+}
+
+/// Stateful small-file document with bounded reads and optional change watching.
+pub struct FileDocument {
+    view: FileView,
+    data: Option<Vec<u8>>,
+    error: Option<FileViewError>,
+    watcher: Option<FileWatcher>,
+    maximum: usize,
+    atomic_writes: bool,
+}
+
+impl FileDocument {
+    pub fn new(path: impl Into<PathBuf>, maximum: usize) -> Self {
+        Self {
+            view: FileView::new(path),
+            data: None,
+            error: None,
+            watcher: None,
+            maximum,
+            atomic_writes: true,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        self.view.path()
+    }
+
+    pub fn set_path(&mut self, path: impl Into<PathBuf>) {
+        self.view = FileView::new(path);
+        self.data = None;
+        self.error = None;
+        self.watcher = None;
+    }
+
+    pub fn loaded(&self) -> bool {
+        self.data.is_some()
+    }
+
+    pub fn exists(&self) -> bool {
+        self.view.exists()
+    }
+
+    pub fn error(&self) -> Option<FileViewError> {
+        self.error
+    }
+
+    pub fn data(&self) -> Option<&[u8]> {
+        self.data.as_deref()
+    }
+
+    pub fn text(&self) -> Option<String> {
+        self.data
+            .as_ref()
+            .map(|data| String::from_utf8_lossy(data).into_owned())
+    }
+
+    pub fn reload(&mut self) -> bool {
+        match self.view.read_bounded(self.maximum) {
+            Ok(data) => {
+                self.data = Some(data);
+                self.error = None;
+                true
+            }
+            Err(error) => {
+                self.data = None;
+                self.error = Some(classify_file_error(&error));
+                false
+            }
+        }
+    }
+
+    pub fn set_atomic_writes(&mut self, atomic: bool) {
+        self.atomic_writes = atomic;
+    }
+
+    pub fn atomic_writes(&self) -> bool {
+        self.atomic_writes
+    }
+
+    pub fn set_data(&mut self, data: &[u8]) -> bool {
+        if data.len() > self.maximum {
+            self.error = Some(FileViewError::TooLarge);
+            return false;
+        }
+        match self.view.write_with_mode(data, self.atomic_writes) {
+            Ok(()) => {
+                self.data = Some(data.to_vec());
+                self.error = None;
+                true
+            }
+            Err(error) => {
+                self.error = Some(classify_file_error(&error));
+                false
+            }
+        }
+    }
+
+    pub fn set_watch_changes(&mut self, enabled: bool) -> io::Result<()> {
+        self.watcher = if enabled {
+            Some(self.view.watch()?)
+        } else {
+            None
+        };
+        Ok(())
+    }
+
+    pub fn watch_changes(&self) -> bool {
+        self.watcher.is_some()
+    }
+
+    pub fn next_change(&self, timeout: Duration) -> Option<FileEvent> {
+        self.watcher
+            .as_ref()
+            .and_then(|watcher| watcher.next_event(timeout))
     }
 }
 
@@ -1359,6 +1524,25 @@ mod tests {
     fn split_parser_handles_multibyte_delimiters() {
         let mut parser = SplitParser::new(b"--".to_vec()).unwrap();
         assert_eq!(parser.push(b"a-b--c--"), [b"a-b".to_vec(), b"c".to_vec()]);
+    }
+
+    #[test]
+    fn file_document_tracks_load_write_and_errors() {
+        let path = std::env::temp_dir().join(format!("mold-file-{}", std::process::id()));
+        let mut file = FileDocument::new(&path, 16);
+        assert!(!file.reload());
+        assert_eq!(file.error(), Some(FileViewError::FileNotFound));
+        assert!(file.set_data(b"hello"));
+        assert!(file.loaded());
+        assert!(file.exists());
+        assert_eq!(file.text().as_deref(), Some("hello"));
+        file.set_atomic_writes(false);
+        assert!(!file.atomic_writes());
+        assert!(file.set_data(b"world"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"world");
+        assert!(!file.set_data(b"this value is too large"));
+        assert_eq!(file.error(), Some(FileViewError::TooLarge));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
