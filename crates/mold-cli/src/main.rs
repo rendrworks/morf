@@ -57,7 +57,8 @@ fn run() -> Result<(), String> {
                 | LayerEvent::PointerLeave
                 | LayerEvent::PointerButton { .. }
                 | LayerEvent::Key { .. }
-                | LayerEvent::Modifiers { .. } => {}
+                | LayerEvent::Modifiers { .. }
+                | LayerEvent::Screens(_) => {}
             }
         }
     }
@@ -165,7 +166,9 @@ fn run() -> Result<(), String> {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::KeyPressed);
                     }
                 }
-                LayerEvent::Key { pressed: false, .. } | LayerEvent::Modifiers { .. } => {}
+                LayerEvent::Key { pressed: false, .. }
+                | LayerEvent::Modifiers { .. }
+                | LayerEvent::Screens(_) => {}
             }
         }
         if repaint {

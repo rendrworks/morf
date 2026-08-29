@@ -64,6 +64,21 @@ pub struct InputRect {
     pub height: i32,
 }
 
+/// Capability-derived compositor output description.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScreenInfo {
+    /// Registry-global output identifier.
+    pub id: u32,
+    /// Compositor-provided stable output name when available.
+    pub name: Option<String>,
+    /// Logical top-left position.
+    pub position: Option<(i32, i32)>,
+    /// Logical output dimensions.
+    pub size: Option<(i32, i32)>,
+    /// Integer fallback scale advertised by wl_output.
+    pub scale: i32,
+}
+
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
@@ -108,6 +123,8 @@ pub enum LayerEvent {
         shift: bool,
         logo: bool,
     },
+    /// The compositor output set changed.
+    Screens(Vec<ScreenInfo>),
     /// The compositor closed the layer surface.
     Closed,
 }
@@ -185,6 +202,7 @@ impl LayerClient {
             events: VecDeque::new(),
             pointer: None,
             keyboard: None,
+            screens: Vec::new(),
         };
         Ok(Self {
             connection,
@@ -295,6 +313,11 @@ impl LayerClient {
         physical_size(self.logical_size(), self.scale_120())
     }
 
+    /// Returns the latest compositor output snapshot.
+    pub fn screens(&self) -> &[ScreenInfo] {
+        &self.state.screens
+    }
+
     /// Applies the default, empty, or explicitly rectangular input region.
     pub fn set_input_region(&self, rectangles: Option<&[InputRect]>) {
         let surface = self.state.layer.wl_surface();
@@ -352,6 +375,7 @@ struct LayerState {
     events: VecDeque<LayerEvent>,
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    screens: Vec<ScreenInfo>,
 }
 
 impl CompositorHandler for LayerState {
@@ -444,6 +468,7 @@ impl OutputHandler for LayerState {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
+        self.refresh_screens();
     }
 
     fn update_output(
@@ -452,6 +477,7 @@ impl OutputHandler for LayerState {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
+        self.refresh_screens();
     }
 
     fn output_destroyed(
@@ -460,6 +486,7 @@ impl OutputHandler for LayerState {
         _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
+        self.refresh_screens();
     }
 }
 
@@ -637,6 +664,25 @@ impl KeyboardHandler for LayerState {
 }
 
 impl LayerState {
+    fn refresh_screens(&mut self) {
+        let screens = self
+            .outputs
+            .outputs()
+            .filter_map(|output| self.outputs.info(&output))
+            .map(|info| ScreenInfo {
+                id: info.id,
+                name: info.name,
+                position: info.logical_position,
+                size: info.logical_size,
+                scale: info.scale_factor,
+            })
+            .collect::<Vec<_>>();
+        if screens != self.screens {
+            self.screens = screens.clone();
+            self.events.push_back(LayerEvent::Screens(screens));
+        }
+    }
+
     fn push_key(&mut self, event: KeyEvent, pressed: bool, repeat: bool) {
         self.events.push_back(LayerEvent::Key {
             keysym: event.keysym.raw(),

@@ -66,19 +66,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         client.scale_120(),
     )?;
-    loop {
+    'framed: loop {
         client.dispatch()?;
-        if let Some(LayerEvent::Frame { time_ms }) = client.next_event() {
-            println!(
-                "{}x{} at {}/120, frame {} ms, {} ({:?})",
-                client.logical_size().0,
-                client.logical_size().1,
-                client.scale_120(),
-                time_ms,
-                backend.info().name,
-                backend.info().backend,
-            );
-            break;
+        while let Some(event) = client.next_event() {
+            if let LayerEvent::Frame { time_ms } = event {
+                println!(
+                    "{}x{} at {}/120, {} screens, frame {} ms, {} ({:?})",
+                    client.logical_size().0,
+                    client.logical_size().1,
+                    client.scale_120(),
+                    client.screens().len(),
+                    time_ms,
+                    backend.info().name,
+                    backend.info().backend,
+                );
+                break 'framed;
+            }
         }
     }
     Ok(())
