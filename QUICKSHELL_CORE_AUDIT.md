@@ -103,3 +103,20 @@ children, and honors antialiasing and physical-pixel border alignment.
 All included Quickshell core, IO, window, and visual support types now have an
 audited native mapping. External runtime acceptance remains separate from this
 source-surface audit.
+
+## Acceptance evidence
+
+Validated on 2026-08-30:
+
+- `oslo make verify` passed the boundary, formatting, check, test, all-feature,
+  clippy, rustdoc, and final verification lanes;
+- `oslo make gpu-smoke` compiled the WGSL pipeline and submitted a frame through
+  llvmpipe Vulkan;
+- `oslo make wayland-smoke` presented a frame callback on the live compositor
+  across `eDP-1`, `DP-5`, and `DP-6`;
+- the board example and the multi-window parented popup smoke each remained
+  active for eight seconds and exited only through the acceptance timeout.
+
+The live shader validation caught and fixed a WGSL local-name collision that
+Rust compilation alone could not detect. `/dev/dri` is absent in this
+environment, so real Mali/Panfrost acceptance remains pending.

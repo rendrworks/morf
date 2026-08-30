@@ -108,10 +108,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         antialiasing,
     );
     let border_width = max(input.border.x, 0.0);
-    let inner_distance = signed_distance + border_width;
+    let border_inner_distance = signed_distance + border_width;
     let inner = select(
-        select(0.0, 1.0, inner_distance <= 0.0),
-        smoothstep(softness, -softness, inner_distance),
+        select(0.0, 1.0, border_inner_distance <= 0.0),
+        smoothstep(softness, -softness, border_inner_distance),
         antialiasing,
     );
     let normalized = point / max(input.shape.zw, vec2<f32>(0.000001));
