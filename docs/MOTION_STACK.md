@@ -17,8 +17,13 @@ retargeting rules, damage tracking, and Rust frame clock.
 Polymorpher currently accepts these built-in shape names through
 `morph_from`/`morph_to`:
 
-- `circle`, `triangle`, `square`, `diamond`, `pentagon`, and `hexagon`;
-- `heptagon`, `octagon`, `nonagon`, `decagon`, `dodecagon`, and `star`.
+- `circle`, `square`, `slanted`, `arch`, `fan`, `arrow`, `semi_circle`, `oval`,
+  `pill`, `triangle`, `diamond`, `clam_shell`, `pentagon`, and `gem`;
+- `sunny`, `very_sunny`, `cookie4`, `cookie6`, `cookie7`, `cookie9`, `cookie12`,
+  `ghostish`, `clover4`, `clover8`, `burst`, `soft_burst`, `boom`, and
+  `soft_boom`;
+- `flower`, `puffy`, `puffy_diamond`, `pixel_circle`, `pixel_triangle`, `bun`,
+  and `heart`.
 
 `morph_progress` is a normal animated numeric scene property. Lua declares the
 two shape names and changes the target progress; Rust builds, caches,

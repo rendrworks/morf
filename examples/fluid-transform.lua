@@ -65,10 +65,13 @@ local shape = ui.Rect {
     shadow_blur = { duration = 300, easing = "out_cubic" },
     shadow_spread = { duration = 300, easing = "out_cubic" },
   },
-  on_clicked = function()
-    local ok, error = transformed:set(not transformed:get())
-    assert(ok, error)
-  end,
+  ui.MouseArea {
+    anchors = { fill = true },
+    on_clicked = function()
+      local ok, error = transformed:set(not transformed:get())
+      assert(ok, error)
+    end,
+  },
 }
 
 ui.Item {

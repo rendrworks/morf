@@ -398,9 +398,11 @@ fn fluid_transform_example_animates_square_to_circle_in_rust() {
         .unwrap();
     let root = runtime.scene().roots()[0];
     let shape = runtime.scene().children(root).unwrap()[1];
+    let pointer = runtime.scene().children(shape).unwrap()[0];
     assert_eq!(runtime.scene().number(shape, "radius").unwrap(), 12.0);
 
-    assert!(runtime.dispatch_ui_event(shape, UiEvent::Clicked));
+    assert_eq!(runtime.scene().element(pointer).unwrap(), Element::MouseArea);
+    assert!(runtime.dispatch_ui_event(pointer, UiEvent::Clicked));
     assert_eq!(
         runtime.scene().target(shape, "radius").unwrap(),
         &SceneValue::Number(60.0)
@@ -436,20 +438,25 @@ fn morph_stack_example_combines_native_animation_and_geometry() {
         .tick_animations(Duration::from_secs(2))
         .unwrap();
     let root = runtime.scene().roots()[0];
-    let shape = runtime.scene().children(root).unwrap()[1];
+    let root_children = runtime.scene().children(root).unwrap();
+    let shape = root_children[10];
+    let second_stage = root_children[6];
+    let second_stage_children = runtime.scene().children(second_stage).unwrap();
+    let pointer = second_stage_children[4];
 
     assert_eq!(
         runtime.scene().string_value(shape, "morph_from").unwrap(),
-        "square"
+        "circle"
     );
     assert_eq!(
         runtime.scene().string_value(shape, "morph_to").unwrap(),
-        "circle"
+        "soft_burst"
     );
-    assert!(runtime.dispatch_ui_event(shape, UiEvent::Clicked));
+    assert_eq!(runtime.scene().element(pointer).unwrap(), Element::MouseArea);
+    assert!(runtime.dispatch_ui_event(pointer, UiEvent::Clicked));
     assert_eq!(
         runtime.scene().target(shape, "morph_progress").unwrap(),
-        &SceneValue::Number(1.0)
+        &SceneValue::Number(1.0 / 3.0)
     );
 
     let frame = runtime
