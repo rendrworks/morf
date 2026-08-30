@@ -101,8 +101,9 @@ behavioral reductions do not count as parity.
 - restartable streaming processes with process IDs, working directories,
   bounded mutable commands and environment contexts with atomic restart,
   stdin, signals, and exit status;
-- bounded stateful file views with preload, reload, atomic writes, stable error
-  categories, and change watching;
+- bounded stateful file views with persistent preload and watch policies,
+  explicit unload and path rebinding, reload, atomic writes, stable error
+  categories, and watcher rebinding;
 - native JSON encoding and decoding with preserved array, object, and null
   values, plus direct stateful file-view adapters;
 - Unix sockets and socket servers;

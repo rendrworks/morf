@@ -375,7 +375,17 @@ impl FileView {
 
     /// Reads a file only when its current size fits the supplied bound.
     pub fn read_bounded(&self, maximum: usize) -> io::Result<Vec<u8>> {
-        let length = fs::metadata(&self.path)?.len();
+        let metadata = fs::metadata(&self.path)?;
+        if metadata.is_dir() {
+            return Err(io::Error::from(io::ErrorKind::IsADirectory));
+        }
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path is not a file",
+            ));
+        }
+        let length = metadata.len();
         if length > maximum as u64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -442,6 +452,9 @@ fn classify_file_error(error: &io::Error) -> FileViewError {
             FileViewError::TooLarge
         }
         io::ErrorKind::IsADirectory => FileViewError::NotAFile,
+        io::ErrorKind::InvalidInput if error.to_string() == "path is not a file" => {
+            FileViewError::NotAFile
+        }
         _ => FileViewError::Unknown,
     }
 }
@@ -452,7 +465,9 @@ pub struct FileDocument {
     data: Option<Vec<u8>>,
     error: Option<FileViewError>,
     watcher: Option<FileWatcher>,
+    watch_changes: bool,
     maximum: usize,
+    preload: bool,
     atomic_writes: bool,
 }
 
@@ -463,7 +478,9 @@ impl FileDocument {
             data: None,
             error: None,
             watcher: None,
+            watch_changes: false,
             maximum,
+            preload: true,
             atomic_writes: true,
         }
     }
@@ -472,11 +489,26 @@ impl FileDocument {
         self.view.path()
     }
 
-    pub fn set_path(&mut self, path: impl Into<PathBuf>) {
-        self.view = FileView::new(path);
+    pub fn set_path(&mut self, path: impl Into<PathBuf>) -> io::Result<()> {
+        let view = FileView::new(path);
+        let watcher = if self.watch_changes && !view.path().as_os_str().is_empty() {
+            Some(view.watch()?)
+        } else {
+            None
+        };
+        self.view = view;
         self.data = None;
         self.error = None;
-        self.watcher = None;
+        self.watcher = watcher;
+        Ok(())
+    }
+
+    pub fn set_preload(&mut self, preload: bool) {
+        self.preload = preload;
+    }
+
+    pub fn preload(&self) -> bool {
+        self.preload
     }
 
     pub fn loaded(&self) -> bool {
@@ -543,16 +575,17 @@ impl FileDocument {
     }
 
     pub fn set_watch_changes(&mut self, enabled: bool) -> io::Result<()> {
-        self.watcher = if enabled {
+        self.watcher = if enabled && !self.view.path().as_os_str().is_empty() {
             Some(self.view.watch()?)
         } else {
             None
         };
+        self.watch_changes = enabled;
         Ok(())
     }
 
     pub fn watch_changes(&self) -> bool {
-        self.watcher.is_some()
+        self.watch_changes
     }
 
     pub fn next_change(&self, timeout: Duration) -> Option<FileEvent> {
@@ -1692,6 +1725,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("mold-file-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let mut file = FileDocument::new(&path, 16);
+        assert!(file.preload());
+        file.set_preload(false);
+        assert!(!file.preload());
         assert!(!file.reload());
         assert_eq!(file.error(), Some(FileViewError::FileNotFound));
         assert!(file.set_data(b"hello"));
@@ -1704,7 +1740,27 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"world");
         assert!(!file.set_data(b"this value is too large"));
         assert_eq!(file.error(), Some(FileViewError::TooLarge));
-        std::fs::remove_file(path).unwrap();
+        file.set_watch_changes(true).unwrap();
+        assert!(file.watch_changes());
+        file.set_path("").unwrap();
+        assert!(file.watch_changes());
+        assert!(!file.loaded());
+        assert_eq!(file.next_change(Duration::ZERO), None);
+        let next = std::env::temp_dir().join(format!("mold-file-next-{}", std::process::id()));
+        std::fs::write(&next, b"next").unwrap();
+        file.set_path(&next).unwrap();
+        assert!(file.watch_changes());
+        assert!(!file.loaded());
+        assert!(file.reload());
+        assert_eq!(file.text().as_deref(), Some("next"));
+        file.set_path(std::env::temp_dir()).unwrap();
+        assert!(!file.reload());
+        assert_eq!(file.error(), Some(FileViewError::NotAFile));
+        file.set_path(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(!file.reload());
+        assert_eq!(file.error(), Some(FileViewError::FileNotFound));
+        std::fs::remove_file(next).unwrap();
     }
 
     #[test]

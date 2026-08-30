@@ -5198,13 +5198,29 @@ fn install_reactive_api(
             let (file, path, preload): (UserRef<FileDocumentToken>, String, LuaValue) =
                 stack.consume(ctx)?;
             let preload = match preload {
-                LuaValue::Nil => true,
+                LuaValue::Nil => file.file.borrow().preload(),
                 LuaValue::Boolean(value) => value,
                 _ => return Err(HostError("preload must be boolean".into()).into()),
             };
             let mut file = file.file.borrow_mut();
-            file.set_path(path);
-            let loaded = !preload || file.reload();
+            file.set_preload(preload);
+            file.set_path(&path)
+                .map_err(|error| HostError(error.to_string()))?;
+            let loaded = path.is_empty() || !preload || file.reload();
+            stack.replace(ctx, loaded);
+            Ok(CallbackReturn::Return)
+        });
+        let document_preload = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+            stack.replace(ctx, file.file.borrow().preload());
+            Ok(CallbackReturn::Return)
+        });
+        let document_set_preload = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (file, preload): (UserRef<FileDocumentToken>, bool) = stack.consume(ctx)?;
+            let mut file = file.file.borrow_mut();
+            file.set_preload(preload);
+            let loaded =
+                !preload || file.loaded() || file.path().as_os_str().is_empty() || file.reload();
             stack.replace(ctx, loaded);
             Ok(CallbackReturn::Return)
         });
@@ -5291,6 +5307,8 @@ fn install_reactive_api(
         let document_methods = Table::new(&ctx);
         document_methods.set_field(ctx, "path", document_path);
         document_methods.set_field(ctx, "set_path", document_set_path);
+        document_methods.set_field(ctx, "preload", document_preload);
+        document_methods.set_field(ctx, "set_preload", document_set_preload);
         document_methods.set_field(ctx, "reload", document_reload);
         document_methods.set_field(ctx, "loaded", document_loaded);
         document_methods.set_field(ctx, "exists", document_exists);
@@ -5347,6 +5365,7 @@ fn install_reactive_api(
                 }
             };
             let mut file = FileDocument::new(path, maximum);
+            file.set_preload(preload);
             file.set_atomic_writes(atomic_writes);
             if preload {
                 file.reload();
@@ -11117,6 +11136,7 @@ mod tests {
                 local io = require("mold.io")
                 local file = io.file_view {{ path = {:?}, preload = false }}
                 assert(file:path() == {:?})
+                assert(not file:preload())
                 assert(file:loaded() == false)
                 assert(file:exists() == false)
                 assert(file:set_text("hello"))
@@ -11135,7 +11155,14 @@ mod tests {
                 local decoded = json.read_file(file)
                 assert(decoded.answer == 42)
                 assert(decoded.values[2] == 2)
+                assert(file:set_path(""))
+                assert(file:path() == "" and not file:loaded())
+                file:set_preload(true)
+                assert(file:preload())
+                assert(file:set_path({:?}))
+                assert(file:loaded())
             "#,
+            path.to_string_lossy(),
             path.to_string_lossy(),
             path.to_string_lossy(),
         );
