@@ -697,6 +697,20 @@ impl IpcServer {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        if path.exists() {
+            match UnixStream::connect(&path) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AddrInUse,
+                        "IPC socket is already active",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                    fs::remove_file(&path)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let listener = UnixListener::bind(&path)?;
         listener.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -1708,6 +1722,19 @@ mod tests {
             );
         }
         responder.join().unwrap();
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn ipc_server_reclaims_stale_socket_paths() {
+        let path = std::env::temp_dir().join(format!("mold-ipc-stale-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        drop(listener);
+        let (tx, _rx) = mpsc::channel();
+        let server = IpcServer::bind(&path, tx).unwrap();
+        assert!(path.exists());
         drop(server);
         assert!(!path.exists());
     }
