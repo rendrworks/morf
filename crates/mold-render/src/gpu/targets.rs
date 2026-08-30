@@ -303,7 +303,10 @@ fn intersect_damage(left: DamageRect, right: DamageRect) -> Option<DamageRect> {
         .y
         .saturating_add(left.height)
         .min(right.y.saturating_add(right.height));
-    (right_edge > x && bottom_edge > y).then_some(DamageRect {
+    if right_edge <= x || bottom_edge <= y {
+        return None;
+    }
+    Some(DamageRect {
         x,
         y,
         width: right_edge - x,

@@ -164,6 +164,23 @@ fn damage_and_clip_scissors_are_intersected() {
             height: 10,
         })
     );
+    assert_eq!(
+        intersect_damage(
+            DamageRect {
+                x: 700,
+                y: 0,
+                width: 40,
+                height: 40,
+            },
+            DamageRect {
+                x: 0,
+                y: 200,
+                width: 100,
+                height: 100,
+            },
+        ),
+        None
+    );
 }
 
 #[test]
