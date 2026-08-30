@@ -911,10 +911,17 @@ fn handle_worker_command(
                         .update_clock(clock_text())
                         .map_err(|error| error.to_string())
                 });
-            if result.is_ok() {
-                *runtime = candidate;
-            }
-            let repaint = result.is_ok();
+            let repaint = match &result {
+                Ok(()) => {
+                    candidate.dispatch_reload_completed();
+                    *runtime = candidate;
+                    true
+                }
+                Err(error) => {
+                    runtime.dispatch_reload_failed(error.clone());
+                    false
+                }
+            };
             let _ = reply.send(result);
             WorkerUpdate {
                 repaint,
@@ -2327,8 +2334,11 @@ mod tests {
         };
         let source = br#"
             local value = mold.reloadable("counter", 0)
+            local completed = false
+            mold.on_reload_completed(function() completed = true end)
             mold.ipc["counter.set"] = function(next) value:set(next) end
             mold.ipc["counter.get"] = function() return value:get() end
+            mold.ipc["reload.completed"] = function() return completed end
             mold.ui.Item {}
         "#;
         let mut runtime = Runtime::for_screen(Limits::default(), screen.clone());
@@ -2355,6 +2365,10 @@ mod tests {
         assert_eq!(
             runtime.call_ipc("counter.get", &[]).unwrap(),
             [IpcValue::Integer(7)]
+        );
+        assert_eq!(
+            runtime.call_ipc("reload.completed", &[]).unwrap(),
+            [IpcValue::Boolean(true)]
         );
     }
 
@@ -2413,7 +2427,13 @@ mod tests {
         runtime
             .execute(
                 "shell.lua",
-                b"mold.ipc.value = function() return 7 end; mold.ui.Item {}",
+                br#"
+                    local failure = ""
+                    mold.on_reload_failed(function(error) failure = error end)
+                    mold.ipc.value = function() return 7 end
+                    mold.ipc["reload.failure"] = function() return failure end
+                    mold.ui.Item {}
+                "#,
             )
             .unwrap();
         let (reply, result) = mpsc::sync_channel(1);
@@ -2436,6 +2456,8 @@ mod tests {
             runtime.call_ipc("value", &[]).unwrap(),
             [IpcValue::Integer(7)]
         );
+        let failure = runtime.call_ipc("reload.failure", &[]).unwrap();
+        assert!(matches!(&failure[..], [IpcValue::String(error)] if !error.is_empty()));
     }
 
     #[test]

@@ -758,6 +758,38 @@ impl Runtime {
         })
     }
 
+    pub fn dispatch_reload_completed(&mut self) -> bool {
+        self.dispatch_reload_callbacks(true, None)
+    }
+
+    pub fn dispatch_reload_failed(&mut self, error: String) -> bool {
+        self.dispatch_reload_callbacks(false, Some(error))
+    }
+
+    fn dispatch_reload_callbacks(&mut self, completed: bool, error: Option<String>) -> bool {
+        let callbacks = {
+            let state = self.reactive.borrow();
+            if completed {
+                state.reload_completed_callbacks.clone()
+            } else {
+                state.reload_failed_callbacks.clone()
+            }
+        };
+        let args = error.map(IpcValue::String).into_iter().collect::<Vec<_>>();
+        for callback in &callbacks {
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("reload callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
     /// Borrows the scene produced by executed configuration code.
     pub fn scene(&self) -> Ref<'_, Scene> {
         Ref::map(self.reactive.borrow(), |state| &state.scene)
@@ -2253,6 +2285,8 @@ struct ReactiveState {
     reload_request: Option<bool>,
     watch_files: bool,
     watch_files_changed: bool,
+    reload_completed_callbacks: Vec<StashedClosure>,
+    reload_failed_callbacks: Vec<StashedClosure>,
     effects: HashMap<u64, LuaEffect>,
     next_effect: u64,
     active: Option<Capture>,
@@ -2321,6 +2355,8 @@ impl ReactiveState {
             reload_request: None,
             watch_files: true,
             watch_files_changed: false,
+            reload_completed_callbacks: Vec::new(),
+            reload_failed_callbacks: Vec::new(),
             effects: HashMap::new(),
             next_effect: 0,
             active: None,
@@ -3342,6 +3378,26 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "reload", reload);
+        let completed_state = Rc::clone(&state);
+        let on_reload_completed = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let callback: Closure = stack.consume(ctx)?;
+            completed_state
+                .borrow_mut()
+                .reload_completed_callbacks
+                .push(ctx.stash(callback));
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "on_reload_completed", on_reload_completed);
+        let failed_state = Rc::clone(&state);
+        let on_reload_failed = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let callback: Closure = stack.consume(ctx)?;
+            failed_state
+                .borrow_mut()
+                .reload_failed_callbacks
+                .push(ctx.stash(callback));
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "on_reload_failed", on_reload_failed);
         let watch_state = Rc::clone(&state);
         let watch_files = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let value: Option<bool> = stack.consume(ctx)?;
@@ -6137,6 +6193,8 @@ fn install_reactive_api(
             "cache_path",
             "has_version",
             "reload",
+            "on_reload_completed",
+            "on_reload_failed",
             "watch_files",
             "working_directory",
             "elapsed_timer",
