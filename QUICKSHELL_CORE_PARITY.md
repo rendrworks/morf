@@ -75,7 +75,7 @@ behavioral reductions do not count as parity.
   reconciliation, value lookup, virtual lists, and flick state;
 - process, instance, shell and application identity, launch time, environment
   lookup, shell paths, version checks, elapsed timers, and detached process
-  launch;
+  launch, including native compile-feature checks;
 - shell-scoped XDG data, state, and cache directories with bounded relative
   path resolution;
 - native easing curves across quadratic, cubic, quartic, quintic, sine,

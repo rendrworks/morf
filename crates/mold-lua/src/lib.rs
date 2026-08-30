@@ -3369,7 +3369,7 @@ fn install_reactive_api(
                 .expect("core path resolver accepts a native callback");
         }
         let has_version = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-            let (major, minor): (i64, i64) = stack.consume(ctx)?;
+            let (major, minor, features): (i64, i64, Option<Table>) = stack.consume(ctx)?;
             let current = env!("CARGO_PKG_VERSION")
                 .split('.')
                 .take(2)
@@ -3378,7 +3378,26 @@ fn install_reactive_api(
             let available = current.first().copied().unwrap_or(0) > major
                 || current.first().copied().unwrap_or(0) == major
                     && current.get(1).copied().unwrap_or(0) >= minor;
-            stack.replace(ctx, available);
+            let features_available = features.is_none_or(|features| {
+                table_string_array(ctx, features, 64).is_ok_and(|features| {
+                    features.iter().all(|feature| {
+                        matches!(
+                            feature.as_str(),
+                            "wayland"
+                                | "vulkan"
+                                | "gles"
+                                | "lua"
+                                | "ipc"
+                                | "session-lock"
+                                | "screencopy"
+                                | "virtual-keyboard"
+                                | "input-method"
+                                | "text-input"
+                        )
+                    })
+                })
+            });
+            stack.replace(ctx, available && features_available);
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "has_version", has_version);
@@ -9985,6 +10004,8 @@ mod tests {
                     assert(not core.has_icon("mold-icon-that-does-not-exist"))
                     assert(not pcall(core.icon_path, "icon", "hicolor", 0))
                     assert(core.has_version(0, 1))
+                    assert(core.has_version(0, 1, { "wayland", "ipc", "lua" }))
+                    assert(not core.has_version(0, 1, { "mold-widget-toolkit" }))
                     local timer = core.elapsed_timer()
                     assert(timer:elapsed() >= 0)
                     assert(timer:elapsed_ms() >= 0)
