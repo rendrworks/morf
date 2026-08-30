@@ -531,6 +531,19 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().window_surfaces_changed)
     }
 
+    pub fn set_window_surface_visible(&mut self, id: u64, visible: bool) -> bool {
+        let mut state = self.reactive.borrow_mut();
+        let Some(surface) = state.window_surfaces.get_mut(&id) else {
+            return false;
+        };
+        if surface.visible == visible {
+            return false;
+        }
+        surface.visible = visible;
+        state.window_surfaces_changed = true;
+        true
+    }
+
     /// Drains non-fatal binding diagnostics produced since the previous call.
     pub fn take_logs(&mut self) -> Vec<String> {
         std::mem::take(&mut self.reactive.borrow_mut().logs)

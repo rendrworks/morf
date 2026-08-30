@@ -105,7 +105,8 @@ behavioral reductions do not count as parity.
 - popup anchor rectangles, edge and gravity selection, offsets, and compositor
   slide, flip, and resize constraints;
 - typed dynamic popup and undecorated floating-surface models with validated
-  roots, sizes, identity, visibility, and placement state;
+  roots, sizes, identity, visibility, placement state, compositor lifecycle,
+  and independent GPU rendering;
 - composable rectangular, rounded, and elliptical input masks with combine,
   subtract, intersect, and XOR operations;
 - fractional scaling, output tracking, frame callbacks, and input regions.

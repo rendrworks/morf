@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -13,13 +13,14 @@ use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValu
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
     InputMethodRequest, IpcValue, Limits, Runtime, Screen, Screencopy as LuaScreencopy,
-    TextInputRequest, UiEvent, VirtualKeyboardRequest,
+    TextInputRequest, UiEvent, VirtualKeyboardRequest, WindowSurfaceKind,
 };
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
 use mold_wayland::{
-    BarConfig, InputRect, KeyboardFocus, LayerAnchors, LayerClient, LayerEvent, OutputPowerMode,
-    ScreenInfo, ScreencopyFormat, ShellLayer,
+    BarConfig, FloatingConfig, InputRect, KeyboardFocus, LayerAnchors, LayerClient, LayerEvent,
+    OutputPowerMode, PopupAnchor, PopupConfig, PopupConstraints, PopupGravity, ScreenInfo,
+    ScreencopyFormat, ShellLayer,
 };
 
 fn usage() -> &'static str {
@@ -373,7 +374,7 @@ fn paint_lock(
     let (width, height) = client
         .lock_size(index)
         .ok_or_else(|| "lock surface disappeared while painting".to_owned())?;
-    let root = runtime.scene().roots()[0];
+    let root = primary_surface_root(runtime)?;
     {
         let mut scene = runtime.scene_mut();
         scene
@@ -882,11 +883,7 @@ fn handle_worker_command(
             let mut candidate = Runtime::for_screen(Limits::default(), screen.clone());
             candidate.restore_reloadable_state(runtime.reloadable_state());
             let result = execute_config(&mut candidate, &path, &source, policy)
-                .and_then(|()| {
-                    (candidate.scene().roots().len() == 1)
-                        .then_some(())
-                        .ok_or_else(|| "configuration must create exactly one root item".to_owned())
-                })
+                .and_then(|()| primary_surface_root(&candidate).map(|_| ()))
                 .and_then(|()| {
                     candidate
                         .update_clock(clock_text())
@@ -1057,6 +1054,185 @@ fn stop_workers(workers: BTreeMap<String, Worker>) {
     }
 }
 
+struct AuxiliarySurface {
+    id: u64,
+    root: NodeHandle,
+    width: u32,
+    height: u32,
+    renderer: Option<RenderEngine<WgpuBackend>>,
+}
+
+fn popup_anchor(value: &str) -> Result<PopupAnchor, String> {
+    Ok(match value {
+        "none" => PopupAnchor::None,
+        "top" => PopupAnchor::Top,
+        "bottom" => PopupAnchor::Bottom,
+        "left" => PopupAnchor::Left,
+        "right" => PopupAnchor::Right,
+        "top_left" => PopupAnchor::TopLeft,
+        "top_right" => PopupAnchor::TopRight,
+        "bottom_left" => PopupAnchor::BottomLeft,
+        "bottom_right" => PopupAnchor::BottomRight,
+        value => return Err(format!("invalid popup anchor `{value}`")),
+    })
+}
+
+fn popup_gravity(value: &str) -> Result<PopupGravity, String> {
+    Ok(match value {
+        "none" => PopupGravity::None,
+        "top" => PopupGravity::Top,
+        "bottom" => PopupGravity::Bottom,
+        "left" => PopupGravity::Left,
+        "right" => PopupGravity::Right,
+        "top_left" => PopupGravity::TopLeft,
+        "top_right" => PopupGravity::TopRight,
+        "bottom_left" => PopupGravity::BottomLeft,
+        "bottom_right" => PopupGravity::BottomRight,
+        value => return Err(format!("invalid popup gravity `{value}`")),
+    })
+}
+
+fn sync_window_surfaces(
+    runtime: &Runtime,
+    client: &mut LayerClient,
+    popup: &mut Option<AuxiliarySurface>,
+    floating: &mut Option<AuxiliarySurface>,
+) -> Result<(), String> {
+    let surfaces = runtime.window_surface_configs();
+    let popups = surfaces
+        .iter()
+        .filter(|surface| surface.visible && matches!(&surface.kind, WindowSurfaceKind::Popup(_)))
+        .collect::<Vec<_>>();
+    let floatings = surfaces
+        .iter()
+        .filter(|surface| {
+            surface.visible && matches!(&surface.kind, WindowSurfaceKind::Floating(_))
+        })
+        .collect::<Vec<_>>();
+    if popups.len() > 1 || floatings.len() > 1 {
+        return Err(
+            "the current Wayland client supports one visible popup and floating surface per output"
+                .into(),
+        );
+    }
+
+    let desired_popup = popups.first().copied();
+    if popup.as_ref().map(|surface| surface.id) != desired_popup.map(|surface| surface.id) {
+        client.close_popup();
+        *popup = None;
+        if let Some(surface) = desired_popup {
+            let WindowSurfaceKind::Popup(config) = &surface.kind else {
+                unreachable!();
+            };
+            client
+                .open_popup(PopupConfig {
+                    anchor: InputRect {
+                        x: config.anchor_x,
+                        y: config.anchor_y,
+                        width: config.anchor_width,
+                        height: config.anchor_height,
+                    },
+                    width: config.width,
+                    height: config.height,
+                    anchor_edge: popup_anchor(&config.anchor_edge)?,
+                    gravity: popup_gravity(&config.gravity)?,
+                    offset_x: config.offset_x,
+                    offset_y: config.offset_y,
+                    constraints: PopupConstraints {
+                        slide_x: config.constraints.slide_x,
+                        slide_y: config.constraints.slide_y,
+                        flip_x: config.constraints.flip_x,
+                        flip_y: config.constraints.flip_y,
+                        resize_x: config.constraints.resize_x,
+                        resize_y: config.constraints.resize_y,
+                    },
+                })
+                .map_err(|error| error.to_string())?;
+            *popup = Some(AuxiliarySurface {
+                id: surface.id,
+                root: surface.root,
+                width: config.width,
+                height: config.height,
+                renderer: None,
+            });
+        }
+    } else if let (Some(current), Some(surface)) = (popup.as_mut(), desired_popup) {
+        let WindowSurfaceKind::Popup(config) = &surface.kind else {
+            unreachable!();
+        };
+        current.root = surface.root;
+        current.width = config.width;
+        current.height = config.height;
+    }
+
+    let desired_floating = floatings.first().copied();
+    if floating.as_ref().map(|surface| surface.id) != desired_floating.map(|surface| surface.id) {
+        client.close_floating();
+        *floating = None;
+        if let Some(surface) = desired_floating {
+            let WindowSurfaceKind::Floating(config) = &surface.kind else {
+                unreachable!();
+            };
+            client
+                .open_floating(FloatingConfig {
+                    width: config.width,
+                    height: config.height,
+                    title: config.title.clone(),
+                    app_id: config.app_id.clone(),
+                })
+                .map_err(|error| error.to_string())?;
+            *floating = Some(AuxiliarySurface {
+                id: surface.id,
+                root: surface.root,
+                width: config.width,
+                height: config.height,
+                renderer: None,
+            });
+        }
+    } else if let (Some(current), Some(surface)) = (floating.as_mut(), desired_floating) {
+        let WindowSurfaceKind::Floating(config) = &surface.kind else {
+            unreachable!();
+        };
+        current.root = surface.root;
+        current.width = config.width;
+        current.height = config.height;
+    }
+    Ok(())
+}
+
+fn auxiliary_physical_size(width: u32, height: u32, scale_120: u32) -> (u32, u32) {
+    let physical = |value: u32| {
+        u32::try_from((u64::from(value) * u64::from(scale_120)).div_ceil(120)).unwrap_or(u32::MAX)
+    };
+    (physical(width), physical(height))
+}
+
+fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, String> {
+    let roots = runtime.scene().roots();
+    let mut window_roots = HashSet::new();
+    for surface in runtime.window_surface_configs() {
+        if !window_roots.insert(surface.root) {
+            return Err("a scene root cannot back multiple window surfaces".into());
+        }
+        if runtime
+            .scene()
+            .parent(surface.root)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err("window surface roots must be top-level scene nodes".into());
+        }
+    }
+    let primary = roots
+        .into_iter()
+        .filter(|root| !window_roots.contains(root))
+        .collect::<Vec<_>>();
+    if primary.len() != 1 {
+        return Err("configuration must create exactly one primary surface root".into());
+    }
+    Ok(primary[0])
+}
+
 fn run_surface(
     path: &Path,
     source: &[u8],
@@ -1078,9 +1254,7 @@ fn run_surface(
     };
     let mut runtime = Runtime::for_screen(Limits::default(), runtime_screen.clone());
     execute_config(&mut runtime, path, source, policy)?;
-    if runtime.scene().roots().len() != 1 {
-        return Err("configuration must create exactly one root item".to_owned());
-    }
+    primary_surface_root(&runtime)?;
 
     let surface = runtime.layer_surface_config();
     let layer = match surface.layer.as_str() {
@@ -1176,6 +1350,15 @@ fn run_surface(
         .map_err(|error| error.to_string())?;
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let mut layout = paint(&runtime, &mut renderer, &client)?;
+    let mut popup_surface = None;
+    let mut floating_surface = None;
+    runtime.take_window_surface_change();
+    sync_window_surfaces(
+        &runtime,
+        &mut client,
+        &mut popup_surface,
+        &mut floating_surface,
+    )?;
     apply_output_power_requests(&mut runtime, &mut client);
     apply_screencopy_requests(&mut runtime, &mut client);
     apply_virtual_keyboard_requests(&mut runtime, &mut client);
@@ -1209,6 +1392,14 @@ fn run_surface(
                 client.set_idle_timeouts(&runtime.idle_timeouts());
             }
         }
+        if runtime.take_window_surface_change() {
+            sync_window_surfaces(
+                &runtime,
+                &mut client,
+                &mut popup_surface,
+                &mut floating_surface,
+            )?;
+        }
         apply_output_power_requests(&mut runtime, &mut client);
         apply_clipboard_requests(&mut runtime, &mut client);
         apply_screencopy_requests(&mut runtime, &mut client);
@@ -1227,6 +1418,19 @@ fn run_surface(
                 LayerEvent::Configure { .. } | LayerEvent::Scale(_) => {
                     let (width, height) = client.physical_size();
                     renderer.backend_mut().resize(width, height);
+                    for surface in [&mut popup_surface, &mut floating_surface]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(renderer) = &mut surface.renderer {
+                            let (width, height) = auxiliary_physical_size(
+                                surface.width,
+                                surface.height,
+                                client.scale_120(),
+                            );
+                            renderer.backend_mut().resize(width, height);
+                        }
+                    }
                     repaint = true;
                 }
                 LayerEvent::Frame { time_ms } => {
@@ -1419,14 +1623,84 @@ fn run_surface(
                         repaint |= runtime.dispatch_key_event(node, keysym, text.as_deref());
                     }
                 }
+                LayerEvent::PopupConfigure { width, height } => {
+                    if let Some(surface) = &mut popup_surface {
+                        surface.width = width.max(1);
+                        surface.height = height.max(1);
+                        let (physical_width, physical_height) = auxiliary_physical_size(
+                            surface.width,
+                            surface.height,
+                            client.scale_120(),
+                        );
+                        if let Some(renderer) = &mut surface.renderer {
+                            renderer
+                                .backend_mut()
+                                .resize(physical_width, physical_height);
+                        } else {
+                            let target = client
+                                .popup_window_target()
+                                .ok_or_else(|| "configured popup disappeared".to_owned())?;
+                            let backend = pollster::block_on(WgpuBackend::new_surface(
+                                target,
+                                physical_width,
+                                physical_height,
+                            ))
+                            .map_err(|error| error.to_string())?;
+                            surface.renderer = Some(RenderEngine::new(backend));
+                        }
+                        paint_popup_surface(&runtime, &client, surface)?;
+                    }
+                }
+                LayerEvent::PopupFrame { .. } => {
+                    if let Some(surface) = &mut popup_surface {
+                        paint_popup_surface(&runtime, &client, surface)?;
+                    }
+                }
+                LayerEvent::PopupDone => {
+                    if let Some(surface) = popup_surface.take() {
+                        runtime.set_window_surface_visible(surface.id, false);
+                    }
+                }
+                LayerEvent::FloatingConfigure { width, height } => {
+                    if let Some(surface) = &mut floating_surface {
+                        surface.width = width.max(1);
+                        surface.height = height.max(1);
+                        let (physical_width, physical_height) = auxiliary_physical_size(
+                            surface.width,
+                            surface.height,
+                            client.scale_120(),
+                        );
+                        if let Some(renderer) = &mut surface.renderer {
+                            renderer
+                                .backend_mut()
+                                .resize(physical_width, physical_height);
+                        } else {
+                            let target = client.floating_window_target().ok_or_else(|| {
+                                "configured floating surface disappeared".to_owned()
+                            })?;
+                            let backend = pollster::block_on(WgpuBackend::new_surface(
+                                target,
+                                physical_width,
+                                physical_height,
+                            ))
+                            .map_err(|error| error.to_string())?;
+                            surface.renderer = Some(RenderEngine::new(backend));
+                        }
+                        paint_floating_surface(&runtime, &client, surface)?;
+                    }
+                }
+                LayerEvent::FloatingFrame { .. } => {
+                    if let Some(surface) = &mut floating_surface {
+                        paint_floating_surface(&runtime, &client, surface)?;
+                    }
+                }
+                LayerEvent::FloatingClose => {
+                    if let Some(surface) = floating_surface.take() {
+                        runtime.set_window_surface_visible(surface.id, false);
+                    }
+                }
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
-                | LayerEvent::PopupConfigure { .. }
-                | LayerEvent::PopupFrame { .. }
-                | LayerEvent::PopupDone
-                | LayerEvent::FloatingConfigure { .. }
-                | LayerEvent::FloatingFrame { .. }
-                | LayerEvent::FloatingClose
                 | LayerEvent::SessionLocked
                 | LayerEvent::SessionLockFinished
                 | LayerEvent::SessionLockConfigure { .. }
@@ -1449,6 +1723,12 @@ fn run_surface(
         if repaint {
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;
+            if let Some(surface) = &mut popup_surface {
+                paint_popup_surface(&runtime, &client, surface)?;
+            }
+            if let Some(surface) = &mut floating_surface {
+                paint_floating_surface(&runtime, &client, surface)?;
+            }
         }
     }
 }
@@ -1462,7 +1742,7 @@ fn apply_parent_transitions(
     if transitions.is_empty() {
         return Ok(());
     }
-    let root = runtime.scene().roots()[0];
+    let root = primary_surface_root(runtime)?;
     let (width, height) = client.logical_size();
     let available = Size {
         width: width as f64,
@@ -1492,7 +1772,7 @@ fn paint(
     client: &LayerClient,
 ) -> Result<Layout, String> {
     let scene = runtime.scene();
-    let root = scene.roots()[0];
+    let root = primary_surface_root(runtime)?;
     let (width, height) = client.logical_size();
     let layout = Layout::compute(
         &scene,
@@ -1540,6 +1820,76 @@ fn paint(
         client.commit();
     }
     Ok(layout)
+}
+
+fn paint_popup_surface(
+    runtime: &Runtime,
+    client: &LayerClient,
+    surface: &mut AuxiliarySurface,
+) -> Result<(), String> {
+    let Some(renderer) = &mut surface.renderer else {
+        return Ok(());
+    };
+    let scene = runtime.scene();
+    let layout = Layout::compute(
+        &scene,
+        surface.root,
+        Size {
+            width: surface.width as f64,
+            height: surface.height as f64,
+        },
+        renderer.backend_mut(),
+    )
+    .map_err(|error| error.to_string())?;
+    let (width, height) =
+        auxiliary_physical_size(surface.width, surface.height, client.scale_120());
+    client.request_popup_frame();
+    let popup = client
+        .popup_surface()
+        .ok_or_else(|| "popup surface disappeared while painting".to_owned())?;
+    popup.damage_buffer(0, 0, width as i32, height as i32);
+    let damage = renderer
+        .render(&scene, &layout, client.scale_120())
+        .map_err(|error| error.to_string())?;
+    if damage.is_empty() {
+        popup.commit();
+    }
+    Ok(())
+}
+
+fn paint_floating_surface(
+    runtime: &Runtime,
+    client: &LayerClient,
+    surface: &mut AuxiliarySurface,
+) -> Result<(), String> {
+    let Some(renderer) = &mut surface.renderer else {
+        return Ok(());
+    };
+    let scene = runtime.scene();
+    let layout = Layout::compute(
+        &scene,
+        surface.root,
+        Size {
+            width: surface.width as f64,
+            height: surface.height as f64,
+        },
+        renderer.backend_mut(),
+    )
+    .map_err(|error| error.to_string())?;
+    let (width, height) =
+        auxiliary_physical_size(surface.width, surface.height, client.scale_120());
+    client.request_floating_frame();
+    let floating = client
+        .floating_surface()
+        .ok_or_else(|| "floating surface disappeared while painting".to_owned())?;
+    floating.damage_buffer(0, 0, width as i32, height as i32);
+    let damage = renderer
+        .render(&scene, &layout, client.scale_120())
+        .map_err(|error| error.to_string())?;
+    if damage.is_empty() {
+        floating.commit();
+    }
+    Ok(())
 }
 
 fn clock_text() -> String {
@@ -1590,6 +1940,26 @@ mod tests {
 
         assert_eq!(names.keys().cloned().collect::<Vec<_>>(), ["DP-2", "eDP-1"]);
         assert_eq!(names["DP-2"].id, 9);
+    }
+
+    #[test]
+    fn primary_root_excludes_registered_window_roots() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "window-roots.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local window = require("mold.window")
+                    local primary = ui.Item {}
+                    local popup = ui.Item {}
+                    window.popup { root = popup, width = 20, height = 10 }
+                "#,
+            )
+            .unwrap();
+        let primary = primary_surface_root(&runtime).unwrap();
+        assert_eq!(runtime.scene().roots()[0], primary);
+        assert_eq!(auxiliary_physical_size(101, 31, 150), (127, 39));
     }
 
     #[test]
