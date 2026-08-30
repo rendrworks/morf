@@ -9,6 +9,9 @@ mold exposes equivalent capabilities through native Rust-backed Lua modules. It
 does not embed QML, copy Quickshell's implementation, or move the engine into
 Lua.
 
+The source-type mapping and remaining property lanes are tracked in
+[`QUICKSHELL_CORE_AUDIT.md`](QUICKSHELL_CORE_AUDIT.md).
+
 ## Scope
 
 Included:
