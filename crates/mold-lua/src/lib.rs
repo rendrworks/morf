@@ -21,6 +21,7 @@ use mold_io::{
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
     Timer as IoTimer,
 };
+use mold_menu::{ButtonType, CheckState, Menu, MenuEntry};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
 use mold_scene::{
@@ -1361,6 +1362,11 @@ struct JsonNullToken;
 
 struct DesktopEntriesToken {
     entries: DesktopEntries,
+}
+
+struct MenuToken {
+    menu: RefCell<Menu>,
+    callbacks: HashMap<String, StashedClosure>,
 }
 
 struct LuaVirtualView {
@@ -4258,6 +4264,112 @@ fn install_reactive_api(
         json.set_field(ctx, "object", json_object);
         json.set_field(ctx, "null", json_null);
         mold.set_field(ctx, "json", json);
+        let menu_entries = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let menu: UserRef<MenuToken> = stack.consume(ctx)?;
+            stack.replace(ctx, menu_entries_to_lua(ctx, menu.menu.borrow().entries()));
+            Ok(CallbackReturn::Return)
+        });
+        let menu_children = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (menu, parent): (UserRef<MenuToken>, LuaValue) = stack.consume(ctx)?;
+            let parent = match parent {
+                LuaValue::Nil => None,
+                LuaValue::String(value) => Some(value.display_lossy().to_string()),
+                _ => return Err(HostError("menu parent must be a string or nil".into()).into()),
+            };
+            let menu = menu.menu.borrow();
+            let children = menu
+                .children(parent.as_deref())
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, menu_entries_to_lua(ctx, children));
+            Ok(CallbackReturn::Return)
+        });
+        let menu_entry = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (menu, id): (UserRef<MenuToken>, String) = stack.consume(ctx)?;
+            match menu.menu.borrow().entry(&id) {
+                Some(entry) => stack.replace(ctx, menu_entry_to_lua(ctx, entry)),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let menu_activate = Callback::from_fn(&ctx, {
+            let limits = limits;
+            move |ctx, _, mut stack| {
+                let (menu, id): (UserRef<MenuToken>, String) = stack.consume(ctx)?;
+                let activation = menu
+                    .menu
+                    .borrow_mut()
+                    .activate(&id)
+                    .map_err(|error| HostError(error.to_string()))?;
+                let callback = menu.callbacks.get(&id).cloned();
+                if let Some(callback) = callback {
+                    execute_handler_args(ctx, &callback, &[], limits).map_err(HostError)?;
+                }
+                let value = Table::new(&ctx);
+                value.set_field(ctx, "id", activation.id.as_str());
+                value.set_field(ctx, "check_state", check_state_name(activation.check_state));
+                stack.replace(ctx, value);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let menu_set_enabled = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (menu, id, enabled): (UserRef<MenuToken>, String, bool) = stack.consume(ctx)?;
+            menu.menu
+                .borrow_mut()
+                .set_enabled(&id, enabled)
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let menu_set_visible = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (menu, id, visible): (UserRef<MenuToken>, String, bool) = stack.consume(ctx)?;
+            menu.menu
+                .borrow_mut()
+                .set_visible(&id, visible)
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let menu_set_checked = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (menu, id, checked): (UserRef<MenuToken>, String, LuaValue) = stack.consume(ctx)?;
+            let checked = parse_check_state(checked).map_err(HostError)?;
+            menu.menu
+                .borrow_mut()
+                .set_check_state(&id, checked)
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        let menu_methods = Table::new(&ctx);
+        menu_methods.set_field(ctx, "entries", menu_entries);
+        menu_methods.set_field(ctx, "children", menu_children);
+        menu_methods.set_field(ctx, "entry", menu_entry);
+        menu_methods.set_field(ctx, "activate", menu_activate);
+        menu_methods.set_field(ctx, "set_enabled", menu_set_enabled);
+        menu_methods.set_field(ctx, "set_visible", menu_set_visible);
+        menu_methods.set_field(ctx, "set_checked", menu_set_checked);
+        let menu_metatable = Table::new(&ctx);
+        menu_metatable.set_field(ctx, "__index", menu_methods);
+        let menu_metatable = ctx.stash(menu_metatable);
+        let menu = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let entries = match options.get_value(ctx, "entries") {
+                LuaValue::Nil => options,
+                LuaValue::Table(entries) => entries,
+                _ => return Err(HostError("menu entries must be a table".into()).into()),
+            };
+            let mut callbacks = HashMap::new();
+            let entries = parse_menu_entries(ctx, entries, 0, &mut callbacks).map_err(HostError)?;
+            let menu = Menu::new(entries).map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                MenuToken {
+                    menu: RefCell::new(menu),
+                    callbacks,
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&menu_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "menu", menu);
+
         let desktop_applications = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let entries: UserRef<DesktopEntriesToken> = stack.consume(ctx)?;
             let values = Table::new(&ctx);
@@ -4369,6 +4481,7 @@ fn install_reactive_api(
             "flickable",
             "transition_parent",
             "desktop_entries",
+            "menu",
         ] {
             core.set(ctx, name, mold.get_value(ctx, name))
                 .expect("core module accepts native fields");
@@ -5872,6 +5985,160 @@ fn table_number<'gc>(
     }
 }
 
+fn parse_menu_entries<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    depth: usize,
+    callbacks: &mut HashMap<String, StashedClosure>,
+) -> Result<Vec<MenuEntry>, String> {
+    if depth >= 32 {
+        return Err("menu exceeds 32 levels".into());
+    }
+    let mut values = Vec::new();
+    for (key, value) in table.iter(ctx) {
+        let LuaValue::Integer(index) = key else {
+            continue;
+        };
+        let LuaValue::Table(value) = value else {
+            return Err(format!("menu entry {index} must be a table"));
+        };
+        values.push((index, value));
+    }
+    values.sort_by_key(|(index, _)| *index);
+    for (offset, (index, _)) in values.iter().enumerate() {
+        if *index != offset as i64 + 1 {
+            return Err("menu entries must be a dense sequence".into());
+        }
+    }
+    let mut entries = Vec::with_capacity(values.len());
+    for (_, value) in values {
+        let id = table_string(ctx, value, "id", "")?;
+        let separator = table_bool(ctx, value, "separator", false)?;
+        let mut entry = if separator {
+            MenuEntry::separator(id.clone())
+        } else {
+            MenuEntry::item(id.clone(), table_string(ctx, value, "text", "")?)
+        };
+        entry.enabled = table_bool(ctx, value, "enabled", !separator)?;
+        entry.visible = table_bool(ctx, value, "visible", true)?;
+        entry.icon = match value.get_value(ctx, "icon") {
+            LuaValue::Nil => None,
+            LuaValue::String(icon) => Some(icon.display_lossy().to_string()),
+            _ => return Err(format!("menu entry `{id}` icon must be a string or nil")),
+        };
+        entry.button_type = match value.get_value(ctx, "button_type") {
+            LuaValue::Nil => ButtonType::None,
+            LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
+                "none" => ButtonType::None,
+                "checkbox" => ButtonType::CheckBox,
+                "radio" => ButtonType::RadioButton,
+                _ => return Err(format!("menu entry `{id}` has an invalid button_type")),
+            },
+            _ => return Err(format!("menu entry `{id}` button_type must be a string")),
+        };
+        entry.check_state = parse_check_state(value.get_value(ctx, "checked"))?;
+        entry.radio_group = match value.get_value(ctx, "radio_group") {
+            LuaValue::Nil => None,
+            LuaValue::String(group) => Some(group.display_lossy().to_string()),
+            _ => {
+                return Err(format!(
+                    "menu entry `{id}` radio_group must be a string or nil"
+                ));
+            }
+        };
+        entry.children = match value.get_value(ctx, "children") {
+            LuaValue::Nil => Vec::new(),
+            LuaValue::Table(children) => parse_menu_entries(ctx, children, depth + 1, callbacks)?,
+            _ => return Err(format!("menu entry `{id}` children must be a table")),
+        };
+        match value.get_value(ctx, "on_triggered") {
+            LuaValue::Nil => {}
+            LuaValue::Function(Function::Closure(closure)) => {
+                callbacks.insert(id, ctx.stash(closure));
+            }
+            _ => return Err("menu on_triggered must be a function".into()),
+        }
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn parse_check_state(value: LuaValue<'_>) -> Result<CheckState, String> {
+    match value {
+        LuaValue::Nil | LuaValue::Boolean(false) => Ok(CheckState::Unchecked),
+        LuaValue::Boolean(true) => Ok(CheckState::Checked),
+        LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
+            "unchecked" => Ok(CheckState::Unchecked),
+            "partial" => Ok(CheckState::PartiallyChecked),
+            "checked" => Ok(CheckState::Checked),
+            _ => Err("menu checked must be boolean, partial, checked, or unchecked".into()),
+        },
+        _ => Err("menu checked must be boolean or a check state string".into()),
+    }
+}
+
+fn menu_entries_to_lua<'gc>(ctx: Context<'gc>, entries: &[MenuEntry]) -> Table<'gc> {
+    let values = Table::new(&ctx);
+    for (index, entry) in entries.iter().enumerate() {
+        values
+            .set(ctx, index as i64 + 1, menu_entry_to_lua(ctx, entry))
+            .expect("menu table accepts integer keys");
+    }
+    values
+}
+
+fn menu_entry_to_lua<'gc>(ctx: Context<'gc>, entry: &MenuEntry) -> Table<'gc> {
+    let value = Table::new(&ctx);
+    value.set_field(ctx, "id", entry.id.as_str());
+    value.set_field(ctx, "separator", entry.separator);
+    value.set_field(ctx, "enabled", entry.enabled);
+    value.set_field(ctx, "visible", entry.visible);
+    value.set_field(ctx, "text", entry.text.as_str());
+    match &entry.icon {
+        Some(icon) => value.set_field(ctx, "icon", icon.as_str()),
+        None => value.set_field(ctx, "icon", LuaValue::Nil),
+    };
+    value.set_field(
+        ctx,
+        "button_type",
+        match entry.button_type {
+            ButtonType::None => "none",
+            ButtonType::CheckBox => "checkbox",
+            ButtonType::RadioButton => "radio",
+        },
+    );
+    value.set_field(ctx, "check_state", check_state_name(entry.check_state));
+    value.set_field(ctx, "checked", entry.check_state == CheckState::Checked);
+    match &entry.radio_group {
+        Some(group) => value.set_field(ctx, "radio_group", group.as_str()),
+        None => value.set_field(ctx, "radio_group", LuaValue::Nil),
+    };
+    value.set_field(ctx, "has_children", !entry.children.is_empty());
+    value.set_field(ctx, "children", menu_entries_to_lua(ctx, &entry.children));
+    value
+}
+
+fn check_state_name(state: CheckState) -> &'static str {
+    match state {
+        CheckState::Unchecked => "unchecked",
+        CheckState::PartiallyChecked => "partial",
+        CheckState::Checked => "checked",
+    }
+}
+
+fn table_bool<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+    default: bool,
+) -> Result<bool, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(default),
+        LuaValue::Boolean(value) => Ok(value),
+        _ => Err(format!("{field} must be boolean")),
+    }
+}
+
 fn table_string<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
@@ -7068,6 +7335,44 @@ mod tests {
                     clock:set_precision("seconds")
                     clock:set_enabled(false)
                     assert(clock:enabled() == false)
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn core_menu_models_nested_entries_and_activation() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "menu.lua",
+                br#"
+                    local core = require("mold.core")
+                    local triggered = false
+                    local menu = core.menu {
+                        { id = "open", text = "Open", icon = "folder", on_triggered = function()
+                            triggered = true
+                        end },
+                        { id = "separator", separator = true },
+                        { id = "flag", text = "Flag", button_type = "checkbox" },
+                        { id = "choice", text = "Choice", children = {
+                            { id = "one", text = "One", button_type = "radio", radio_group = "choice", checked = true },
+                            { id = "two", text = "Two", button_type = "radio", radio_group = "choice" },
+                        } },
+                    }
+                    assert(#menu:entries() == 4)
+                    assert(menu:entry("choice").has_children)
+                    assert(#menu:children("choice") == 2)
+                    menu:activate("open")
+                    assert(triggered)
+                    assert(menu:activate("flag").check_state == "checked")
+                    menu:activate("two")
+                    assert(menu:entry("one").checked == false)
+                    assert(menu:entry("two").checked == true)
+                    menu:set_enabled("open", false)
+                    assert(menu:entry("open").enabled == false)
+                    menu:set_visible("open", false)
+                    assert(menu:entry("open").visible == false)
                 "#,
             )
             .unwrap();

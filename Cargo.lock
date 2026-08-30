@@ -1227,12 +1227,17 @@ dependencies = [
  "mold-desktop",
  "mold-image",
  "mold-io",
+ "mold-menu",
  "mold-reactive",
  "mold-region",
  "mold-scene",
  "mold-services",
  "serde_json",
 ]
+
+[[package]]
+name = "mold-menu"
+version = "0.1.0"
 
 [[package]]
 name = "mold-reactive"

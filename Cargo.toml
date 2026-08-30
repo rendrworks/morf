@@ -40,6 +40,7 @@ mold-desktop = { path = "crates/mold-desktop" }
 mold-io = { path = "crates/mold-io" }
 mold-layout = { path = "crates/mold-layout" }
 mold-lua = { path = "crates/mold-lua" }
+mold-menu = { path = "crates/mold-menu" }
 mold-reactive = { path = "crates/mold-reactive" }
 mold-region = { path = "crates/mold-region" }
 mold-render = { path = "crates/mold-render" }
