@@ -28,9 +28,9 @@ use mold_menu::{ButtonType, CheckState, Menu, MenuEntry};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
 use mold_scene::{
-    AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
-    NodeHandle, Physics, RotationDirection, Scene, Value as SceneValue, ViewTransition,
-    VirtualList,
+    AnimationEnd, AnimationFrame, AnimationStep, Behavior, Color, Easing, Element, FlickState,
+    GroupId, ListChange, ListModel, ModelId, NodeHandle, Physics, Repeat, RotationDirection, Scene,
+    SceneError, Value as SceneValue, ViewTransition, VirtualList,
 };
 use mold_services::{
     AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire,
@@ -42,6 +42,7 @@ include!("surface_types.rs");
 include!("events.rs");
 include!("runtime_config.rs");
 include!("runtime_events.rs");
+include!("runtime_animation.rs");
 include!("runtime_services.rs");
 include!("runtime_ipc.rs");
 include!("runtime_helpers.rs");
@@ -53,6 +54,8 @@ include!("api_shell.rs");
 include!("api_time.rs");
 include!("api_image.rs");
 include!("api_transform.rs");
+include!("api_animation.rs");
+include!("api_group.rs");
 include!("api_host.rs");
 include!("api_view.rs");
 include!("api_process.rs");
@@ -72,6 +75,7 @@ include!("views.rs");
 include!("configure.rs");
 include!("table_menu.rs");
 include!("window_parse.rs");
+include!("layer_parse.rs");
 include!("lua_values.rs");
 include!("reactive_bindings.rs");
 include!("reactive_execute.rs");

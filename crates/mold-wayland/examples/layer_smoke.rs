@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     'framed: loop {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
-            if let LayerEvent::Frame { time_ms } = event {
+            if let LayerEvent::Frame { time_ms, .. } = event {
                 let screens = client
                     .screens()
                     .iter()

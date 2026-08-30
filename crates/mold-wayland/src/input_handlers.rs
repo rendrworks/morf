@@ -297,7 +297,9 @@ impl KeyboardHandler for LayerState {
     ) {
         self.latest_input_serial = Some(serial);
         self.events.push_back(LayerEvent::Modifiers {
-            surface: self.keyboard_surface.unwrap_or(SurfaceRole::Layer),
+            surface: self
+                .keyboard_surface
+                .unwrap_or(SurfaceRole::Layer(PRIMARY_LAYER)),
             control: modifiers.ctrl,
             alt: modifiers.alt,
             shift: modifiers.shift,

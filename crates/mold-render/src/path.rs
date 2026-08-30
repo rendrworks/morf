@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use lyon_tessellation::geom::{Angle, ArcFlags};
@@ -12,15 +13,25 @@ use svgtypes::{PathParser, PathSegment};
 
 use mold_layout::Geometry;
 use mold_scene::NodeHandle;
-use polymorpher::{Morph, RoundedPolygon, shapes};
+use polymorpher::geometry::Size;
+use polymorpher::{CornerRounding, Morph, RoundedPolygon, shapes};
 
 use crate::ShapeMorph;
 
+include!("path/shapes.rs");
+
+/// Triangles in path coordinates, each vertex carrying its coverage position.
+///
+/// The third vertex component is `SOLID` for interior geometry and runs from
+/// `0` to `1` across the antialiasing band that skirts the outline.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Mesh {
-    pub(crate) vertices: Vec<[f32; 2]>,
+    pub(crate) vertices: Vec<[f32; 3]>,
     pub(crate) indices: Vec<u32>,
 }
+
+/// Coverage marker for geometry that is fully inside the shape.
+const SOLID: f32 = -2.0;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PathMesh {
@@ -147,7 +158,8 @@ fn tessellate_path(
             path,
             &FillOptions::tolerance(tolerance).with_fill_rule(fill_rule),
             &mut BuffersBuilder::new(&mut fill, |vertex: FillVertex<'_>| {
-                vertex.position().to_array()
+                let [x, y] = vertex.position().to_array();
+                [x, y, SOLID]
             }),
         )
         .map_err(|error| format!("could not tessellate path fill: {error}"))?;
@@ -158,21 +170,122 @@ fn tessellate_path(
                 path,
                 &StrokeOptions::tolerance(tolerance).with_line_width(stroke_width as f32),
                 &mut BuffersBuilder::new(&mut stroke, |vertex: StrokeVertex<'_, '_>| {
-                    vertex.position().to_array()
+                    let [x, y] = vertex.position().to_array();
+                    [x, y, SOLID]
                 }),
             )
             .map_err(|error| format!("could not tessellate path stroke: {error}"))?;
     }
-    Ok(PathMesh {
-        fill: Mesh {
-            vertices: fill.vertices,
-            indices: fill.indices,
-        },
-        stroke: Mesh {
-            vertices: stroke.vertices,
-            indices: stroke.indices,
-        },
-    })
+    // One physical pixel expressed in the path's own coordinates, so the band
+    // stays a pixel wide whatever scale the geometry was tessellated for.
+    let fringe = 1.0 / scale;
+    let mut fill = Mesh {
+        vertices: fill.vertices,
+        indices: fill.indices,
+    };
+    let mut stroke = Mesh {
+        vertices: stroke.vertices,
+        indices: stroke.indices,
+    };
+    add_coverage_band(&mut fill, fringe);
+    add_coverage_band(&mut stroke, fringe);
+    Ok(PathMesh { fill, stroke })
+}
+
+/// Skirts a tessellated mesh with a one-pixel outward coverage band.
+///
+/// A tessellator emits hard polygon edges and the rasterizer samples them once
+/// per pixel, which is why an untreated curve comes out visibly stepped. The
+/// band fades from full coverage at the outline to nothing a pixel beyond it.
+///
+/// It is built from the mesh rather than from the path, which matters twice
+/// over: the outline is found as the edges belonging to a single triangle, so
+/// the result does not depend on how the contours were wound, and the band is
+/// extruded strictly outwards, so it never blends over the shape it is
+/// smoothing and a translucent fill stays exactly as translucent as it was
+/// asked to be. Strokes are closed regions too, so the same pass covers them.
+fn add_coverage_band(mesh: &mut Mesh, width: f32) {
+    if mesh.indices.len() < 3 || !width.is_finite() || width <= 0.0 {
+        return;
+    }
+    // An interior edge is shared by two triangles; anything seen once is on the
+    // outline. The opposite corner is kept to tell inwards from outwards.
+    let mut edges: HashMap<(u32, u32), (u32, u32, u32)> = HashMap::new();
+    for triangle in mesh.indices.chunks_exact(3) {
+        let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
+        for (from, to, opposite) in [(a, b, c), (b, c, a), (c, a, b)] {
+            let key = (from.min(to), from.max(to));
+            match edges.entry(key) {
+                Entry::Occupied(entry) => {
+                    entry.remove();
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert((from, to, opposite));
+                }
+            }
+        }
+    }
+    if edges.is_empty() {
+        return;
+    }
+
+    // Outward normals are averaged per vertex so the band closes at corners
+    // instead of leaving a wedge between neighbouring edges.
+    fn point(vertices: &[[f32; 3]], index: u32) -> (f32, f32) {
+        let vertex = vertices[index as usize];
+        (vertex[0], vertex[1])
+    }
+    let mut normals: HashMap<u32, (f32, f32)> = HashMap::new();
+    let boundary = edges.values().copied().collect::<Vec<_>>();
+    for (from, to, opposite) in &boundary {
+        let (ax, ay) = point(&mesh.vertices, *from);
+        let (bx, by) = point(&mesh.vertices, *to);
+        let (dx, dy) = (bx - ax, by - ay);
+        let length = dx.hypot(dy);
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let mut normal = (dy / length, -dx / length);
+        let (cx, cy) = point(&mesh.vertices, *opposite);
+        let midpoint = ((ax + bx) * 0.5, (ay + by) * 0.5);
+        if normal.0 * (cx - midpoint.0) + normal.1 * (cy - midpoint.1) > 0.0 {
+            normal = (-normal.0, -normal.1);
+        }
+        for vertex in [*from, *to] {
+            let entry = normals.entry(vertex).or_insert((0.0, 0.0));
+            entry.0 += normal.0;
+            entry.1 += normal.1;
+        }
+    }
+
+    // The outline vertices are duplicated rather than reused: the originals
+    // stay marked solid for the fill triangles that share them, while the
+    // copies carry the band's coverage ramp.
+    let mut ring: HashMap<u32, (u32, u32)> = HashMap::new();
+    for (vertex, normal) in &normals {
+        let length = normal.0.hypot(normal.1);
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let (nx, ny) = (normal.0 / length * width, normal.1 / length * width);
+        let (x, y) = point(&mesh.vertices, *vertex);
+        let inner = mesh.vertices.len() as u32;
+        mesh.vertices.push([x, y, 0.0]);
+        mesh.vertices.push([x + nx, y + ny, 1.0]);
+        ring.insert(*vertex, (inner, inner + 1));
+    }
+
+    for (from, to, _) in &boundary {
+        let (Some((inner_from, outer_from)), Some((inner_to, outer_to))) =
+            (ring.get(from).copied(), ring.get(to).copied())
+        else {
+            continue;
+        };
+        mesh.indices
+            .extend_from_slice(&[inner_from, inner_to, outer_to]);
+        mesh.indices
+            .extend_from_slice(&[inner_from, outer_to, outer_from]);
+    }
 }
 
 fn morph_path(morph: &Morph, progress: f32, width: f32, height: f32) -> Path {
@@ -194,89 +307,6 @@ fn morph_path(morph: &Morph, progress: f32, width: f32, height: f32) -> Path {
         builder.end(true);
     }
     builder.build()
-}
-
-pub(crate) fn is_morph_shape(name: &str) -> bool {
-    matches!(
-        name,
-        "circle"
-            | "square"
-            | "slanted"
-            | "arch"
-            | "fan"
-            | "arrow"
-            | "semi_circle"
-            | "oval"
-            | "pill"
-            | "triangle"
-            | "diamond"
-            | "clam_shell"
-            | "pentagon"
-            | "gem"
-            | "sunny"
-            | "very_sunny"
-            | "cookie4"
-            | "cookie6"
-            | "cookie7"
-            | "cookie9"
-            | "cookie12"
-            | "ghostish"
-            | "clover4"
-            | "clover8"
-            | "burst"
-            | "soft_burst"
-            | "boom"
-            | "soft_boom"
-            | "flower"
-            | "puffy"
-            | "puffy_diamond"
-            | "pixel_circle"
-            | "pixel_triangle"
-            | "bun"
-            | "heart"
-    )
-}
-
-fn morph_shape(name: &str) -> Result<RoundedPolygon, String> {
-    let shape = match name {
-        "circle" => shapes::circle(None),
-        "square" => shapes::square(),
-        "slanted" => shapes::slanted(),
-        "arch" => shapes::arch(),
-        "fan" => shapes::fan(),
-        "arrow" => shapes::arrow(),
-        "semi_circle" => shapes::semi_circle(),
-        "oval" => shapes::oval(),
-        "pill" => shapes::pill(),
-        "triangle" => shapes::triangle(),
-        "diamond" => shapes::diamond(),
-        "clam_shell" => shapes::clam_shell(),
-        "pentagon" => shapes::pentagon(),
-        "gem" => shapes::gem(),
-        "sunny" => shapes::sunny(),
-        "very_sunny" => shapes::very_sunny(),
-        "cookie4" => shapes::cookie4(),
-        "cookie6" => shapes::cookie6(),
-        "cookie7" => shapes::cookie7(),
-        "cookie9" => shapes::cookie9(),
-        "cookie12" => shapes::cookie12(),
-        "ghostish" => shapes::ghostish(),
-        "clover4" => shapes::clover4(),
-        "clover8" => shapes::clover8(),
-        "burst" => shapes::burst(),
-        "soft_burst" => shapes::soft_burst(),
-        "boom" => shapes::boom(),
-        "soft_boom" => shapes::soft_boom(),
-        "flower" => shapes::flower(),
-        "puffy" => shapes::puffy(),
-        "puffy_diamond" => shapes::puffy_diamond(),
-        "pixel_circle" => shapes::pixel_circle(),
-        "pixel_triangle" => shapes::pixel_triangle(),
-        "bun" => shapes::bun(),
-        "heart" => shapes::heart(),
-        _ => return Err(format!("unknown Polymorpher shape `{name}`")),
-    };
-    Ok(shape)
 }
 
 fn parse_path(data: &str) -> Result<Path, String> {
@@ -400,50 +430,4 @@ fn parse_path(data: &str) -> Result<Path, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use mold_scene::{Element, Scene};
-
-    #[test]
-    fn tessellates_svg_curves_and_caches_scale() {
-        let mut cache = PathCache::default();
-        let path = "M2 14 C2 4 14 4 14 14 Z";
-        let first = cache.tessellate(path, 2.0, false, 120).unwrap();
-        assert!(!first.fill.indices.is_empty());
-        assert!(!first.stroke.indices.is_empty());
-        let first_vertices = first.fill.vertices.len();
-        let second = cache.tessellate(path, 2.0, false, 120).unwrap();
-        assert_eq!(second.fill.vertices.len(), first_vertices);
-    }
-
-    #[test]
-    fn polymorpher_replaces_one_cached_mesh_per_scene_node() {
-        let mut scene = Scene::new();
-        let node = scene.create(Element::Shape);
-        let bounds = Geometry {
-            x: 0.0,
-            y: 0.0,
-            width: 120.0,
-            height: 120.0,
-        };
-        let mut cache = PathCache::default();
-        let mut spec = ShapeMorph {
-            from: "square".to_owned(),
-            to: "circle".to_owned(),
-            progress: 0.0,
-        };
-        let square = cache
-            .tessellate_morph(node, &spec, bounds, 0.0, false, 120)
-            .unwrap()
-            .clone();
-        spec.progress = 1.0;
-        let circle = cache
-            .tessellate_morph(node, &spec, bounds, 0.0, false, 120)
-            .unwrap()
-            .clone();
-
-        assert_ne!(square.fill.vertices, circle.fill.vertices);
-        assert_eq!(cache.morphs.len(), 1);
-        assert_eq!(cache.morphed.len(), 1);
-    }
-}
+mod tests;

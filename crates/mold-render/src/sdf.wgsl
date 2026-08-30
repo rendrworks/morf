@@ -101,7 +101,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let point = input.local - input.shape.xy;
     let signed_distance = rounded_distance(point, input.shape.zw, input.radii);
     let antialiasing = input.border.y > 0.5;
-    let softness = max(input.effects.x, 0.5);
+    // Half the screen-space width of one pixel, measured in the same units the
+    // distance is expressed in. Taking it from the derivative rather than
+    // assuming a fixed local-unit width keeps the edge exactly one pixel wide
+    // however the node is scaled, skewed, or rotated on its way to the screen.
+    let edge_softness = max(fwidth(signed_distance), 0.0001) * 0.5;
+    let softness = max(input.effects.x, edge_softness);
     let coverage = select(
         select(0.0, 1.0, signed_distance <= 0.0),
         smoothstep(softness, -softness, signed_distance),
@@ -138,7 +143,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let shadow_point = point - input.shadow.xy + vec2<f32>(spread);
     let shadow_size = max(input.shape.zw + vec2<f32>(spread * 2.0), vec2<f32>(0.0));
     let shadow_distance = rounded_distance(shadow_point, shadow_size, max(input.radii + vec4<f32>(spread), vec4<f32>(0.0)));
-    let shadow_softness = max(input.effects.y, 0.5);
+    let shadow_softness = max(input.effects.y, max(fwidth(shadow_distance), 0.0001) * 0.5);
     let outer_shadow = select(1.0, 0.0, input.shadow.z > 0.5);
     let shadow_alpha = input.shadow_color.a * outer_shadow * smoothstep(shadow_softness, -shadow_softness, shadow_distance);
     let shadow_layer = vec4<f32>(input.shadow_color.rgb * shadow_alpha, shadow_alpha);

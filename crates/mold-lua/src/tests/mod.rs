@@ -26,4 +26,8 @@ include!("input_api.rs");
 include!("scene.rs");
 include!("lifecycle_io.rs");
 include!("events_animation.rs");
+include!("animation_playback.rs");
+include!("animation_groups.rs");
 include!("views_states.rs");
+include!("layer_surfaces.rs");
+include!("examples.rs");

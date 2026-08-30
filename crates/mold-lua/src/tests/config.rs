@@ -106,6 +106,7 @@ fn layer_surface_settings_are_native_and_typed() {
             layer: "overlay".to_owned(),
             keyboard_focus: "none".to_owned(),
             input_regions: None,
+            reserve: SurfaceReserve::default(),
         }
     );
 }

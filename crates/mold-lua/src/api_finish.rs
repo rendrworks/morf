@@ -91,6 +91,9 @@ fn install_reactive_api(
         install_time_api(ctx, Rc::clone(&state), mold);
         install_image_api(ctx, mold);
         install_transform_api(ctx, Rc::clone(&state), mold);
+        install_animation_api(ctx, Rc::clone(&state), mold);
+        install_easing_api(ctx, mold);
+        install_group_api(ctx, Rc::clone(&state), mold);
         install_host_service_api(ctx, Rc::clone(&state), mold, screen);
         install_view_api(ctx, Rc::clone(&state), mold, limits);
         install_process_api(ctx, mold);

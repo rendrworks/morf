@@ -84,6 +84,7 @@ fn behavior_intercepts_writes_and_keeps_target_live() {
                 duration: Duration::from_millis(200),
                 easing: Easing::Linear,
                 rotation_direction: RotationDirection::Numerical,
+                ..Behavior::default()
             }),
         )
         .unwrap();
@@ -106,6 +107,7 @@ fn interrupted_animation_retargets_without_a_jump() {
         duration: Duration::from_millis(200),
         easing: Easing::Linear,
         rotation_direction: RotationDirection::Numerical,
+        ..Behavior::default()
     };
     scene.set_behavior(rect, "opacity", Some(behavior)).unwrap();
     scene.assign(rect, "opacity", 0.0).unwrap();
@@ -135,6 +137,7 @@ fn rotation_behavior_can_take_the_shortest_path() {
                 duration: Duration::from_millis(100),
                 easing: Easing::Linear,
                 rotation_direction: RotationDirection::Shortest,
+                ..Behavior::default()
             }),
         )
         .unwrap();
@@ -159,6 +162,7 @@ fn paint_animation_finishes_at_the_exact_target() {
                 duration: Duration::from_millis(120),
                 easing: Easing::OutCubic,
                 rotation_direction: RotationDirection::Numerical,
+                ..Behavior::default()
             }),
         )
         .unwrap();
@@ -252,3 +256,6 @@ fn smoothed_motion_obeys_velocity_limit() {
     scene.tick_animations(Duration::from_millis(400)).unwrap();
     assert_eq!(scene.number(item, "x").unwrap(), 100.0);
 }
+
+mod groups;
+mod playback;

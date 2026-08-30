@@ -8,12 +8,44 @@ struct AuxiliarySurface {
     layout: Option<Layout>,
     popup_config: Option<PopupSurfaceConfig>,
     floating_config: Option<FloatingSurfaceConfig>,
+    layer_config: Option<LayerSurfaceConfig>,
+    /// Whether this surface has work pending for the next frame callback.
+    ///
+    /// A configured layer surface is permanent decoration, so repainting it on
+    /// every frame callback would keep the compositor compositing forever. It
+    /// paints only when something marked it dirty, and asks for another frame
+    /// only when it painted.
+    needs_paint: bool,
+}
+
+/// Largest frame delta charged to animations in a single tick.
+///
+/// A compositor that fell behind should let motion catch up, but only so far.
+/// Beyond a few dropped frames, advancing by the whole gap reads as a jump, so
+/// the tick is capped and the remaining time is simply lost.
+const MAX_FRAME_DELTA_MS: u32 = 100;
+
+/// How far to advance animations for a frame callback at `time_ms`.
+///
+/// `previous` is the timebase carried forward from the last tick, and is absent
+/// whenever the scene had settled. That absence is what keeps idle time out of
+/// the clock: the compositor stops sending frame callbacks while nothing moves,
+/// so the gap since the last one measures how long the shell sat still, not how
+/// far motion should advance. Charging it to an animation that started in the
+/// meantime makes it jump, and a long enough gap lands it on its target in a
+/// single tick.
+fn animation_delta(previous: Option<u32>, time_ms: u32) -> Duration {
+    let elapsed = previous.map_or(0, |previous| {
+        time_ms.wrapping_sub(previous).min(MAX_FRAME_DELTA_MS)
+    });
+    Duration::from_millis(elapsed.into())
 }
 
 struct SurfaceEventState {
     layout: Layout,
     popup_surfaces: HashMap<u64, AuxiliarySurface>,
     floating_surfaces: HashMap<u64, AuxiliarySurface>,
+    layer_surfaces: HashMap<u64, AuxiliarySurface>,
     last_frame: Option<u32>,
     hovered: Option<(SurfaceRole, NodeHandle)>,
     pressed: Option<(SurfaceRole, NodeHandle, f64, f64, bool)>,
@@ -55,6 +87,7 @@ fn window_surface_parent(surface: &WindowSurfaceConfig) -> Option<u64> {
     match &surface.kind {
         WindowSurfaceKind::Popup(config) => config.parent,
         WindowSurfaceKind::Floating(config) => config.parent,
+        WindowSurfaceKind::Layer(_) => None,
     }
 }
 
@@ -80,6 +113,8 @@ fn sync_window_surfaces(
     client: &mut LayerClient,
     popups: &mut HashMap<u64, AuxiliarySurface>,
     floatings: &mut HashMap<u64, AuxiliarySurface>,
+    layers: &mut HashMap<u64, AuxiliarySurface>,
+    output: &str,
 ) -> Result<bool, String> {
     let mut resumed = false;
     let surfaces = runtime.window_surface_configs();
@@ -109,8 +144,20 @@ fn sync_window_surfaces(
                 )
         })
         .collect::<Vec<_>>();
+    let mut desired_layers = surfaces
+        .iter()
+        .filter(|surface| {
+            matches!(&surface.kind, WindowSurfaceKind::Layer(_))
+                && window_surface_effectively_visible(
+                    surface.id,
+                    &surfaces_by_id,
+                    &mut HashSet::new(),
+                )
+        })
+        .collect::<Vec<_>>();
     desired_popups.sort_by_key(|surface| surface.id);
     desired_floatings.sort_by_key(|surface| surface.id);
+    desired_layers.sort_by_key(|surface| surface.id);
     let desired_popup_ids = desired_popups
         .iter()
         .map(|surface| surface.id)
@@ -140,6 +187,7 @@ fn sync_window_surfaces(
         client.close_floating(id);
         floatings.remove(&id);
     }
+    resumed |= sync_layer_surfaces(client, output, &desired_layers, layers)?;
     let mut reopened = HashSet::new();
     for surface in desired_floatings {
         let id = surface.id;
@@ -186,6 +234,8 @@ fn sync_window_surfaces(
                     layout: None,
                     popup_config: None,
                     floating_config: Some(config.clone()),
+                    layer_config: None,
+                    needs_paint: true,
                 },
             );
         } else if let Some(current) = floatings.get_mut(&id) {
@@ -217,9 +267,10 @@ fn sync_window_surfaces(
                 match parent.kind {
                     WindowSurfaceKind::Popup(_) => SurfaceRole::Popup(parent.id),
                     WindowSurfaceKind::Floating(_) => SurfaceRole::Floating(parent.id),
+                    WindowSurfaceKind::Layer(_) => SurfaceRole::Layer(window_layer_id(parent.id)),
                 }
             } else {
-                SurfaceRole::Layer
+                SurfaceRole::Layer(PRIMARY_LAYER)
             };
             client
                 .open_popup(
@@ -263,6 +314,8 @@ fn sync_window_surfaces(
                     layout: None,
                     popup_config: Some(config.clone()),
                     floating_config: None,
+                    layer_config: None,
+                    needs_paint: true,
                 },
             );
         } else if let Some(current) = popups.get_mut(&id) {
@@ -289,9 +342,11 @@ fn surface_layout<'a>(
     layer: &'a Layout,
     popups: &'a HashMap<u64, AuxiliarySurface>,
     floatings: &'a HashMap<u64, AuxiliarySurface>,
+    layers: &'a HashMap<u64, AuxiliarySurface>,
 ) -> Option<&'a Layout> {
     match surface {
-        SurfaceRole::Layer => Some(layer),
+        SurfaceRole::Layer(PRIMARY_LAYER) => Some(layer),
+        SurfaceRole::Layer(id) => layers.get(&window_surface_id(id)?)?.layout.as_ref(),
         SurfaceRole::Popup(id) => popups.get(&id)?.layout.as_ref(),
         SurfaceRole::Floating(id) => floatings.get(&id)?.layout.as_ref(),
     }
@@ -302,9 +357,13 @@ fn surface_root(
     layer: NodeHandle,
     popups: &HashMap<u64, AuxiliarySurface>,
     floatings: &HashMap<u64, AuxiliarySurface>,
+    layers: &HashMap<u64, AuxiliarySurface>,
 ) -> Option<NodeHandle> {
     match surface {
-        SurfaceRole::Layer => Some(layer),
+        SurfaceRole::Layer(PRIMARY_LAYER) => Some(layer),
+        SurfaceRole::Layer(id) => layers
+            .get(&window_surface_id(id)?)
+            .map(|surface| surface.root),
         SurfaceRole::Popup(id) => popups.get(&id).map(|surface| surface.root),
         SurfaceRole::Floating(id) => floatings.get(&id).map(|surface| surface.root),
     }
@@ -336,8 +395,7 @@ fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, String> {
     Ok(primary[0])
 }
 
-fn runtime_bar_config(runtime: &Runtime, output: &str) -> Result<BarConfig, String> {
-    let surface = runtime.layer_surface_config();
+fn runtime_bar_config(surface: &LayerSurfaceConfig, output: &str) -> Result<BarConfig, String> {
     let layer = match surface.layer.as_str() {
         "background" => ShellLayer::Background,
         "bottom" => ShellLayer::Bottom,
@@ -352,7 +410,7 @@ fn runtime_bar_config(runtime: &Runtime, output: &str) -> Result<BarConfig, Stri
         value => return Err(format!("unsupported keyboard focus policy `{value}`")),
     };
     Ok(BarConfig {
-        namespace: surface.namespace,
+        namespace: surface.namespace.clone(),
         width: surface.width,
         height: surface.height,
         exclusive_zone: surface.exclusive_zone,
@@ -373,17 +431,20 @@ fn runtime_bar_config(runtime: &Runtime, output: &str) -> Result<BarConfig, Stri
 }
 
 fn connect_runtime_surface(runtime: &Runtime, output: &str) -> Result<LayerClient, String> {
-    let mut client = LayerClient::connect(runtime_bar_config(runtime, output)?)
-        .map_err(|error| error.to_string())?;
+    let config = runtime.layer_surface_config();
+    let mut client =
+        LayerClient::connect(runtime_bar_config(&config, output)?).map_err(|e| e.to_string())?;
+    open_reserve_layers(&mut client, &config, output)?;
     loop {
         client.dispatch().map_err(|error| error.to_string())?;
         while let Some(event) = client.next_event() {
             match event {
-                LayerEvent::Configure { .. } => return Ok(client),
-                LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
+                LayerEvent::Configure { id, .. } if id == PRIMARY_LAYER => return Ok(client),
+                LayerEvent::Closed { id } if id == PRIMARY_LAYER => {
+                    return Err("layer surface was closed".to_owned());
+                }
                 _ => {}
             }
         }
     }
 }
-

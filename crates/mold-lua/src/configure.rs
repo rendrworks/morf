@@ -31,9 +31,10 @@ fn configure_element<'gc>(
             }
         }
     }
-    if let Some((_, behavior)) = named.iter().find(|(name, _)| name == "behavior") {
-        configure_behaviors(state, ctx, node, *behavior)?;
-    }
+    let named_behavior = named
+        .iter()
+        .find(|(name, _)| name == "behavior")
+        .map(|(_, value)| *value);
     if let Some((_, states)) = named.iter().find(|(name, _)| name == "states") {
         let transitions = named
             .iter()
@@ -78,6 +79,16 @@ fn configure_element<'gc>(
             let value = lua_to_scene(ctx, value, 0)?;
             assign_scene_property(&mut state.borrow_mut(), node, &property, value)?;
         }
+    }
+    // Behaviors are installed only once every declared property has been
+    // assigned. A behavior intercepts writes, so installing it first would make
+    // an element animate its own construction — every colour easing up from the
+    // schema default, every width growing from zero — which is a flash on
+    // startup, not a transition. Qt's `Behavior` withholds itself during
+    // component construction for the same reason. Anything that changes after
+    // this point, including the state applied below, animates normally.
+    if let Some(behavior) = named_behavior {
+        configure_behaviors(state, ctx, node, behavior)?;
     }
     children.sort_by_key(|(index, _)| *index);
     for (_, child) in children {
@@ -236,6 +247,7 @@ fn configure_states<'gc>(
                     duration: Duration::from_secs_f64(duration / 1_000.0),
                     easing: parse_easing(ctx, transition.get_value(ctx, "easing"))?,
                     rotation_direction: parse_rotation_direction(ctx, transition)?,
+                    ..Behavior::default()
                 },
             });
         }
@@ -270,6 +282,24 @@ fn configure_behaviors<'gc>(
             return Err("each behavior must be a table".to_owned());
         };
         let property = property.display_lossy().to_string();
+        // Registered before the kind branches below return early, so spring and
+        // smoothed motion report their settling the same way a tween does.
+        match behavior.get_value(ctx, "on_finished") {
+            LuaValue::Nil => {
+                state
+                    .borrow_mut()
+                    .animation_callbacks
+                    .remove(&(node, property.clone()));
+            }
+            LuaValue::Function(Function::Closure(callback)) => {
+                let callback = ctx.stash(callback);
+                state
+                    .borrow_mut()
+                    .animation_callbacks
+                    .insert((node, property.clone()), callback);
+            }
+            _ => return Err("behavior on_finished must be a function".to_owned()),
+        }
         let kind = match behavior.get_value(ctx, "kind") {
             LuaValue::Nil => None,
             LuaValue::String(value) => Some(value.display_lossy().to_string()),
@@ -313,6 +343,14 @@ fn configure_behaviors<'gc>(
         }
         let easing = parse_easing(ctx, behavior.get_value(ctx, "easing"))?;
         let rotation_direction = parse_rotation_direction(ctx, behavior)?;
+        let delay = table_number(ctx, behavior, "delay", 0.0)?;
+        if delay < 0.0 {
+            return Err("behavior delay cannot be negative".to_owned());
+        }
+        let time_scale = table_number(ctx, behavior, "time_scale", 1.0)?;
+        if time_scale <= 0.0 {
+            return Err("behavior time_scale must be greater than zero".to_owned());
+        }
         state
             .borrow_mut()
             .scene
@@ -323,11 +361,62 @@ fn configure_behaviors<'gc>(
                     duration: Duration::from_secs_f64(duration / 1_000.0),
                     easing,
                     rotation_direction,
+                    delay: Duration::from_secs_f64(delay / 1_000.0),
+                    time_scale,
+                    repeat: parse_repeat(ctx, behavior)?,
+                    enabled: parse_enabled(ctx, behavior)?,
                 }),
             )
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// Reads the `loops` and `ping_pong` pair into a repetition mode.
+///
+/// `loops` is either a pass count or one of the endless names, and `ping_pong`
+/// turns whichever of those was given into an alternating variant. Lua reserves
+/// `repeat` as a keyword, so the count field cannot carry that name.
+fn parse_repeat<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<Repeat, String> {
+    let alternating = match options.get_value(ctx, "ping_pong") {
+        LuaValue::Nil => false,
+        LuaValue::Boolean(value) => value,
+        _ => return Err("behavior ping_pong must be boolean".to_owned()),
+    };
+    let count = |value: f64| -> Result<u32, String> {
+        if !value.is_finite() || value < 1.0 {
+            return Err("behavior loops must be at least one pass".to_owned());
+        }
+        Ok(value as u32)
+    };
+    match options.get_value(ctx, "loops") {
+        LuaValue::Nil if alternating => Ok(Repeat::PingPong),
+        LuaValue::Nil => Ok(Repeat::Once),
+        LuaValue::Integer(value) => Ok(match alternating {
+            true => Repeat::PingPongTimes(count(value as f64)?),
+            false => Repeat::Times(count(value as f64)?),
+        }),
+        LuaValue::Number(value) => Ok(match alternating {
+            true => Repeat::PingPongTimes(count(value)?),
+            false => Repeat::Times(count(value)?),
+        }),
+        LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
+            "once" => Ok(Repeat::Once),
+            "forever" => Ok(Repeat::Forever),
+            "ping_pong" => Ok(Repeat::PingPong),
+            name => Err(format!("unknown behavior loops mode `{name}`")),
+        },
+        _ => Err("behavior loops must be a pass count or a mode name".to_owned()),
+    }
+}
+
+/// Reads the optional `enabled` switch, defaulting an absent one to on.
+fn parse_enabled<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<bool, String> {
+    match options.get_value(ctx, "enabled") {
+        LuaValue::Nil => Ok(true),
+        LuaValue::Boolean(value) => Ok(value),
+        _ => Err("behavior enabled must be boolean".to_owned()),
+    }
 }
 
 fn parse_rotation_direction<'gc>(

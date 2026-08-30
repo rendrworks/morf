@@ -12,16 +12,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
-    FloatingSurfaceConfig, InputMethodRequest, IpcValue, Limits, PopupSurfaceConfig, Runtime,
-    Screen, Screencopy as LuaScreencopy, TextInputRequest, UiEvent, VirtualKeyboardRequest,
-    WindowSurfaceAction, WindowSurfaceConfig, WindowSurfaceKind,
+    FloatingSurfaceConfig, InputMethodRequest, IpcValue, LayerSurfaceConfig, Limits,
+    PopupSurfaceConfig, Runtime, Screen, Screencopy as LuaScreencopy, TextInputRequest, UiEvent,
+    VirtualKeyboardRequest, WindowSurfaceAction, WindowSurfaceConfig, WindowSurfaceKind,
 };
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
 use mold_wayland::{
     BarConfig, FloatingConfig, FloatingResizeEdge, InputRect, KeyboardFocus, LayerAnchors,
-    LayerClient, LayerEvent, OutputPowerMode, PopupAnchor, PopupConfig, PopupConstraints,
-    PopupGravity, ScreenInfo, ScreencopyFormat, ShellLayer, SurfaceRole,
+    LayerClient, LayerEvent, OutputPowerMode, PRIMARY_LAYER, PopupAnchor, PopupConfig,
+    PopupConstraints, PopupGravity, ScreenInfo, ScreencopyFormat, ShellLayer, SurfaceRole,
 };
 
 include!("config.rs");
@@ -30,6 +30,7 @@ include!("supervisor.rs");
 include!("workers.rs");
 include!("services.rs");
 include!("surfaces.rs");
+include!("surface_layers.rs");
 include!("surface_run.rs");
 include!("surface_events.rs");
 include!("surface_actions.rs");

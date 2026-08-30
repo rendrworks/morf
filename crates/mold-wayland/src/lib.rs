@@ -99,6 +99,7 @@ include!("surface_types.rs");
 include!("client_connection.rs");
 include!("client_services.rs");
 include!("client_input.rs");
+include!("client_layer.rs");
 include!("client_surface.rs");
 include!("client_floating.rs");
 include!("client_lock.rs");

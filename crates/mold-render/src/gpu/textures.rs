@@ -58,6 +58,9 @@ struct TextureStyle {
     opacity: f32,
     overlay: Color,
     distance_field: bool,
+    field: DistanceFieldStyle,
+    /// Source-pixel range the cached field encodes on either side of the edge.
+    spread: f32,
 }
 
 struct TextureBatchContext<'a> {
@@ -91,6 +94,7 @@ fn create_texture_batch(
             fill_mode,
             distance_field,
             distance_field_spread,
+            distance_field_style,
             ..
         } = command
         else {
@@ -127,6 +131,8 @@ fn create_texture_batch(
                     opacity: *opacity,
                     overlay: *color_overlay,
                     distance_field: *distance_field,
+                    field: *distance_field_style,
+                    spread: *distance_field_spread,
                 },
                 context.target_size,
                 scale,
@@ -222,6 +228,8 @@ fn create_texture_batch(
                 opacity: *opacity,
                 overlay: *color_overlay,
                 distance_field: *distance_field,
+                field: *distance_field_style,
+                spread: *distance_field_spread,
             },
             (target_width, target_height),
             scale,
@@ -285,6 +293,21 @@ fn texture_placement(
     }
 }
 
+/// Converts the field style into the units the shader samples in.
+///
+/// The cached texture maps `[-spread, spread]` source pixels onto `[0, 1]`, so
+/// a width expressed in pixels has to be divided by the full span to land in
+/// the same space as the sampled value.
+fn distance_field_uniform(style: DistanceFieldStyle, spread: f32) -> [f32; 4] {
+    let span = (spread.max(0.5) * 2.0).max(f32::EPSILON);
+    [
+        style.weight,
+        style.softness / span,
+        style.outline_width / span,
+        0.0,
+    ]
+}
+
 fn push_texture_instance(
     batch: &mut TextureBatch,
     command_index: usize,
@@ -309,11 +332,9 @@ fn push_texture_instance(
             f32::from(style.distance_field),
             f32::from(style.distance_field),
         ],
-        surface: [0.0; 4],
-        mask_bounds: [0.0; 4],
-        mask_inverse_0: [0.0; 4],
-        mask_inverse_1: [0.0; 4],
-        mask_radii: [0.0; 4],
+        field: distance_field_uniform(style.field, style.spread),
+        outline_color: color_array(style.field.outline_color),
+        ..GlyphInstance::default()
     });
     batch.images.push(image);
 }
@@ -459,11 +480,7 @@ fn create_glyph_batch(
             color: tint,
             color_overlay: color_array(prepared.color_overlay),
             mode: [0.0, 0.0, if color_glyph { 0.0 } else { 1.0 }, 0.0],
-            surface: [0.0; 4],
-            mask_bounds: [0.0; 4],
-            mask_inverse_0: [0.0; 4],
-            mask_inverse_1: [0.0; 4],
-            mask_radii: [0.0; 4],
+            ..GlyphInstance::default()
         });
     }
     Ok(Some(GlyphBatch {

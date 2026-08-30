@@ -34,6 +34,7 @@ fn install_shell_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, 
                     }
                     LuaValue::Table(values)
                 }),
+            "reserve" => LuaValue::Table(reserve_to_lua(ctx, config.reserve)),
             _ => LuaValue::Nil,
         };
         stack.replace(ctx, value);
@@ -43,105 +44,7 @@ fn install_shell_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, 
     let surface_new_index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (_surface, key, value): (Table, String, LuaValue) = stack.consume(ctx)?;
         let mut state = surface_write_state.borrow_mut();
-        let config = &mut state.layer_surface;
-        match key.as_str() {
-            "namespace" => {
-                let LuaValue::String(value) = value else {
-                    return Err(HostError("surface namespace must be a string".into()).into());
-                };
-                let value = value.display_lossy().to_string();
-                if value.is_empty() || value.len() > 128 {
-                    return Err(
-                        HostError("surface namespace must contain 1 to 128 bytes".into()).into(),
-                    );
-                }
-                config.namespace = value;
-            }
-            "width" | "height" => {
-                let LuaValue::Integer(value) = value else {
-                    return Err(HostError(format!("surface {key} must be an integer")).into());
-                };
-                let value = u32::try_from(value)
-                    .map_err(|_| HostError(format!("surface {key} must fit u32")))?;
-                if key == "height" && value == 0 {
-                    return Err(HostError("surface height must be positive".into()).into());
-                }
-                if key == "width" {
-                    config.width = value;
-                } else {
-                    config.height = value;
-                }
-            }
-            "exclusive_zone" | "margin_top" | "margin_right" | "margin_bottom" | "margin_left" => {
-                let LuaValue::Integer(value) = value else {
-                    return Err(HostError(format!("surface {key} must be an integer")).into());
-                };
-                let value = i32::try_from(value)
-                    .map_err(|_| HostError(format!("surface {key} must fit i32")))?;
-                match key.as_str() {
-                    "exclusive_zone" => config.exclusive_zone = value,
-                    "margin_top" => config.margin_top = value,
-                    "margin_right" => config.margin_right = value,
-                    "margin_bottom" => config.margin_bottom = value,
-                    "margin_left" => config.margin_left = value,
-                    _ => unreachable!(),
-                }
-            }
-            "anchors" => {
-                let LuaValue::Table(value) = value else {
-                    return Err(HostError("surface anchors must be a table".into()).into());
-                };
-                let read = |name| match value.get_value(ctx, name) {
-                    LuaValue::Nil => Ok(false),
-                    LuaValue::Boolean(value) => Ok(value),
-                    _ => Err(HostError(format!("surface anchor {name} must be boolean"))),
-                };
-                config.anchors = SurfaceAnchors {
-                    top: read("top")?,
-                    right: read("right")?,
-                    bottom: read("bottom")?,
-                    left: read("left")?,
-                };
-            }
-            "layer" => {
-                let LuaValue::String(value) = value else {
-                    return Err(HostError("surface layer must be a string".into()).into());
-                };
-                let value = value.display_lossy().to_string();
-                if !matches!(value.as_str(), "background" | "bottom" | "top" | "overlay") {
-                    return Err(HostError(
-                        "surface layer must be background, bottom, top, or overlay".into(),
-                    )
-                    .into());
-                }
-                config.layer = value;
-            }
-            "keyboard_focus" => {
-                let LuaValue::String(value) = value else {
-                    return Err(HostError("surface keyboard_focus must be a string".into()).into());
-                };
-                let value = value.display_lossy().to_string();
-                if !matches!(value.as_str(), "none" | "exclusive" | "on_demand") {
-                    return Err(HostError(
-                        "surface keyboard_focus must be none, exclusive, or on_demand".into(),
-                    )
-                    .into());
-                }
-                config.keyboard_focus = value;
-            }
-            "mask" => {
-                config.input_regions = match value {
-                    LuaValue::Nil => None,
-                    LuaValue::Table(value) => {
-                        Some(vec![parse_region(ctx, value, 0).map_err(HostError)?])
-                    }
-                    _ => {
-                        return Err(HostError("surface mask must be a region table".into()).into());
-                    }
-                };
-            }
-            _ => return Err(HostError(format!("unknown surface setting `{key}`")).into()),
-        }
+        apply_layer_setting(ctx, &mut state.layer_surface, &key, value).map_err(HostError)?;
         Ok(CallbackReturn::Return)
     });
     let surface_metatable = Table::new(&ctx);

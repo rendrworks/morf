@@ -110,6 +110,8 @@ pub enum DrawCommand {
         distance_field: bool,
         /// Pixel distance represented on either side of the mask edge.
         distance_field_spread: f32,
+        /// Edge shaping applied to the sampled field.
+        distance_field_style: DistanceFieldStyle,
     },
     /// Filled and optionally stroked SVG path.
     Path {
@@ -134,6 +136,38 @@ pub enum DrawCommand {
         /// True for even-odd fill, false for nonzero fill.
         even_odd: bool,
     },
+}
+
+/// Edge shaping applied when sampling a cached distance field.
+///
+/// The field is a continuous distance, not a coverage mask, so where the edge
+/// sits and how sharply it falls off are decisions taken at sampling time. That
+/// makes every one of these an ordinary animatable scene property rather than a
+/// property of the cached texture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DistanceFieldStyle {
+    /// Normalized distance treated as the shape edge.
+    ///
+    /// Below the neutral `0.5` the edge moves outwards and the shape thickens;
+    /// above it the shape thins, the way a variable font gains or loses weight.
+    pub weight: f32,
+    /// Extra edge feathering in source pixels, on top of pixel-derived coverage.
+    pub softness: f32,
+    /// Outline band drawn outside the fill edge, in source pixels.
+    pub outline_width: f32,
+    /// Outline colour, composited beneath the fill.
+    pub outline_color: Color,
+}
+
+impl Default for DistanceFieldStyle {
+    fn default() -> Self {
+        Self {
+            weight: 0.5,
+            softness: 0.0,
+            outline_width: 0.0,
+            outline_color: Color::rgba8(0, 0, 0, 0),
+        }
+    }
 }
 
 /// Image placement policy inside resolved node bounds.

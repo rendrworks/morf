@@ -153,6 +153,7 @@ fn install_module_api<'gc>(
                 .map(|surface| match surface.kind {
                     WindowSurfaceKind::Popup(_) => "popup",
                     WindowSurfaceKind::Floating(_) => "floating",
+                    WindowSurfaceKind::Layer(_) => "layer",
                 })
                 .ok_or_else(|| HostError("window surface is stale".into()))?;
             stack.replace(ctx, kind);
@@ -417,11 +418,50 @@ fn install_module_api<'gc>(
             Ok(CallbackReturn::Return)
         }
     });
+    let layer_surface = Callback::from_fn(&ctx, {
+        let state = Rc::clone(&state);
+        let window_metatable = window_metatable.clone();
+        move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let updates_enabled =
+                table_bool(ctx, options, "updates_enabled", true).map_err(HostError)?;
+            let (root, visible, config) = parse_layer_surface(ctx, options).map_err(HostError)?;
+            {
+                let state = state.borrow();
+                state
+                    .scene
+                    .element(root)
+                    .map_err(|error| HostError(error.to_string()))?;
+            }
+            let id = {
+                let mut state = state.borrow_mut();
+                let id = state.next_window_surface;
+                state.next_window_surface = state.next_window_surface.wrapping_add(1);
+                state.window_surfaces.insert(
+                    id,
+                    WindowSurfaceConfig {
+                        id,
+                        root,
+                        visible,
+                        updates_enabled,
+                        kind: WindowSurfaceKind::Layer(config),
+                    },
+                );
+                state.window_surfaces_changed = true;
+                id
+            };
+            let userdata = UserData::new_static(&ctx, WindowSurfaceToken { id });
+            userdata.set_metatable(ctx, Some(ctx.fetch(&window_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        }
+    });
     let window = Table::new(&ctx);
     window.set_field(ctx, "layer_surface", mold.get_value(ctx, "surface"));
     window.set_field(ctx, "region", region);
     window.set_field(ctx, "popup", popup_surface);
     window.set_field(ctx, "floating", floating_surface);
+    window.set_field(ctx, "layer", layer_surface);
     mold.set_field(ctx, "core", core);
     mold.set_field(ctx, "io", io);
     mold.set_field(ctx, "window", window);

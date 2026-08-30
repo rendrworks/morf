@@ -20,23 +20,56 @@ impl HasWindowHandle for WaylandWindowTarget {
     }
 }
 
+/// One live wlr-layer-shell surface and the per-surface state the compositor
+/// configures independently of every other layer surface this client owns.
+struct LayerRecord {
+    surface: LayerSurface,
+    fractional_scale: Option<WpFractionalScaleV1>,
+    viewport: Option<WpViewport>,
+    width: u32,
+    height: u32,
+    scale_120: u32,
+    /// Whether this surface should map itself with a blank buffer once the
+    /// compositor has configured it.
+    wants_blank: bool,
+    /// Whether a configure has been acknowledged, which the protocol requires
+    /// before any buffer may be attached.
+    configured: bool,
+    /// Backing store for a surface mapped with a blank buffer.
+    ///
+    /// A reserver has no renderer, but a layer surface that never attaches a
+    /// buffer stays unmapped, and a compositor computes an output's usable area
+    /// only from the layer surfaces it actually arranges. Holding the pool and
+    /// the buffer here keeps the mapping alive for as long as the surface is.
+    blank: Option<(SlotPool, ShmBuffer)>,
+}
+
+impl Drop for LayerRecord {
+    fn drop(&mut self) {
+        if let Some(scale) = self.fractional_scale.take() {
+            scale.destroy();
+        }
+        if let Some(viewport) = self.viewport.take() {
+            viewport.destroy();
+        }
+    }
+}
+
 struct LayerState {
     registry: RegistryState,
     compositor: CompositorState,
     outputs: OutputState,
     seats: SeatState,
     xdg_shell: XdgShell,
-    layer: Option<LayerSurface>,
+    layer_shell: LayerShell,
+    layers: HashMap<u64, LayerRecord>,
     popups: HashMap<u64, Popup>,
+    /// Reposition tokens sent to, and echoed back by, each live popup.
+    popup_repositions: HashMap<u64, PopupReposition>,
     floatings: HashMap<u64, Window>,
     floating_sizes: HashMap<u64, (u32, u32)>,
-    _fractional_manager: Option<WpFractionalScaleManagerV1>,
-    fractional_scale: Option<WpFractionalScaleV1>,
-    _viewporter: Option<WpViewporter>,
-    viewport: Option<WpViewport>,
-    width: u32,
-    height: u32,
-    scale_120: u32,
+    fractional_manager: Option<WpFractionalScaleManagerV1>,
+    viewporter: Option<WpViewporter>,
     events: VecDeque<LayerEvent>,
     pointer: Option<wl_pointer::WlPointer>,
     pointer_seat: Option<wl_seat::WlSeat>,
@@ -103,4 +136,3 @@ struct LockSurface {
     size: (u32, u32),
     scale: u32,
 }
-

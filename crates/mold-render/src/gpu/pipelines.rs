@@ -125,7 +125,9 @@ fn create_glyph_pipeline(
         7 => Float32x4,
         8 => Float32x4,
         9 => Float32x4,
-        10 => Float32x4
+        10 => Float32x4,
+        11 => Float32x4,
+        12 => Float32x4
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<GlyphInstance>() as u64,

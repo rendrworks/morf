@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (x, y) = popup_anchor(&mut client)?;
     client.open_popup(
         0,
-        mold_wayland::SurfaceRole::Layer,
+        mold_wayland::SurfaceRole::Layer(0),
         PopupConfig {
             anchor: InputRect {
                 x: x.floor() as i32,
@@ -108,7 +108,7 @@ fn wait_for_layer(client: &mut LayerClient) -> Result<(), Box<dyn std::error::Er
         while let Some(event) = client.next_event() {
             match event {
                 LayerEvent::Configure { .. } => return Ok(()),
-                LayerEvent::Closed => return Err("layer surface was closed".into()),
+                LayerEvent::Closed { .. } => return Err("layer surface was closed".into()),
                 _ => {}
             }
         }
@@ -129,7 +129,7 @@ fn popup_anchor(client: &mut LayerClient) -> Result<(f64, f64), Box<dyn std::err
                     y,
                     ..
                 } => return Ok((x, y)),
-                LayerEvent::Closed => return Err("layer surface was closed".into()),
+                LayerEvent::Closed { .. } => return Err("layer surface was closed".into()),
                 _ => {}
             }
         }

@@ -51,17 +51,14 @@ impl LayerClient {
             outputs: OutputState::new(&globals, &qh),
             seats: SeatState::new(&globals, &qh),
             xdg_shell,
-            layer: None,
+            layer_shell,
+            layers: HashMap::new(),
             popups: HashMap::new(),
+            popup_repositions: HashMap::new(),
             floatings: HashMap::new(),
             floating_sizes: HashMap::new(),
-            _fractional_manager: fractional_manager,
-            fractional_scale: None,
-            _viewporter: viewporter,
-            viewport: None,
-            width: 1,
-            height: config.as_ref().map_or(1, |config| config.height.max(1)),
-            scale_120: 120,
+            fractional_manager,
+            viewporter,
             events: VecDeque::new(),
             pointer: None,
             pointer_seat: None,
@@ -111,84 +108,16 @@ impl LayerClient {
             .roundtrip(&mut state)
             .map_err(|error| WaylandError(format!("could not read Wayland outputs: {error}")))?;
         state.refresh_data_devices(&qh);
-        if let Some(config) = config {
-            let output = match config.output.as_deref() {
-                Some(name) => Some(
-                    state
-                        .outputs
-                        .outputs()
-                        .find(|output| {
-                            state
-                                .outputs
-                                .info(output)
-                                .and_then(|info| info.name)
-                                .as_deref()
-                                == Some(name)
-                        })
-                        .ok_or_else(|| {
-                            WaylandError(format!("Wayland output `{name}` is unavailable"))
-                        })?,
-                ),
-                None => None,
-            };
-            state.output_power_target = output.clone();
-            let surface = state.compositor.create_surface(&qh);
-            surface.set_buffer_scale(1);
-            let layer = layer_shell.create_layer_surface(
-                &qh,
-                surface,
-                match config.layer {
-                    ShellLayer::Background => Layer::Background,
-                    ShellLayer::Bottom => Layer::Bottom,
-                    ShellLayer::Top => Layer::Top,
-                    ShellLayer::Overlay => Layer::Overlay,
-                },
-                Some(config.namespace),
-                output.as_ref(),
-            );
-            let mut anchors = Anchor::empty();
-            if config.anchors.top {
-                anchors |= Anchor::TOP;
-            }
-            if config.anchors.right {
-                anchors |= Anchor::RIGHT;
-            }
-            if config.anchors.bottom {
-                anchors |= Anchor::BOTTOM;
-            }
-            if config.anchors.left {
-                anchors |= Anchor::LEFT;
-            }
-            layer.set_anchor(anchors);
-            layer.set_keyboard_interactivity(match config.keyboard_focus {
-                KeyboardFocus::None => WlrKeyboardInteractivity::None,
-                KeyboardFocus::Exclusive => WlrKeyboardInteractivity::Exclusive,
-                KeyboardFocus::OnDemand => WlrKeyboardInteractivity::OnDemand,
-            });
-            layer.set_size(config.width, config.height);
-            layer.set_margin(
-                config.margin_top,
-                config.margin_right,
-                config.margin_bottom,
-                config.margin_left,
-            );
-            layer.set_exclusive_zone(config.exclusive_zone);
-            state.fractional_scale = state
-                ._fractional_manager
-                .as_ref()
-                .map(|manager| manager.get_fractional_scale(layer.wl_surface(), &qh, ()));
-            state.viewport = state
-                ._viewporter
-                .as_ref()
-                .map(|manager| manager.get_viewport(layer.wl_surface(), &qh, ()));
-            layer.commit();
-            state.layer = Some(layer);
-        }
-        Ok(Self {
+        let mut client = Self {
             connection,
             queue,
             state,
-        })
+        };
+        if let Some(config) = config {
+            client.state.output_power_target = client.layer_output(config.output.as_deref())?;
+            client.open_layer(PRIMARY_LAYER, config)?;
+        }
+        Ok(client)
     }
 }
 

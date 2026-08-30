@@ -8,7 +8,7 @@ fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
 }
 
 #[repr(C)]
-#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]
 struct GlyphInstance {
     origin: [f32; 2],
     axes: [f32; 4],
@@ -21,6 +21,10 @@ struct GlyphInstance {
     mask_inverse_0: [f32; 4],
     mask_inverse_1: [f32; 4],
     mask_radii: [f32; 4],
+    /// Field edge, feathering, and outline width in sampled-field units.
+    field: [f32; 4],
+    /// Outline colour composited beneath a distance-field fill.
+    outline_color: [f32; 4],
 }
 
 fn layer_mask_data(mask: Option<LayerMask>) -> (f32, [f32; 4], [f32; 4], [f32; 4], [f32; 4]) {

@@ -28,8 +28,10 @@ fn run_surface(
     execute_config(&mut runtime, path, source, policy)?;
     primary_surface_root(&runtime)?;
 
-    let mut client = LayerClient::connect(runtime_bar_config(&runtime, &name)?)
+    let layer_config = runtime.layer_surface_config();
+    let mut client = LayerClient::connect(runtime_bar_config(&layer_config, &name)?)
         .map_err(|error| error.to_string())?;
+    open_reserve_layers(&mut client, &layer_config, &name)?;
 
     client.set_idle_timeouts(&runtime.idle_timeouts());
     tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
@@ -41,12 +43,16 @@ fn run_surface(
         client.dispatch().map_err(|error| error.to_string())?;
         while let Some(event) = client.next_event() {
             match event {
-                LayerEvent::Configure { .. } => break 'configured,
-                LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
+                LayerEvent::Configure { id, .. } if id == PRIMARY_LAYER => break 'configured,
+                LayerEvent::Closed { id } if id == PRIMARY_LAYER => {
+                    return Err("layer surface was closed".to_owned());
+                }
                 LayerEvent::Screencopy { request_id, result } => {
                     dispatch_screencopy(&mut runtime, request_id, result);
                 }
-                LayerEvent::Scale(_)
+                LayerEvent::Configure { .. }
+                | LayerEvent::Closed { .. }
+                | LayerEvent::Scale { .. }
                 | LayerEvent::Idle { .. }
                 | LayerEvent::OutputPower { .. }
                 | LayerEvent::Clipboard { .. }
@@ -94,12 +100,15 @@ fn run_surface(
     let layout = paint(&runtime, &mut renderer, &client)?;
     let mut popup_surfaces = HashMap::new();
     let mut floating_surfaces = HashMap::new();
+    let mut layer_surfaces = HashMap::new();
     runtime.take_window_surface_change();
     let _ = sync_window_surfaces(
         &runtime,
         &mut client,
         &mut popup_surfaces,
         &mut floating_surfaces,
+        &mut layer_surfaces,
+        &name,
     )?;
     apply_output_power_requests(&mut runtime, &mut client);
     apply_screencopy_requests(&mut runtime, &mut client);
@@ -111,6 +120,7 @@ fn run_surface(
         layout,
         popup_surfaces,
         floating_surfaces,
+        layer_surfaces,
         last_frame: None,
         hovered: None,
         pressed: None,
@@ -154,6 +164,7 @@ fn run_surface(
             renderer = RenderEngine::new(backend);
             state.popup_surfaces.clear();
             state.floating_surfaces.clear();
+            state.layer_surfaces.clear();
             client = replacement;
             tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
                 output: name.clone(),
@@ -175,6 +186,8 @@ fn run_surface(
                 &mut client,
                 &mut state.popup_surfaces,
                 &mut state.floating_surfaces,
+                &mut state.layer_surfaces,
+                &name,
             )?;
         }
         apply_output_power_requests(&mut runtime, &mut client);
@@ -194,7 +207,7 @@ fn run_surface(
             repaint |= handle_surface_event(
                 &mut runtime,
                 &mut renderer,
-                &client,
+                &mut client,
                 &mut state,
                 event,
                 tx,
@@ -223,6 +236,13 @@ fn run_surface(
                 .filter(|surface| surface.updates_enabled)
             {
                 paint_floating_surface(&runtime, &client, surface)?;
+            }
+            for surface in state
+                .layer_surfaces
+                .values_mut()
+                .filter(|surface| surface.updates_enabled)
+            {
+                paint_layer_surface(&runtime, &client, surface)?;
             }
         }
     }

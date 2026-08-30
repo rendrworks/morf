@@ -70,6 +70,9 @@ fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
         state.views.remove(node);
         state.timer_callbacks.remove(node);
         state.loader_factories.remove(node);
+        state
+            .animation_callbacks
+            .retain(|(owner, _), _| owner != node);
         state.loaded_loaders.remove(node);
     }
     state

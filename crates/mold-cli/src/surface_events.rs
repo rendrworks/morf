@@ -1,7 +1,7 @@
 fn handle_surface_event(
     runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
-    client: &LayerClient,
+    client: &mut LayerClient,
     state: &mut SurfaceEventState,
     event: LayerEvent,
     tx: &mpsc::Sender<SupervisorMessage>,
@@ -9,7 +9,7 @@ fn handle_surface_event(
 ) -> Result<bool, String> {
     let mut repaint = false;
     match event {
-        LayerEvent::Configure { .. } | LayerEvent::Scale(_) => {
+        LayerEvent::Configure { id, .. } | LayerEvent::Scale { id, .. } if id == PRIMARY_LAYER => {
             let (width, height) = client.physical_size();
             renderer.backend_mut().resize(width, height);
             for surface in state
@@ -25,18 +25,37 @@ fn handle_surface_event(
             }
             repaint = true;
         }
-        LayerEvent::Frame { time_ms } => {
-            let delta = state
-                .last_frame
-                .map(|previous: u32| time_ms.wrapping_sub(previous).min(250))
-                .unwrap_or(0);
-            state.last_frame = Some(time_ms);
-            let frame = runtime
-                .tick_animations(Duration::from_millis(delta as u64))
-                .map_err(|error| error.to_string())?;
-            repaint |= frame.active || !frame.changes.is_empty();
+        LayerEvent::Configure { id, width, height } => {
+            layer_surface_configure(runtime, client, state, id, width, height)?;
         }
-        LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
+        LayerEvent::Scale { id, .. } => layer_surface_scale(client, state, id),
+        LayerEvent::Frame { id, time_ms } if id == PRIMARY_LAYER => {
+            let frame = runtime
+                .tick_animations(animation_delta(state.last_frame, time_ms))
+                .map_err(|error| error.to_string())?;
+            // Carried forward only while motion continues, so the next run of
+            // animation starts from a clean timebase rather than inheriting
+            // however long the shell was idle.
+            state.last_frame = frame.active.then_some(time_ms);
+            let advanced = frame.active || !frame.changes.is_empty();
+            repaint |= advanced;
+            // Configured layer surfaces have no clock of their own; the shell's
+            // tick is what tells them a repaint is due, and a surface that is
+            // already idle needs a frame callback to come back on.
+            if advanced {
+                for surface in state.layer_surfaces.values_mut() {
+                    if surface.updates_enabled && !surface.needs_paint {
+                        surface.needs_paint = true;
+                        client.request_layer_frame(window_layer_id(surface.id));
+                    }
+                }
+            }
+        }
+        LayerEvent::Frame { id, .. } => layer_surface_frame(runtime, client, state, id)?,
+        LayerEvent::Closed { id } if id == PRIMARY_LAYER => {
+            return Err("layer surface was closed".to_owned());
+        }
+        LayerEvent::Closed { id } => layer_surface_closed(runtime, client, state, id),
         LayerEvent::Idle { timeout_ms, idle } => {
             repaint |= runtime.dispatch_idle(timeout_ms, idle);
         }
@@ -74,6 +93,7 @@ fn handle_surface_event(
                 &state.layout,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
+                &state.layer_surfaces,
             ) else {
                 return Ok(false);
             };
@@ -145,6 +165,7 @@ fn handle_surface_event(
                 &state.layout,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
+                &state.layer_surfaces,
             ) else {
                 return Ok(false);
             };
@@ -172,6 +193,7 @@ fn handle_surface_event(
                 &state.layout,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
+                &state.layer_surfaces,
             ) else {
                 return Ok(false);
             };
@@ -195,6 +217,7 @@ fn handle_surface_event(
                 &state.layout,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
+                &state.layer_surfaces,
             ) else {
                 return Ok(false);
             };
@@ -228,6 +251,7 @@ fn handle_surface_event(
                     &state.layout,
                     &state.popup_surfaces,
                     &state.floating_surfaces,
+                    &state.layer_surfaces,
                 )
                 .filter(|_| touch_surface == surface)
                 .map(|layout| layout.hit_test(&runtime.scene(), x, y))
@@ -257,6 +281,7 @@ fn handle_surface_event(
                 &state.layout,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
+                &state.layer_surfaces,
             )
             .map(|layout| layout.hit_test(&runtime.scene(), x, y))
             .transpose()
@@ -291,6 +316,7 @@ fn handle_surface_event(
                 primary_surface_root(runtime)?,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
+                &state.layer_surfaces,
             ) else {
                 return Ok(false);
             };

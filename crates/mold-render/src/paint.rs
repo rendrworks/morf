@@ -149,6 +149,7 @@ fn append_node(
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
             distance_field: scene.bool_value(node, "distance_field")?,
             distance_field_spread: scene.number(node, "distance_field_spread")?.max(0.5) as f32,
+            distance_field_style: distance_field_style(scene, node, opacity)?,
         }),
         Element::Icon => list.commands.push(DrawCommand::Texture {
             node,
@@ -162,6 +163,7 @@ fn append_node(
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
             distance_field: scene.bool_value(node, "distance_field")?,
             distance_field_spread: scene.number(node, "distance_field_spread")?.max(0.5) as f32,
+            distance_field_style: distance_field_style(scene, node, opacity)?,
         }),
         Element::Shape => list.commands.push(DrawCommand::Path {
             node,
@@ -299,6 +301,28 @@ fn append_node(
         };
     }
     Ok(())
+}
+
+/// Reads the animatable edge shaping applied to a cached distance field.
+///
+/// The outline colour carries node opacity like every other painted colour, so
+/// fading an icon out takes its outline with it.
+fn distance_field_style(
+    scene: &Scene,
+    node: NodeHandle,
+    opacity: f64,
+) -> Result<DistanceFieldStyle, RenderError> {
+    Ok(DistanceFieldStyle {
+        weight: scene.number(node, "distance_field_weight")?.clamp(0.0, 1.0) as f32,
+        softness: scene.number(node, "distance_field_softness")?.max(0.0) as f32,
+        outline_width: scene
+            .number(node, "distance_field_outline_width")?
+            .max(0.0) as f32,
+        outline_color: with_opacity(
+            scene.color_value(node, "distance_field_outline_color")?,
+            opacity,
+        ),
+    })
 }
 
 fn shape_morph(scene: &Scene, node: NodeHandle) -> Result<Option<ShapeMorph>, RenderError> {

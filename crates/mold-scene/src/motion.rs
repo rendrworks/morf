@@ -9,6 +9,9 @@ impl Animation {
         let clock = Tween::new(0.0, 1.0)
             .duration(behavior.duration.as_secs_f32())
             .easing(behavior.easing.animato())
+            .delay(behavior.delay.as_secs_f32())
+            .time_scale(behavior.time_scale.max(0.0) as f32)
+            .looping(behavior.repeat.animato())
             .build();
         Self {
             from,
@@ -21,7 +24,39 @@ impl Animation {
     }
 
     fn progress(&self) -> f64 {
-        f64::from(self.clock.progress())
+        let progress = f64::from(self.clock.progress());
+        if self.clock.is_ping_pong_reversed() {
+            1.0 - progress
+        } else {
+            progress
+        }
+    }
+
+    /// Reports whether the interval is waiting out its behavior delay.
+    fn is_delayed(&self) -> bool {
+        matches!(self.clock.state(), TweenState::Idle)
+    }
+
+    /// Reports whether playback is halted without having reached the target.
+    fn is_paused(&self) -> bool {
+        matches!(self.clock.state(), TweenState::Paused)
+    }
+
+    /// Reports whether the animation settles on its own.
+    fn settles(&self) -> bool {
+        !self.behavior.repeat.is_endless()
+    }
+
+    /// The value a settling animation comes to rest on.
+    ///
+    /// An alternating repetition that ends on a backward pass finishes where it
+    /// started, so the resting value is not always the target.
+    fn settled(&self) -> &Value {
+        if self.clock.is_ping_pong_reversed() {
+            &self.from
+        } else {
+            &self.to
+        }
     }
 
     fn value(&self) -> Value {
@@ -329,6 +364,10 @@ fn property_class(property: &str) -> PropertyClass {
         | "shadow_inner"
         | "path"
         | "morph_progress"
+        | "distance_field_weight"
+        | "distance_field_softness"
+        | "distance_field_outline_width"
+        | "distance_field_outline_color"
         | "fill_color"
         | "stroke_color"
         | "stroke_width" => PropertyClass::Paint,

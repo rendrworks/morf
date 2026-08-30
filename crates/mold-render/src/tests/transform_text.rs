@@ -313,3 +313,91 @@ fn images_and_icons_emit_texture_commands() {
             if source == "network-wireless" && theme == "Adwaita"
     ));
 }
+
+#[test]
+fn distance_field_edge_style_reaches_the_draw_list() {
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let icon = scene.create(Element::Image);
+    scene.assign(root, "width", 64.0).unwrap();
+    scene.assign(root, "height", 64.0).unwrap();
+    scene.assign(icon, "width", 32.0).unwrap();
+    scene.assign(icon, "height", 32.0).unwrap();
+    scene.assign(icon, "source", "star.svg").unwrap();
+    scene.assign(icon, "distance_field", true).unwrap();
+    scene.assign(icon, "distance_field_weight", 0.38).unwrap();
+    scene.assign(icon, "distance_field_softness", 1.5).unwrap();
+    scene
+        .assign(icon, "distance_field_outline_width", 2.0)
+        .unwrap();
+    scene
+        .assign(icon, "distance_field_outline_color", "#ff0000")
+        .unwrap();
+    scene.reparent(icon, Some(root)).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 64.0,
+            height: 64.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+
+    let list = DrawList::from_scene(&scene, &layout).unwrap();
+    let DrawCommand::Texture {
+        distance_field_style,
+        ..
+    } = &list.commands[0]
+    else {
+        panic!("image did not emit a texture command");
+    };
+    assert_eq!(distance_field_style.weight, 0.38);
+    assert_eq!(distance_field_style.softness, 1.5);
+    assert_eq!(distance_field_style.outline_width, 2.0);
+    assert_eq!(
+        distance_field_style.outline_color,
+        Color::rgba8(255, 0, 0, 255)
+    );
+}
+
+#[test]
+fn animating_the_field_edge_repaints_without_touching_the_cached_field() {
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let icon = scene.create(Element::Icon);
+    scene.assign(root, "width", 64.0).unwrap();
+    scene.assign(root, "height", 64.0).unwrap();
+    scene.assign(icon, "width", 32.0).unwrap();
+    scene.assign(icon, "height", 32.0).unwrap();
+    scene.assign(icon, "name", "battery").unwrap();
+    scene.assign(icon, "distance_field", true).unwrap();
+    scene.reparent(icon, Some(root)).unwrap();
+    let size = Size {
+        width: 64.0,
+        height: 64.0,
+    };
+    let layout = Layout::compute(&scene, root, size, &mut NoText).unwrap();
+    let before = DrawList::from_scene(&scene, &layout).unwrap();
+
+    scene.assign(icon, "distance_field_weight", 0.42).unwrap();
+    let layout = Layout::compute(&scene, root, size, &mut NoText).unwrap();
+    let after = DrawList::from_scene(&scene, &layout).unwrap();
+
+    let source = |list: &DrawList| {
+        let DrawCommand::Texture {
+            source,
+            distance_field_spread,
+            ..
+        } = &list.commands[0]
+        else {
+            panic!("icon did not emit a texture command");
+        };
+        (source.clone(), *distance_field_spread)
+    };
+    // A new edge is a new draw command, but the cache key that decides whether
+    // the CPU distance transform reruns is untouched.
+    assert_ne!(before.commands[0], after.commands[0]);
+    assert_eq!(source(&before), source(&after));
+}

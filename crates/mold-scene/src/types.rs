@@ -96,7 +96,11 @@ impl Color {
         }
     }
 
-    fn parse(input: &str) -> Option<Self> {
+    /// Parses a CSS-style hex string or one of the handful of named colours.
+    ///
+    /// Returns `None` rather than a fallback so a typo in a colour surfaces as
+    /// an error at the property that used it.
+    pub fn parse(input: &str) -> Option<Self> {
         match input {
             "transparent" => return Some(Self::rgba8(0, 0, 0, 0)),
             "black" => return Some(Self::rgba8(0, 0, 0, 255)),
@@ -188,6 +192,11 @@ pub struct Scene {
     animations: HashMap<PropertyKey, Animation>,
     physics: HashMap<PropertyKey, PhysicsAnimation>,
     physics_specs: HashMap<PropertyKey, Physics>,
+    paused_physics: HashSet<PropertyKey>,
+    events: Vec<AnimationEvent>,
+    groups: HashMap<GroupId, RunningGroup>,
+    group_events: Vec<GroupEvent>,
+    next_group: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

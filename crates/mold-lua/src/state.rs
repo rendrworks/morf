@@ -66,6 +66,10 @@ struct NodeToken {
     handle: NodeHandle,
 }
 
+struct GroupToken {
+    id: GroupId,
+}
+
 #[derive(Debug)]
 struct DbusToken {
     proxy: DbusProxy,
@@ -362,6 +366,8 @@ struct ReactiveState {
     pam_tasks: Vec<PendingPam>,
     timers: Vec<PendingTimer>,
     timer_callbacks: HashMap<NodeHandle, StashedClosure>,
+    animation_callbacks: HashMap<(NodeHandle, String), StashedClosure>,
+    group_callbacks: HashMap<GroupId, StashedClosure>,
     loader_factories: HashMap<NodeHandle, StashedClosure>,
     loaded_loaders: HashSet<NodeHandle>,
     retention: Retention<NodeHandle>,
@@ -433,6 +439,8 @@ impl ReactiveState {
             pam_tasks: Vec::new(),
             timers: Vec::new(),
             timer_callbacks: HashMap::new(),
+            animation_callbacks: HashMap::new(),
+            group_callbacks: HashMap::new(),
             loader_factories: HashMap::new(),
             loaded_loaders: HashSet::new(),
             retention: Retention::default(),

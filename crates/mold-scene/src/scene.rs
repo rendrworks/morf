@@ -8,6 +8,11 @@ impl Scene {
             animations: HashMap::new(),
             physics: HashMap::new(),
             physics_specs: HashMap::new(),
+            paused_physics: HashSet::new(),
+            events: Vec::new(),
+            groups: HashMap::new(),
+            group_events: Vec::new(),
+            next_group: 0,
         }
     }
 
@@ -146,8 +151,10 @@ impl Scene {
             self.animations.retain(|key, _| key.node != current);
             self.physics.retain(|key, _| key.node != current);
             self.physics_specs.retain(|key, _| key.node != current);
+            self.paused_physics.retain(|key| key.node != current);
             self.nodes.remove(current);
         }
+        self.retain_live_groups();
         Ok(())
     }
 
@@ -193,7 +200,7 @@ impl Scene {
             self.physics
                 .insert(key, physics_animation(current, target, velocity, spec));
         } else if let Some(behavior) = self.behaviors.get(&key).copied()
-            && behavior.duration > Duration::ZERO
+            && behavior.intercepts()
             && interpolatable(self.properties.read(slot.current)?, &value)
         {
             let from = animation_start(
@@ -219,8 +226,12 @@ impl Scene {
                 ),
             );
         } else {
-            self.animations.remove(&key);
-            self.physics.remove(&key);
+            let interrupted =
+                self.animations.remove(&key).is_some() | self.physics.remove(&key).is_some();
+            self.paused_physics.remove(&key);
+            if interrupted {
+                self.push_event(key, AnimationEnd::Canceled);
+            }
             self.properties.batch(|graph| {
                 graph.write(slot.target, value.clone())?;
                 graph.write(slot.current, value)?;
@@ -255,7 +266,9 @@ impl Scene {
             self.physics.remove(&key);
         } else {
             self.behaviors.remove(&key);
-            self.animations.remove(&key);
+            if self.animations.remove(&key).is_some() {
+                self.push_event(key, AnimationEnd::Canceled);
+            }
         }
         Ok(())
     }
@@ -293,13 +306,16 @@ impl Scene {
             property: name,
         };
         let from = animation_start(name, from, &to, behavior.rotation_direction);
-        self.physics.remove(&key);
+        self.paused_physics.remove(&key);
+        if self.physics.remove(&key).is_some() {
+            self.push_event(key, AnimationEnd::Canceled);
+        }
         self.properties.batch(|graph| {
             graph.write(slot.current, from.clone())?;
             graph.write(slot.target, to.clone())?;
             Ok(())
         })?;
-        if behavior.duration == Duration::ZERO {
+        if !behavior.intercepts() {
             self.properties.write(slot.current, to)?;
             self.animations.remove(&key);
         } else {
@@ -344,14 +360,21 @@ impl Scene {
             self.animations.remove(&key);
         } else {
             self.physics_specs.remove(&key);
-            self.physics.remove(&key);
+            self.paused_physics.remove(&key);
+            if self.physics.remove(&key).is_some() {
+                self.push_event(key, AnimationEnd::Canceled);
+            }
         }
         Ok(())
     }
 
     /// Advances every active behavior without invoking Lua.
     pub fn tick_animations(&mut self, delta: Duration) -> Result<AnimationFrame, SceneError> {
-        let mut frame = AnimationFrame::default();
+        let mut frame = AnimationFrame {
+            groups: self.tick_groups(delta)?,
+            events: std::mem::take(&mut self.events),
+            ..AnimationFrame::default()
+        };
         let keys: Vec<_> = self.animations.keys().copied().collect();
         let mut finished = Vec::new();
         for key in keys {
@@ -359,9 +382,13 @@ impl Scene {
                 .animations
                 .get_mut(&key)
                 .expect("animation key vanished");
+            let paused = animation.is_paused();
+            let delayed = animation.is_delayed();
             let complete = !animation.clock.update(delta.as_secs_f32());
-            let value = if complete {
-                animation.to.clone()
+            // A settling animation lands exactly on its target; an endless one
+            // is stopped at whatever point in the cycle the clock reports.
+            let value = if complete && animation.settles() {
+                animation.settled().clone()
             } else {
                 animation.value()
             };
@@ -369,23 +396,47 @@ impl Scene {
                 finished.push(key);
                 continue;
             };
-            let slot = node.properties[key.property];
-            self.properties.write(slot.current, value)?;
-            frame.changes.push(AnimatedChange {
-                node: NodeHandle(key.node),
-                property: key.property,
-                class: property_class(key.property),
-            });
+            // A paused clock holds its value, and one still draining its delay
+            // has not left the start value, so neither is worth a repaint.
+            let idle = paused || (delayed && animation.is_delayed());
+            if !idle {
+                let slot = node.properties[key.property];
+                self.properties.write(slot.current, value)?;
+                frame.changes.push(AnimatedChange {
+                    node: NodeHandle(key.node),
+                    property: key.property,
+                    class: property_class(key.property),
+                });
+            }
             if complete {
                 finished.push(key);
             }
         }
         for key in finished {
-            self.animations.remove(&key);
+            // An alternating repetition can rest on its start value, so the
+            // settled target is corrected to whatever the property actually
+            // holds rather than the value the last write asked for.
+            if self.animations.remove(&key).is_some()
+                && let Some(node) = self.nodes.get(key.node)
+            {
+                let slot = node.properties[key.property];
+                let settled = self.properties.read(slot.current)?.clone();
+                if self.properties.read(slot.target)? != &settled {
+                    self.properties.write(slot.target, settled)?;
+                }
+            }
+            frame.events.push(AnimationEvent {
+                node: NodeHandle(key.node),
+                property: key.property,
+                end: AnimationEnd::Completed,
+            });
         }
         let physics_keys: Vec<_> = self.physics.keys().copied().collect();
         let mut physics_finished = Vec::new();
         for key in physics_keys {
+            if self.paused_physics.contains(&key) {
+                continue;
+            }
             let Some(node) = self.nodes.get(key.node) else {
                 physics_finished.push(key);
                 continue;
@@ -410,6 +461,12 @@ impl Scene {
         }
         for key in physics_finished {
             self.physics.remove(&key);
+            self.paused_physics.remove(&key);
+            frame.events.push(AnimationEvent {
+                node: NodeHandle(key.node),
+                property: key.property,
+                end: AnimationEnd::Completed,
+            });
         }
         let report = self.properties.flush()?;
         if let Some(error) = report.errors.first() {
@@ -418,7 +475,8 @@ impl Scene {
                 error.effect, error.message
             )));
         }
-        frame.active = !self.animations.is_empty() || !self.physics.is_empty();
+        frame.active =
+            !self.animations.is_empty() || !self.physics.is_empty() || !self.groups.is_empty();
         Ok(frame)
     }
 

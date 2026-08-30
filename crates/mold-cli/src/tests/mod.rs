@@ -480,3 +480,6 @@ fn supervisor_dispatches_registered_ipc_handler() {
     );
     stop_workers(workers);
 }
+
+include!("frame.rs");
+include!("layers.rs");

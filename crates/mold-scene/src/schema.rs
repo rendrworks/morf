@@ -126,6 +126,10 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("source_height", 0.0),
                 boolean("distance_field", false),
                 number("distance_field_spread", 8.0),
+                number("distance_field_weight", 0.5),
+                number("distance_field_softness", 0.0),
+                number("distance_field_outline_width", 0.0),
+                color("distance_field_outline_color", Color::rgba8(0, 0, 0, 0)),
             ]);
         }
         Element::Icon => {
@@ -137,6 +141,10 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("source_height", 0.0),
                 boolean("distance_field", false),
                 number("distance_field_spread", 8.0),
+                number("distance_field_weight", 0.5),
+                number("distance_field_softness", 0.0),
+                number("distance_field_outline_width", 0.0),
+                color("distance_field_outline_color", Color::rgba8(0, 0, 0, 0)),
             ]);
         }
         Element::Shape => {

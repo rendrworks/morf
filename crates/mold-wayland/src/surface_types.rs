@@ -119,7 +119,8 @@ impl Default for BarConfig {
 /// Surface category associated with an input event.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SurfaceRole {
-    Layer,
+    /// One wlr-layer-shell surface, addressed by its client-local identifier.
+    Layer(u64),
     Popup(u64),
     Floating(u64),
 }
@@ -127,12 +128,12 @@ pub enum SurfaceRole {
 /// Event produced by the layer-surface connection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayerEvent {
-    /// The compositor selected a logical surface size.
-    Configure { width: u32, height: u32 },
-    /// The preferred scale changed in protocol-native 120ths.
-    Scale(u32),
+    /// The compositor selected a logical size for one layer surface.
+    Configure { id: u64, width: u32, height: u32 },
+    /// One layer surface's preferred scale changed in protocol-native 120ths.
+    Scale { id: u64, scale_120: u32 },
     /// The compositor permits the next animation and paint tick.
-    Frame { time_ms: u32 },
+    Frame { id: u64, time_ms: u32 },
     /// The pointer moved over or entered the surface.
     PointerMotion {
         surface: SurfaceRole,
@@ -246,8 +247,8 @@ pub enum LayerEvent {
     SessionLockSurfaceRemoved { index: usize },
     /// The compositor permits the next lock-surface paint tick.
     SessionLockFrame { index: usize, time_ms: u32 },
-    /// The compositor closed the layer surface.
-    Closed,
+    /// The compositor closed one layer surface.
+    Closed { id: u64 },
 }
 
 /// Wayland connection or protocol setup failure.

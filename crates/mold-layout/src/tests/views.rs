@@ -194,11 +194,10 @@ fn reparent_transition_preserves_position_then_flies_to_target() {
         width: 400.0,
         height: 200.0,
     };
-    let behavior = Behavior {
-        duration: std::time::Duration::from_millis(200),
-        easing: mold_scene::Easing::Linear,
-        rotation_direction: mold_scene::RotationDirection::Numerical,
-    };
+    let behavior = Behavior::timed(
+        std::time::Duration::from_millis(200),
+        mold_scene::Easing::Linear,
+    );
 
     let initial = Layout::transition_reparent(
         &mut scene,

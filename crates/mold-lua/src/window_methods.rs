@@ -50,6 +50,7 @@ fn window_size_method<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>)
             let size = match &mut surface.kind {
                 WindowSurfaceKind::Popup(config) => (&mut config.width, &mut config.height),
                 WindowSurfaceKind::Floating(config) => (&mut config.width, &mut config.height),
+                WindowSurfaceKind::Layer(config) => (&mut config.width, &mut config.height),
             };
             let before = (*size.0, *size.1);
             if let Some((width, height)) = values {
@@ -325,6 +326,7 @@ fn window_parent_id_method<'gc>(
             .map(|surface| match &surface.kind {
                 WindowSurfaceKind::Popup(config) => config.parent,
                 WindowSurfaceKind::Floating(config) => config.parent,
+                WindowSurfaceKind::Layer(_) => None,
             })
             .ok_or_else(|| HostError("window surface is stale".into()))?;
         stack.replace(
@@ -375,6 +377,7 @@ fn window_set_parent_method<'gc>(
                     .and_then(|surface| match &surface.kind {
                         WindowSurfaceKind::Popup(config) => config.parent,
                         WindowSurfaceKind::Floating(config) => config.parent,
+                        WindowSurfaceKind::Layer(_) => None,
                     });
             }
         }
@@ -388,6 +391,11 @@ fn window_set_parent_method<'gc>(
                     let changed = config.parent != parent;
                     config.parent = parent;
                     changed
+                }
+                WindowSurfaceKind::Layer(_) => {
+                    return Err(
+                        HostError("a layer surface cannot have a window parent".into()).into(),
+                    );
                 }
                 WindowSurfaceKind::Floating(config) => {
                     if target.visible && config.parent != parent {

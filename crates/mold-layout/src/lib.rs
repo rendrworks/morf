@@ -10,6 +10,7 @@ use mold_scene::{Behavior, Element, NodeHandle, Scene, SceneError, Value};
 
 include!("geometry.rs");
 include!("layout.rs");
+include!("hit.rs");
 include!("transform.rs");
 include!("helpers.rs");
 #[cfg(test)]

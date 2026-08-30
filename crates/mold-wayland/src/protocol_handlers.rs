@@ -1,8 +1,17 @@
 impl LayerState {
     fn layer(&self) -> &LayerSurface {
-        self.layer
-            .as_ref()
+        &self
+            .layers
+            .get(&PRIMARY_LAYER)
             .expect("layer surface is initialized before client use")
+            .surface
+    }
+
+    /// Identifies which of this client's layer surfaces owns a wl_surface.
+    fn layer_id(&self, surface: &wl_surface::WlSurface) -> Option<u64> {
+        self.layers
+            .iter()
+            .find_map(|(id, layer)| (surface == layer.surface.wl_surface()).then_some(*id))
     }
 
     fn refresh_screens(&mut self) {
@@ -31,12 +40,8 @@ impl LayerState {
     }
 
     fn surface_role(&self, surface: &wl_surface::WlSurface) -> Option<SurfaceRole> {
-        if self
-            .layer
-            .as_ref()
-            .is_some_and(|layer| surface == layer.wl_surface())
-        {
-            Some(SurfaceRole::Layer)
+        if let Some(id) = self.layer_id(surface) {
+            Some(SurfaceRole::Layer(id))
         } else if let Some(id) = self
             .popups
             .iter()
@@ -53,7 +58,9 @@ impl LayerState {
 
     fn push_key(&mut self, event: KeyEvent, pressed: bool, repeat: bool) {
         self.events.push_back(LayerEvent::Key {
-            surface: self.keyboard_surface.unwrap_or(SurfaceRole::Layer),
+            surface: self
+                .keyboard_surface
+                .unwrap_or(SurfaceRole::Layer(PRIMARY_LAYER)),
             keysym: event.keysym.raw(),
             text: event.utf8,
             pressed,
@@ -62,19 +69,27 @@ impl LayerState {
     }
 }
 
-impl Dispatch<WpFractionalScaleV1, ()> for LayerState {
+impl Dispatch<WpFractionalScaleV1, u64> for LayerState {
     fn event(
         state: &mut Self,
         _proxy: &WpFractionalScaleV1,
         event: wp_fractional_scale_v1::Event,
-        _data: &(),
+        id: &u64,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
-            state.scale_120 = scale.max(1);
-            state.events.push_back(LayerEvent::Scale(state.scale_120));
-        }
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
+            return;
+        };
+        let Some(layer) = state.layers.get_mut(id) else {
+            return;
+        };
+        layer.scale_120 = scale.max(1);
+        let scale_120 = layer.scale_120;
+        state.events.push_back(LayerEvent::Scale {
+            id: *id,
+            scale_120,
+        });
     }
 }
 

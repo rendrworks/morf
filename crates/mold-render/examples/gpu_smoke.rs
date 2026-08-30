@@ -1,7 +1,7 @@
 use mold_layout::{Geometry, TextAlignment, TextElide, Transform2D};
 use mold_render::{
-    DamageRect, DrawCommand, DrawList, Gradient, ImageFillMode, Layer, LayerMask, RenderBackend,
-    VerticalAlignment, WgpuBackend,
+    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, Gradient, ImageFillMode, Layer,
+    LayerMask, RenderBackend, VerticalAlignment, WgpuBackend,
 };
 use mold_scene::{Color, Element, Scene};
 
@@ -73,6 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fill_mode: ImageFillMode::PreserveAspectFit,
                 distance_field: false,
                 distance_field_spread: 8.0,
+                distance_field_style: DistanceFieldStyle::default(),
             },
             DrawCommand::Path {
                 node: shape,

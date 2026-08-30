@@ -14,8 +14,8 @@ use mold_text::{RasterContent, RasterGlyph, TextSystem};
 
 use crate::path::PathCache;
 use crate::{
-    DamageRect, DrawCommand, DrawList, ImageFillMode, LayerMask, RenderBackend, SdfQuadInstance,
-    VerticalAlignment, color_array, physical_damage,
+    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode, LayerMask, RenderBackend,
+    SdfQuadInstance, VerticalAlignment, color_array, physical_damage,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;

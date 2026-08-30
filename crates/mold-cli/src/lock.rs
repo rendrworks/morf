@@ -125,13 +125,10 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                     }
                 }
                 LayerEvent::SessionLockFrame { time_ms, .. } => {
-                    let delta = last_frame
-                        .map(|previous: u32| time_ms.wrapping_sub(previous).min(250))
-                        .unwrap_or(0);
-                    last_frame = Some(time_ms);
                     let frame = runtime
-                        .tick_animations(Duration::from_millis(delta as u64))
+                        .tick_animations(animation_delta(last_frame, time_ms))
                         .map_err(|error| error.to_string())?;
+                    last_frame = frame.active.then_some(time_ms);
                     repaint |= frame.active || !frame.changes.is_empty();
                 }
                 LayerEvent::Key {
@@ -181,7 +178,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 LayerEvent::Key { pressed: false, .. }
                 | LayerEvent::Modifiers { .. }
                 | LayerEvent::Configure { .. }
-                | LayerEvent::Scale(_)
+                | LayerEvent::Scale { .. }
                 | LayerEvent::Frame { .. }
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave { .. }
@@ -197,7 +194,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 | LayerEvent::FloatingConfigure { .. }
                 | LayerEvent::FloatingFrame { .. }
                 | LayerEvent::FloatingClose { .. }
-                | LayerEvent::Closed => {}
+                | LayerEvent::Closed { .. } => {}
             }
         }
         apply_clipboard_requests(&mut runtime, &mut client);

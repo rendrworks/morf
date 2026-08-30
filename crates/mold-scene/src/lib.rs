@@ -1,11 +1,11 @@
 //! Scene graph, typed properties, and animation targets for mold.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
 
-use animato::{Spring, SpringConfig, Tween, Update};
+use animato::{Spring, SpringConfig, Tween, TweenState, Update};
 use mold_reactive::{Graph, GraphError, SignalId};
 use slotmap::{SlotMap, new_key_type};
 
@@ -20,6 +20,8 @@ include!("animation.rs");
 include!("scene_default.rs");
 include!("scene.rs");
 include!("scene_access.rs");
+include!("playback.rs");
+include!("groups.rs");
 include!("motion.rs");
 include!("schema.rs");
 #[cfg(test)]

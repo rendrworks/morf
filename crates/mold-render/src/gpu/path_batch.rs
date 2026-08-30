@@ -67,6 +67,8 @@ fn create_pipeline(
 struct PathVertex {
     position: [f32; 2],
     color: [f32; 4],
+    /// Coverage position: solid inside the shape, ramping across the edge band.
+    coverage: f32,
 }
 
 #[derive(Default)]
@@ -89,7 +91,7 @@ fn create_path_pipeline(
         label: Some("mold path shader"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../path.wgsl").into()),
     });
-    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
+    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<PathVertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
@@ -225,6 +227,7 @@ fn append_path_mesh(
         PathVertex {
             position: [(point.0 as f32) * scale, (point.1 as f32) * scale],
             color: color_array(color),
+            coverage: position[2],
         }
     }));
     batch

@@ -1,4 +1,37 @@
 impl LayerState {
+    /// Maps a layer surface with one transparent pixel, once it is configured.
+    ///
+    /// Only a surface that asked for it and has not been mapped yet is touched,
+    /// so this is safe to call from both the request and the configure handler.
+    fn attach_blank_buffer(&mut self, id: u64) {
+        let Some(record) = self.layers.get(&id) else {
+            return;
+        };
+        if !record.wants_blank || record.blank.is_some() || !record.configured {
+            return;
+        }
+        let Some(shm) = self.shm.as_ref() else {
+            return;
+        };
+        let Ok(mut pool) = SlotPool::new(4, shm) else {
+            return;
+        };
+        let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888) else {
+            return;
+        };
+        canvas[..4].fill(0);
+        let Some(record) = self.layers.get_mut(&id) else {
+            return;
+        };
+        let surface = record.surface.wl_surface();
+        if buffer.attach_to(surface).is_err() {
+            return;
+        }
+        surface.damage_buffer(0, 0, 1, 1);
+        surface.commit();
+        record.blank = Some((pool, buffer));
+    }
+
     fn refresh_virtual_keyboard(&mut self, qh: &QueueHandle<Self>) {
         if self.virtual_keyboard.is_some() {
             return;
@@ -212,4 +245,3 @@ impl LayerState {
         });
     }
 }
-

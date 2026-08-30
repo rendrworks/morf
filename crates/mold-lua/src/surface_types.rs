@@ -18,6 +18,37 @@ impl Default for SurfaceAnchors {
     }
 }
 
+/// Compositor space reserved along each output edge by a dedicated surface.
+///
+/// A layer surface can only reserve space on an unambiguously anchored edge, so
+/// a frame drawn on all four edges cannot reserve for itself. These thicknesses
+/// ask the engine for one zero-size reserver surface per non-zero edge, which is
+/// what shrinks the tiling area.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SurfaceReserve {
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+    pub left: u32,
+}
+
+impl SurfaceReserve {
+    /// Returns whether any edge asks for reserved space.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Returns the requested thickness per edge, in anchor order.
+    pub fn edges(&self) -> [(&'static str, u32); 4] {
+        [
+            ("top", self.top),
+            ("right", self.right),
+            ("bottom", self.bottom),
+            ("left", self.left),
+        ]
+    }
+}
+
 /// Native layer-surface settings assigned by Lua before startup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayerSurfaceConfig {
@@ -33,6 +64,7 @@ pub struct LayerSurfaceConfig {
     pub layer: String,
     pub keyboard_focus: String,
     pub input_regions: Option<Vec<Region>>,
+    pub reserve: SurfaceReserve,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,6 +127,8 @@ pub struct FloatingSurfaceConfig {
 pub enum WindowSurfaceKind {
     Popup(PopupSurfaceConfig),
     Floating(FloatingSurfaceConfig),
+    /// One additional wlr-layer-shell surface beyond the shell's own.
+    Layer(LayerSurfaceConfig),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +161,7 @@ impl Default for LayerSurfaceConfig {
             layer: "top".to_owned(),
             keyboard_focus: "on_demand".to_owned(),
             input_regions: None,
+            reserve: SurfaceReserve::default(),
         }
     }
 }

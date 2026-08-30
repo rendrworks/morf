@@ -395,4 +395,3 @@ fn grid_view_virtualizes_complete_rows_in_rust() {
     assert_eq!(scene.number(children[5], "y").unwrap(), -25.0);
     assert!(scene.bool_value(root, "clip").unwrap());
 }
-

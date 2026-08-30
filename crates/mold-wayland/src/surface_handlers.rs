@@ -3,13 +3,22 @@ impl CompositorHandler for LayerState {
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         factor: i32,
     ) {
-        if self.fractional_scale.is_none() {
-            self.scale_120 = factor.max(1) as u32 * 120;
-            self.events.push_back(LayerEvent::Scale(self.scale_120));
-        }
+        let Some(id) = self.layer_id(surface) else {
+            return;
+        };
+        let Some(layer) = self
+            .layers
+            .get_mut(&id)
+            .filter(|layer| layer.fractional_scale.is_none())
+        else {
+            return;
+        };
+        layer.scale_120 = factor.max(1) as u32 * 120;
+        let scale_120 = layer.scale_120;
+        self.events.push_back(LayerEvent::Scale { id, scale_120 });
     }
 
     fn transform_changed(
@@ -28,12 +37,9 @@ impl CompositorHandler for LayerState {
         surface: &wl_surface::WlSurface,
         time: u32,
     ) {
-        if self
-            .layer
-            .as_ref()
-            .is_some_and(|layer| surface == layer.wl_surface())
-        {
-            self.events.push_back(LayerEvent::Frame { time_ms: time });
+        if let Some(id) = self.layer_id(surface) {
+            self.events
+                .push_back(LayerEvent::Frame { id, time_ms: time });
         } else if let Some(id) = self
             .popups
             .iter()
@@ -80,27 +86,40 @@ impl CompositorHandler for LayerState {
 }
 
 impl LayerShellHandler for LayerState {
-    fn closed(&mut self, _connection: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
-        self.events.push_back(LayerEvent::Closed);
+    fn closed(&mut self, _connection: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        let Some(id) = self.layer_id(layer.wl_surface()) else {
+            return;
+        };
+        self.events.push_back(LayerEvent::Closed { id });
     }
 
     fn configure(
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _layer: &LayerSurface,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        self.width = NonZeroU32::new(configure.new_size.0).map_or(self.width, NonZeroU32::get);
-        self.height = NonZeroU32::new(configure.new_size.1).map_or(self.height, NonZeroU32::get);
-        if let Some(viewport) = &self.viewport {
-            viewport.set_destination(self.width as i32, self.height as i32);
+        let Some(id) = self.layer_id(layer.wl_surface()) else {
+            return;
+        };
+        let Some(record) = self.layers.get_mut(&id) else {
+            return;
+        };
+        record.width = NonZeroU32::new(configure.new_size.0).map_or(record.width, NonZeroU32::get);
+        record.height =
+            NonZeroU32::new(configure.new_size.1).map_or(record.height, NonZeroU32::get);
+        if let Some(viewport) = &record.viewport {
+            viewport.set_destination(record.width as i32, record.height as i32);
         }
-        self.events.push_back(LayerEvent::Configure {
-            width: self.width,
-            height: self.height,
-        });
+        record.configured = true;
+        let (width, height) = (record.width, record.height);
+        // sctk acknowledges the configure for us, so a surface waiting to map
+        // itself may attach its buffer now.
+        self.attach_blank_buffer(id);
+        self.events
+            .push_back(LayerEvent::Configure { id, width, height });
     }
 }
 
@@ -238,11 +257,20 @@ impl PopupHandler for LayerState {
         popup: &Popup,
         config: PopupConfigure,
     ) {
+        use smithay_client_toolkit::shell::xdg::popup::ConfigureKind;
+
         let Some(id) = self.popups.iter().find_map(|(id, candidate)| {
             (candidate.wl_surface() == popup.wl_surface()).then_some(*id)
         }) else {
             return;
         };
+        // A configure that answers a reposition carries the token of the
+        // request it answers. Recording it here is what lets a caller tell the
+        // configure for the move it just asked for apart from a reactive one
+        // the compositor sent on its own.
+        if let ConfigureKind::Reposition { token } = config.kind {
+            record_reposition_ack(&mut self.popup_repositions, id, token);
+        }
         self.events.push_back(LayerEvent::PopupConfigure {
             id,
             width: config.width.max(1) as u32,
@@ -257,6 +285,7 @@ impl PopupHandler for LayerState {
             return;
         };
         self.popups.remove(&id);
+        self.popup_repositions.remove(&id);
         self.events.push_back(LayerEvent::PopupDone { id });
     }
 }
@@ -299,4 +328,3 @@ impl WindowHandler for LayerState {
             .push_back(LayerEvent::FloatingConfigure { id, width, height });
     }
 }
-

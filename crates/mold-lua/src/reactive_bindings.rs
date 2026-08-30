@@ -142,11 +142,7 @@ fn apply_state(
                     node,
                     parent,
                     anchors: definition.anchors,
-                    behavior: transition.unwrap_or(Behavior {
-                        duration: Duration::ZERO,
-                        easing: Easing::Linear,
-                        rotation_direction: RotationDirection::Numerical,
-                    }),
+                    behavior: transition.unwrap_or_default(),
                 });
             }
         }

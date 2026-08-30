@@ -158,11 +158,7 @@ impl RenderBackend for WgpuBackend {
                         color
                     },
                     mode: [0.0; 4],
-                    surface: [0.0; 4],
-                    mask_bounds: [0.0; 4],
-                    mask_inverse_0: [0.0; 4],
-                    mask_inverse_1: [0.0; 4],
-                    mask_radii: [0.0; 4],
+                    ..GlyphInstance::default()
                 });
                 instance
             });
@@ -197,6 +193,7 @@ impl RenderBackend for WgpuBackend {
                 mask_inverse_0,
                 mask_inverse_1,
                 mask_radii,
+                ..GlyphInstance::default()
             });
             layer_targets.push(LayerTarget {
                 _texture: texture,
