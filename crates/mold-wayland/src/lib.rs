@@ -232,6 +232,8 @@ pub struct PopupConfig {
     pub offset_y: i32,
     /// Compositor adjustments allowed when the popup would be constrained.
     pub constraints: PopupConstraints,
+    /// Requests an explicit popup grab from the latest input serial.
+    pub grab_focus: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -301,6 +303,7 @@ impl Default for PopupConfig {
             offset_x: 0,
             offset_y: 0,
             constraints: PopupConstraints::default(),
+            grab_focus: false,
         }
     }
 }
@@ -1246,6 +1249,18 @@ impl LayerClient {
         let popup = Popup::from_surface(None, &positioner, &qh, surface, &self.state.xdg_shell)
             .map_err(|error| WaylandError(format!("could not create popup: {error}")))?;
         self.state.layer().get_popup(popup.xdg_popup());
+        if config.grab_focus {
+            let seat = self
+                .state
+                .pointer_seat
+                .as_ref()
+                .ok_or_else(|| WaylandError("popup grab requires a pointer seat".into()))?;
+            let serial = self
+                .state
+                .latest_input_serial
+                .ok_or_else(|| WaylandError("popup grab requires an input serial".into()))?;
+            popup.xdg_popup().grab(seat, serial);
+        }
         popup.wl_surface().commit();
         self.state.popup = Some(popup);
         self.connection

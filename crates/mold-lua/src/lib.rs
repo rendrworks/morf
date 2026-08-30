@@ -308,6 +308,7 @@ pub struct PopupSurfaceConfig {
     pub offset_x: i32,
     pub offset_y: i32,
     pub constraints: PopupConstraintConfig,
+    pub grab_focus: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -8567,6 +8568,7 @@ fn parse_popup_surface<'gc>(
             offset_x: window_i32(ctx, options, "offset_x", 0)?,
             offset_y: window_i32(ctx, options, "offset_y", 0)?,
             constraints,
+            grab_focus: table_bool(ctx, options, "grab_focus", false)?,
         },
         node_anchor,
     ))
@@ -9732,6 +9734,7 @@ mod tests {
                         offset_x = 4,
                         offset_y = -2,
                         constraints = { resize_x = true, flip_y = false },
+                        grab_focus = true,
                     }
                     local floating_root = ui.Item {}
                     local floating = window.floating {
@@ -9778,6 +9781,7 @@ mod tests {
         assert_eq!((popup.anchor_x, popup.anchor_y), (10, 20));
         assert!(popup.constraints.resize_x);
         assert!(!popup.constraints.flip_y);
+        assert!(popup.grab_focus);
         assert!(surfaces[1].visible);
         let WindowSurfaceKind::Floating(floating) = &surfaces[1].kind else {
             panic!("second surface was not floating");

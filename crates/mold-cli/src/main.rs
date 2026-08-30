@@ -1189,6 +1189,7 @@ fn sync_window_surfaces(
                         resize_x: config.constraints.resize_x,
                         resize_y: config.constraints.resize_y,
                     },
+                    grab_focus: config.grab_focus,
                 })
                 .map_err(|error| error.to_string())?;
             *popup = Some(AuxiliarySurface {
