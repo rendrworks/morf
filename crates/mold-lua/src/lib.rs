@@ -6353,6 +6353,20 @@ fn install_reactive_api(
                 floating_state_method(ctx, Rc::clone(&state), property),
             );
         }
+        for property in ["title", "app_id"] {
+            window_methods.set_field(
+                ctx,
+                property,
+                floating_string_method(ctx, Rc::clone(&state), property),
+            );
+        }
+        for property in ["size", "minimum_size", "maximum_size"] {
+            window_methods.set_field(
+                ctx,
+                property,
+                floating_size_method(ctx, Rc::clone(&state), property),
+            );
+        }
         let move_state = Rc::clone(&state);
         let start_system_move = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let surface: UserRef<WindowSurfaceToken> = stack.consume(ctx)?;
@@ -7055,6 +7069,140 @@ fn floating_state_method<'gc>(
             state.window_surfaces_changed = true;
         }
         stack.replace(ctx, current);
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn floating_string_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    property: &'static str,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, value): (UserRef<WindowSurfaceToken>, Option<String>) = stack.consume(ctx)?;
+        if value
+            .as_ref()
+            .is_some_and(|value| value.len() > 4_096 || value.as_bytes().contains(&0))
+        {
+            return Err(HostError(format!("floating {property} is invalid")).into());
+        }
+        let mut state = state.borrow_mut();
+        let (current, changed) = {
+            let surface = state
+                .window_surfaces
+                .get_mut(&surface.id)
+                .ok_or_else(|| HostError("window surface is stale".into()))?;
+            let WindowSurfaceKind::Floating(config) = &mut surface.kind else {
+                return Err(
+                    HostError(format!("{property} is only valid for floating windows")).into(),
+                );
+            };
+            let current = match property {
+                "title" => &mut config.title,
+                "app_id" => &mut config.app_id,
+                _ => unreachable!(),
+            };
+            let changed = value.as_ref().is_some_and(|value| current != value);
+            if let Some(value) = value {
+                *current = value;
+            }
+            (current.clone(), changed)
+        };
+        state.window_surfaces_changed |= changed;
+        stack.replace(ctx, current);
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn floating_size_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    property: &'static str,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, width, height): (UserRef<WindowSurfaceToken>, Option<i64>, Option<i64>) =
+            stack.consume(ctx)?;
+        if width.is_some() != height.is_some() {
+            return Err(HostError("floating size requires both width and height".into()).into());
+        }
+        let values = match (width, height) {
+            (Some(width), Some(height)) => Some((
+                u32::try_from(width).map_err(|_| HostError("width must fit u32".into()))?,
+                u32::try_from(height).map_err(|_| HostError("height must fit u32".into()))?,
+            )),
+            _ => None,
+        };
+        if values.is_some_and(|(width, height)| {
+            width > 16_384
+                || height > 16_384
+                || (property != "maximum_size" && (width == 0 || height == 0))
+        }) {
+            return Err(HostError("floating size is outside 1..16384".into()).into());
+        }
+        let mut state = state.borrow_mut();
+        let (width, height, changed) = {
+            let surface = state
+                .window_surfaces
+                .get_mut(&surface.id)
+                .ok_or_else(|| HostError("window surface is stale".into()))?;
+            let WindowSurfaceKind::Floating(config) = &mut surface.kind else {
+                return Err(
+                    HostError(format!("{property} is only valid for floating windows")).into(),
+                );
+            };
+            let before = match property {
+                "size" => (config.width, config.height),
+                "minimum_size" => (config.minimum_width, config.minimum_height),
+                "maximum_size" => (
+                    config.maximum_width.unwrap_or_default(),
+                    config.maximum_height.unwrap_or_default(),
+                ),
+                _ => unreachable!(),
+            };
+            if let Some((width, height)) = values {
+                match property {
+                    "size" => (config.width, config.height) = (width, height),
+                    "minimum_size" => {
+                        if config.maximum_width.is_some_and(|maximum| width > maximum)
+                            || config
+                                .maximum_height
+                                .is_some_and(|maximum| height > maximum)
+                        {
+                            return Err(HostError("floating minimum exceeds maximum".into()).into());
+                        }
+                        (config.minimum_width, config.minimum_height) = (width, height);
+                    }
+                    "maximum_size" => {
+                        if (width != 0 && width < config.minimum_width)
+                            || (height != 0 && height < config.minimum_height)
+                        {
+                            return Err(HostError(
+                                "floating maximum is smaller than minimum".into(),
+                            )
+                            .into());
+                        }
+                        config.maximum_width = (width != 0).then_some(width);
+                        config.maximum_height = (height != 0).then_some(height);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            let after = match property {
+                "size" => (config.width, config.height),
+                "minimum_size" => (config.minimum_width, config.minimum_height),
+                "maximum_size" => (
+                    config.maximum_width.unwrap_or_default(),
+                    config.maximum_height.unwrap_or_default(),
+                ),
+                _ => unreachable!(),
+            };
+            (after.0, after.1, before != after)
+        };
+        state.window_surfaces_changed |= changed;
+        let result = Table::new(&ctx);
+        result.set_field(ctx, "width", i64::from(width));
+        result.set_field(ctx, "height", i64::from(height));
+        stack.replace(ctx, result);
         Ok(CallbackReturn::Return)
     })
 }
@@ -9604,6 +9752,13 @@ mod tests {
                     assert(not floating:fullscreen())
                     assert(floating:fullscreen(true))
                     assert(not floating:maximized(false))
+                    assert(floating:title() == "Mold Example")
+                    assert(floating:title("Changed") == "Changed")
+                    assert(floating:app_id("dev.mold.changed") == "dev.mold.changed")
+                    assert(floating:size().width == 800)
+                    assert(floating:size(900, 700).height == 700)
+                    assert(floating:minimum_size(400, 300).width == 400)
+                    assert(floating:maximum_size(0, 0).width == 0)
                     popup:close()
                     floating:open()
                     assert(floating:start_system_move())
@@ -9627,14 +9782,16 @@ mod tests {
         let WindowSurfaceKind::Floating(floating) = &surfaces[1].kind else {
             panic!("second surface was not floating");
         };
-        assert_eq!(floating.title, "Mold Example");
+        assert_eq!(floating.title, "Changed");
+        assert_eq!(floating.app_id, "dev.mold.changed");
+        assert_eq!((floating.width, floating.height), (900, 700));
         assert_eq!(
             (floating.minimum_width, floating.minimum_height),
-            (320, 200)
+            (400, 300)
         );
         assert_eq!(
             (floating.maximum_width, floating.maximum_height),
-            (Some(1920), Some(1080))
+            (None, None)
         );
         assert!(!floating.maximized);
         assert!(!floating.minimized);

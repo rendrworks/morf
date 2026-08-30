@@ -124,7 +124,7 @@ behavioral reductions do not count as parity.
   slide, flip, and resize constraints, including item-derived rectangles with
   side margins;
 - typed dynamic popup and undecorated floating-surface models with validated
-  roots, bounded minimum and maximum sizes, identity, visibility, initial
+  roots, mutable bounded size constraints, identity, title, visibility, initial
   and mutable minimized, maximized and fullscreen state, placement state,
   compositor-owned interactive move and resize requests, compositor lifecycle,
   independent GPU rendering, and surface-scoped pointer, touch, and keyboard
