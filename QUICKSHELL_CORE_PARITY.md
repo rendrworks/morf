@@ -71,6 +71,8 @@ behavioral reductions do not count as parity.
   reconciliation, virtual lists, and flick state;
 - process identity, environment lookup, shell paths, version checks, elapsed
   timers, and detached process launch;
+- shell-scoped XDG data, state, and cache directories with bounded relative
+  path resolution;
 - native easing curves across quadratic, cubic, quartic, quintic, sine,
   exponential, circular, back, bounce, and cubic-Bezier families;
 - bounded native image color quantization with crop and rescale controls;

@@ -111,6 +111,61 @@ pub struct Screen {
     pub transform: String,
 }
 
+#[derive(Clone, Copy)]
+enum StorageKind {
+    Data,
+    State,
+    Cache,
+}
+
+fn shell_storage_dir(shell_root: &Path, kind: StorageKind) -> Result<PathBuf, String> {
+    let (variable, fallback) = match kind {
+        StorageKind::Data => ("XDG_DATA_HOME", ".local/share"),
+        StorageKind::State => ("XDG_STATE_HOME", ".local/state"),
+        StorageKind::Cache => ("XDG_CACHE_HOME", ".cache"),
+    };
+    let base = std::env::var_os(variable)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(fallback)))
+        .ok_or_else(|| format!("{variable} and HOME are unset"))?;
+    Ok(base.join("mold").join(shell_storage_key(shell_root)))
+}
+
+fn shell_storage_key(shell_root: &Path) -> String {
+    let name = shell_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("shell")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let hash = shell_root
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        });
+    format!("{name}-{hash:016x}")
+}
+
+fn rooted_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    if relative.len() > 4_096 || relative.as_bytes().contains(&0) {
+        return Err("relative path is invalid".to_owned());
+    }
+    let relative = Path::new(relative);
+    if relative.is_absolute() {
+        return Err("relative path must not be absolute".to_owned());
+    }
+    Ok(root.join(relative))
+}
+
 fn screen_density(screen: &Screen) -> Option<f64> {
     let (width, height) = (screen.width?, screen.height?);
     let (physical_width, physical_height) = screen.physical_size?;
@@ -3140,14 +3195,49 @@ fn install_reactive_api(
         mold.set_field(ctx, "env", env);
         mold.set_field(ctx, "process_id", i64::from(std::process::id()));
         mold.set_field(ctx, "version", env!("CARGO_PKG_VERSION"));
+        let shell_dir_state = Rc::clone(&state);
+        let shell_dir = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let root = shell_dir_state.borrow().shell_root.clone();
+            stack.replace(ctx, root.to_string_lossy().as_ref());
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "shell_dir", shell_dir);
         let shell_root_state = Rc::clone(&state);
         let shell_path = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let relative: String = stack.consume(ctx)?;
-            let path = shell_root_state.borrow().shell_root.join(relative);
+            let path =
+                rooted_path(&shell_root_state.borrow().shell_root, &relative).map_err(HostError)?;
             stack.replace(ctx, path.to_string_lossy().as_ref());
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "shell_path", shell_path);
+        mold.set_field(ctx, "config_path", mold.get_value(ctx, "shell_path"));
+        for (directory_name, path_name, kind) in [
+            ("data_dir", "data_path", StorageKind::Data),
+            ("state_dir", "state_path", StorageKind::State),
+            ("cache_dir", "cache_path", StorageKind::Cache),
+        ] {
+            let directory_state = Rc::clone(&state);
+            let directory = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+                let root = shell_storage_dir(&directory_state.borrow().shell_root, kind)
+                    .map_err(HostError)?;
+                stack.replace(ctx, root.to_string_lossy().as_ref());
+                Ok(CallbackReturn::Return)
+            });
+            mold.set(ctx, directory_name, directory)
+                .expect("core path directory accepts a native callback");
+            let path_state = Rc::clone(&state);
+            let path = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+                let relative: String = stack.consume(ctx)?;
+                let root =
+                    shell_storage_dir(&path_state.borrow().shell_root, kind).map_err(HostError)?;
+                let path = rooted_path(&root, &relative).map_err(HostError)?;
+                stack.replace(ctx, path.to_string_lossy().as_ref());
+                Ok(CallbackReturn::Return)
+            });
+            mold.set(ctx, path_name, path)
+                .expect("core path resolver accepts a native callback");
+        }
         let has_version = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (major, minor): (i64, i64) = stack.consume(ctx)?;
             let current = env!("CARGO_PKG_VERSION")
@@ -5842,7 +5932,15 @@ fn install_reactive_api(
             "env",
             "process_id",
             "version",
+            "shell_dir",
             "shell_path",
+            "config_path",
+            "data_dir",
+            "data_path",
+            "state_dir",
+            "state_path",
+            "cache_dir",
+            "cache_path",
             "has_version",
             "elapsed_timer",
             "system_clock",
@@ -9194,7 +9292,14 @@ mod tests {
                     assert(type(core.version) == "string")
                     assert(core.env("PATH") ~= nil)
                     assert(core.env("MOLD_VARIABLE_THAT_DOES_NOT_EXIST") == nil)
+                    assert(core.shell_dir() == "/tmp/mold-shell")
                     assert(core.shell_path("icons/logo.svg") == "/tmp/mold-shell/icons/logo.svg")
+                    assert(core.config_path("config.lua") == "/tmp/mold-shell/config.lua")
+                    assert(core.data_path("values.json") == core.data_dir() .. "/values.json")
+                    assert(core.state_path("state.json") == core.state_dir() .. "/state.json")
+                    assert(core.cache_path("image") == core.cache_dir() .. "/image")
+                    assert(string.find(core.data_dir(), "/mold/mold-shell-", 1, true))
+                    assert(not pcall(core.shell_path, "/absolute"))
                     assert(core.has_version(0, 1))
                     local timer = core.elapsed_timer()
                     assert(timer:elapsed() >= 0)
