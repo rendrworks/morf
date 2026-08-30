@@ -125,6 +125,33 @@ impl ListModel {
         true
     }
 
+    /// Reconciles ordered unique values while preserving matching item identities.
+    pub fn reconcile(&mut self, values: Vec<Value>, object_property: Option<&str>) {
+        let target_len = values.len();
+        for (target, value) in values.into_iter().enumerate() {
+            let matching = self.entries[target.min(self.entries.len())..]
+                .iter()
+                .position(|entry| model_values_match(&entry.value, &value, object_property))
+                .map(|position| target + position);
+            match matching {
+                Some(current) => {
+                    if current != target {
+                        self.move_item(current, target);
+                    }
+                    if self.entries[target].value != value {
+                        self.set(target, value);
+                    }
+                }
+                None => {
+                    self.insert(target, value);
+                }
+            }
+        }
+        while self.entries.len() > target_len {
+            self.remove(self.entries.len() - 1);
+        }
+    }
+
     /// Drains mutations since the previous call.
     pub fn take_changes(&mut self) -> Vec<ListChange> {
         std::mem::take(&mut self.changes)
@@ -133,6 +160,19 @@ impl ListModel {
     fn allocate_id(&mut self) -> ModelId {
         self.next_id = self.next_id.wrapping_add(1).max(1);
         ModelId(self.next_id)
+    }
+}
+
+fn model_values_match(left: &Value, right: &Value, object_property: Option<&str>) -> bool {
+    let Some(property) = object_property else {
+        return left == right;
+    };
+    match (left, right) {
+        (Value::Map(left), Value::Map(right)) => match (left.get(property), right.get(property)) {
+            (Some(left), Some(right)) => left == right,
+            _ => left == right,
+        },
+        _ => left == right,
     }
 }
 
@@ -360,7 +400,16 @@ impl FlickState {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    fn record(id: &str, label: &str) -> Value {
+        Value::Map(BTreeMap::from([
+            ("id".to_owned(), Value::String(id.to_owned())),
+            ("label".to_owned(), Value::String(label.to_owned())),
+        ]))
+    }
 
     #[test]
     fn virtual_list_materializes_only_the_viewport() {
@@ -406,6 +455,51 @@ mod tests {
             transition,
             ViewTransition::Displaced { from: 3, item, .. } if item.index == 2
         )));
+    }
+
+    #[test]
+    fn reconcile_preserves_ids_across_reorder_and_updates() {
+        let mut model = ListModel::new([
+            record("a", "first"),
+            record("b", "second"),
+            record("c", "third"),
+        ]);
+        let a = model.get(0).unwrap().0;
+        let b = model.get(1).unwrap().0;
+        model.reconcile(
+            vec![
+                record("b", "changed"),
+                record("d", "new"),
+                record("a", "first"),
+            ],
+            Some("id"),
+        );
+
+        assert_eq!(model.get(0).unwrap().0, b);
+        assert_eq!(model.get(2).unwrap().0, a);
+        assert!(matches!(
+            model.get(0).unwrap().1,
+            Value::Map(value) if value["label"] == Value::String("changed".to_owned())
+        ));
+        let changes = model.take_changes();
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            ListChange::Moved { from: 1, to: 0, id } if *id == b
+        )));
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            ListChange::Updated { index: 0, id } if *id == b
+        )));
+        assert!(
+            changes
+                .iter()
+                .any(|change| matches!(change, ListChange::Added { index: 1, .. }))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|change| matches!(change, ListChange::Removed { index: 3, .. }))
+        );
     }
 
     #[test]

@@ -67,8 +67,8 @@ behavioral reductions do not count as parity.
   transitions;
 - reactive native local-time snapshots and bounded date/time formatting;
 - screen variants with logical geometry, physical metadata, density,
-  orientation and transform data, plus list models, virtual lists, and flick
-  state;
+  orientation and transform data, plus list models with stable keyed
+  reconciliation, virtual lists, and flick state;
 - process identity, environment lookup, shell paths, version checks, elapsed
   timers, and detached process launch;
 - native easing curves across quadratic, cubic, quartic, quintic, sine,

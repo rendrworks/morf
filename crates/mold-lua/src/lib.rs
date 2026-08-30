@@ -4081,6 +4081,28 @@ fn install_reactive_api(
             }
             Ok(CallbackReturn::Return)
         });
+        let model_replace = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (model, items, object_property): (UserRef<ListModelToken>, Table, Option<String>) =
+                stack.consume(ctx)?;
+            if object_property
+                .as_ref()
+                .is_some_and(|property| property.is_empty() || property.len() > 128)
+            {
+                return Err(HostError(
+                    "list-model object property must contain 1 to 128 bytes".into(),
+                )
+                .into());
+            }
+            let value = lua_to_scene(ctx, LuaValue::Table(items), 0).map_err(HostError)?;
+            let SceneValue::List(values) = value else {
+                return Err(HostError("list-model replacement needs an array table".into()).into());
+            };
+            model
+                .model
+                .borrow_mut()
+                .reconcile(values, object_property.as_deref());
+            Ok(CallbackReturn::Return)
+        });
         let model_methods = Table::new(&ctx);
         model_methods.set_field(ctx, "len", model_len);
         model_methods.set_field(ctx, "get", model_get);
@@ -4088,6 +4110,7 @@ fn install_reactive_api(
         model_methods.set_field(ctx, "remove", model_remove);
         model_methods.set_field(ctx, "move", model_move);
         model_methods.set_field(ctx, "set", model_set);
+        model_methods.set_field(ctx, "replace", model_replace);
         let model_metatable = Table::new(&ctx);
         model_metatable.set_field(ctx, "__index", model_methods);
         let model_metatable = ctx.stash(model_metatable);
@@ -11231,6 +11254,42 @@ mod tests {
                     assert(moved and displaced)
                     view:set_offset(4000)
                     assert(view:visible()[1].index == 100)
+                "#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn lua_list_model_reconciles_structured_values_by_property() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "reconcile.lua",
+                br#"
+                    local mold = require("mold")
+                    local model = mold.list_model {
+                      { id = "a", label = "first" },
+                      { id = "b", label = "second" },
+                      { id = "c", label = "third" },
+                    }
+                    local view = mold.virtual_list(model, 20, 100, 0)
+                    view:sync()
+                    model:replace({
+                      { id = "b", label = "changed" },
+                      { id = "d", label = "new" },
+                      { id = "a", label = "first" },
+                    }, "id")
+                    assert(model:len() == 3)
+                    assert(model:get(1).id == "b")
+                    assert(model:get(1).label == "changed")
+                    assert(model:get(2).id == "d")
+                    local moved, added, removed = false, false, false
+                    for _, change in ipairs(view:sync()) do
+                      moved = moved or change.kind == "move"
+                      added = added or change.kind == "add"
+                      removed = removed or change.kind == "remove"
+                    end
+                    assert(moved and added and removed)
                 "#,
             )
             .unwrap();
