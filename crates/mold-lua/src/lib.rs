@@ -750,6 +750,14 @@ impl Runtime {
         self.reactive.borrow_mut().reload_request.take()
     }
 
+    pub fn take_watch_files_change(&mut self) -> Option<bool> {
+        let mut state = self.reactive.borrow_mut();
+        state.watch_files_changed.then(|| {
+            state.watch_files_changed = false;
+            state.watch_files
+        })
+    }
+
     /// Borrows the scene produced by executed configuration code.
     pub fn scene(&self) -> Ref<'_, Scene> {
         Ref::map(self.reactive.borrow(), |state| &state.scene)
@@ -2243,6 +2251,8 @@ struct ReactiveState {
     reload_seed: HashMap<String, ScriptValue>,
     reloadable: HashMap<String, SignalId>,
     reload_request: Option<bool>,
+    watch_files: bool,
+    watch_files_changed: bool,
     effects: HashMap<u64, LuaEffect>,
     next_effect: u64,
     active: Option<Capture>,
@@ -2309,6 +2319,8 @@ impl ReactiveState {
             reload_seed: HashMap::new(),
             reloadable: HashMap::new(),
             reload_request: None,
+            watch_files: true,
+            watch_files_changed: false,
             effects: HashMap::new(),
             next_effect: 0,
             active: None,
@@ -3330,6 +3342,33 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "reload", reload);
+        let watch_state = Rc::clone(&state);
+        let watch_files = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let value: Option<bool> = stack.consume(ctx)?;
+            let mut state = watch_state.borrow_mut();
+            if let Some(value) = value
+                && state.watch_files != value
+            {
+                state.watch_files = value;
+                state.watch_files_changed = true;
+            }
+            stack.replace(ctx, state.watch_files);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "watch_files", watch_files);
+        let working_directory = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let path: Option<String> = stack.consume(ctx)?;
+            if let Some(path) = path {
+                if path.is_empty() || path.len() > 4_096 || path.as_bytes().contains(&0) {
+                    return Err(HostError("working directory path is invalid".into()).into());
+                }
+                std::env::set_current_dir(&path).map_err(|error| HostError(error.to_string()))?;
+            }
+            let current = std::env::current_dir().map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, current.to_string_lossy().as_ref());
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "working_directory", working_directory);
         let elapsed = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
             stack.replace(ctx, timer.started.borrow().elapsed().as_secs_f64());
@@ -6098,6 +6137,8 @@ fn install_reactive_api(
             "cache_path",
             "has_version",
             "reload",
+            "watch_files",
+            "working_directory",
             "elapsed_timer",
             "system_clock",
             "easing_curve",
@@ -9571,6 +9612,10 @@ mod tests {
                     assert(type(core.instance_id) == "string")
                     assert(type(core.launch_time_ms) == "number")
                     assert(type(core.app_id) == "string")
+                    assert(type(core.working_directory()) == "string")
+                    assert(core.working_directory(core.working_directory()) == core.working_directory())
+                    assert(core.watch_files())
+                    assert(not core.watch_files(false))
                     assert(core.env("PATH") ~= nil)
                     assert(core.env("MOLD_VARIABLE_THAT_DOES_NOT_EXIST") == nil)
                     assert(core.shell_dir() == "/tmp/mold-shell")
@@ -9616,6 +9661,8 @@ mod tests {
                 "#,
             )
             .unwrap();
+        assert_eq!(runtime.take_watch_files_change(), Some(false));
+        assert_eq!(runtime.take_watch_files_change(), None);
     }
 
     #[test]

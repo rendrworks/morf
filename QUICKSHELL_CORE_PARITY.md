@@ -65,6 +65,7 @@ behavioral reductions do not count as parity.
   property scopes, timers, and clock updates;
 - coalesced soft and hard reload requests routed through the native supervisor,
   with reloadable state retained only for soft reloads;
+- native working-directory control and runtime file-watcher enablement;
 - retainable scene objects and scoped locks for delayed destruction and exit
   transitions;
 - reactive native local-time snapshots and bounded date/time formatting;

@@ -180,6 +180,7 @@ enum SupervisorMessage {
     Worker(WorkerMessage),
     Ipc(IpcIncoming),
     Reload { hard: bool },
+    WatchFiles(bool),
 }
 
 enum WorkerMessage {
@@ -451,11 +452,17 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
     let (tx, rx) = mpsc::channel();
     let reload_roots = runtimepath_roots(&path, policy.external_roots);
     let mut reload_snapshot = lua_snapshot(&reload_roots);
+    let watch_files = Arc::new(AtomicBool::new(true));
+    let watcher_enabled = Arc::clone(&watch_files);
     let reload_tx = tx.clone();
     thread::spawn(move || {
         loop {
             thread::sleep(Duration::from_millis(100));
             let next = lua_snapshot(&reload_roots);
+            if !watcher_enabled.load(Ordering::Acquire) {
+                reload_snapshot = next;
+                continue;
+            }
             if next != reload_snapshot {
                 reload_snapshot = next;
                 if reload_tx
@@ -554,6 +561,9 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
                 }
                 Err(error) => daemon_logs.push(format!("reload: {error}")),
             },
+            Ok(SupervisorMessage::WatchFiles(enabled)) => {
+                watch_files.store(enabled, Ordering::Release);
+            }
             Err(_) => return Err("all output workers stopped".to_owned()),
         }
     }
@@ -1480,6 +1490,10 @@ fn run_surface(
         }
         if let Some(hard) = runtime.take_reload_request() {
             tx.send(SupervisorMessage::Reload { hard })
+                .map_err(|_| "output supervisor stopped".to_owned())?;
+        }
+        if let Some(enabled) = runtime.take_watch_files_change() {
+            tx.send(SupervisorMessage::WatchFiles(enabled))
                 .map_err(|_| "output supervisor stopped".to_owned())?;
         }
         if runtime.take_window_surface_change() {
