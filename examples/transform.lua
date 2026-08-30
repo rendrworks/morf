@@ -1,6 +1,7 @@
 local mold = require("mold")
 local core = require("mold.core")
 local ui = require("mold.ui")
+local window = require("mold.window")
 
 mold.surface.width = 320
 mold.surface.height = 120
@@ -25,7 +26,7 @@ local root = ui.Item {
   },
   ui.Timer {
     interval = 1000,
-    repeat = true,
+    ["repeat"] = true,
     running = true,
     on_triggered = function()
       shifted = not shifted
@@ -39,6 +40,20 @@ core.transform_watcher {
   b = target,
   common_parent = root,
   on_changed = function(value) revision:set(value) end,
+}
+
+local popup_root = ui.Rect {
+  width = 160,
+  height = 60,
+  radius = 8,
+  color = "#20242c",
+}
+window.popup {
+  root = popup_root,
+  visible = false,
+  width = 160,
+  height = 60,
+  anchor = { node = target, margin = 4 },
 }
 
 return root

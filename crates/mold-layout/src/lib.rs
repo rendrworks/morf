@@ -646,6 +646,11 @@ impl TransformTracker {
         self.geometry.extend(layout.geometries());
     }
 
+    /// Returns the latest resolved geometry for a scene node.
+    pub fn geometry(&self, node: NodeHandle) -> Option<Geometry> {
+        self.geometry.get(&node).copied()
+    }
+
     /// Removes geometry for destroyed or replaced scene nodes.
     pub fn retain_scene(&mut self, scene: &Scene) {
         self.geometry.retain(|node, _| scene.element(*node).is_ok());

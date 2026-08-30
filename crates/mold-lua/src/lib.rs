@@ -1074,6 +1074,55 @@ impl Runtime {
     pub fn observe_layout(&self, layout: &Layout) -> bool {
         let mut state = self.reactive.borrow_mut();
         state.transform_tracker.update(layout);
+        let anchors = state
+            .popup_node_anchors
+            .iter()
+            .map(|(id, anchor)| (*id, anchor.clone()))
+            .collect::<Vec<_>>();
+        for (id, anchor) in anchors {
+            let Some(geometry) = state.transform_tracker.geometry(anchor.node) else {
+                continue;
+            };
+            let node_width = geometry_i32(geometry.width).max(1);
+            let node_height = geometry_i32(geometry.height).max(1);
+            let resolved = (
+                geometry_i32(geometry.x)
+                    .saturating_add(anchor.x)
+                    .saturating_sub(anchor.margin_left),
+                geometry_i32(geometry.y)
+                    .saturating_add(anchor.y)
+                    .saturating_sub(anchor.margin_top),
+                anchor
+                    .width
+                    .unwrap_or(node_width)
+                    .saturating_add(anchor.margin_left)
+                    .saturating_add(anchor.margin_right)
+                    .max(1),
+                anchor
+                    .height
+                    .unwrap_or(node_height)
+                    .saturating_add(anchor.margin_top)
+                    .saturating_add(anchor.margin_bottom)
+                    .max(1),
+            );
+            if let Some(WindowSurfaceConfig {
+                kind: WindowSurfaceKind::Popup(config),
+                ..
+            }) = state.window_surfaces.get_mut(&id)
+                && (
+                    config.anchor_x,
+                    config.anchor_y,
+                    config.anchor_width,
+                    config.anchor_height,
+                ) != resolved
+            {
+                config.anchor_x = resolved.0;
+                config.anchor_y = resolved.1;
+                config.anchor_width = resolved.2;
+                config.anchor_height = resolved.3;
+                state.window_surfaces_changed = true;
+            }
+        }
         let mut watchers = std::mem::take(&mut state.transform_watchers);
         let mut changed = false;
         for watcher in watchers.values_mut() {
@@ -1455,6 +1504,12 @@ impl Runtime {
     }
 }
 
+fn geometry_i32(value: f64) -> i32 {
+    value
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
 fn key_targets(state: &ReactiveState) -> Vec<NodeHandle> {
     let mut targets = Vec::new();
     let mut pending = state.scene.roots();
@@ -1538,6 +1593,31 @@ fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
     state
         .transform_watchers
         .retain(|_, watcher| !removed.contains(&watcher.a) && !removed.contains(&watcher.b));
+    let surface_count = state.window_surfaces.len();
+    state
+        .window_surfaces
+        .retain(|_, surface| !removed.contains(&surface.root));
+    let removed_anchors = state
+        .popup_node_anchors
+        .iter()
+        .filter_map(|(id, anchor)| removed.contains(&anchor.node).then_some(*id))
+        .collect::<Vec<_>>();
+    for id in removed_anchors {
+        state.popup_node_anchors.remove(&id);
+        if let Some(surface) = state.window_surfaces.get_mut(&id) {
+            surface.visible = false;
+            state.window_surfaces_changed = true;
+        }
+    }
+    let surface_ids = state
+        .window_surfaces
+        .keys()
+        .copied()
+        .collect::<HashSet<_>>();
+    state
+        .popup_node_anchors
+        .retain(|id, anchor| surface_ids.contains(id) && !removed.contains(&anchor.node));
+    state.window_surfaces_changed |= state.window_surfaces.len() != surface_count;
 }
 
 fn finish_retained_destroy(
@@ -1944,6 +2024,19 @@ struct LuaTransformWatcher {
     pending: bool,
 }
 
+#[derive(Clone, Debug)]
+struct PopupNodeAnchor {
+    node: NodeHandle,
+    x: i32,
+    y: i32,
+    width: Option<i32>,
+    height: Option<i32>,
+    margin_top: i32,
+    margin_right: i32,
+    margin_bottom: i32,
+    margin_left: i32,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -2049,6 +2142,7 @@ struct ReactiveState {
     window_surfaces: HashMap<u64, WindowSurfaceConfig>,
     next_window_surface: u64,
     window_surfaces_changed: bool,
+    popup_node_anchors: HashMap<u64, PopupNodeAnchor>,
     transform_tracker: TransformTracker,
     transform_watchers: HashMap<u64, LuaTransformWatcher>,
     next_transform_watcher: u64,
@@ -2113,6 +2207,7 @@ impl ReactiveState {
             window_surfaces: HashMap::new(),
             next_window_surface: 0,
             window_surfaces_changed: false,
+            popup_node_anchors: HashMap::new(),
             transform_tracker: TransformTracker::default(),
             transform_watchers: HashMap::new(),
             next_transform_watcher: 0,
@@ -5769,7 +5864,7 @@ fn install_reactive_api(
             let window_metatable = window_metatable.clone();
             move |ctx, _, mut stack| {
                 let options: Table = stack.consume(ctx)?;
-                let (root, visible, config) =
+                let (root, visible, config, node_anchor) =
                     parse_popup_surface(ctx, options).map_err(HostError)?;
                 state
                     .borrow()
@@ -5789,6 +5884,13 @@ fn install_reactive_api(
                             kind: WindowSurfaceKind::Popup(config),
                         },
                     );
+                    if let Some(anchor) = node_anchor {
+                        state
+                            .scene
+                            .element(anchor.node)
+                            .map_err(|error| HostError(error.to_string()))?;
+                        state.popup_node_anchors.insert(id, anchor);
+                    }
                     state.window_surfaces_changed = true;
                     id
                 };
@@ -7599,6 +7701,20 @@ fn window_i32<'gc>(
     }
 }
 
+fn window_optional_i32<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+) -> Result<Option<i32>, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Integer(value) => i32::try_from(value)
+            .map(Some)
+            .map_err(|_| format!("{field} is outside the signed 32-bit range")),
+        _ => Err(format!("{field} must be an integer")),
+    }
+}
+
 fn popup_position(value: &str) -> bool {
     matches!(
         value,
@@ -7617,7 +7733,15 @@ fn popup_position(value: &str) -> bool {
 fn parse_popup_surface<'gc>(
     ctx: Context<'gc>,
     options: Table<'gc>,
-) -> Result<(NodeHandle, bool, PopupSurfaceConfig), String> {
+) -> Result<
+    (
+        NodeHandle,
+        bool,
+        PopupSurfaceConfig,
+        Option<PopupNodeAnchor>,
+    ),
+    String,
+> {
     let root = window_root(ctx, options)?;
     let visible = table_bool(ctx, options, "visible", false)?;
     let anchor = match options.get_value(ctx, "anchor") {
@@ -7649,6 +7773,32 @@ fn parse_popup_surface<'gc>(
         },
         _ => return Err("popup constraints must be a table".into()),
     };
+    let node_anchor = if let Some(anchor) = anchor {
+        match anchor.get_value(ctx, "node") {
+            LuaValue::Nil => None,
+            LuaValue::UserData(node) => {
+                let node = node
+                    .downcast_static::<NodeToken>()
+                    .map_err(|_| "popup anchor node must be a mold node".to_owned())?
+                    .handle;
+                let margin = window_i32(ctx, anchor, "margin", 0)?;
+                Some(PopupNodeAnchor {
+                    node,
+                    x: window_i32(ctx, anchor, "x", 0)?,
+                    y: window_i32(ctx, anchor, "y", 0)?,
+                    width: window_optional_i32(ctx, anchor, "width")?,
+                    height: window_optional_i32(ctx, anchor, "height")?,
+                    margin_top: window_i32(ctx, anchor, "margin_top", margin)?,
+                    margin_right: window_i32(ctx, anchor, "margin_right", margin)?,
+                    margin_bottom: window_i32(ctx, anchor, "margin_bottom", margin)?,
+                    margin_left: window_i32(ctx, anchor, "margin_left", margin)?,
+                })
+            }
+            _ => return Err("popup anchor node must be a mold node".into()),
+        }
+    } else {
+        None
+    };
     Ok((
         root,
         visible,
@@ -7665,6 +7815,7 @@ fn parse_popup_surface<'gc>(
             offset_y: window_i32(ctx, options, "offset_y", 0)?,
             constraints,
         },
+        node_anchor,
     ))
 }
 
@@ -8849,6 +9000,65 @@ mod tests {
     }
 
     #[test]
+    fn popup_anchor_tracks_native_item_geometry() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "popup-anchor.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local window = require("mold.window")
+                    local anchor = ui.Item {
+                      x = 20, y = 30, implicit_width = 40, implicit_height = 20,
+                    }
+                    ui.Item { anchor }
+                    local popup_root = ui.Item {}
+                    window.popup {
+                      root = popup_root,
+                      anchor = { node = anchor, x = 2, y = 3, margin = 4 },
+                      width = 100,
+                      height = 80,
+                    }
+                "#,
+            )
+            .unwrap();
+        let popup_root = runtime.window_surface_configs()[0].root;
+        let primary = runtime
+            .scene()
+            .roots()
+            .into_iter()
+            .find(|root| *root != popup_root)
+            .unwrap();
+        let layout = Layout::compute(
+            &runtime.scene(),
+            primary,
+            mold_layout::Size {
+                width: 200.0,
+                height: 100.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+        runtime.take_window_surface_change();
+        runtime.observe_layout(&layout);
+
+        let surfaces = runtime.window_surface_configs();
+        let WindowSurfaceKind::Popup(config) = &surfaces[0].kind else {
+            panic!("surface was not a popup");
+        };
+        assert_eq!(
+            (
+                config.anchor_x,
+                config.anchor_y,
+                config.anchor_width,
+                config.anchor_height
+            ),
+            (18, 29, 48, 28)
+        );
+        assert!(runtime.take_window_surface_change());
+    }
+
+    #[test]
     fn core_namespace_exposes_native_process_and_path_data() {
         let mut runtime = Runtime::default();
         runtime.set_shell_root(PathBuf::from("/tmp/mold-shell"));
@@ -9126,8 +9336,9 @@ mod tests {
         let mut runtime = Runtime::default();
         runtime.execute("examples/transform.lua", source).unwrap();
 
-        assert_eq!(runtime.scene().roots().len(), 1);
+        assert_eq!(runtime.scene().roots().len(), 2);
         assert_eq!(runtime.reactive.borrow().transform_watchers.len(), 1);
+        assert_eq!(runtime.window_surface_configs().len(), 1);
     }
 
     #[test]

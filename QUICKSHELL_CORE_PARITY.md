@@ -107,7 +107,8 @@ behavioral reductions do not count as parity.
 - layer-surface namespace, size, anchors, margins, exclusive zone, compositor
   layer, output selection, and keyboard focus policy;
 - popup anchor rectangles, edge and gravity selection, offsets, and compositor
-  slide, flip, and resize constraints;
+  slide, flip, and resize constraints, including item-derived rectangles with
+  side margins;
 - typed dynamic popup and undecorated floating-surface models with validated
   roots, sizes, identity, visibility, placement state, compositor lifecycle,
   independent GPU rendering, and surface-scoped pointer, touch, and keyboard

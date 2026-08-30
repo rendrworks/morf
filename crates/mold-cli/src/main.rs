@@ -12,8 +12,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
-    InputMethodRequest, IpcValue, Limits, Runtime, Screen, Screencopy as LuaScreencopy,
-    TextInputRequest, UiEvent, VirtualKeyboardRequest, WindowSurfaceKind,
+    InputMethodRequest, IpcValue, Limits, PopupSurfaceConfig, Runtime, Screen,
+    Screencopy as LuaScreencopy, TextInputRequest, UiEvent, VirtualKeyboardRequest,
+    WindowSurfaceKind,
 };
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
@@ -1064,6 +1065,7 @@ struct AuxiliarySurface {
     height: u32,
     renderer: Option<RenderEngine<WgpuBackend>>,
     layout: Option<Layout>,
+    popup_config: Option<PopupSurfaceConfig>,
 }
 
 fn popup_anchor(value: &str) -> Result<PopupAnchor, String> {
@@ -1121,7 +1123,18 @@ fn sync_window_surfaces(
     }
 
     let desired_popup = popups.first().copied();
-    if popup.as_ref().map(|surface| surface.id) != desired_popup.map(|surface| surface.id) {
+    let popup_changed = match desired_popup {
+        Some(surface) => {
+            let WindowSurfaceKind::Popup(config) = &surface.kind else {
+                unreachable!();
+            };
+            popup.as_ref().is_none_or(|current| {
+                current.id != surface.id || current.popup_config.as_ref() != Some(config)
+            })
+        }
+        None => popup.is_some(),
+    };
+    if popup_changed {
         client.close_popup();
         *popup = None;
         if let Some(surface) = desired_popup {
@@ -1159,6 +1172,7 @@ fn sync_window_surfaces(
                 height: config.height,
                 renderer: None,
                 layout: None,
+                popup_config: Some(config.clone()),
             });
         }
     } else if let (Some(current), Some(surface)) = (popup.as_mut(), desired_popup) {
@@ -1194,6 +1208,7 @@ fn sync_window_surfaces(
                 height: config.height,
                 renderer: None,
                 layout: None,
+                popup_config: None,
             });
         }
     } else if let (Some(current), Some(surface)) = (floating.as_mut(), desired_floating) {
