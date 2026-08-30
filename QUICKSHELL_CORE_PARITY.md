@@ -55,10 +55,10 @@ behavioral reductions do not count as parity.
 
 | Quickshell area | mold Lua module | status |
 |---|---|---|
-| reusable core | `mold.core` | partial |
-| general IO | `mold.io` | partial |
-| visual primitives | `mold.ui` | partial |
-| general windows | `mold.window` | partial |
+| reusable core | `mold.core` | implemented, acceptance pending |
+| general IO | `mold.io` | implemented, acceptance pending |
+| visual primitives | `mold.ui` | implemented, acceptance pending |
+| general windows | `mold.window` | implemented, acceptance pending |
 
 ## Implemented native surface
 

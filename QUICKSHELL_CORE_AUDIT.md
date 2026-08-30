@@ -55,10 +55,27 @@ Floating and popup handles support multiple independent instances. Native
 transient parents are created before their children, parent recreation rebuilds
 the dependent surface, and a hidden or missing parent suppresses its child.
 
-## Remaining audit lanes
+## Visual support boundary
 
-- verify every visual primitive property against the bundled Quickshell visual
-  support types.
+| Quickshell support type | Native mold mechanism |
+|---|---|
+| ClippingRectangle | `mold.ui.ClipRect` |
+| WrapperItem | `mold.ui.Inset` around `mold.ui.Item` |
+| WrapperMouseArea | `mold.ui.Inset` around `mold.ui.MouseArea` |
+| WrapperRectangle | `mold.ui.Inset` around `mold.ui.Rect` |
+| ClippingWrapperRectangle | `mold.ui.Inset` around `mold.ui.ClipRect` |
+
+Inset exposes the shared margin, side override, extra margin, implicit-size,
+single-child, and child-resize controls. Rect, MouseArea, and ClipRect retain
+their own primitive properties rather than combining them into mold-owned
+widgets.
+
+Quickshell's `IconImage` is a convenience composition rather than an engine
+primitive. Mold deliberately leaves that composition to consumer Lua: Image
+already provides source, aspect-fit, source-size, and implicit-size mechanisms.
+Images are decoded for their exact physical target size and every load is
+settled before the native frame uses it, so mipmap, asynchronous, and pending
+status toggles have no distinct state in this synchronous renderer.
 
 File views preserve preload, atomic-write, and watch policies across path
 changes. Empty paths unload the document, non-empty paths rebind active
@@ -82,3 +99,7 @@ Clipping rectangles expose independent `content_inside_border` and
 `content_under_border` policies. The renderer uses a separate rounded inner
 mask when content may not pass beneath the border, draws the border after its
 children, and honors antialiasing and physical-pixel border alignment.
+
+All included Quickshell core, IO, window, and visual support types now have an
+audited native mapping. External runtime acceptance remains separate from this
+source-surface audit.
