@@ -1,0 +1,352 @@
+impl LayerState {
+    fn layer(&self) -> &LayerSurface {
+        self.layer
+            .as_ref()
+            .expect("layer surface is initialized before client use")
+    }
+
+    fn refresh_screens(&mut self) {
+        let screens = self
+            .outputs
+            .outputs()
+            .filter_map(|output| self.outputs.info(&output))
+            .map(|info| ScreenInfo {
+                id: info.id,
+                name: info.name,
+                make: info.make,
+                model: info.model,
+                description: info.description,
+                position: info.logical_position,
+                size: info.logical_size,
+                physical_size: (info.physical_size.0 > 0 && info.physical_size.1 > 0)
+                    .then_some(info.physical_size),
+                scale: info.scale_factor,
+                transform: output_transform_name(info.transform),
+            })
+            .collect::<Vec<_>>();
+        if screens != self.screens {
+            self.screens = screens.clone();
+            self.events.push_back(LayerEvent::Screens(screens));
+        }
+    }
+
+    fn surface_role(&self, surface: &wl_surface::WlSurface) -> Option<SurfaceRole> {
+        if self
+            .layer
+            .as_ref()
+            .is_some_and(|layer| surface == layer.wl_surface())
+        {
+            Some(SurfaceRole::Layer)
+        } else if let Some(id) = self
+            .popups
+            .iter()
+            .find_map(|(id, popup)| (surface == popup.wl_surface()).then_some(*id))
+        {
+            Some(SurfaceRole::Popup(id))
+        } else {
+            self.floatings
+                .iter()
+                .find_map(|(id, floating)| (surface == floating.wl_surface()).then_some(*id))
+                .map(SurfaceRole::Floating)
+        }
+    }
+
+    fn push_key(&mut self, event: KeyEvent, pressed: bool, repeat: bool) {
+        self.events.push_back(LayerEvent::Key {
+            surface: self.keyboard_surface.unwrap_or(SurfaceRole::Layer),
+            keysym: event.keysym.raw(),
+            text: event.utf8,
+            pressed,
+            repeat,
+        });
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            state.scale_120 = scale.max(1);
+            state.events.push_back(LayerEvent::Scale(state.scale_120));
+        }
+    }
+}
+
+impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ExtIdleNotificationV1,
+        event: ext_idle_notification_v1::Event,
+        timeout_ms: &u32,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let idle = match event {
+            ext_idle_notification_v1::Event::Idled => true,
+            ext_idle_notification_v1::Event::Resumed => false,
+            _ => return,
+        };
+        state.events.push_back(LayerEvent::Idle {
+            timeout_ms: *timeout_ms,
+            idle,
+        });
+    }
+}
+
+impl Dispatch<ZwlrOutputPowerV1, wl_output::WlOutput> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrOutputPowerV1,
+        event: zwlr_output_power_v1::Event,
+        output: &wl_output::WlOutput,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_output_power_v1::Event::Mode { mode } => {
+                let mode = match mode {
+                    wayland_client::WEnum::Value(zwlr_output_power_v1::Mode::Off) => {
+                        OutputPowerMode::Off
+                    }
+                    wayland_client::WEnum::Value(zwlr_output_power_v1::Mode::On) => {
+                        OutputPowerMode::On
+                    }
+                    _ => return,
+                };
+                let output_id = state.outputs.info(output).map(|info| info.id).unwrap_or(0);
+                state
+                    .events
+                    .push_back(LayerEvent::OutputPower { output_id, mode });
+            }
+            zwlr_output_power_v1::Event::Failed => {
+                if let Some(index) = state
+                    .output_power
+                    .iter()
+                    .position(|control| control.control == *proxy)
+                {
+                    state.output_power.remove(index).control.destroy();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwlrScreencopyFrameV1, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
+                let format = match format {
+                    wayland_client::WEnum::Value(format) => format,
+                    wayland_client::WEnum::Unknown(value) => {
+                        state.fail_screencopy(proxy, format!("unknown screencopy format {value}"));
+                        return;
+                    }
+                };
+                if let Some(pending) = state
+                    .screencopies
+                    .iter_mut()
+                    .find(|pending| pending.frame == *proxy)
+                {
+                    pending.offer = Some((format, width, height, stride));
+                }
+                if proxy.version() < 3
+                    && let Err(error) = state.start_screencopy(proxy)
+                {
+                    state.fail_screencopy(proxy, error);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::BufferDone => {
+                if let Err(error) = state.start_screencopy(proxy) {
+                    state.fail_screencopy(proxy, error);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Flags { flags } => {
+                if let wayland_client::WEnum::Value(flags) = flags
+                    && let Some(pending) = state
+                        .screencopies
+                        .iter_mut()
+                        .find(|pending| pending.frame == *proxy)
+                {
+                    pending.y_invert = flags.contains(zwlr_screencopy_frame_v1::Flags::YInvert);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Ready { .. } => {
+                let Some(request_id) = state
+                    .screencopies
+                    .iter()
+                    .find(|pending| pending.frame == *proxy)
+                    .map(|pending| pending.request_id)
+                else {
+                    return;
+                };
+                let result = state.finish_screencopy(proxy);
+                proxy.destroy();
+                state
+                    .events
+                    .push_back(LayerEvent::Screencopy { request_id, result });
+            }
+            zwlr_screencopy_frame_v1::Event::Failed => {
+                state.fail_screencopy(proxy, "compositor rejected screencopy".to_owned());
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpInputMethodV2, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwpInputMethodV2,
+        event: zwp_input_method_v2::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_input_method_v2::Event::Activate => {
+                state.input_method_pending = InputMethodState {
+                    active: true,
+                    serial: state.input_method_state.serial,
+                    ..InputMethodState::default()
+                };
+            }
+            zwp_input_method_v2::Event::Deactivate => {
+                state.input_method_pending.active = false;
+            }
+            zwp_input_method_v2::Event::SurroundingText {
+                text,
+                cursor,
+                anchor,
+            } => {
+                state.input_method_pending.surrounding_text = Some(text);
+                state.input_method_pending.cursor = cursor;
+                state.input_method_pending.anchor = anchor;
+            }
+            zwp_input_method_v2::Event::Done => {
+                state.input_method_pending.serial = state.input_method_state.serial.wrapping_add(1);
+                state.input_method_state = state.input_method_pending.clone();
+                state
+                    .events
+                    .push_back(LayerEvent::InputMethod(state.input_method_state.clone()));
+            }
+            zwp_input_method_v2::Event::Unavailable => {
+                if state.input_method.as_ref() == Some(proxy) {
+                    state.input_method = None;
+                }
+                state.input_method_state.active = false;
+                state
+                    .events
+                    .push_back(LayerEvent::InputMethod(state.input_method_state.clone()));
+                proxy.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpTextInputV3, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        _data: &(),
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_text_input_v3::Event::Enter { .. } => {
+                state.text_input_pending.focused = true;
+                if state.text_input_requested {
+                    proxy.enable();
+                    proxy.commit();
+                }
+            }
+            zwp_text_input_v3::Event::Leave { .. } => {
+                state.text_input_pending = TextInputState::default();
+                state
+                    .events
+                    .push_back(LayerEvent::TextInput(state.text_input_pending.clone()));
+            }
+            zwp_text_input_v3::Event::PreeditString {
+                text,
+                cursor_begin,
+                cursor_end,
+            } => {
+                state.text_input_pending.preedit = text;
+                state.text_input_pending.preedit_begin = cursor_begin;
+                state.text_input_pending.preedit_end = cursor_end;
+            }
+            zwp_text_input_v3::Event::CommitString { text } => {
+                state.text_input_pending.commit = text;
+            }
+            zwp_text_input_v3::Event::DeleteSurroundingText {
+                before_length,
+                after_length,
+            } => {
+                state.text_input_pending.delete_before = before_length;
+                state.text_input_pending.delete_after = after_length;
+            }
+            zwp_text_input_v3::Event::Done { serial } => {
+                state.text_input_pending.serial = serial;
+                state
+                    .events
+                    .push_back(LayerEvent::TextInput(state.text_input_pending.clone()));
+                state.text_input_pending.preedit = None;
+                state.text_input_pending.commit = None;
+                state.text_input_pending.delete_before = 0;
+                state.text_input_pending.delete_after = 0;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl ProvidesRegistryState for LayerState {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry
+    }
+
+    registry_handlers![OutputState, SeatState];
+}
+
+impl ShmHandler for LayerState {
+    fn shm_state(&mut self) -> &mut Shm {
+        self.shm
+            .as_mut()
+            .expect("wl_shm handler requires bound state")
+    }
+}
+
+delegate_registry!(LayerState);
+smithay_client_toolkit::delegate_dispatch2!(LayerState);
+wayland_client::delegate_noop!(LayerState: ignore WpFractionalScaleManagerV1);
+wayland_client::delegate_noop!(LayerState: ignore WpViewporter);
+wayland_client::delegate_noop!(LayerState: ignore ExtIdleNotifierV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwlrOutputPowerManagerV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwlrScreencopyManagerV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardManagerV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardV1);
+wayland_client::delegate_noop!(LayerState: ignore ZwpInputMethodManagerV2);
+wayland_client::delegate_noop!(LayerState: ignore ZwpTextInputManagerV3);
+wayland_client::delegate_noop!(LayerState: ignore WpViewport);
+wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
+
