@@ -15,7 +15,7 @@ use luna::{
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
 use mold_desktop::{DesktopEntries, DesktopEntry};
-use mold_image::{ImageRect as QuantizeRect, quantize_colors};
+use mold_image::{IconResolver, ImageRect as QuantizeRect, quantize_colors};
 use mold_io::{
     Bus, DbusProxy, DbusSignal, DbusValue, FileDocument, FileEvent, FileView, FileWatcher,
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
@@ -164,6 +164,27 @@ fn rooted_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
         return Err("relative path must not be absolute".to_owned());
     }
     Ok(root.join(relative))
+}
+
+fn icon_lookup_options(
+    name: &str,
+    theme: Option<String>,
+    size: Option<i64>,
+) -> Result<(String, u32), String> {
+    if name.is_empty() || name.len() > 512 || name.as_bytes().contains(&0) {
+        return Err("icon name is invalid".to_owned());
+    }
+    let theme = theme
+        .or_else(|| std::env::var("MOLD_ICON_THEME").ok())
+        .unwrap_or_else(|| "hicolor".to_owned());
+    if theme.is_empty() || theme.len() > 128 || theme.as_bytes().contains(&0) {
+        return Err("icon theme is invalid".to_owned());
+    }
+    let size = u32::try_from(size.unwrap_or(32))
+        .ok()
+        .filter(|size| (1..=1_024).contains(size))
+        .ok_or_else(|| "icon size must be 1..1024".to_owned())?;
+    Ok((theme, size))
 }
 
 fn screen_density(screen: &Screen) -> Option<f64> {
@@ -3516,6 +3537,28 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "color_quantize", color_quantize);
+        let icon_path = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (name, theme, size): (String, Option<String>, Option<i64>) = stack.consume(ctx)?;
+            let (theme, size) = icon_lookup_options(&name, theme, size).map_err(HostError)?;
+            match IconResolver::from_environment().find(&name, &theme, size) {
+                Ok(path) => stack.replace(ctx, path.to_string_lossy().as_ref()),
+                Err(_) => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "icon_path", icon_path);
+        let has_icon = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (name, theme, size): (String, Option<String>, Option<i64>) = stack.consume(ctx)?;
+            let (theme, size) = icon_lookup_options(&name, theme, size).map_err(HostError)?;
+            stack.replace(
+                ctx,
+                IconResolver::from_environment()
+                    .find(&name, &theme, size)
+                    .is_ok(),
+            );
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "has_icon", has_icon);
         let exec_detached = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let command: Table = stack.consume(ctx)?;
             let mut command = table_string_array(ctx, command, 64).map_err(HostError)?;
@@ -5946,6 +5989,8 @@ fn install_reactive_api(
             "system_clock",
             "easing_curve",
             "color_quantize",
+            "icon_path",
+            "has_icon",
             "exec_detached",
             "signal",
             "reloadable",
@@ -9300,6 +9345,9 @@ mod tests {
                     assert(core.cache_path("image") == core.cache_dir() .. "/image")
                     assert(string.find(core.data_dir(), "/mold/mold-shell-", 1, true))
                     assert(not pcall(core.shell_path, "/absolute"))
+                    assert(core.icon_path("mold-icon-that-does-not-exist") == nil)
+                    assert(not core.has_icon("mold-icon-that-does-not-exist"))
+                    assert(not pcall(core.icon_path, "icon", "hicolor", 0))
                     assert(core.has_version(0, 1))
                     local timer = core.elapsed_timer()
                     assert(timer:elapsed() >= 0)
