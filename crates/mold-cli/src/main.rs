@@ -337,6 +337,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave { .. }
                 | LayerEvent::PointerButton { .. }
+                | LayerEvent::PointerAxis { .. }
                 | LayerEvent::TouchDown { .. }
                 | LayerEvent::TouchMotion { .. }
                 | LayerEvent::TouchUp { .. }
@@ -1346,6 +1347,7 @@ fn run_surface(
                 | LayerEvent::PointerMotion { .. }
                 | LayerEvent::PointerLeave { .. }
                 | LayerEvent::PointerButton { .. }
+                | LayerEvent::PointerAxis { .. }
                 | LayerEvent::TouchDown { .. }
                 | LayerEvent::TouchMotion { .. }
                 | LayerEvent::TouchUp { .. }
@@ -1568,6 +1570,35 @@ fn run_surface(
                         && let Some((_, node)) = hovered.take()
                     {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerExited);
+                    }
+                }
+                LayerEvent::PointerAxis {
+                    surface,
+                    x,
+                    y,
+                    horizontal,
+                    vertical,
+                    horizontal_steps,
+                    vertical_steps,
+                } => {
+                    let Some(hit_layout) =
+                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                    else {
+                        continue;
+                    };
+                    let hit = hit_layout
+                        .hit_test(&runtime.scene(), x, y)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(node) = hit {
+                        repaint |= runtime.dispatch_wheel_event(
+                            node,
+                            x,
+                            y,
+                            horizontal,
+                            vertical,
+                            horizontal_steps,
+                            vertical_steps,
+                        );
                     }
                 }
                 LayerEvent::PointerButton {

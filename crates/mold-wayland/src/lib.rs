@@ -466,6 +466,16 @@ pub enum LayerEvent {
         x: f64,
         y: f64,
     },
+    /// A pointer wheel or touchpad axis changed.
+    PointerAxis {
+        surface: SurfaceRole,
+        x: f64,
+        y: f64,
+        horizontal: f64,
+        vertical: f64,
+        horizontal_steps: i32,
+        vertical_steps: i32,
+    },
     /// A touch contact began on the surface.
     TouchDown {
         surface: SurfaceRole,
@@ -2092,7 +2102,23 @@ impl PointerHandler for LayerState {
                         y,
                     });
                 }
-                PointerEventKind::Axis { .. } => {}
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    if !horizontal.is_none() || !vertical.is_none() {
+                        self.events.push_back(LayerEvent::PointerAxis {
+                            surface,
+                            x,
+                            y,
+                            horizontal: horizontal.absolute,
+                            vertical: vertical.absolute,
+                            horizontal_steps: horizontal.discrete,
+                            vertical_steps: vertical.discrete,
+                        });
+                    }
+                }
             }
         }
     }

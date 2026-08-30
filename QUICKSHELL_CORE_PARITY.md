@@ -98,7 +98,7 @@ behavioral reductions do not count as parity.
 - native single-child inset containers with side overrides, extra margins,
   implicit sizing, and optional child resizing;
 - native properties, bindings, states, transitions, animation, focus, pointer,
-  touch, and keyboard routing.
+  wheel and touchpad axes, touch, and keyboard routing.
 
 ### `mold.window`
 

@@ -381,6 +381,8 @@ pub enum UiEvent {
     Dragged,
     /// A pointer drag ended.
     DragFinished,
+    /// A pointer wheel or touchpad axis changed.
+    Wheel,
     /// A key was pressed while the target held focus.
     KeyPressed,
     /// A touch contact began on the target.
@@ -405,6 +407,7 @@ impl UiEvent {
             Self::DragStarted => "on_drag_started",
             Self::Dragged => "on_dragged",
             Self::DragFinished => "on_drag_finished",
+            Self::Wheel => "on_wheel",
             Self::KeyPressed => "on_key_pressed",
             Self::TouchPressed => "on_touch_pressed",
             Self::TouchMoved => "on_touch_moved",
@@ -917,6 +920,31 @@ impl Runtime {
                 IpcValue::Number(y),
                 IpcValue::Number(delta_x),
                 IpcValue::Number(delta_y),
+            ],
+        )
+    }
+
+    /// Dispatches one wheel or touchpad-axis event to a MouseArea.
+    pub fn dispatch_wheel_event(
+        &mut self,
+        node: NodeHandle,
+        x: f64,
+        y: f64,
+        horizontal: f64,
+        vertical: f64,
+        horizontal_steps: i32,
+        vertical_steps: i32,
+    ) -> bool {
+        self.dispatch_ui_event_with_args(
+            node,
+            UiEvent::Wheel,
+            &[
+                IpcValue::Number(x),
+                IpcValue::Number(y),
+                IpcValue::Number(horizontal),
+                IpcValue::Number(vertical),
+                IpcValue::Integer(i64::from(horizontal_steps)),
+                IpcValue::Integer(i64::from(vertical_steps)),
             ],
         )
     }
@@ -6889,6 +6917,7 @@ fn handler_event(property: &str) -> Option<UiEvent> {
         "on_drag_started" => Some(UiEvent::DragStarted),
         "on_dragged" => Some(UiEvent::Dragged),
         "on_drag_finished" => Some(UiEvent::DragFinished),
+        "on_wheel" => Some(UiEvent::Wheel),
         "on_key_pressed" => Some(UiEvent::KeyPressed),
         "on_touch_pressed" => Some(UiEvent::TouchPressed),
         "on_touch_moved" => Some(UiEvent::TouchMoved),
@@ -10411,6 +10440,35 @@ mod tests {
         assert_eq!(
             runtime.scene().string_value(text, "text").unwrap(),
             "20:30:9:12"
+        );
+    }
+
+    #[test]
+    fn wheel_handlers_receive_pixels_and_steps() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "wheel.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local status = mold.signal("wheel.status", "idle")
+                    ui.MouseArea {
+                      on_wheel = function(x, y, dx, dy, sx, sy)
+                        status:set(string.format("%.0f:%.0f:%.0f:%.0f:%d:%d", x, y, dx, dy, sx, sy))
+                      end,
+                      ui.Text { text = function() return status:get() end },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let text = runtime.scene().children(root).unwrap()[0];
+
+        assert!(runtime.dispatch_wheel_event(root, 8.0, 12.0, -4.0, 15.0, -1, 2));
+        assert_eq!(
+            runtime.scene().string_value(text, "text").unwrap(),
+            "8:12:-4:15:-1:2"
         );
     }
 
