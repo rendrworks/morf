@@ -1277,6 +1277,11 @@ struct SignalToken {
     id: SignalId,
 }
 
+struct PersistentToken {
+    properties: HashMap<String, SignalId>,
+    reloaded: bool,
+}
+
 #[derive(Debug)]
 struct NodeToken {
     handle: NodeHandle,
@@ -1900,6 +1905,163 @@ fn install_reactive_api(
             }
         });
 
+        let persistent_index = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (persistent, key): (UserRef<PersistentToken>, String) = stack.consume(ctx)?;
+                if key == "loaded" {
+                    stack.replace(ctx, true);
+                    return Ok(CallbackReturn::Return);
+                }
+                if key == "reloaded" {
+                    stack.replace(ctx, persistent.reloaded);
+                    return Ok(CallbackReturn::Return);
+                }
+                let id = persistent
+                    .properties
+                    .get(&key)
+                    .copied()
+                    .ok_or_else(|| HostError(format!("unknown persistent property `{key}`")))?;
+                let value = {
+                    let mut state = state.borrow_mut();
+                    if let Some(active) = &mut state.active {
+                        active.reads.insert(id);
+                        active
+                            .writes
+                            .iter()
+                            .rev()
+                            .find(|(signal, _)| *signal == id)
+                            .map(|(_, value)| value.clone())
+                            .or_else(|| state.values.get(&id).cloned())
+                    } else {
+                        state.values.get(&id).cloned()
+                    }
+                    .ok_or_else(|| HostError("stale persistent property".into()))?
+                };
+                stack.replace(ctx, value.to_lua(ctx));
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let persistent_new_index = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (persistent, key, value): (UserRef<PersistentToken>, String, LuaValue) =
+                    stack.consume(ctx)?;
+                if matches!(key.as_str(), "loaded" | "reloaded") {
+                    return Err(HostError(format!("persistent property `{key}` is read-only")).into());
+                }
+                let id = persistent
+                    .properties
+                    .get(&key)
+                    .copied()
+                    .ok_or_else(|| HostError(format!("unknown persistent property `{key}`")))?;
+                let value = ScriptValue::from_lua(value).map_err(HostError)?;
+                {
+                    let mut state = state.borrow_mut();
+                    let current = state
+                        .values
+                        .get(&id)
+                        .ok_or_else(|| HostError("stale persistent property".into()))?;
+                    if std::mem::discriminant(current) != std::mem::discriminant(&value) {
+                        return Err(HostError(format!(
+                            "persistent property `{key}` cannot change value type"
+                        ))
+                        .into());
+                    }
+                    if let Some(active) = &mut state.active {
+                        active.writes.push((id, value));
+                        return Ok(CallbackReturn::Return);
+                    }
+                    state
+                        .graph
+                        .as_mut()
+                        .ok_or_else(|| HostError("reactive graph is already running".into()))?
+                        .write(id, value.clone())
+                        .map_err(|error| HostError(error.to_string()))?;
+                    state.values.insert(id, value);
+                }
+                replace_status(ctx, &mut stack, flush_reactive(&state, ctx, limits));
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let persistent_metatable = Table::new(&ctx);
+        persistent_metatable.set_field(ctx, "__index", persistent_index);
+        persistent_metatable.set_field(ctx, "__newindex", persistent_new_index);
+        let persistent_metatable = ctx.stash(persistent_metatable);
+        let persistent = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (name, defaults): (String, Table) = stack.consume(ctx)?;
+                if name.is_empty() || name.len() > 256 {
+                    return Err(HostError("persistent id must be 1..256 bytes".into()).into());
+                }
+                let mut definitions = Vec::new();
+                for (key, value) in defaults.iter(ctx) {
+                    let LuaValue::String(key) = key else {
+                        return Err(HostError("persistent property names must be strings".into()).into());
+                    };
+                    let key = key.display_lossy().to_string();
+                    if key.is_empty() || key.len() > 256 || matches!(key.as_str(), "loaded" | "reloaded") {
+                        return Err(HostError(format!("invalid persistent property `{key}`")).into());
+                    }
+                    definitions.push((key, ScriptValue::from_lua(value).map_err(HostError)?));
+                    if definitions.len() > 256 {
+                        return Err(HostError("persistent object exceeds 256 properties".into()).into());
+                    }
+                }
+                definitions.sort_by(|left, right| left.0.cmp(&right.0));
+                let mut properties = HashMap::new();
+                let mut reloaded = false;
+                {
+                    let mut state = state.borrow_mut();
+                    for (key, initial) in definitions {
+                        let full_name = format!("{name}.{key}");
+                        if state.reloadable.contains_key(&full_name) {
+                            return Err(HostError(format!(
+                                "reloadable id `{full_name}` is already registered"
+                            ))
+                            .into());
+                        }
+                        let value = match state.reload_seed.remove(&full_name) {
+                            Some(value)
+                                if std::mem::discriminant(&value)
+                                    == std::mem::discriminant(&initial) =>
+                            {
+                                reloaded = true;
+                                value
+                            }
+                            Some(_) => {
+                                state.logs.push(format!(
+                                    "persistent `{full_name}` changed value type; using its new default"
+                                ));
+                                initial
+                            }
+                            None => initial,
+                        };
+                        let id = state
+                            .graph
+                            .as_mut()
+                            .ok_or_else(|| HostError("reactive graph is already running".into()))?
+                            .signal(format!("reloadable.{full_name}"), value.clone());
+                        state.values.insert(id, value);
+                        state.signals.push(id);
+                        state.reloadable.insert(full_name, id);
+                        properties.insert(key, id);
+                    }
+                }
+                let userdata = UserData::new_static(
+                    &ctx,
+                    PersistentToken {
+                        properties,
+                        reloaded,
+                    },
+                );
+                userdata.set_metatable(ctx, Some(ctx.fetch(&persistent_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
+
         let effect = Callback::from_fn(&ctx, {
             let state = Rc::clone(&state);
             move |ctx, _, mut stack| {
@@ -2408,6 +2570,7 @@ fn install_reactive_api(
         mold.set_field(ctx, "exec_detached", exec_detached);
         mold.set_field(ctx, "signal", signal);
         mold.set_field(ctx, "reloadable", reloadable);
+        mold.set_field(ctx, "persistent", persistent);
         mold.set_field(ctx, "effect", effect);
         let clock = UserData::new_static(
             &ctx,
@@ -4470,6 +4633,7 @@ fn install_reactive_api(
             "exec_detached",
             "signal",
             "reloadable",
+            "persistent",
             "effect",
             "clock",
             "timer",
@@ -7716,6 +7880,45 @@ mod tests {
         assert_eq!(
             second.call_ipc("state.get", &[]).unwrap(),
             [IpcValue::Boolean(true)]
+        );
+    }
+
+    #[test]
+    fn persistent_properties_reload_as_one_typed_scope() {
+        let source = br#"
+            local state = mold.persistent("launcher", { visible = false, page = 1 })
+            mold.ipc["state.set"] = function()
+                state.visible = true
+                state.page = 4
+            end
+            mold.ipc["state.get"] = function()
+                return state.visible, state.page, state.loaded, state.reloaded
+            end
+        "#;
+        let mut first = Runtime::default();
+        first.execute("persistent.lua", source).unwrap();
+        assert_eq!(
+            first.call_ipc("state.get", &[]).unwrap(),
+            [
+                IpcValue::Boolean(false),
+                IpcValue::Integer(1),
+                IpcValue::Boolean(true),
+                IpcValue::Boolean(false),
+            ]
+        );
+        first.call_ipc("state.set", &[]).unwrap();
+
+        let mut second = Runtime::default();
+        second.restore_reloadable_state(first.reloadable_state());
+        second.execute("persistent.lua", source).unwrap();
+        assert_eq!(
+            second.call_ipc("state.get", &[]).unwrap(),
+            [
+                IpcValue::Boolean(true),
+                IpcValue::Integer(4),
+                IpcValue::Boolean(true),
+                IpcValue::Boolean(true),
+            ]
         );
     }
 
