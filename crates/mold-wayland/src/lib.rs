@@ -481,8 +481,8 @@ impl Default for BarConfig {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SurfaceRole {
     Layer,
-    Popup,
-    Floating,
+    Popup(u64),
+    Floating(u64),
 }
 
 /// Event produced by the layer-surface connection.
@@ -582,17 +582,17 @@ pub enum LayerEvent {
     /// The compositor output set changed.
     Screens(Vec<ScreenInfo>),
     /// The compositor positioned and sized the popup.
-    PopupConfigure { width: u32, height: u32 },
+    PopupConfigure { id: u64, width: u32, height: u32 },
     /// The compositor permits the next popup paint tick.
-    PopupFrame { time_ms: u32 },
+    PopupFrame { id: u64, time_ms: u32 },
     /// The compositor dismissed the popup.
-    PopupDone,
+    PopupDone { id: u64 },
     /// The compositor configured the floating window.
-    FloatingConfigure { width: u32, height: u32 },
+    FloatingConfigure { id: u64, width: u32, height: u32 },
     /// The compositor permits the next floating-window paint tick.
-    FloatingFrame { time_ms: u32 },
+    FloatingFrame { id: u64, time_ms: u32 },
     /// The compositor requested that the floating window close.
-    FloatingClose,
+    FloatingClose { id: u64 },
     /// The compositor accepted exclusive session ownership.
     SessionLocked,
     /// The compositor rejected or ended the session lock.
@@ -684,9 +684,9 @@ impl LayerClient {
             seats: SeatState::new(&globals, &qh),
             xdg_shell,
             layer: None,
-            popup: None,
-            floating: None,
-            floating_size: (1, 1),
+            popups: HashMap::new(),
+            floatings: HashMap::new(),
+            floating_sizes: HashMap::new(),
             _fractional_manager: fractional_manager,
             fractional_scale: None,
             _viewporter: viewporter,
@@ -1228,8 +1228,8 @@ impl LayerClient {
     }
 
     /// Creates an xdg popup anchored to a parent-surface rectangle.
-    pub fn open_popup(&mut self, config: PopupConfig) -> Result<(), WaylandError> {
-        self.close_popup();
+    pub fn open_popup(&mut self, id: u64, config: PopupConfig) -> Result<(), WaylandError> {
+        self.close_popup(id);
         let qh = self.queue.handle();
         let positioner = XdgPositioner::new(&self.state.xdg_shell)
             .map_err(|error| WaylandError(format!("could not create popup positioner: {error}")))?;
@@ -1262,28 +1262,28 @@ impl LayerClient {
             popup.xdg_popup().grab(seat, serial);
         }
         popup.wl_surface().commit();
-        self.state.popup = Some(popup);
+        self.state.popups.insert(id, popup);
         self.connection
             .flush()
             .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
     }
 
     /// Destroys the current popup when present.
-    pub fn close_popup(&mut self) {
-        self.state.popup = None;
-        if self.state.keyboard_surface == Some(SurfaceRole::Popup) {
+    pub fn close_popup(&mut self, id: u64) {
+        self.state.popups.remove(&id);
+        if self.state.keyboard_surface == Some(SurfaceRole::Popup(id)) {
             self.state.keyboard_surface = None;
         }
     }
 
     /// Returns the popup surface used to attach buffers.
-    pub fn popup_surface(&self) -> Option<&wl_surface::WlSurface> {
-        self.state.popup.as_ref().map(Popup::wl_surface)
+    pub fn popup_surface(&self, id: u64) -> Option<&wl_surface::WlSurface> {
+        self.state.popups.get(&id).map(Popup::wl_surface)
     }
 
     /// Requests a compositor callback for the next popup frame.
-    pub fn request_popup_frame(&self) {
-        let Some(surface) = self.popup_surface() else {
+    pub fn request_popup_frame(&self, id: u64) {
+        let Some(surface) = self.popup_surface(id) else {
             return;
         };
         let qh = self.queue.handle();
@@ -1291,16 +1291,16 @@ impl LayerClient {
     }
 
     /// Returns an owned raw-window target for the current popup.
-    pub fn popup_window_target(&self) -> Option<WaylandWindowTarget> {
-        self.state.popup.as_ref().map(|popup| WaylandWindowTarget {
+    pub fn popup_window_target(&self, id: u64) -> Option<WaylandWindowTarget> {
+        self.state.popups.get(&id).map(|popup| WaylandWindowTarget {
             backend: self.connection.backend(),
             surface: popup.wl_surface().clone(),
         })
     }
 
     /// Creates an undecorated xdg toplevel surface.
-    pub fn open_floating(&mut self, config: FloatingConfig) -> Result<(), WaylandError> {
-        self.close_floating();
+    pub fn open_floating(&mut self, id: u64, config: FloatingConfig) -> Result<(), WaylandError> {
+        self.close_floating(id);
         let qh = self.queue.handle();
         let surface = self.state.compositor.create_surface(&qh);
         surface.set_buffer_scale(1);
@@ -1326,25 +1326,28 @@ impl LayerClient {
         if config.minimized {
             window.set_minimized();
         }
-        self.state.floating_size = (config.width.max(1), config.height.max(1));
+        self.state
+            .floating_sizes
+            .insert(id, (config.width.max(1), config.height.max(1)));
         window.wl_surface().commit();
-        self.state.floating = Some(window);
+        self.state.floatings.insert(id, window);
         self.connection
             .flush()
             .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
     }
 
     /// Destroys the current floating window when present.
-    pub fn close_floating(&mut self) {
-        self.state.floating = None;
-        if self.state.keyboard_surface == Some(SurfaceRole::Floating) {
+    pub fn close_floating(&mut self, id: u64) {
+        self.state.floatings.remove(&id);
+        self.state.floating_sizes.remove(&id);
+        if self.state.keyboard_surface == Some(SurfaceRole::Floating(id)) {
             self.state.keyboard_surface = None;
         }
     }
 
-    pub fn start_floating_move(&self) -> bool {
+    pub fn start_floating_move(&self, id: u64) -> bool {
         let (Some(window), Some(seat), Some(serial)) = (
-            self.state.floating.as_ref(),
+            self.state.floatings.get(&id),
             self.state.pointer_seat.as_ref(),
             self.state.latest_input_serial,
         ) else {
@@ -1354,9 +1357,9 @@ impl LayerClient {
         self.connection.flush().is_ok()
     }
 
-    pub fn start_floating_resize(&self, edge: FloatingResizeEdge) -> bool {
+    pub fn start_floating_resize(&self, id: u64, edge: FloatingResizeEdge) -> bool {
         let (Some(window), Some(seat), Some(serial)) = (
-            self.state.floating.as_ref(),
+            self.state.floatings.get(&id),
             self.state.pointer_seat.as_ref(),
             self.state.latest_input_serial,
         ) else {
@@ -1367,13 +1370,13 @@ impl LayerClient {
     }
 
     /// Returns the floating-window surface used to attach buffers.
-    pub fn floating_surface(&self) -> Option<&wl_surface::WlSurface> {
-        self.state.floating.as_ref().map(Window::wl_surface)
+    pub fn floating_surface(&self, id: u64) -> Option<&wl_surface::WlSurface> {
+        self.state.floatings.get(&id).map(Window::wl_surface)
     }
 
     /// Requests a compositor callback for the next floating-window frame.
-    pub fn request_floating_frame(&self) {
-        let Some(surface) = self.floating_surface() else {
+    pub fn request_floating_frame(&self, id: u64) {
+        let Some(surface) = self.floating_surface(id) else {
             return;
         };
         let qh = self.queue.handle();
@@ -1381,10 +1384,10 @@ impl LayerClient {
     }
 
     /// Returns an owned raw-window target for the current floating window.
-    pub fn floating_window_target(&self) -> Option<WaylandWindowTarget> {
+    pub fn floating_window_target(&self, id: u64) -> Option<WaylandWindowTarget> {
         self.state
-            .floating
-            .as_ref()
+            .floatings
+            .get(&id)
             .map(|window| WaylandWindowTarget {
                 backend: self.connection.backend(),
                 surface: window.wl_surface().clone(),
@@ -1514,9 +1517,9 @@ struct LayerState {
     seats: SeatState,
     xdg_shell: XdgShell,
     layer: Option<LayerSurface>,
-    popup: Option<Popup>,
-    floating: Option<Window>,
-    floating_size: (u32, u32),
+    popups: HashMap<u64, Popup>,
+    floatings: HashMap<u64, Window>,
+    floating_sizes: HashMap<u64, (u32, u32)>,
     _fractional_manager: Option<WpFractionalScaleManagerV1>,
     fractional_scale: Option<WpFractionalScaleV1>,
     _viewporter: Option<WpViewporter>,
@@ -1842,20 +1845,20 @@ impl CompositorHandler for LayerState {
             .is_some_and(|layer| surface == layer.wl_surface())
         {
             self.events.push_back(LayerEvent::Frame { time_ms: time });
-        } else if self
-            .popup
-            .as_ref()
-            .is_some_and(|popup| surface == popup.wl_surface())
+        } else if let Some(id) = self
+            .popups
+            .iter()
+            .find_map(|(id, popup)| (surface == popup.wl_surface()).then_some(*id))
         {
             self.events
-                .push_back(LayerEvent::PopupFrame { time_ms: time });
-        } else if self
-            .floating
-            .as_ref()
-            .is_some_and(|window| surface == window.wl_surface())
+                .push_back(LayerEvent::PopupFrame { id, time_ms: time });
+        } else if let Some(id) = self
+            .floatings
+            .iter()
+            .find_map(|(id, window)| (surface == window.wl_surface()).then_some(*id))
         {
             self.events
-                .push_back(LayerEvent::FloatingFrame { time_ms: time });
+                .push_back(LayerEvent::FloatingFrame { id, time_ms: time });
         } else if let Some(index) = self
             .lock_surfaces
             .iter()
@@ -2043,18 +2046,29 @@ impl PopupHandler for LayerState {
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _popup: &Popup,
+        popup: &Popup,
         config: PopupConfigure,
     ) {
+        let Some(id) = self.popups.iter().find_map(|(id, candidate)| {
+            (candidate.wl_surface() == popup.wl_surface()).then_some(*id)
+        }) else {
+            return;
+        };
         self.events.push_back(LayerEvent::PopupConfigure {
+            id,
             width: config.width.max(1) as u32,
             height: config.height.max(1) as u32,
         });
     }
 
-    fn done(&mut self, _connection: &Connection, _qh: &QueueHandle<Self>, _popup: &Popup) {
-        self.popup = None;
-        self.events.push_back(LayerEvent::PopupDone);
+    fn done(&mut self, _connection: &Connection, _qh: &QueueHandle<Self>, popup: &Popup) {
+        let Some(id) = self.popups.iter().find_map(|(id, candidate)| {
+            (candidate.wl_surface() == popup.wl_surface()).then_some(*id)
+        }) else {
+            return;
+        };
+        self.popups.remove(&id);
+        self.events.push_back(LayerEvent::PopupDone { id });
     }
 }
 
@@ -2063,31 +2077,37 @@ impl WindowHandler for LayerState {
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _window: &Window,
+        window: &Window,
     ) {
-        self.floating = None;
-        self.events.push_back(LayerEvent::FloatingClose);
+        let Some(id) = self.floatings.iter().find_map(|(id, candidate)| {
+            (candidate.wl_surface() == window.wl_surface()).then_some(*id)
+        }) else {
+            return;
+        };
+        self.floatings.remove(&id);
+        self.floating_sizes.remove(&id);
+        self.events.push_back(LayerEvent::FloatingClose { id });
     }
 
     fn configure(
         &mut self,
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
-        _window: &Window,
+        window: &Window,
         configure: WindowConfigure,
         _serial: u32,
     ) {
-        let width = configure
-            .new_size
-            .0
-            .map_or(self.floating_size.0, NonZeroU32::get);
-        let height = configure
-            .new_size
-            .1
-            .map_or(self.floating_size.1, NonZeroU32::get);
-        self.floating_size = (width, height);
+        let Some(id) = self.floatings.iter().find_map(|(id, candidate)| {
+            (candidate.wl_surface() == window.wl_surface()).then_some(*id)
+        }) else {
+            return;
+        };
+        let previous = self.floating_sizes.get(&id).copied().unwrap_or((1, 1));
+        let width = configure.new_size.0.map_or(previous.0, NonZeroU32::get);
+        let height = configure.new_size.1.map_or(previous.1, NonZeroU32::get);
+        self.floating_sizes.insert(id, (width, height));
         self.events
-            .push_back(LayerEvent::FloatingConfigure { width, height });
+            .push_back(LayerEvent::FloatingConfigure { id, width, height });
     }
 }
 
@@ -2650,20 +2670,17 @@ impl LayerState {
             .is_some_and(|layer| surface == layer.wl_surface())
         {
             Some(SurfaceRole::Layer)
-        } else if self
-            .popup
-            .as_ref()
-            .is_some_and(|popup| surface == popup.wl_surface())
+        } else if let Some(id) = self
+            .popups
+            .iter()
+            .find_map(|(id, popup)| (surface == popup.wl_surface()).then_some(*id))
         {
-            Some(SurfaceRole::Popup)
-        } else if self
-            .floating
-            .as_ref()
-            .is_some_and(|floating| surface == floating.wl_surface())
-        {
-            Some(SurfaceRole::Floating)
+            Some(SurfaceRole::Popup(id))
         } else {
-            None
+            self.floatings
+                .iter()
+                .find_map(|(id, floating)| (surface == floating.wl_surface()).then_some(*id))
+                .map(SurfaceRole::Floating)
         }
     }
 

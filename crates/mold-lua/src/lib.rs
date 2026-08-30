@@ -10023,6 +10023,50 @@ mod tests {
     }
 
     #[test]
+    fn window_models_keep_multiple_surfaces_independent() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "multiple-windows.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local window = require("mold.window")
+                    window.popup { root = ui.Item {}, visible = true, width = 100, height = 50 }
+                    window.popup { root = ui.Item {}, visible = true, width = 200, height = 60 }
+                    window.floating { root = ui.Item {}, visible = true, title = "one" }
+                    window.floating { root = ui.Item {}, visible = true, title = "two" }
+                "#,
+            )
+            .unwrap();
+
+        let surfaces = runtime.window_surface_configs();
+        assert_eq!(surfaces.len(), 4);
+        assert_eq!(
+            surfaces
+                .iter()
+                .filter(|surface| matches!(surface.kind, WindowSurfaceKind::Popup(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            surfaces
+                .iter()
+                .filter(|surface| matches!(surface.kind, WindowSurfaceKind::Floating(_)))
+                .count(),
+            2
+        );
+        assert!(surfaces.iter().all(|surface| surface.visible));
+        assert_eq!(
+            surfaces
+                .iter()
+                .map(|surface| surface.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
     fn native_reparenting_wraps_and_unwraps_scene_items() {
         let mut runtime = Runtime::default();
         runtime

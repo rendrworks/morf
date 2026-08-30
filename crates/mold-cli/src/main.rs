@@ -348,10 +348,10 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 | LayerEvent::TouchCancel
                 | LayerEvent::PopupConfigure { .. }
                 | LayerEvent::PopupFrame { .. }
-                | LayerEvent::PopupDone
+                | LayerEvent::PopupDone { .. }
                 | LayerEvent::FloatingConfigure { .. }
                 | LayerEvent::FloatingFrame { .. }
-                | LayerEvent::FloatingClose
+                | LayerEvent::FloatingClose { .. }
                 | LayerEvent::Closed => {}
             }
         }
@@ -1133,145 +1133,145 @@ fn popup_gravity(value: &str) -> Result<PopupGravity, String> {
 fn sync_window_surfaces(
     runtime: &Runtime,
     client: &mut LayerClient,
-    popup: &mut Option<AuxiliarySurface>,
-    floating: &mut Option<AuxiliarySurface>,
+    popups: &mut HashMap<u64, AuxiliarySurface>,
+    floatings: &mut HashMap<u64, AuxiliarySurface>,
 ) -> Result<(), String> {
     let surfaces = runtime.window_surface_configs();
-    let popups = surfaces
+    let desired_popups = surfaces
         .iter()
         .filter(|surface| surface.visible && matches!(&surface.kind, WindowSurfaceKind::Popup(_)))
-        .collect::<Vec<_>>();
-    let floatings = surfaces
+        .map(|surface| (surface.id, surface))
+        .collect::<HashMap<_, _>>();
+    let desired_floatings = surfaces
         .iter()
         .filter(|surface| {
             surface.visible && matches!(&surface.kind, WindowSurfaceKind::Floating(_))
         })
-        .collect::<Vec<_>>();
-    if popups.len() > 1 || floatings.len() > 1 {
-        return Err(
-            "the current Wayland client supports one visible popup and floating surface per output"
-                .into(),
-        );
-    }
+        .map(|surface| (surface.id, surface))
+        .collect::<HashMap<_, _>>();
 
-    let desired_popup = popups.first().copied();
-    let popup_changed = match desired_popup {
-        Some(surface) => {
-            let WindowSurfaceKind::Popup(config) = &surface.kind else {
-                unreachable!();
-            };
-            popup.as_ref().is_none_or(|current| {
-                current.id != surface.id || current.popup_config.as_ref() != Some(config)
-            })
-        }
-        None => popup.is_some(),
-    };
-    if popup_changed {
-        client.close_popup();
-        *popup = None;
-        if let Some(surface) = desired_popup {
-            let WindowSurfaceKind::Popup(config) = &surface.kind else {
-                unreachable!();
-            };
-            client
-                .open_popup(PopupConfig {
-                    anchor: InputRect {
-                        x: config.anchor_x,
-                        y: config.anchor_y,
-                        width: config.anchor_width,
-                        height: config.anchor_height,
-                    },
-                    width: config.width,
-                    height: config.height,
-                    anchor_edge: popup_anchor(&config.anchor_edge)?,
-                    gravity: popup_gravity(&config.gravity)?,
-                    offset_x: config.offset_x,
-                    offset_y: config.offset_y,
-                    constraints: PopupConstraints {
-                        slide_x: config.constraints.slide_x,
-                        slide_y: config.constraints.slide_y,
-                        flip_x: config.constraints.flip_x,
-                        flip_y: config.constraints.flip_y,
-                        resize_x: config.constraints.resize_x,
-                        resize_y: config.constraints.resize_y,
-                    },
-                    grab_focus: config.grab_focus,
-                })
-                .map_err(|error| error.to_string())?;
-            *popup = Some(AuxiliarySurface {
-                id: surface.id,
-                root: surface.root,
-                width: config.width,
-                height: config.height,
-                renderer: None,
-                layout: None,
-                popup_config: Some(config.clone()),
-                floating_config: None,
-            });
-        }
-    } else if let (Some(current), Some(surface)) = (popup.as_mut(), desired_popup) {
+    let stale_popups = popups
+        .keys()
+        .filter(|id| !desired_popups.contains_key(id))
+        .copied()
+        .collect::<Vec<_>>();
+    for id in stale_popups {
+        client.close_popup(id);
+        popups.remove(&id);
+    }
+    for (id, surface) in desired_popups {
         let WindowSurfaceKind::Popup(config) = &surface.kind else {
             unreachable!();
         };
-        current.root = surface.root;
-        current.width = config.width;
-        current.height = config.height;
-        current.layout = None;
-    }
-
-    let desired_floating = floatings.first().copied();
-    let floating_changed = match desired_floating {
-        Some(surface) => {
-            let WindowSurfaceKind::Floating(config) = &surface.kind else {
-                unreachable!();
-            };
-            floating.as_ref().is_none_or(|current| {
-                current.id != surface.id || current.floating_config.as_ref() != Some(config)
-            })
-        }
-        None => floating.is_some(),
-    };
-    if floating_changed {
-        client.close_floating();
-        *floating = None;
-        if let Some(surface) = desired_floating {
-            let WindowSurfaceKind::Floating(config) = &surface.kind else {
-                unreachable!();
-            };
+        let changed = popups
+            .get(&id)
+            .is_none_or(|current| current.popup_config.as_ref() != Some(config));
+        if changed {
+            client.close_popup(id);
             client
-                .open_floating(FloatingConfig {
+                .open_popup(
+                    id,
+                    PopupConfig {
+                        anchor: InputRect {
+                            x: config.anchor_x,
+                            y: config.anchor_y,
+                            width: config.anchor_width,
+                            height: config.anchor_height,
+                        },
+                        width: config.width,
+                        height: config.height,
+                        anchor_edge: popup_anchor(&config.anchor_edge)?,
+                        gravity: popup_gravity(&config.gravity)?,
+                        offset_x: config.offset_x,
+                        offset_y: config.offset_y,
+                        constraints: PopupConstraints {
+                            slide_x: config.constraints.slide_x,
+                            slide_y: config.constraints.slide_y,
+                            flip_x: config.constraints.flip_x,
+                            flip_y: config.constraints.flip_y,
+                            resize_x: config.constraints.resize_x,
+                            resize_y: config.constraints.resize_y,
+                        },
+                        grab_focus: config.grab_focus,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            popups.insert(
+                id,
+                AuxiliarySurface {
+                    id: surface.id,
+                    root: surface.root,
                     width: config.width,
                     height: config.height,
-                    minimum_width: config.minimum_width,
-                    minimum_height: config.minimum_height,
-                    maximum_width: config.maximum_width,
-                    maximum_height: config.maximum_height,
-                    title: config.title.clone(),
-                    app_id: config.app_id.clone(),
-                    minimized: config.minimized,
-                    maximized: config.maximized,
-                    fullscreen: config.fullscreen,
-                })
-                .map_err(|error| error.to_string())?;
-            *floating = Some(AuxiliarySurface {
-                id: surface.id,
-                root: surface.root,
-                width: config.width,
-                height: config.height,
-                renderer: None,
-                layout: None,
-                popup_config: None,
-                floating_config: Some(config.clone()),
-            });
+                    renderer: None,
+                    layout: None,
+                    popup_config: Some(config.clone()),
+                    floating_config: None,
+                },
+            );
+        } else if let Some(current) = popups.get_mut(&id) {
+            current.root = surface.root;
+            current.width = config.width;
+            current.height = config.height;
+            current.layout = None;
         }
-    } else if let (Some(current), Some(surface)) = (floating.as_mut(), desired_floating) {
+    }
+
+    let stale_floatings = floatings
+        .keys()
+        .filter(|id| !desired_floatings.contains_key(id))
+        .copied()
+        .collect::<Vec<_>>();
+    for id in stale_floatings {
+        client.close_floating(id);
+        floatings.remove(&id);
+    }
+    for (id, surface) in desired_floatings {
         let WindowSurfaceKind::Floating(config) = &surface.kind else {
             unreachable!();
         };
-        current.root = surface.root;
-        current.width = config.width;
-        current.height = config.height;
-        current.layout = None;
+        let changed = floatings
+            .get(&id)
+            .is_none_or(|current| current.floating_config.as_ref() != Some(config));
+        if changed {
+            client.close_floating(id);
+            client
+                .open_floating(
+                    id,
+                    FloatingConfig {
+                        width: config.width,
+                        height: config.height,
+                        minimum_width: config.minimum_width,
+                        minimum_height: config.minimum_height,
+                        maximum_width: config.maximum_width,
+                        maximum_height: config.maximum_height,
+                        title: config.title.clone(),
+                        app_id: config.app_id.clone(),
+                        minimized: config.minimized,
+                        maximized: config.maximized,
+                        fullscreen: config.fullscreen,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            floatings.insert(
+                id,
+                AuxiliarySurface {
+                    id: surface.id,
+                    root: surface.root,
+                    width: config.width,
+                    height: config.height,
+                    renderer: None,
+                    layout: None,
+                    popup_config: None,
+                    floating_config: Some(config.clone()),
+                },
+            );
+        } else if let Some(current) = floatings.get_mut(&id) {
+            current.root = surface.root;
+            current.width = config.width;
+            current.height = config.height;
+            current.layout = None;
+        }
     }
     Ok(())
 }
@@ -1286,26 +1286,26 @@ fn auxiliary_physical_size(width: u32, height: u32, scale_120: u32) -> (u32, u32
 fn surface_layout<'a>(
     surface: SurfaceRole,
     layer: &'a Layout,
-    popup: &'a Option<AuxiliarySurface>,
-    floating: &'a Option<AuxiliarySurface>,
+    popups: &'a HashMap<u64, AuxiliarySurface>,
+    floatings: &'a HashMap<u64, AuxiliarySurface>,
 ) -> Option<&'a Layout> {
     match surface {
         SurfaceRole::Layer => Some(layer),
-        SurfaceRole::Popup => popup.as_ref()?.layout.as_ref(),
-        SurfaceRole::Floating => floating.as_ref()?.layout.as_ref(),
+        SurfaceRole::Popup(id) => popups.get(&id)?.layout.as_ref(),
+        SurfaceRole::Floating(id) => floatings.get(&id)?.layout.as_ref(),
     }
 }
 
 fn surface_root(
     surface: SurfaceRole,
     layer: NodeHandle,
-    popup: &Option<AuxiliarySurface>,
-    floating: &Option<AuxiliarySurface>,
+    popups: &HashMap<u64, AuxiliarySurface>,
+    floatings: &HashMap<u64, AuxiliarySurface>,
 ) -> Option<NodeHandle> {
     match surface {
         SurfaceRole::Layer => Some(layer),
-        SurfaceRole::Popup => popup.as_ref().map(|surface| surface.root),
-        SurfaceRole::Floating => floating.as_ref().map(|surface| surface.root),
+        SurfaceRole::Popup(id) => popups.get(&id).map(|surface| surface.root),
+        SurfaceRole::Floating(id) => floatings.get(&id).map(|surface| surface.root),
     }
 }
 
@@ -1454,10 +1454,10 @@ fn run_surface(
                 | LayerEvent::Screens(_)
                 | LayerEvent::PopupConfigure { .. }
                 | LayerEvent::PopupFrame { .. }
-                | LayerEvent::PopupDone
+                | LayerEvent::PopupDone { .. }
                 | LayerEvent::FloatingConfigure { .. }
                 | LayerEvent::FloatingFrame { .. }
-                | LayerEvent::FloatingClose
+                | LayerEvent::FloatingClose { .. }
                 | LayerEvent::SessionLocked
                 | LayerEvent::SessionLockFinished
                 | LayerEvent::SessionLockConfigure { .. }
@@ -1480,14 +1480,14 @@ fn run_surface(
         .map_err(|error| error.to_string())?;
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let mut layout = paint(&runtime, &mut renderer, &client)?;
-    let mut popup_surface = None;
-    let mut floating_surface = None;
+    let mut popup_surfaces = HashMap::new();
+    let mut floating_surfaces = HashMap::new();
     runtime.take_window_surface_change();
     sync_window_surfaces(
         &runtime,
         &mut client,
-        &mut popup_surface,
-        &mut floating_surface,
+        &mut popup_surfaces,
+        &mut floating_surfaces,
     )?;
     apply_output_power_requests(&mut runtime, &mut client);
     apply_screencopy_requests(&mut runtime, &mut client);
@@ -1535,8 +1535,8 @@ fn run_surface(
             ))
             .map_err(|error| error.to_string())?;
             renderer = RenderEngine::new(backend);
-            popup_surface = None;
-            floating_surface = None;
+            popup_surfaces.clear();
+            floating_surfaces.clear();
             client = replacement;
             tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
                 output: name.clone(),
@@ -1556,8 +1556,8 @@ fn run_surface(
             sync_window_surfaces(
                 &runtime,
                 &mut client,
-                &mut popup_surface,
-                &mut floating_surface,
+                &mut popup_surfaces,
+                &mut floating_surfaces,
             )?;
         }
         apply_output_power_requests(&mut runtime, &mut client);
@@ -1578,9 +1578,9 @@ fn run_surface(
                 LayerEvent::Configure { .. } | LayerEvent::Scale(_) => {
                     let (width, height) = client.physical_size();
                     renderer.backend_mut().resize(width, height);
-                    for surface in [&mut popup_surface, &mut floating_surface]
-                        .into_iter()
-                        .flatten()
+                    for surface in popup_surfaces
+                        .values_mut()
+                        .chain(floating_surfaces.values_mut())
                     {
                         if let Some(renderer) = &mut surface.renderer {
                             let (width, height) = auxiliary_physical_size(
@@ -1637,7 +1637,7 @@ fn run_surface(
                 }
                 LayerEvent::PointerMotion { surface, x, y } => {
                     let Some(hit_layout) =
-                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                        surface_layout(surface, &layout, &popup_surfaces, &floating_surfaces)
                     else {
                         continue;
                     };
@@ -1709,7 +1709,7 @@ fn run_surface(
                     vertical_steps,
                 } => {
                     let Some(hit_layout) =
-                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                        surface_layout(surface, &layout, &popup_surfaces, &floating_surfaces)
                     else {
                         continue;
                     };
@@ -1733,7 +1733,7 @@ fn run_surface(
                     y,
                 } => {
                     let Some(hit_layout) =
-                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                        surface_layout(surface, &layout, &popup_surfaces, &floating_surfaces)
                     else {
                         continue;
                     };
@@ -1753,7 +1753,7 @@ fn run_surface(
                 }
                 LayerEvent::TouchDown { surface, id, x, y } => {
                     let Some(hit_layout) =
-                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                        surface_layout(surface, &layout, &popup_surfaces, &floating_surfaces)
                     else {
                         continue;
                     };
@@ -1786,7 +1786,7 @@ fn run_surface(
                             runtime.dispatch_touch_event(node, UiEvent::TouchReleased, id, x, y);
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
                         let hit =
-                            surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                            surface_layout(surface, &layout, &popup_surfaces, &floating_surfaces)
                                 .filter(|_| touch_surface == surface)
                                 .map(|layout| layout.hit_test(&runtime.scene(), x, y))
                                 .transpose()
@@ -1811,7 +1811,7 @@ fn run_surface(
                     y,
                     ..
                 } => {
-                    let hit = surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                    let hit = surface_layout(surface, &layout, &popup_surfaces, &floating_surfaces)
                         .map(|layout| layout.hit_test(&runtime.scene(), x, y))
                         .transpose()
                         .map_err(|error| error.to_string())?
@@ -1844,8 +1844,8 @@ fn run_surface(
                     let Some(root) = surface_root(
                         surface,
                         primary_surface_root(&runtime)?,
-                        &popup_surface,
-                        &floating_surface,
+                        &popup_surfaces,
+                        &floating_surfaces,
                     ) else {
                         continue;
                     };
@@ -1866,8 +1866,8 @@ fn run_surface(
                         repaint |= runtime.dispatch_key_event(node, keysym, text.as_deref());
                     }
                 }
-                LayerEvent::PopupConfigure { width, height } => {
-                    if let Some(surface) = &mut popup_surface {
+                LayerEvent::PopupConfigure { id, width, height } => {
+                    if let Some(surface) = popup_surfaces.get_mut(&id) {
                         surface.width = width.max(1);
                         surface.height = height.max(1);
                         let (physical_width, physical_height) = auxiliary_physical_size(
@@ -1881,7 +1881,7 @@ fn run_surface(
                                 .resize(physical_width, physical_height);
                         } else {
                             let target = client
-                                .popup_window_target()
+                                .popup_window_target(id)
                                 .ok_or_else(|| "configured popup disappeared".to_owned())?;
                             let backend = pollster::block_on(WgpuBackend::new_surface(
                                 target,
@@ -1894,18 +1894,18 @@ fn run_surface(
                         paint_popup_surface(&runtime, &client, surface)?;
                     }
                 }
-                LayerEvent::PopupFrame { .. } => {
-                    if let Some(surface) = &mut popup_surface {
+                LayerEvent::PopupFrame { id, .. } => {
+                    if let Some(surface) = popup_surfaces.get_mut(&id) {
                         paint_popup_surface(&runtime, &client, surface)?;
                     }
                 }
-                LayerEvent::PopupDone => {
-                    if let Some(surface) = popup_surface.take() {
+                LayerEvent::PopupDone { id } => {
+                    if let Some(surface) = popup_surfaces.remove(&id) {
                         runtime.set_window_surface_visible(surface.id, false);
                     }
                 }
-                LayerEvent::FloatingConfigure { width, height } => {
-                    if let Some(surface) = &mut floating_surface {
+                LayerEvent::FloatingConfigure { id, width, height } => {
+                    if let Some(surface) = floating_surfaces.get_mut(&id) {
                         surface.width = width.max(1);
                         surface.height = height.max(1);
                         let (physical_width, physical_height) = auxiliary_physical_size(
@@ -1918,7 +1918,7 @@ fn run_surface(
                                 .backend_mut()
                                 .resize(physical_width, physical_height);
                         } else {
-                            let target = client.floating_window_target().ok_or_else(|| {
+                            let target = client.floating_window_target(id).ok_or_else(|| {
                                 "configured floating surface disappeared".to_owned()
                             })?;
                             let backend = pollster::block_on(WgpuBackend::new_surface(
@@ -1932,13 +1932,13 @@ fn run_surface(
                         paint_floating_surface(&runtime, &client, surface)?;
                     }
                 }
-                LayerEvent::FloatingFrame { .. } => {
-                    if let Some(surface) = &mut floating_surface {
+                LayerEvent::FloatingFrame { id, .. } => {
+                    if let Some(surface) = floating_surfaces.get_mut(&id) {
                         paint_floating_surface(&runtime, &client, surface)?;
                     }
                 }
-                LayerEvent::FloatingClose => {
-                    if let Some(surface) = floating_surface.take() {
+                LayerEvent::FloatingClose { id } => {
+                    if let Some(surface) = floating_surfaces.remove(&id) {
                         runtime.set_window_surface_visible(surface.id, false);
                     }
                 }
@@ -1963,14 +1963,14 @@ fn run_surface(
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
         apply_text_input_requests(&mut runtime, &mut client);
-        apply_window_surface_actions(&mut runtime, &client, floating_surface.as_ref());
+        apply_window_surface_actions(&mut runtime, &client, &floating_surfaces);
         if repaint {
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;
-            if let Some(surface) = &mut popup_surface {
+            for surface in popup_surfaces.values_mut() {
                 paint_popup_surface(&runtime, &client, surface)?;
             }
-            if let Some(surface) = &mut floating_surface {
+            for surface in floating_surfaces.values_mut() {
                 paint_floating_surface(&runtime, &client, surface)?;
             }
         }
@@ -1980,18 +1980,14 @@ fn run_surface(
 fn apply_window_surface_actions(
     runtime: &mut Runtime,
     client: &LayerClient,
-    floating: Option<&AuxiliarySurface>,
+    floatings: &HashMap<u64, AuxiliarySurface>,
 ) {
     for action in runtime.take_window_surface_actions() {
         match action {
-            WindowSurfaceAction::Move { id }
-                if floating.is_some_and(|surface| surface.id == id) =>
-            {
-                client.start_floating_move();
+            WindowSurfaceAction::Move { id } if floatings.contains_key(&id) => {
+                client.start_floating_move(id);
             }
-            WindowSurfaceAction::Resize { id, edge }
-                if floating.is_some_and(|surface| surface.id == id) =>
-            {
+            WindowSurfaceAction::Resize { id, edge } if floatings.contains_key(&id) => {
                 let edge = match edge.as_str() {
                     "top" => FloatingResizeEdge::Top,
                     "bottom" => FloatingResizeEdge::Bottom,
@@ -2003,7 +1999,7 @@ fn apply_window_surface_actions(
                     "bottom_right" => FloatingResizeEdge::BottomRight,
                     _ => continue,
                 };
-                client.start_floating_resize(edge);
+                client.start_floating_resize(id, edge);
             }
             WindowSurfaceAction::Move { .. } | WindowSurfaceAction::Resize { .. } => {}
         }
@@ -2122,9 +2118,9 @@ fn paint_popup_surface(
     .map_err(|error| error.to_string())?;
     let (width, height) =
         auxiliary_physical_size(surface.width, surface.height, client.scale_120());
-    client.request_popup_frame();
+    client.request_popup_frame(surface.id);
     let popup = client
-        .popup_surface()
+        .popup_surface(surface.id)
         .ok_or_else(|| "popup surface disappeared while painting".to_owned())?;
     popup.damage_buffer(0, 0, width as i32, height as i32);
     let damage = renderer
@@ -2160,9 +2156,9 @@ fn paint_floating_surface(
     .map_err(|error| error.to_string())?;
     let (width, height) =
         auxiliary_physical_size(surface.width, surface.height, client.scale_120());
-    client.request_floating_frame();
+    client.request_floating_frame(surface.id);
     let floating = client
-        .floating_surface()
+        .floating_surface(surface.id)
         .ok_or_else(|| "floating surface disappeared while painting".to_owned())?;
     floating.damage_buffer(0, 0, width as i32, height as i32);
     let damage = renderer

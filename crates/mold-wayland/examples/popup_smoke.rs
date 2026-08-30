@@ -36,30 +36,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let (x, y) = popup_anchor(&mut client)?;
-    client.open_popup(PopupConfig {
-        anchor: InputRect {
-            x: x.floor() as i32,
-            y: y.floor() as i32,
-            width: 1,
-            height: 1,
+    client.open_popup(
+        0,
+        PopupConfig {
+            anchor: InputRect {
+                x: x.floor() as i32,
+                y: y.floor() as i32,
+                width: 1,
+                height: 1,
+            },
+            width: 240,
+            height: 120,
+            ..PopupConfig::default()
         },
-        width: 240,
-        height: 120,
-        ..PopupConfig::default()
-    })?;
+    )?;
     let (width, height) = wait_for_popup(&mut client)?;
     let scale = client.scale_120();
     let physical_width = ((width as u64 * scale as u64).div_ceil(120)) as u32;
     let physical_height = ((height as u64 * scale as u64).div_ceil(120)) as u32;
     let mut popup = pollster::block_on(WgpuBackend::new_surface(
-        client.popup_window_target().ok_or("popup was dismissed")?,
+        client.popup_window_target(0).ok_or("popup was dismissed")?,
         physical_width,
         physical_height,
     ))?;
     let popup_node = scene.create(Element::Rect);
-    client.request_popup_frame();
+    client.request_popup_frame(0);
     client
-        .popup_surface()
+        .popup_surface(0)
         .ok_or("popup was dismissed")?
         .damage_buffer(0, 0, physical_width as i32, physical_height as i32);
     popup.render(
@@ -86,11 +89,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
             match event {
-                LayerEvent::PopupFrame { time_ms } => {
+                LayerEvent::PopupFrame { time_ms, .. } => {
                     println!("click-anchored popup {width}x{height}, frame {time_ms} ms");
                     break 'framed;
                 }
-                LayerEvent::PopupDone => return Err("popup was dismissed".into()),
+                LayerEvent::PopupDone { .. } => return Err("popup was dismissed".into()),
                 _ => {}
             }
         }
@@ -137,8 +140,8 @@ fn wait_for_popup(client: &mut LayerClient) -> Result<(u32, u32), Box<dyn std::e
         client.dispatch()?;
         while let Some(event) = client.next_event() {
             match event {
-                LayerEvent::PopupConfigure { width, height } => return Ok((width, height)),
-                LayerEvent::PopupDone => return Err("popup was dismissed".into()),
+                LayerEvent::PopupConfigure { width, height, .. } => return Ok((width, height)),
+                LayerEvent::PopupDone { .. } => return Err("popup was dismissed".into()),
                 _ => {}
             }
         }
