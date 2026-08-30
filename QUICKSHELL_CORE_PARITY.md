@@ -80,8 +80,8 @@ behavioral reductions do not count as parity.
   exponential, circular, back, bounce, and cubic-Bezier families;
 - bounded native image color quantization with crop and rescale controls;
 - bounded XDG icon-theme lookup and availability checks;
-- bounded XDG desktop-entry discovery, precedence masking, lookup, actions, and
-  detached launching;
+- bounded XDG desktop-entry discovery, precedence masking, change-detecting
+  refresh, lookup, actions, and detached launching;
 - bounded hierarchical menu models with separators, icons, nested children,
   checkbox and radio state, mutation, and protected activation handlers;
 - native same-surface and cross-surface transform-chain watchers with bounded,

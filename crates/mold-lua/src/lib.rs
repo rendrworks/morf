@@ -15,7 +15,7 @@ use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
-use mold_desktop::{DesktopEntries, DesktopEntry};
+use mold_desktop::{DesktopEntries, DesktopEntry, desktop_paths};
 use mold_image::{IconResolver, ImageRect as QuantizeRect, quantize_colors};
 use mold_io::{
     Bus, DbusProxy, DbusSignal, DbusValue, FileDocument, FileEvent, FileView, FileWatcher,
@@ -2086,7 +2086,8 @@ struct SystemClockToken {
 struct JsonNullToken;
 
 struct DesktopEntriesToken {
-    entries: DesktopEntries,
+    entries: RefCell<DesktopEntries>,
+    paths: Vec<PathBuf>,
 }
 
 struct MenuToken {
@@ -5979,7 +5980,7 @@ fn install_reactive_api(
         let desktop_applications = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let entries: UserRef<DesktopEntriesToken> = stack.consume(ctx)?;
             let values = Table::new(&ctx);
-            for (index, entry) in entries.entries.applications().iter().enumerate() {
+            for (index, entry) in entries.entries.borrow().applications().iter().enumerate() {
                 values.set(ctx, index as i64 + 1, desktop_entry_table(ctx, entry))?;
             }
             stack.replace(ctx, values);
@@ -5987,7 +5988,7 @@ fn install_reactive_api(
         });
         let desktop_by_id = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (entries, id): (UserRef<DesktopEntriesToken>, String) = stack.consume(ctx)?;
-            match entries.entries.by_id(&id) {
+            match entries.entries.borrow().by_id(&id) {
                 Some(entry) => stack.replace(ctx, desktop_entry_table(ctx, entry)),
                 None => stack.replace(ctx, LuaValue::Nil),
             }
@@ -5995,7 +5996,7 @@ fn install_reactive_api(
         });
         let desktop_lookup = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (entries, query): (UserRef<DesktopEntriesToken>, String) = stack.consume(ctx)?;
-            match entries.entries.heuristic_lookup(&query) {
+            match entries.entries.borrow().heuristic_lookup(&query) {
                 Some(entry) => stack.replace(ctx, desktop_entry_table(ctx, entry)),
                 None => stack.replace(ctx, LuaValue::Nil),
             }
@@ -6003,8 +6004,8 @@ fn install_reactive_api(
         });
         let desktop_launch = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (entries, id): (UserRef<DesktopEntriesToken>, String) = stack.consume(ctx)?;
-            let entry = entries
-                .entries
+            let entries_ref = entries.entries.borrow();
+            let entry = entries_ref
                 .by_id(&id)
                 .ok_or_else(|| HostError(format!("desktop entry `{id}` was not found")))?;
             entry
@@ -6015,8 +6016,8 @@ fn install_reactive_api(
         let desktop_launch_action = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (entries, id, action): (UserRef<DesktopEntriesToken>, String, String) =
                 stack.consume(ctx)?;
-            let entry = entries
-                .entries
+            let entries_ref = entries.entries.borrow();
+            let entry = entries_ref
                 .by_id(&id)
                 .ok_or_else(|| HostError(format!("desktop entry `{id}` was not found")))?;
             let action = entry
@@ -6035,28 +6036,43 @@ fn install_reactive_api(
         desktop_methods.set_field(ctx, "heuristic_lookup", desktop_lookup);
         desktop_methods.set_field(ctx, "launch", desktop_launch);
         desktop_methods.set_field(ctx, "launch_action", desktop_launch_action);
+        let desktop_refresh = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let entries: UserRef<DesktopEntriesToken> = stack.consume(ctx)?;
+            let next = DesktopEntries::scan_paths(entries.paths.clone())
+                .map_err(|error| HostError(error.to_string()))?;
+            let changed = *entries.entries.borrow() != next;
+            if changed {
+                *entries.entries.borrow_mut() = next;
+            }
+            stack.replace(ctx, changed);
+            Ok(CallbackReturn::Return)
+        });
+        desktop_methods.set_field(ctx, "refresh", desktop_refresh);
         let desktop_metatable = Table::new(&ctx);
         desktop_metatable.set_field(ctx, "__index", desktop_methods);
         let desktop_metatable = ctx.stash(desktop_metatable);
         let desktop_entries = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let paths: LuaValue = stack.consume(ctx)?;
-            let entries = match paths {
-                LuaValue::Nil => DesktopEntries::scan_environment()
-                    .map_err(|error| HostError(error.to_string()))?,
-                LuaValue::Table(paths) => {
-                    let paths = table_string_array(ctx, paths, 256)
-                        .map_err(HostError)?
-                        .into_iter()
-                        .map(PathBuf::from)
-                        .collect::<Vec<_>>();
-                    DesktopEntries::scan_paths(paths)
-                        .map_err(|error| HostError(error.to_string()))?
-                }
+            let paths = match paths {
+                LuaValue::Nil => desktop_paths(),
+                LuaValue::Table(paths) => table_string_array(ctx, paths, 256)
+                    .map_err(HostError)?
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>(),
                 _ => {
                     return Err(HostError("desktop_entries paths must be a table".into()).into());
                 }
             };
-            let userdata = UserData::new_static(&ctx, DesktopEntriesToken { entries });
+            let entries = DesktopEntries::scan_paths(paths.clone())
+                .map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                DesktopEntriesToken {
+                    entries: RefCell::new(entries),
+                    paths,
+                },
+            );
             userdata.set_metatable(ctx, Some(ctx.fetch(&desktop_metatable)));
             stack.replace(ctx, userdata);
             Ok(CallbackReturn::Return)
@@ -9743,8 +9759,17 @@ mod tests {
                 assert(entries:by_id("browser").icon == "browser")
                 assert(entries:heuristic_lookup("BROWSER").id == "browser")
                 assert(entries:by_id("missing") == nil)
+                assert(not entries:refresh())
+                local io = require("mold.io")
+                local added = io.file_view {{ path = {:?}, preload = false }}
+                assert(added:set_text("[Desktop Entry]\nType=Application\nName=Editor\nExec=editor\n"))
+                assert(entries:refresh())
+                assert(#entries:applications() == 2)
+                assert(entries:by_id("editor").name == "Editor")
+                assert(not entries:refresh())
             "#,
             directory.to_string_lossy(),
+            directory.join("editor.desktop").to_string_lossy(),
         );
         let mut runtime = Runtime::default();
         runtime
