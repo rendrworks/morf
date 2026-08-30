@@ -70,7 +70,7 @@ behavioral reductions do not count as parity.
 - reactive native local-time snapshots and bounded date/time formatting;
 - screen variants with logical geometry, physical metadata, density,
   orientation and transform data, plus list models with stable keyed
-  reconciliation, virtual lists, and flick state;
+  reconciliation, value lookup, virtual lists, and flick state;
 - process, instance, shell and application identity, launch time, environment
   lookup, shell paths, version checks, elapsed timers, and detached process
   launch;

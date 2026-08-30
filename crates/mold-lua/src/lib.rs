@@ -4227,6 +4227,21 @@ fn install_reactive_api(
             stack.replace(ctx, value);
             Ok(CallbackReturn::Return)
         });
+        let model_index_of = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (model, value): (UserRef<ListModelToken>, LuaValue) = stack.consume(ctx)?;
+            let value = lua_to_scene(ctx, value, 0).map_err(HostError)?;
+            let model = model.model.borrow();
+            let index = (0..model.len()).find(|index| {
+                model
+                    .get(*index)
+                    .is_some_and(|(_, candidate)| candidate == &value)
+            });
+            match index {
+                Some(index) => stack.replace(ctx, index as i64 + 1),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
         let model_insert = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (model, index, value): (UserRef<ListModelToken>, i64, LuaValue) =
                 stack.consume(ctx)?;
@@ -4295,6 +4310,7 @@ fn install_reactive_api(
         let model_methods = Table::new(&ctx);
         model_methods.set_field(ctx, "len", model_len);
         model_methods.set_field(ctx, "get", model_get);
+        model_methods.set_field(ctx, "index_of", model_index_of);
         model_methods.set_field(ctx, "insert", model_insert);
         model_methods.set_field(ctx, "remove", model_remove);
         model_methods.set_field(ctx, "move", model_move);
@@ -11566,6 +11582,8 @@ mod tests {
                     assert(model:get(1).id == "b")
                     assert(model:get(1).label == "changed")
                     assert(model:get(2).id == "d")
+                    assert(model:index_of(model:get(2)) == 2)
+                    assert(model:index_of({ id = "missing" }) == nil)
                     local moved, added, removed = false, false, false
                     for _, change in ipairs(view:sync()) do
                       moved = moved or change.kind == "move"
