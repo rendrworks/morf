@@ -483,12 +483,11 @@ impl RenderBackend for WgpuBackend {
                     axes,
                     uv: [0.0, 0.0, 1.0, 1.0],
                     color: [1.0, 1.0, 1.0, layer.shadow_color.alpha * layer.opacity],
-                    color_overlay: [
-                        layer.shadow_color.red,
-                        layer.shadow_color.green,
-                        layer.shadow_color.blue,
-                        1.0,
-                    ],
+                    color_overlay: {
+                        let mut color = color_array(layer.shadow_color);
+                        color[3] = 1.0;
+                        color
+                    },
                     mode: [0.0; 4],
                     surface: [0.0; 4],
                     mask_bounds: [0.0; 4],
@@ -1011,7 +1010,7 @@ fn append_path_mesh(
         );
         PathVertex {
             position: [(point.0 as f32) * scale, (point.1 as f32) * scale],
-            color: [color.red, color.green, color.blue, color.alpha],
+            color: color_array(color),
         }
     }));
     batch
@@ -1925,6 +1924,7 @@ fn create_glyph_batch(
             transform,
             text,
             family,
+            font_source,
             size,
             font_weight,
             color,
@@ -1949,6 +1949,7 @@ fn create_glyph_batch(
                 alignment: *horizontal_alignment,
                 elide: *elide,
                 font_weight: *font_weight,
+                font_source: (!font_source.is_empty()).then(|| font_source.clone()),
             },
         );
         let spare_height = (bounds.height - measured.height).max(0.0);
@@ -1997,12 +1998,7 @@ fn create_glyph_batch(
             GpuError("prepared glyph is missing from the persistent atlas".to_owned())
         })?;
         let tint = match glyph.content {
-            RasterContent::Mask => [
-                prepared.color.red,
-                prepared.color.green,
-                prepared.color.blue,
-                prepared.color.alpha,
-            ],
+            RasterContent::Mask => color_array(prepared.color),
             RasterContent::Color => [1.0, 1.0, 1.0, prepared.color.alpha],
         };
         let (origin, axes) = transformed_quad(
@@ -2370,6 +2366,129 @@ fn intersect_damage(left: DamageRect, right: DamageRect) -> Option<DamageRect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_quad(
+        node: NodeHandle,
+        color: Color,
+        border_color: Color,
+        border_width: f64,
+    ) -> DrawCommand {
+        DrawCommand::Quad {
+            node,
+            bounds: Geometry {
+                x: 0.0,
+                y: 0.0,
+                width: 4.0,
+                height: 4.0,
+            },
+            transform: Transform2D::IDENTITY,
+            clip: None,
+            color,
+            color_overlay: Color::rgba8(0, 0, 0, 0),
+            gradient: crate::Gradient::None,
+            radii: [0.0; 4],
+            border_width,
+            antialiasing: false,
+            border_pixel_aligned: true,
+            border_color,
+            blur: 0.0,
+            shadow_color: Color::rgba8(0, 0, 0, 0),
+            shadow_blur: 0.0,
+            shadow_spread: 0.0,
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 0.0,
+            shadow_inner: false,
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn srgb_target_preserves_hex_colors_and_blends_borders() {
+        let mut backend = pollster::block_on(WgpuBackend::new(4, 4)).unwrap();
+        let mut scene = mold_scene::Scene::new();
+        let background = scene.create(mold_scene::Element::Rect);
+        let border = scene.create(mold_scene::Element::Rect);
+        let list = DrawList {
+            commands: vec![
+                test_quad(
+                    background,
+                    Color::rgba8(33, 34, 41, 255),
+                    Color::rgba8(0, 0, 0, 0),
+                    0.0,
+                ),
+                test_quad(
+                    border,
+                    Color::rgba8(0, 0, 0, 0),
+                    Color::rgba8(190, 198, 240, 20),
+                    1.0,
+                ),
+            ],
+            layers: Vec::new(),
+        };
+        backend
+            .render(
+                &list,
+                &[DamageRect {
+                    x: 0,
+                    y: 0,
+                    width: 4,
+                    height: 4,
+                }],
+                120,
+            )
+            .unwrap();
+
+        let bytes_per_row = 256;
+        let buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mold color test readback"),
+            size: bytes_per_row * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = backend
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("mold color test copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &backend.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row as u32),
+                    rows_per_image: Some(4),
+                },
+            },
+            wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+        );
+        backend.queue.submit([encoder.finish()]);
+
+        let slice = buffer.slice(..);
+        let (send, receive) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            send.send(result).unwrap()
+        });
+        backend
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        receive.recv().unwrap().unwrap();
+        let pixels = slice.get_mapped_range().unwrap();
+
+        assert_eq!(&pixels[0..4], &[66, 69, 84, 255]);
+        let center = 2 * bytes_per_row as usize + 2 * 4;
+        assert_eq!(&pixels[center..center + 4], &[33, 34, 41, 255]);
+    }
 
     #[test]
     fn scissor_is_clamped_to_the_physical_target() {

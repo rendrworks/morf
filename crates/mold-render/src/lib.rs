@@ -71,6 +71,8 @@ pub enum DrawCommand {
         text: String,
         /// Font family used by the shaping cache.
         family: String,
+        /// Optional local font file or directory.
+        font_source: String,
         /// Logical font size.
         size: f64,
         /// Numeric OpenType font weight.
@@ -735,6 +737,7 @@ fn append_node(
             clip,
             text: scene.string_value(node, "text")?.to_owned(),
             family: scene.string_value(node, "font_family")?.to_owned(),
+            font_source: scene.string_value(node, "font_source")?.to_owned(),
             size: scene.number(node, "font_size")?,
             font_weight: scene.number(node, "font_weight")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
@@ -1219,7 +1222,20 @@ fn effect_bounds(
 }
 
 fn color_array(color: Color) -> [f32; 4] {
-    [color.red, color.green, color.blue, color.alpha]
+    [
+        srgb_channel_to_linear(color.red),
+        srgb_channel_to_linear(color.green),
+        srgb_channel_to_linear(color.blue),
+        color.alpha,
+    ]
+}
+
+fn srgb_channel_to_linear(channel: f32) -> f32 {
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 fn physical_damage(geometry: Geometry, scale_120: u32) -> Option<DamageRect> {
@@ -1291,6 +1307,19 @@ mod tests {
     use mold_scene::{Element, Scene};
 
     use super::*;
+
+    #[test]
+    fn scene_srgb_colors_are_linearized_for_gpu_output() {
+        let color = Color::rgba8(0x46, 0x48, 0x58, 0x80);
+        let converted = color_array(color);
+
+        assert!((converted[0] - 0.061_246_07).abs() < 1e-7);
+        assert!((converted[1] - 0.064_803_27).abs() < 1e-7);
+        assert!((converted[2] - 0.097_587_35).abs() < 1e-7);
+        assert_eq!(converted[3], color.alpha);
+        assert_eq!(srgb_channel_to_linear(0.0), 0.0);
+        assert_eq!(srgb_channel_to_linear(1.0), 1.0);
+    }
 
     struct NoText;
 
@@ -1662,6 +1691,9 @@ mod tests {
         scene.assign(text, "elide", "right").unwrap();
         scene.assign(text, "font_weight", 700.0).unwrap();
         scene
+            .assign(text, "font_source", "file:///tmp/test.ttf")
+            .unwrap();
+        scene
             .assign(text, "horizontal_alignment", "center")
             .unwrap();
         scene.assign(text, "vertical_alignment", "bottom").unwrap();
@@ -1681,6 +1713,7 @@ mod tests {
             wrap,
             elide,
             font_weight,
+            ref font_source,
             horizontal_alignment,
             vertical_alignment,
             ..
@@ -1691,6 +1724,7 @@ mod tests {
         assert!(wrap);
         assert_eq!(elide, TextElide::Right);
         assert_eq!(font_weight, 700.0);
+        assert_eq!(font_source, "file:///tmp/test.ttf");
         assert_eq!(horizontal_alignment, TextAlignment::Center);
         assert_eq!(vertical_alignment, VerticalAlignment::Bottom);
     }
