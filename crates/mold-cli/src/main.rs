@@ -1092,6 +1092,7 @@ fn stop_workers(workers: BTreeMap<String, Worker>) {
 struct AuxiliarySurface {
     id: u64,
     root: NodeHandle,
+    updates_enabled: bool,
     width: u32,
     height: u32,
     renderer: Option<RenderEngine<WgpuBackend>>,
@@ -1159,7 +1160,8 @@ fn sync_window_surfaces(
     client: &mut LayerClient,
     popups: &mut HashMap<u64, AuxiliarySurface>,
     floatings: &mut HashMap<u64, AuxiliarySurface>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let mut resumed = false;
     let surfaces = runtime.window_surface_configs();
     let surfaces_by_id = surfaces
         .iter()
@@ -1257,6 +1259,7 @@ fn sync_window_surfaces(
                 AuxiliarySurface {
                     id: surface.id,
                     root: surface.root,
+                    updates_enabled: surface.updates_enabled,
                     width: config.width,
                     height: config.height,
                     renderer: None,
@@ -1266,7 +1269,9 @@ fn sync_window_surfaces(
                 },
             );
         } else if let Some(current) = floatings.get_mut(&id) {
+            resumed |= !current.updates_enabled && surface.updates_enabled;
             current.root = surface.root;
+            current.updates_enabled = surface.updates_enabled;
             current.width = config.width;
             current.height = config.height;
             current.layout = None;
@@ -1331,6 +1336,7 @@ fn sync_window_surfaces(
                 AuxiliarySurface {
                     id: surface.id,
                     root: surface.root,
+                    updates_enabled: surface.updates_enabled,
                     width: config.width,
                     height: config.height,
                     renderer: None,
@@ -1340,13 +1346,15 @@ fn sync_window_surfaces(
                 },
             );
         } else if let Some(current) = popups.get_mut(&id) {
+            resumed |= !current.updates_enabled && surface.updates_enabled;
             current.root = surface.root;
+            current.updates_enabled = surface.updates_enabled;
             current.width = config.width;
             current.height = config.height;
             current.layout = None;
         }
     }
-    Ok(())
+    Ok(resumed)
 }
 
 fn auxiliary_physical_size(width: u32, height: u32, scale_120: u32) -> (u32, u32) {
@@ -1556,7 +1564,7 @@ fn run_surface(
     let mut popup_surfaces = HashMap::new();
     let mut floating_surfaces = HashMap::new();
     runtime.take_window_surface_change();
-    sync_window_surfaces(
+    let _ = sync_window_surfaces(
         &runtime,
         &mut client,
         &mut popup_surfaces,
@@ -1626,7 +1634,7 @@ fn run_surface(
                 .map_err(|_| "output supervisor stopped".to_owned())?;
         }
         if runtime.take_window_surface_change() {
-            sync_window_surfaces(
+            repaint |= sync_window_surfaces(
                 &runtime,
                 &mut client,
                 &mut popup_surfaces,
@@ -1941,6 +1949,7 @@ fn run_surface(
                 }
                 LayerEvent::PopupConfigure { id, width, height } => {
                     if let Some(surface) = popup_surfaces.get_mut(&id) {
+                        let initial = surface.renderer.is_none();
                         surface.width = width.max(1);
                         surface.height = height.max(1);
                         let (physical_width, physical_height) = auxiliary_physical_size(
@@ -1964,11 +1973,16 @@ fn run_surface(
                             .map_err(|error| error.to_string())?;
                             surface.renderer = Some(RenderEngine::new(backend));
                         }
-                        paint_popup_surface(&runtime, &client, surface)?;
+                        if initial || surface.updates_enabled {
+                            paint_popup_surface(&runtime, &client, surface)?;
+                        }
                     }
                 }
                 LayerEvent::PopupFrame { id, .. } => {
-                    if let Some(surface) = popup_surfaces.get_mut(&id) {
+                    if let Some(surface) = popup_surfaces
+                        .get_mut(&id)
+                        .filter(|surface| surface.updates_enabled)
+                    {
                         paint_popup_surface(&runtime, &client, surface)?;
                     }
                 }
@@ -1979,6 +1993,7 @@ fn run_surface(
                 }
                 LayerEvent::FloatingConfigure { id, width, height } => {
                     if let Some(surface) = floating_surfaces.get_mut(&id) {
+                        let initial = surface.renderer.is_none();
                         surface.width = width.max(1);
                         surface.height = height.max(1);
                         let (physical_width, physical_height) = auxiliary_physical_size(
@@ -2002,11 +2017,16 @@ fn run_surface(
                             .map_err(|error| error.to_string())?;
                             surface.renderer = Some(RenderEngine::new(backend));
                         }
-                        paint_floating_surface(&runtime, &client, surface)?;
+                        if initial || surface.updates_enabled {
+                            paint_floating_surface(&runtime, &client, surface)?;
+                        }
                     }
                 }
                 LayerEvent::FloatingFrame { id, .. } => {
-                    if let Some(surface) = floating_surfaces.get_mut(&id) {
+                    if let Some(surface) = floating_surfaces
+                        .get_mut(&id)
+                        .filter(|surface| surface.updates_enabled)
+                    {
                         paint_floating_surface(&runtime, &client, surface)?;
                     }
                 }
@@ -2040,10 +2060,16 @@ fn run_surface(
         if repaint {
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;
-            for surface in popup_surfaces.values_mut() {
+            for surface in popup_surfaces
+                .values_mut()
+                .filter(|surface| surface.updates_enabled)
+            {
                 paint_popup_surface(&runtime, &client, surface)?;
             }
-            for surface in floating_surfaces.values_mut() {
+            for surface in floating_surfaces
+                .values_mut()
+                .filter(|surface| surface.updates_enabled)
+            {
                 paint_floating_surface(&runtime, &client, surface)?;
             }
         }

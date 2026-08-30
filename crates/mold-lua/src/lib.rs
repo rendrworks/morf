@@ -339,6 +339,7 @@ pub struct WindowSurfaceConfig {
     pub id: u64,
     pub root: NodeHandle,
     pub visible: bool,
+    pub updates_enabled: bool,
     pub kind: WindowSurfaceKind,
 }
 
@@ -6542,6 +6543,11 @@ fn install_reactive_api(
         window_methods.set_field(ctx, "open", window_open);
         window_methods.set_field(ctx, "close", window_close);
         window_methods.set_field(ctx, "kind", window_kind);
+        window_methods.set_field(
+            ctx,
+            "updates_enabled",
+            window_updates_enabled_method(ctx, Rc::clone(&state)),
+        );
         for property in ["minimized", "maximized", "fullscreen"] {
             window_methods.set_field(
                 ctx,
@@ -6679,6 +6685,8 @@ fn install_reactive_api(
             let window_metatable = window_metatable.clone();
             move |ctx, _, mut stack| {
                 let options: Table = stack.consume(ctx)?;
+                let updates_enabled =
+                    table_bool(ctx, options, "updates_enabled", true).map_err(HostError)?;
                 let (root, visible, config, node_anchor) =
                     parse_popup_surface(ctx, options).map_err(HostError)?;
                 {
@@ -6718,6 +6726,7 @@ fn install_reactive_api(
                             id,
                             root,
                             visible,
+                            updates_enabled,
                             kind: WindowSurfaceKind::Popup(config),
                         },
                     );
@@ -6742,6 +6751,8 @@ fn install_reactive_api(
             let window_metatable = window_metatable.clone();
             move |ctx, _, mut stack| {
                 let options: Table = stack.consume(ctx)?;
+                let updates_enabled =
+                    table_bool(ctx, options, "updates_enabled", true).map_err(HostError)?;
                 let (root, visible, config) =
                     parse_floating_surface(ctx, options).map_err(HostError)?;
                 {
@@ -6773,6 +6784,7 @@ fn install_reactive_api(
                             id,
                             root,
                             visible,
+                            updates_enabled,
                             kind: WindowSurfaceKind::Floating(config),
                         },
                     );
@@ -7339,6 +7351,30 @@ fn update_process_view_config(
         state.process = Some(replacement);
     }
     Ok(())
+}
+
+fn window_updates_enabled_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, value): (UserRef<WindowSurfaceToken>, Option<bool>) = stack.consume(ctx)?;
+        let mut state = state.borrow_mut();
+        let (current, changed) = {
+            let surface = state
+                .window_surfaces
+                .get_mut(&surface.id)
+                .ok_or_else(|| HostError("window surface is stale".into()))?;
+            let changed = value.is_some_and(|value| surface.updates_enabled != value);
+            if let Some(value) = value {
+                surface.updates_enabled = value;
+            }
+            (surface.updates_enabled, changed)
+        };
+        state.window_surfaces_changed |= changed;
+        stack.replace(ctx, current);
+        Ok(CallbackReturn::Return)
+    })
 }
 
 fn window_size_method<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>) -> Callback<'gc> {
@@ -10601,6 +10637,7 @@ mod tests {
                         offset_y = -2,
                         constraints = { resize_x = true, flip_y = false },
                         grab_focus = true,
+                        updates_enabled = false,
                     }
                     local floating_root = ui.Item {}
                     local floating = window.floating {
@@ -10616,6 +10653,8 @@ mod tests {
                         maximized = true,
                     }
                     assert(popup:kind() == "popup" and popup:visible())
+                    assert(not popup:updates_enabled())
+                    assert(popup:updates_enabled(true))
                     assert(popup:size().width == 240)
                     assert(popup:size(260, 140).height == 140)
                     assert(popup:anchor_rect().x == 10)
@@ -10653,6 +10692,7 @@ mod tests {
         let surfaces = runtime.window_surface_configs();
         assert_eq!(surfaces.len(), 2);
         assert!(!surfaces[0].visible);
+        assert!(surfaces[0].updates_enabled);
         let WindowSurfaceKind::Popup(popup) = &surfaces[0].kind else {
             panic!("first surface was not a popup");
         };

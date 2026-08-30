@@ -140,6 +140,7 @@ behavioral reductions do not count as parity.
   instances, and surface-scoped pointer, touch, and keyboard routing;
 - native item-position, item-rectangle, point, and rectangle mapping from
   window-local scene nodes through ancestor rotation and scale chains;
+- per-window render-update suspension with one catch-up frame when resumed;
 - composable rectangular, rounded, and elliptical input masks with combine,
   subtract, intersect, and XOR operations;
 - fractional scaling, output tracking, frame callbacks, and input regions.
