@@ -1231,6 +1231,7 @@ dependencies = [
  "mold-desktop",
  "mold-image",
  "mold-io",
+ "mold-layout",
  "mold-lifecycle",
  "mold-menu",
  "mold-reactive",

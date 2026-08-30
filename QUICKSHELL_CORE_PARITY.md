@@ -76,6 +76,8 @@ behavioral reductions do not count as parity.
   detached launching;
 - bounded hierarchical menu models with separators, icons, nested children,
   checkbox and radio state, mutation, and protected activation handlers;
+- native same-surface and cross-surface transform-chain watchers with bounded,
+  deferred change handlers;
 - bounded IPC registration and atomic runtime replacement.
 
 ### `mold.io`

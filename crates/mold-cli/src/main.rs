@@ -432,6 +432,8 @@ fn paint_lock(
     if damage.is_empty() {
         client.commit_lock(index);
     }
+    drop(scene);
+    runtime.observe_layout(&layout);
     Ok(())
 }
 
@@ -1938,6 +1940,8 @@ fn paint(
     if damage.is_empty() {
         client.commit();
     }
+    drop(scene);
+    runtime.observe_layout(&layout);
     Ok(layout)
 }
 
@@ -1973,6 +1977,8 @@ fn paint_popup_surface(
     if damage.is_empty() {
         popup.commit();
     }
+    drop(scene);
+    runtime.observe_layout(&layout);
     surface.layout = Some(layout);
     Ok(())
 }
@@ -2009,6 +2015,8 @@ fn paint_floating_surface(
     if damage.is_empty() {
         floating.commit();
     }
+    drop(scene);
+    runtime.observe_layout(&layout);
     surface.layout = Some(layout);
     Ok(())
 }

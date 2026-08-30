@@ -21,6 +21,7 @@ use mold_io::{
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
     StreamCollector, Timer as IoTimer,
 };
+use mold_layout::{Layout, TransformTracker, TransformWatcher as NativeTransformWatcher};
 use mold_lifecycle::Retention;
 use mold_menu::{ButtonType, CheckState, Menu, MenuEntry};
 use mold_reactive::{EffectContext, Graph, SignalId};
@@ -1013,14 +1014,7 @@ impl Runtime {
     /// Returns whether a node belongs to the subtree rooted at `root`.
     pub fn node_in_subtree(&self, root: NodeHandle, node: NodeHandle) -> bool {
         let state = self.reactive.borrow();
-        let mut current = Some(node);
-        while let Some(candidate) = current {
-            if candidate == root {
-                return true;
-            }
-            current = state.scene.parent(candidate).ok().flatten();
-        }
-        false
+        scene_node_in_subtree(&state.scene, root, node)
     }
 
     /// Advances keyboard focus through enabled visible key handlers.
@@ -1076,6 +1070,30 @@ impl Runtime {
         true
     }
 
+    /// Updates native transform watchers from one rendered surface layout.
+    pub fn observe_layout(&self, layout: &Layout) -> bool {
+        let mut state = self.reactive.borrow_mut();
+        state.transform_tracker.update(layout);
+        let mut watchers = std::mem::take(&mut state.transform_watchers);
+        let mut changed = false;
+        for watcher in watchers.values_mut() {
+            match watcher
+                .watcher
+                .observe(&state.scene, &state.transform_tracker)
+            {
+                Ok(true) => {
+                    watcher.revision = watcher.revision.wrapping_add(1);
+                    watcher.pending = true;
+                    changed = true;
+                }
+                Ok(false) => {}
+                Err(error) => state.logs.push(format!("transform watcher: {error}")),
+            }
+        }
+        state.transform_watchers = watchers;
+        changed
+    }
+
     /// Polls native service jobs and runs completed callbacks with bounded fuel.
     pub fn poll_services(&mut self) -> bool {
         let mut ready = Vec::new();
@@ -1086,6 +1104,7 @@ impl Runtime {
         let mut loaders = Vec::new();
         let mut loader_drops = Vec::new();
         let mut retained_destroys = Vec::new();
+        let mut transform_callbacks = Vec::new();
         let mut service_changed = false;
         {
             let mut state = self.reactive.borrow_mut();
@@ -1240,6 +1259,14 @@ impl Runtime {
                     .map(|error| format!("status notifier: {error}")),
             );
             retained_destroys.extend(state.retained_destroy_queue.drain());
+            for watcher in state.transform_watchers.values_mut() {
+                if watcher.pending {
+                    watcher.pending = false;
+                    if let Some(callback) = &watcher.callback {
+                        transform_callbacks.push((callback.clone(), watcher.revision));
+                    }
+                }
+            }
         }
         for node in retained_destroys {
             self.lua
@@ -1302,7 +1329,8 @@ impl Runtime {
             || !timers.is_empty()
             || !dbus_signals.is_empty()
             || !udev_events.is_empty()
-            || !status_updates.is_empty();
+            || !status_updates.is_empty()
+            || !transform_callbacks.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;
@@ -1333,6 +1361,21 @@ impl Runtime {
                     .borrow_mut()
                     .logs
                     .push(format!("timer callback: {message}"));
+            }
+        }
+        for (callback, revision) in transform_callbacks {
+            if let Err(message) = self.lua.enter(|ctx| {
+                execute_handler_args(
+                    ctx,
+                    &callback,
+                    &[IpcValue::Integer(revision as i64)],
+                    self.limits,
+                )
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("transform callback: {message}"));
             }
         }
         for (callback, value) in dbus_signals {
@@ -1431,6 +1474,17 @@ fn key_targets(state: &ReactiveState) -> Vec<NodeHandle> {
     targets
 }
 
+fn scene_node_in_subtree(scene: &Scene, root: NodeHandle, node: NodeHandle) -> bool {
+    let mut current = Some(node);
+    while let Some(candidate) = current {
+        if candidate == root {
+            return true;
+        }
+        current = scene.parent(candidate).ok().flatten();
+    }
+    false
+}
+
 fn key_targets_in(state: &ReactiveState, root: NodeHandle) -> Vec<NodeHandle> {
     let mut targets = Vec::new();
     let mut pending = vec![root];
@@ -1481,6 +1535,9 @@ fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
     state
         .current_property_names
         .retain(|_, (node, _)| !removed.contains(node));
+    state
+        .transform_watchers
+        .retain(|_, watcher| !removed.contains(&watcher.a) && !removed.contains(&watcher.b));
 }
 
 fn finish_retained_destroy(
@@ -1701,6 +1758,10 @@ struct WindowSurfaceToken {
     id: u64,
 }
 
+struct TransformWatcherToken {
+    id: u64,
+}
+
 struct RetainLockToken {
     node: NodeHandle,
     locked: Cell<bool>,
@@ -1874,6 +1935,15 @@ struct PendingStatusNotifier {
     callback: StashedClosure,
 }
 
+struct LuaTransformWatcher {
+    a: NodeHandle,
+    b: NodeHandle,
+    watcher: NativeTransformWatcher,
+    callback: Option<StashedClosure>,
+    revision: u64,
+    pending: bool,
+}
+
 #[derive(Clone)]
 struct LuaEffect {
     closure: StashedClosure,
@@ -1979,6 +2049,9 @@ struct ReactiveState {
     window_surfaces: HashMap<u64, WindowSurfaceConfig>,
     next_window_surface: u64,
     window_surfaces_changed: bool,
+    transform_tracker: TransformTracker,
+    transform_watchers: HashMap<u64, LuaTransformWatcher>,
+    next_transform_watcher: u64,
     dbus_signals: Vec<PendingDbusSignal>,
     udev_monitors: Vec<PendingUdev>,
     status_notifiers: Vec<PendingStatusNotifier>,
@@ -2040,6 +2113,9 @@ impl ReactiveState {
             window_surfaces: HashMap::new(),
             next_window_surface: 0,
             window_surfaces_changed: false,
+            transform_tracker: TransformTracker::default(),
+            transform_watchers: HashMap::new(),
+            next_transform_watcher: 0,
             dbus_signals: Vec::new(),
             udev_monitors: Vec::new(),
             status_notifiers: Vec::new(),
@@ -3239,12 +3315,121 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "exec_detached", exec_detached);
+        let transform_revision = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let watcher: UserRef<TransformWatcherToken> = stack.consume(ctx)?;
+                let revision = state
+                    .borrow()
+                    .transform_watchers
+                    .get(&watcher.id)
+                    .map(|watcher| watcher.revision)
+                    .ok_or_else(|| HostError("transform watcher is stale".into()))?;
+                stack.replace(ctx, revision as i64);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let transform_methods = Table::new(&ctx);
+        transform_methods.set_field(ctx, "revision", transform_revision);
+        let transform_metatable = Table::new(&ctx);
+        transform_metatable.set_field(ctx, "__index", transform_methods);
+        let transform_metatable = ctx.stash(transform_metatable);
+        let transform_watcher = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let options: Table = stack.consume(ctx)?;
+                let node = |field| match options.get_value(ctx, field) {
+                    LuaValue::UserData(value) => value
+                        .downcast_static::<NodeToken>()
+                        .map(|node| node.handle)
+                        .map_err(|_| {
+                            HostError(format!("transform watcher {field} must be a node"))
+                        }),
+                    _ => Err(HostError(format!(
+                        "transform watcher {field} must be a node"
+                    ))),
+                };
+                let a = node("a")?;
+                let b = node("b")?;
+                let common_parent = match options.get_value(ctx, "common_parent") {
+                    LuaValue::Nil => None,
+                    LuaValue::UserData(value) => Some(
+                        value
+                            .downcast_static::<NodeToken>()
+                            .map_err(|_| {
+                                HostError("transform watcher common_parent must be a node".into())
+                            })?
+                            .handle,
+                    ),
+                    _ => {
+                        return Err(HostError(
+                            "transform watcher common_parent must be a node or nil".into(),
+                        )
+                        .into());
+                    }
+                };
+                let callback = match options.get_value(ctx, "on_changed") {
+                    LuaValue::Nil => None,
+                    LuaValue::Function(Function::Closure(callback)) => Some(ctx.stash(callback)),
+                    _ => {
+                        return Err(HostError(
+                            "transform watcher on_changed must be a function".into(),
+                        )
+                        .into());
+                    }
+                };
+                let id = {
+                    let mut state = state.borrow_mut();
+                    if state.transform_watchers.len() >= 1_024 {
+                        return Err(HostError("transform watcher limit reached".into()).into());
+                    }
+                    state
+                        .scene
+                        .element(a)
+                        .and_then(|_| state.scene.element(b))
+                        .map_err(|error| HostError(error.to_string()))?;
+                    if let Some(common) = common_parent {
+                        state
+                            .scene
+                            .element(common)
+                            .map_err(|error| HostError(error.to_string()))?;
+                        if !scene_node_in_subtree(&state.scene, common, a)
+                            || !scene_node_in_subtree(&state.scene, common, b)
+                        {
+                            return Err(HostError(
+                                "transform watcher common_parent must contain both nodes".into(),
+                            )
+                            .into());
+                        }
+                    }
+                    let id = state.next_transform_watcher;
+                    state.next_transform_watcher = id.wrapping_add(1);
+                    state.transform_watchers.insert(
+                        id,
+                        LuaTransformWatcher {
+                            a,
+                            b,
+                            watcher: NativeTransformWatcher::new(a, b, common_parent),
+                            callback,
+                            revision: 0,
+                            pending: false,
+                        },
+                    );
+                    id
+                };
+                let value = UserData::new_static(&ctx, TransformWatcherToken { id });
+                value.set_metatable(ctx, Some(ctx.fetch(&transform_metatable)));
+                stack.replace(ctx, value);
+                Ok(CallbackReturn::Return)
+            }
+        });
         mold.set_field(ctx, "signal", signal);
         mold.set_field(ctx, "reloadable", reloadable);
         mold.set_field(ctx, "persistent", persistent);
         mold.set_field(ctx, "scope", scope);
         mold.set_field(ctx, "retainable", retainable);
         mold.set_field(ctx, "retain_lock", retain_lock);
+        mold.set_field(ctx, "transform_watcher", transform_watcher);
         mold.set_field(ctx, "effect", effect);
         let clock = UserData::new_static(
             &ctx,
@@ -5452,6 +5637,7 @@ fn install_reactive_api(
             "scope",
             "retainable",
             "retain_lock",
+            "transform_watcher",
             "effect",
             "clock",
             "timer",
@@ -8441,6 +8627,21 @@ mod tests {
 
     use super::*;
 
+    struct NoText;
+
+    impl mold_layout::TextMeasurer for NoText {
+        fn measure(
+            &mut self,
+            _node: NodeHandle,
+            _text: &str,
+            _family: &str,
+            _size: f64,
+            _options: mold_layout::TextOptions,
+        ) -> mold_layout::Size {
+            mold_layout::Size::default()
+        }
+    }
+
     #[test]
     fn executes_a_chunk() {
         let mut runtime = Runtime::default();
@@ -8917,6 +9118,16 @@ mod tests {
         assert_eq!(surface.width, 1106);
         assert_eq!(surface.height, 588);
         assert_eq!(surface.exclusive_zone, 0);
+    }
+
+    #[test]
+    fn transform_example_uses_the_native_watcher() {
+        let source = include_bytes!("../../../examples/transform.lua");
+        let mut runtime = Runtime::default();
+        runtime.execute("examples/transform.lua", source).unwrap();
+
+        assert_eq!(runtime.scene().roots().len(), 1);
+        assert_eq!(runtime.reactive.borrow().transform_watchers.len(), 1);
     }
 
     #[test]
@@ -9719,6 +9930,82 @@ mod tests {
             error
                 .to_string()
                 .contains("Inset accepts at most one child")
+        );
+    }
+
+    #[test]
+    fn transform_watcher_dispatches_after_rendered_geometry_changes() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "transform.lua",
+                br#"
+                    local mold = require("mold")
+                    local core = require("mold.core")
+                    local ui = require("mold.ui")
+                    local calls = mold.signal("transform.calls", 0)
+                    local child = ui.Item { implicit_width = 20, implicit_height = 10 }
+                    local root = ui.Item { child }
+                    local watcher = core.transform_watcher {
+                      a = root,
+                      b = child,
+                      common_parent = root,
+                      on_changed = function(revision) calls:set(revision) end,
+                    }
+                    mold.ipc["transform.state"] = function()
+                      return watcher:revision(), calls:get()
+                    end
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        let child = runtime.scene().children(root).unwrap()[0];
+        let layout = Layout::compute(
+            &runtime.scene(),
+            root,
+            mold_layout::Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+        assert!(!runtime.observe_layout(&layout));
+
+        runtime.scene_mut().assign(child, "x", 12.0).unwrap();
+        let layout = Layout::compute(
+            &runtime.scene(),
+            root,
+            mold_layout::Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+        assert!(runtime.observe_layout(&layout));
+        assert!(runtime.poll_services());
+        assert_eq!(
+            runtime.call_ipc("transform.state", &[]).unwrap(),
+            [IpcValue::Integer(1), IpcValue::Integer(1)]
+        );
+
+        let error = Runtime::default()
+            .execute(
+                "invalid-transform.lua",
+                br#"
+                    local core = require("mold.core")
+                    local ui = require("mold.ui")
+                    local a = ui.Item {}
+                    local b = ui.Item {}
+                    core.transform_watcher { a = a, b = b, common_parent = a }
+                "#,
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("common_parent must contain both")
         );
     }
 

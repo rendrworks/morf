@@ -1,8 +1,10 @@
 //! Three-stage layout for mold scene nodes.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use mold_scene::{Behavior, Element, NodeHandle, Scene, SceneError, Value};
 
@@ -190,6 +192,21 @@ pub struct Layout {
     implicit: HashMap<NodeHandle, Size>,
 }
 
+/// Cached layout geometry used by native transform watchers.
+#[derive(Debug, Default)]
+pub struct TransformTracker {
+    geometry: HashMap<NodeHandle, Geometry>,
+}
+
+/// Watches the geometry and transform chain between two scene nodes.
+#[derive(Clone, Debug)]
+pub struct TransformWatcher {
+    a: NodeHandle,
+    b: NodeHandle,
+    common_parent: Option<NodeHandle>,
+    signature: Option<u64>,
+}
+
 /// Inputs for an animated parent and anchor change.
 pub struct ReparentTransition {
     pub root: NodeHandle,
@@ -225,6 +242,13 @@ impl Layout {
     /// Returns the resolved geometry for a node in the computed tree.
     pub fn geometry(&self, node: NodeHandle) -> Option<Geometry> {
         self.geometry.get(&node).copied()
+    }
+
+    /// Iterates over every resolved node geometry.
+    pub fn geometries(&self) -> impl Iterator<Item = (NodeHandle, Geometry)> + '_ {
+        self.geometry
+            .iter()
+            .map(|(node, geometry)| (*node, *geometry))
     }
 
     /// Returns the bottom-up implicit size for a node.
@@ -616,6 +640,106 @@ impl Layout {
     }
 }
 
+impl TransformTracker {
+    /// Merges one rendered surface layout into the geometry cache.
+    pub fn update(&mut self, layout: &Layout) {
+        self.geometry.extend(layout.geometries());
+    }
+
+    /// Removes geometry for destroyed or replaced scene nodes.
+    pub fn retain_scene(&mut self, scene: &Scene) {
+        self.geometry.retain(|node, _| scene.element(*node).is_ok());
+    }
+}
+
+impl TransformWatcher {
+    /// Creates a watcher between two nodes with an optional known common parent.
+    pub fn new(a: NodeHandle, b: NodeHandle, common_parent: Option<NodeHandle>) -> Self {
+        Self {
+            a,
+            b,
+            common_parent,
+            signature: None,
+        }
+    }
+
+    /// Updates the watcher and reports a change after its initial observation.
+    pub fn observe(
+        &mut self,
+        scene: &Scene,
+        tracker: &TransformTracker,
+    ) -> Result<bool, LayoutError> {
+        let Some(signature) =
+            transform_signature(scene, tracker, self.a, self.b, self.common_parent)?
+        else {
+            return Ok(false);
+        };
+        let changed = self.signature.is_some_and(|previous| previous != signature);
+        self.signature = Some(signature);
+        Ok(changed)
+    }
+}
+
+fn transform_signature(
+    scene: &Scene,
+    tracker: &TransformTracker,
+    a: NodeHandle,
+    b: NodeHandle,
+    common_parent: Option<NodeHandle>,
+) -> Result<Option<u64>, LayoutError> {
+    let a_chain = ancestor_chain(scene, a)?;
+    let b_chain = ancestor_chain(scene, b)?;
+    let common = if let Some(common) = common_parent {
+        if !a_chain.contains(&common) || !b_chain.contains(&common) {
+            return Err(LayoutError::InvalidCommonParent);
+        }
+        Some(common)
+    } else {
+        a_chain.iter().copied().find(|node| b_chain.contains(node))
+    };
+    let path = if let Some(common) = common {
+        let mut path = a_chain
+            .into_iter()
+            .take_while(|node| *node != common)
+            .collect::<Vec<_>>();
+        path.push(common);
+        path.extend(b_chain.into_iter().take_while(|node| *node != common));
+        path
+    } else {
+        let mut path = a_chain;
+        path.extend(b_chain);
+        path
+    };
+    let mut hasher = DefaultHasher::new();
+    for node in path {
+        let Some(geometry) = tracker.geometry.get(&node) else {
+            return Ok(None);
+        };
+        node.hash(&mut hasher);
+        for value in [
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+            scene.number(node, "rotation")?,
+            scene.number(node, "scale")?,
+        ] {
+            value.to_bits().hash(&mut hasher);
+        }
+    }
+    Ok(Some(hasher.finish()))
+}
+
+fn ancestor_chain(scene: &Scene, node: NodeHandle) -> Result<Vec<NodeHandle>, LayoutError> {
+    let mut chain = Vec::new();
+    let mut current = Some(node);
+    while let Some(node) = current {
+        chain.push(node);
+        current = scene.parent(node)?;
+    }
+    Ok(chain)
+}
+
 fn inset_margin(
     scene: &Scene,
     node: NodeHandle,
@@ -659,6 +783,8 @@ pub enum LayoutError {
     InvalidAnchors,
     /// An inset margin was neither nil nor a finite number.
     InvalidInsetMargin(&'static str),
+    /// The supplied transform common parent is not an ancestor of both nodes.
+    InvalidCommonParent,
     /// Anchors and a positioner both control the same axis.
     AxisConflict { axis: &'static str },
 }
@@ -670,6 +796,9 @@ impl fmt::Display for LayoutError {
             Self::InvalidAnchors => f.write_str("anchors must be a string-keyed map"),
             Self::InvalidInsetMargin(property) => {
                 write!(f, "{property} must be nil or a finite number")
+            }
+            Self::InvalidCommonParent => {
+                f.write_str("transform common parent must contain both nodes")
             }
             Self::AxisConflict { axis } => {
                 write!(f, "anchors and positioner both control the {axis} axis")
@@ -1006,6 +1135,48 @@ mod tests {
                 height: 20.0
             })
         );
+    }
+
+    #[test]
+    fn transform_watcher_tracks_layout_and_ancestor_changes() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let parent = scene.create(Element::Item);
+        let child = scene.create(Element::Item);
+        scene.reparent(parent, Some(root)).unwrap();
+        scene.reparent(child, Some(parent)).unwrap();
+        let mut tracker = TransformTracker::default();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+        tracker.update(&layout);
+        let mut watcher = TransformWatcher::new(root, child, Some(root));
+        assert!(!watcher.observe(&scene, &tracker).unwrap());
+
+        scene.assign(parent, "rotation", 30.0).unwrap();
+        assert!(watcher.observe(&scene, &tracker).unwrap());
+        assert!(!watcher.observe(&scene, &tracker).unwrap());
+
+        scene.assign(child, "x", 12.0).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+        tracker.update(&layout);
+        assert!(watcher.observe(&scene, &tracker).unwrap());
     }
 
     #[test]
