@@ -339,6 +339,12 @@ pub struct WindowSurfaceConfig {
     pub kind: WindowSurfaceKind,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WindowSurfaceAction {
+    Move { id: u64 },
+    Resize { id: u64, edge: String },
+}
+
 impl Default for LayerSurfaceConfig {
     fn default() -> Self {
         Self {
@@ -667,6 +673,10 @@ impl Runtime {
 
     pub fn take_window_surface_change(&mut self) -> bool {
         std::mem::take(&mut self.reactive.borrow_mut().window_surfaces_changed)
+    }
+
+    pub fn take_window_surface_actions(&mut self) -> Vec<WindowSurfaceAction> {
+        std::mem::take(&mut self.reactive.borrow_mut().window_surface_actions)
     }
 
     pub fn set_window_surface_visible(&mut self, id: u64, visible: bool) -> bool {
@@ -2324,6 +2334,7 @@ struct ReactiveState {
     window_surfaces: HashMap<u64, WindowSurfaceConfig>,
     next_window_surface: u64,
     window_surfaces_changed: bool,
+    window_surface_actions: Vec<WindowSurfaceAction>,
     popup_node_anchors: HashMap<u64, PopupNodeAnchor>,
     transform_tracker: TransformTracker,
     transform_watchers: HashMap<u64, LuaTransformWatcher>,
@@ -2394,6 +2405,7 @@ impl ReactiveState {
             window_surfaces: HashMap::new(),
             next_window_surface: 0,
             window_surfaces_changed: false,
+            window_surface_actions: Vec::new(),
             popup_node_anchors: HashMap::new(),
             transform_tracker: TransformTracker::default(),
             transform_watchers: HashMap::new(),
@@ -6341,6 +6353,60 @@ fn install_reactive_api(
                 floating_state_method(ctx, Rc::clone(&state), property),
             );
         }
+        let move_state = Rc::clone(&state);
+        let start_system_move = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let surface: UserRef<WindowSurfaceToken> = stack.consume(ctx)?;
+            let mut state = move_state.borrow_mut();
+            let valid = state
+                .window_surfaces
+                .get(&surface.id)
+                .is_some_and(|surface| {
+                    surface.visible && matches!(surface.kind, WindowSurfaceKind::Floating(_))
+                });
+            if valid {
+                state
+                    .window_surface_actions
+                    .push(WindowSurfaceAction::Move { id: surface.id });
+            }
+            stack.replace(ctx, valid);
+            Ok(CallbackReturn::Return)
+        });
+        window_methods.set_field(ctx, "start_system_move", start_system_move);
+        let resize_state = Rc::clone(&state);
+        let start_system_resize = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (surface, edge): (UserRef<WindowSurfaceToken>, String) = stack.consume(ctx)?;
+            if !matches!(
+                edge.as_str(),
+                "top"
+                    | "bottom"
+                    | "left"
+                    | "right"
+                    | "top_left"
+                    | "top_right"
+                    | "bottom_left"
+                    | "bottom_right"
+            ) {
+                return Err(HostError("invalid floating resize edge".into()).into());
+            }
+            let mut state = resize_state.borrow_mut();
+            let valid = state
+                .window_surfaces
+                .get(&surface.id)
+                .is_some_and(|surface| {
+                    surface.visible && matches!(surface.kind, WindowSurfaceKind::Floating(_))
+                });
+            if valid {
+                state
+                    .window_surface_actions
+                    .push(WindowSurfaceAction::Resize {
+                        id: surface.id,
+                        edge,
+                    });
+            }
+            stack.replace(ctx, valid);
+            Ok(CallbackReturn::Return)
+        });
+        window_methods.set_field(ctx, "start_system_resize", start_system_resize);
         let window_metatable = Table::new(&ctx);
         window_metatable.set_field(ctx, "__index", window_methods);
         let window_metatable = ctx.stash(window_metatable);
@@ -9540,6 +9606,9 @@ mod tests {
                     assert(not floating:maximized(false))
                     popup:close()
                     floating:open()
+                    assert(floating:start_system_move())
+                    assert(floating:start_system_resize("bottom_right"))
+                    assert(not pcall(floating.start_system_resize, floating, "middle"))
                 "##,
             )
             .unwrap();
@@ -9572,6 +9641,16 @@ mod tests {
         assert!(floating.fullscreen);
         assert!(runtime.take_window_surface_change());
         assert!(!runtime.take_window_surface_change());
+        assert_eq!(
+            runtime.take_window_surface_actions(),
+            [
+                WindowSurfaceAction::Move { id: 1 },
+                WindowSurfaceAction::Resize {
+                    id: 1,
+                    edge: "bottom_right".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

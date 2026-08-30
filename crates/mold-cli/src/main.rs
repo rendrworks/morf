@@ -14,14 +14,14 @@ use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
     FloatingSurfaceConfig, InputMethodRequest, IpcValue, Limits, PopupSurfaceConfig, Runtime,
     Screen, Screencopy as LuaScreencopy, TextInputRequest, UiEvent, VirtualKeyboardRequest,
-    WindowSurfaceKind,
+    WindowSurfaceAction, WindowSurfaceKind,
 };
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
 use mold_wayland::{
-    BarConfig, FloatingConfig, InputRect, KeyboardFocus, LayerAnchors, LayerClient, LayerEvent,
-    OutputPowerMode, PopupAnchor, PopupConfig, PopupConstraints, PopupGravity, ScreenInfo,
-    ScreencopyFormat, ShellLayer, SurfaceRole,
+    BarConfig, FloatingConfig, FloatingResizeEdge, InputRect, KeyboardFocus, LayerAnchors,
+    LayerClient, LayerEvent, OutputPowerMode, PopupAnchor, PopupConfig, PopupConstraints,
+    PopupGravity, ScreenInfo, ScreencopyFormat, ShellLayer, SurfaceRole,
 };
 
 fn usage() -> &'static str {
@@ -1914,6 +1914,7 @@ fn run_surface(
         apply_virtual_keyboard_requests(&mut runtime, &mut client);
         apply_input_method_requests(&mut runtime, &mut client);
         apply_text_input_requests(&mut runtime, &mut client);
+        apply_window_surface_actions(&mut runtime, &client, floating_surface.as_ref());
         if repaint {
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             layout = paint(&runtime, &mut renderer, &client)?;
@@ -1923,6 +1924,39 @@ fn run_surface(
             if let Some(surface) = &mut floating_surface {
                 paint_floating_surface(&runtime, &client, surface)?;
             }
+        }
+    }
+}
+
+fn apply_window_surface_actions(
+    runtime: &mut Runtime,
+    client: &LayerClient,
+    floating: Option<&AuxiliarySurface>,
+) {
+    for action in runtime.take_window_surface_actions() {
+        match action {
+            WindowSurfaceAction::Move { id }
+                if floating.is_some_and(|surface| surface.id == id) =>
+            {
+                client.start_floating_move();
+            }
+            WindowSurfaceAction::Resize { id, edge }
+                if floating.is_some_and(|surface| surface.id == id) =>
+            {
+                let edge = match edge.as_str() {
+                    "top" => FloatingResizeEdge::Top,
+                    "bottom" => FloatingResizeEdge::Bottom,
+                    "left" => FloatingResizeEdge::Left,
+                    "right" => FloatingResizeEdge::Right,
+                    "top_left" => FloatingResizeEdge::TopLeft,
+                    "top_right" => FloatingResizeEdge::TopRight,
+                    "bottom_left" => FloatingResizeEdge::BottomLeft,
+                    "bottom_right" => FloatingResizeEdge::BottomRight,
+                    _ => continue,
+                };
+                client.start_floating_resize(edge);
+            }
+            WindowSurfaceAction::Move { .. } | WindowSurfaceAction::Resize { .. } => {}
         }
     }
 }

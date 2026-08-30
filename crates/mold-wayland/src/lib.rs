@@ -75,7 +75,7 @@ use wayland_protocols::wp::text_input::zv3::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
-use wayland_protocols::xdg::shell::client::xdg_positioner;
+use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_toplevel};
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
     zwp_input_method_v2::{self, ZwpInputMethodV2},
@@ -383,6 +383,33 @@ pub struct FloatingConfig {
     pub fullscreen: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FloatingResizeEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl FloatingResizeEdge {
+    fn protocol(self) -> xdg_toplevel::ResizeEdge {
+        match self {
+            Self::Top => xdg_toplevel::ResizeEdge::Top,
+            Self::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+            Self::Left => xdg_toplevel::ResizeEdge::Left,
+            Self::Right => xdg_toplevel::ResizeEdge::Right,
+            Self::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
+            Self::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+            Self::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+            Self::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+        }
+    }
+}
+
 /// Compositor output power state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputPowerMode {
@@ -666,6 +693,7 @@ impl LayerClient {
             scale_120: 120,
             events: VecDeque::new(),
             pointer: None,
+            pointer_seat: None,
             keyboard: None,
             touch: None,
             touch_points: HashMap::new(),
@@ -1299,6 +1327,30 @@ impl LayerClient {
         }
     }
 
+    pub fn start_floating_move(&self) -> bool {
+        let (Some(window), Some(seat), Some(serial)) = (
+            self.state.floating.as_ref(),
+            self.state.pointer_seat.as_ref(),
+            self.state.latest_input_serial,
+        ) else {
+            return false;
+        };
+        window.move_(seat, serial);
+        self.connection.flush().is_ok()
+    }
+
+    pub fn start_floating_resize(&self, edge: FloatingResizeEdge) -> bool {
+        let (Some(window), Some(seat), Some(serial)) = (
+            self.state.floating.as_ref(),
+            self.state.pointer_seat.as_ref(),
+            self.state.latest_input_serial,
+        ) else {
+            return false;
+        };
+        window.resize(seat, serial, edge.protocol());
+        self.connection.flush().is_ok()
+    }
+
     /// Returns the floating-window surface used to attach buffers.
     pub fn floating_surface(&self) -> Option<&wl_surface::WlSurface> {
         self.state.floating.as_ref().map(Window::wl_surface)
@@ -1459,6 +1511,7 @@ struct LayerState {
     scale_120: u32,
     events: VecDeque<LayerEvent>,
     pointer: Option<wl_pointer::WlPointer>,
+    pointer_seat: Option<wl_seat::WlSeat>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     touch: Option<wl_touch::WlTouch>,
     touch_points: HashMap<i32, ((f64, f64), SurfaceRole)>,
@@ -2047,6 +2100,9 @@ impl SeatHandler for LayerState {
     ) {
         if capability == Capability::Pointer && self.pointer.is_none() {
             self.pointer = self.seats.get_pointer(qh, &seat).ok();
+            if self.pointer.is_some() {
+                self.pointer_seat = Some(seat.clone());
+            }
         }
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             self.keyboard = self.seats.get_keyboard(qh, &seat, None).ok();
@@ -2067,6 +2123,7 @@ impl SeatHandler for LayerState {
             && let Some(pointer) = self.pointer.take()
         {
             pointer.release();
+            self.pointer_seat = None;
         }
         if capability == Capability::Keyboard
             && let Some(keyboard) = self.keyboard.take()
