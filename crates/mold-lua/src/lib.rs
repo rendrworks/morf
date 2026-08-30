@@ -725,6 +725,11 @@ impl Runtime {
             .collect();
     }
 
+    /// Takes a reload request raised by Lua configuration.
+    pub fn take_reload_request(&mut self) -> Option<bool> {
+        self.reactive.borrow_mut().reload_request.take()
+    }
+
     /// Borrows the scene produced by executed configuration code.
     pub fn scene(&self) -> Ref<'_, Scene> {
         Ref::map(self.reactive.borrow(), |state| &state.scene)
@@ -2216,6 +2221,7 @@ struct ReactiveState {
     property_revision: i64,
     reload_seed: HashMap<String, ScriptValue>,
     reloadable: HashMap<String, SignalId>,
+    reload_request: Option<bool>,
     effects: HashMap<u64, LuaEffect>,
     next_effect: u64,
     active: Option<Capture>,
@@ -2281,6 +2287,7 @@ impl ReactiveState {
             property_revision: 0,
             reload_seed: HashMap::new(),
             reloadable: HashMap::new(),
+            reload_request: None,
             effects: HashMap::new(),
             next_effect: 0,
             active: None,
@@ -3270,6 +3277,15 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "has_version", has_version);
+        let reload_state = Rc::clone(&state);
+        let reload = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let hard: Option<bool> = stack.consume(ctx)?;
+            let mut state = reload_state.borrow_mut();
+            state.reload_request =
+                Some(state.reload_request.unwrap_or(false) || hard.unwrap_or(false));
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "reload", reload);
         let elapsed = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
             stack.replace(ctx, timer.started.borrow().elapsed().as_secs_f64());
@@ -5981,6 +5997,7 @@ fn install_reactive_api(
             "cache_dir",
             "cache_path",
             "has_version",
+            "reload",
             "elapsed_timer",
             "system_clock",
             "easing_curve",
@@ -9773,6 +9790,24 @@ mod tests {
             second.call_ipc("state.get", &[]).unwrap(),
             [IpcValue::Boolean(true)]
         );
+    }
+
+    #[test]
+    fn lua_reload_requests_are_coalesced_and_consumed() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "reload-request.lua",
+                br#"
+                    local core = require("mold.core")
+                    core.reload(false)
+                    core.reload(true)
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(runtime.take_reload_request(), Some(true));
+        assert_eq!(runtime.take_reload_request(), None);
     }
 
     #[test]

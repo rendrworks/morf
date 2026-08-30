@@ -171,6 +171,7 @@ enum WorkerCommand {
     Reload {
         path: Arc<PathBuf>,
         source: Arc<[u8]>,
+        hard: bool,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
 }
@@ -178,7 +179,7 @@ enum WorkerCommand {
 enum SupervisorMessage {
     Worker(WorkerMessage),
     Ipc(IpcIncoming),
-    Reload,
+    Reload { hard: bool },
 }
 
 enum WorkerMessage {
@@ -457,7 +458,10 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
             let next = lua_snapshot(&reload_roots);
             if next != reload_snapshot {
                 reload_snapshot = next;
-                if reload_tx.send(SupervisorMessage::Reload).is_err() {
+                if reload_tx
+                    .send(SupervisorMessage::Reload { hard: false })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -523,7 +527,7 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
                     return Ok(());
                 }
             }
-            Ok(SupervisorMessage::Reload) => match fs::read(path.as_ref()) {
+            Ok(SupervisorMessage::Reload { hard }) => match fs::read(path.as_ref()) {
                 Ok(bytes) => {
                     source = Arc::from(bytes);
                     for (output, worker) in &workers {
@@ -533,6 +537,7 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
                             .send(WorkerCommand::Reload {
                                 path: Arc::clone(&path),
                                 source: Arc::clone(&source),
+                                hard,
                                 reply,
                             })
                             .is_err()
@@ -882,10 +887,13 @@ fn handle_worker_command(
         WorkerCommand::Reload {
             path,
             source,
+            hard,
             reply,
         } => {
             let mut candidate = Runtime::for_screen(Limits::default(), screen.clone());
-            candidate.restore_reloadable_state(runtime.reloadable_state());
+            if !hard {
+                candidate.restore_reloadable_state(runtime.reloadable_state());
+            }
             let result = execute_config(&mut candidate, &path, &source, policy)
                 .and_then(|()| primary_surface_root(&candidate).map(|_| ()))
                 .and_then(|()| {
@@ -1448,6 +1456,10 @@ fn run_surface(
             if update.refresh_idle {
                 client.set_idle_timeouts(&runtime.idle_timeouts());
             }
+        }
+        if let Some(hard) = runtime.take_reload_request() {
+            tx.send(SupervisorMessage::Reload { hard })
+                .map_err(|_| "output supervisor stopped".to_owned())?;
         }
         if runtime.take_window_surface_change() {
             sync_window_surfaces(
@@ -2298,6 +2310,7 @@ mod tests {
             WorkerCommand::Reload {
                 path: Arc::new(PathBuf::from("shell.lua")),
                 source: Arc::from(&source[..]),
+                hard: false,
                 reply,
             },
         );
@@ -2307,6 +2320,48 @@ mod tests {
         assert_eq!(
             runtime.call_ipc("counter.get", &[]).unwrap(),
             [IpcValue::Integer(7)]
+        );
+    }
+
+    #[test]
+    fn hard_reload_discards_opt_in_state() {
+        let screen = Screen {
+            name: "test".into(),
+            width: None,
+            height: None,
+            scale: 1,
+            ..Screen::default()
+        };
+        let source = br#"
+            local value = mold.reloadable("counter", 0)
+            mold.ipc["counter.set"] = function(next) value:set(next) end
+            mold.ipc["counter.get"] = function() return value:get() end
+            mold.ui.Item {}
+        "#;
+        let mut runtime = Runtime::for_screen(Limits::default(), screen.clone());
+        runtime.execute("shell.lua", source).unwrap();
+        runtime
+            .call_ipc("counter.set", &[IpcValue::Integer(7)])
+            .unwrap();
+        let (reply, result) = mpsc::sync_channel(1);
+
+        let update = handle_worker_command(
+            &mut runtime,
+            &screen,
+            LoadPolicy::default(),
+            WorkerCommand::Reload {
+                path: Arc::new(PathBuf::from("shell.lua")),
+                source: Arc::from(&source[..]),
+                hard: true,
+                reply,
+            },
+        );
+
+        assert!(result.recv().unwrap().is_ok());
+        assert!(update.repaint);
+        assert_eq!(
+            runtime.call_ipc("counter.get", &[]).unwrap(),
+            [IpcValue::Integer(0)]
         );
     }
 
@@ -2335,6 +2390,7 @@ mod tests {
             WorkerCommand::Reload {
                 path: Arc::new(PathBuf::from("shell.lua")),
                 source: Arc::from(&b"local ="[..]),
+                hard: false,
                 reply,
             },
         );
@@ -2408,6 +2464,7 @@ mod tests {
             .send(WorkerCommand::Reload {
                 path: Arc::new(PathBuf::from("shell.lua")),
                 source: Arc::from(&b"this is not lua"[..]),
+                hard: false,
                 reply: reload,
             })
             .unwrap();
