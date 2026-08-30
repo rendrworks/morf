@@ -88,7 +88,7 @@ impl Element {
     }
 }
 
-/// Linear RGBA colour with components in the inclusive zero-to-one range.
+/// sRGB-encoded RGBA colour with components in the inclusive zero-to-one range.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     /// Red channel.
