@@ -22,7 +22,7 @@ use mold_io::{
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
     StreamCollector, Timer as IoTimer,
 };
-use mold_layout::{Layout, TransformTracker, TransformWatcher as NativeTransformWatcher};
+use mold_layout::{Geometry, Layout, TransformTracker, TransformWatcher as NativeTransformWatcher};
 use mold_lifecycle::Retention;
 use mold_menu::{ButtonType, CheckState, Menu, MenuEntry};
 use mold_reactive::{EffectContext, Graph, SignalId};
@@ -2033,6 +2033,15 @@ type PopupAnchorArgs<'gc> = (
     Option<i64>,
     Option<i64>,
     Option<i64>,
+);
+
+type WindowMapRectArgs<'gc> = (
+    UserRef<'gc, WindowSurfaceToken>,
+    UserRef<'gc, NodeToken>,
+    f64,
+    f64,
+    f64,
+    f64,
 );
 
 struct TransformWatcherToken {
@@ -6588,6 +6597,26 @@ fn install_reactive_api(
             "set_parent",
             window_set_parent_method(ctx, Rc::clone(&state)),
         );
+        window_methods.set_field(
+            ctx,
+            "item_position",
+            window_item_position_method(ctx, Rc::clone(&state)),
+        );
+        window_methods.set_field(
+            ctx,
+            "item_rect",
+            window_item_rect_method(ctx, Rc::clone(&state)),
+        );
+        window_methods.set_field(
+            ctx,
+            "map_from_item",
+            window_map_from_item_method(ctx, Rc::clone(&state)),
+        );
+        window_methods.set_field(
+            ctx,
+            "map_rect_from_item",
+            window_map_rect_from_item_method(ctx, Rc::clone(&state)),
+        );
         let move_state = Rc::clone(&state);
         let start_system_move = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let surface: UserRef<WindowSurfaceToken> = stack.consume(ctx)?;
@@ -7697,6 +7726,146 @@ fn window_set_parent_method<'gc>(
             ctx,
             parent.map_or(LuaValue::Nil, |id| LuaValue::Integer(id as i64)),
         );
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn checked_window_node(
+    state: &ReactiveState,
+    surface: u64,
+    node: NodeHandle,
+) -> Result<NodeHandle, HostError> {
+    let surface = state
+        .window_surfaces
+        .get(&surface)
+        .ok_or_else(|| HostError("window surface is stale".into()))?;
+    if !scene_node_in_subtree(&state.scene, surface.root, node) {
+        return Err(HostError(
+            "item does not belong to the window surface".into(),
+        ));
+    }
+    Ok(node)
+}
+
+fn point_table(ctx: Context<'_>, point: (f64, f64)) -> Table<'_> {
+    let result = Table::new(&ctx);
+    result.set_field(ctx, "x", point.0);
+    result.set_field(ctx, "y", point.1);
+    result
+}
+
+fn geometry_table(ctx: Context<'_>, geometry: Geometry) -> Table<'_> {
+    let result = point_table(ctx, (geometry.x, geometry.y));
+    result.set_field(ctx, "width", geometry.width);
+    result.set_field(ctx, "height", geometry.height);
+    result
+}
+
+fn window_item_position_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, node): (UserRef<WindowSurfaceToken>, UserRef<NodeToken>) =
+            stack.consume(ctx)?;
+        let state = state.borrow();
+        let node = checked_window_node(&state, surface.id, node.handle)?;
+        let point = state
+            .transform_tracker
+            .map_from_node(&state.scene, node, 0.0, 0.0)
+            .map_err(|error| HostError(error.to_string()))?
+            .ok_or_else(|| HostError("item has not been laid out".into()))?;
+        stack.replace(ctx, point_table(ctx, point));
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn window_item_rect_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, node): (UserRef<WindowSurfaceToken>, UserRef<NodeToken>) =
+            stack.consume(ctx)?;
+        let state = state.borrow();
+        let node = checked_window_node(&state, surface.id, node.handle)?;
+        let size = state
+            .transform_tracker
+            .geometry(node)
+            .ok_or_else(|| HostError("item has not been laid out".into()))?;
+        let geometry = state
+            .transform_tracker
+            .map_rect_from_node(
+                &state.scene,
+                node,
+                Geometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size.width,
+                    height: size.height,
+                },
+            )
+            .map_err(|error| HostError(error.to_string()))?
+            .ok_or_else(|| HostError("item has not been laid out".into()))?;
+        stack.replace(ctx, geometry_table(ctx, geometry));
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn window_map_from_item_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, node, x, y): (UserRef<WindowSurfaceToken>, UserRef<NodeToken>, f64, f64) =
+            stack.consume(ctx)?;
+        if !x.is_finite() || !y.is_finite() {
+            return Err(HostError("mapped point must be finite".into()).into());
+        }
+        let state = state.borrow();
+        let node = checked_window_node(&state, surface.id, node.handle)?;
+        let point = state
+            .transform_tracker
+            .map_from_node(&state.scene, node, x, y)
+            .map_err(|error| HostError(error.to_string()))?
+            .ok_or_else(|| HostError("item has not been laid out".into()))?;
+        stack.replace(ctx, point_table(ctx, point));
+        Ok(CallbackReturn::Return)
+    })
+}
+
+fn window_map_rect_from_item_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, node, x, y, width, height): WindowMapRectArgs<'gc> = stack.consume(ctx)?;
+        if !x.is_finite()
+            || !y.is_finite()
+            || !width.is_finite()
+            || !height.is_finite()
+            || width < 0.0
+            || height < 0.0
+        {
+            return Err(HostError("mapped rectangle must be finite and nonnegative".into()).into());
+        }
+        let state = state.borrow();
+        let node = checked_window_node(&state, surface.id, node.handle)?;
+        let geometry = state
+            .transform_tracker
+            .map_rect_from_node(
+                &state.scene,
+                node,
+                Geometry {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+            )
+            .map_err(|error| HostError(error.to_string()))?
+            .ok_or_else(|| HostError("item has not been laid out".into()))?;
+        stack.replace(ctx, geometry_table(ctx, geometry));
         Ok(CallbackReturn::Return)
     })
 }
@@ -10682,6 +10851,56 @@ mod tests {
             (18, 29, 48, 28)
         );
         assert!(runtime.take_window_surface_change());
+    }
+
+    #[test]
+    fn window_handles_map_item_geometry_after_layout() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "window-map.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local window = require("mold.window")
+                    local child = ui.Item { x = 15, y = 7, width = 20, height = 10 }
+                    local root = ui.Item { child }
+                    _G.window_handle = window.floating {
+                      root = root, width = 100, height = 50,
+                    }
+                    _G.window_child = child
+                "#,
+            )
+            .unwrap();
+        let root = runtime.window_surface_configs()[0].root;
+        let layout = Layout::compute(
+            &runtime.scene(),
+            root,
+            mold_layout::Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+        runtime.observe_layout(&layout);
+
+        runtime
+            .execute(
+                "window-map-check.lua",
+                br#"
+                    local position = window_handle:item_position(window_child)
+                    assert(position.x == 15 and position.y == 7)
+                    local rect = window_handle:item_rect(window_child)
+                    assert(rect.x == 15 and rect.y == 7)
+                    assert(rect.width == 20 and rect.height == 10)
+                    local point = window_handle:map_from_item(window_child, 2, 3)
+                    assert(point.x == 17 and point.y == 10)
+                    local mapped = window_handle:map_rect_from_item(window_child, 1, 2, 3, 4)
+                    assert(mapped.x == 16 and mapped.y == 9)
+                    assert(mapped.width == 3 and mapped.height == 4)
+                "#,
+            )
+            .unwrap();
     }
 
     #[test]

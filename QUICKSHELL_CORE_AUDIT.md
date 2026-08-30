@@ -57,7 +57,7 @@ the dependent surface, and a hidden or missing parent suppresses its child.
 
 ## Remaining audit lanes
 
-- verify every common-window coordinate mapping and update-control property;
+- verify every common-window update-control property;
 - verify every FileView mutation and failure-state transition;
 - verify process parser replacement and every socket connection transition;
 - verify reactive mutation behavior for quantizers, desktop models, and menus;

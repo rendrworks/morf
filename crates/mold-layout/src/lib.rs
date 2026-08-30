@@ -668,6 +668,61 @@ impl TransformTracker {
         self.geometry.get(&node).copied()
     }
 
+    /// Maps a point from node-local coordinates into surface coordinates.
+    pub fn map_from_node(
+        &self,
+        scene: &Scene,
+        node: NodeHandle,
+        x: f64,
+        y: f64,
+    ) -> Result<Option<(f64, f64)>, LayoutError> {
+        let Some(geometry) = self.geometry(node) else {
+            return Ok(None);
+        };
+        let Some(transform) = self.node_to_surface_transform(scene, node)? else {
+            return Ok(None);
+        };
+        Ok(Some(transform.point(geometry.x + x, geometry.y + y)))
+    }
+
+    /// Maps a node-local rectangle into surface-aligned bounds.
+    pub fn map_rect_from_node(
+        &self,
+        scene: &Scene,
+        node: NodeHandle,
+        geometry: Geometry,
+    ) -> Result<Option<Geometry>, LayoutError> {
+        let Some(node_geometry) = self.geometry(node) else {
+            return Ok(None);
+        };
+        let Some(transform) = self.node_to_surface_transform(scene, node)? else {
+            return Ok(None);
+        };
+        Ok(Some(transform.bounds(Geometry {
+            x: node_geometry.x + geometry.x,
+            y: node_geometry.y + geometry.y,
+            width: geometry.width,
+            height: geometry.height,
+        })))
+    }
+
+    fn node_to_surface_transform(
+        &self,
+        scene: &Scene,
+        node: NodeHandle,
+    ) -> Result<Option<Transform2D>, LayoutError> {
+        let mut chain = ancestor_chain(scene, node)?;
+        chain.reverse();
+        let mut transform = Transform2D::IDENTITY;
+        for node in chain {
+            let Some(geometry) = self.geometry(node) else {
+                return Ok(None);
+            };
+            transform = transform.then(node_transform(scene, node, geometry)?);
+        }
+        Ok(Some(transform))
+    }
+
     /// Removes geometry for destroyed or replaced scene nodes.
     pub fn retain_scene(&mut self, scene: &Scene) {
         self.geometry.retain(|node, _| scene.element(*node).is_ok());
@@ -1245,6 +1300,58 @@ mod tests {
         .unwrap();
         tracker.update(&layout);
         assert!(watcher.observe(&scene, &tracker).unwrap());
+    }
+
+    #[test]
+    fn transform_tracker_maps_node_local_geometry() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Item);
+        let parent = scene.create(Element::Item);
+        let child = scene.create(Element::Item);
+        scene.assign(parent, "x", 10.0).unwrap();
+        scene.assign(child, "x", 5.0).unwrap();
+        scene.assign(child, "y", 3.0).unwrap();
+        scene.assign(child, "width", 20.0).unwrap();
+        scene.assign(child, "height", 10.0).unwrap();
+        scene.reparent(parent, Some(root)).unwrap();
+        scene.reparent(child, Some(parent)).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+        let mut tracker = TransformTracker::default();
+        tracker.update(&layout);
+
+        assert_eq!(
+            tracker.map_from_node(&scene, child, 2.0, 4.0).unwrap(),
+            Some((17.0, 7.0))
+        );
+        assert_eq!(
+            tracker
+                .map_rect_from_node(
+                    &scene,
+                    child,
+                    Geometry {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 20.0,
+                        height: 10.0,
+                    }
+                )
+                .unwrap(),
+            Some(Geometry {
+                x: 15.0,
+                y: 3.0,
+                width: 20.0,
+                height: 10.0,
+            })
+        );
     }
 
     #[test]
