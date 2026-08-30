@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem::MaybeUninit;
+use std::net::Shutdown;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -210,7 +212,7 @@ impl LineParser {
     }
 }
 
-/// Incremental byte parser using an arbitrary non-empty delimiter.
+/// Incremental byte parser using an arbitrary delimiter.
 pub struct SplitParser {
     delimiter: Vec<u8>,
     pending: Vec<u8>,
@@ -220,12 +222,6 @@ impl SplitParser {
     /// Creates a parser for the supplied delimiter.
     pub fn new(delimiter: impl Into<Vec<u8>>) -> io::Result<Self> {
         let delimiter = delimiter.into();
-        if delimiter.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "split delimiter cannot be empty",
-            ));
-        }
         Ok(Self {
             delimiter,
             pending: Vec::new(),
@@ -234,6 +230,16 @@ impl SplitParser {
 
     /// Appends a chunk and returns every complete segment.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
+        if self.delimiter.is_empty() {
+            let mut parts = Vec::new();
+            if !self.pending.is_empty() {
+                parts.push(std::mem::take(&mut self.pending));
+            }
+            if !chunk.is_empty() {
+                parts.push(chunk.to_vec());
+            }
+            return parts;
+        }
         self.pending.extend_from_slice(chunk);
         let mut parts = Vec::new();
         while let Some(at) = find_bytes(&self.pending, &self.delimiter) {
@@ -241,6 +247,19 @@ impl SplitParser {
             self.pending.drain(..self.delimiter.len());
         }
         parts
+    }
+
+    pub fn delimiter(&self) -> &[u8] {
+        &self.delimiter
+    }
+
+    pub fn set_delimiter(&mut self, delimiter: impl Into<Vec<u8>>) -> Vec<Vec<u8>> {
+        let delimiter = delimiter.into();
+        if delimiter == self.delimiter {
+            return Vec::new();
+        }
+        self.delimiter = delimiter;
+        self.push(&[])
     }
 
     /// Returns the final unterminated segment.
@@ -695,6 +714,14 @@ impl Socket {
         self.0.write_all(bytes)
     }
 
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+
+    pub fn shutdown(&self) -> io::Result<()> {
+        self.0.shutdown(Shutdown::Both)
+    }
+
     pub fn receive(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         self.0.read(bytes)
     }
@@ -709,29 +736,51 @@ impl Socket {
 }
 
 /// Listening Unix-domain socket.
-pub struct SocketServer(UnixListener);
+pub struct SocketServer {
+    listener: UnixListener,
+    path: PathBuf,
+    identity: (u64, u64),
+}
 
 impl SocketServer {
     pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
-        UnixListener::bind(path).map(Self)
+        let path = path.as_ref();
+        let listener = UnixListener::bind(path)?;
+        let metadata = fs::metadata(path)?;
+        Ok(Self {
+            listener,
+            path: path.to_owned(),
+            identity: (metadata.dev(), metadata.ino()),
+        })
     }
 
     pub fn accept(&self) -> io::Result<Socket> {
-        self.0.accept().map(|(stream, _)| Socket(stream))
+        self.listener.accept().map(|(stream, _)| Socket(stream))
     }
 
     /// Accepts one pending client without blocking the caller.
     pub fn try_accept(&self) -> io::Result<Option<Socket>> {
-        self.0.set_nonblocking(true)?;
-        let result = match self.0.accept() {
+        self.listener.set_nonblocking(true)?;
+        let result = match self.listener.accept() {
             Ok((stream, _)) => Ok(Some(Socket(stream))),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
             Err(error) => Err(error),
         };
-        let reset = self.0.set_nonblocking(false);
+        let reset = self.listener.set_nonblocking(false);
         match (result, reset) {
             (Ok(socket), Ok(())) => Ok(socket),
             (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+}
+
+impl Drop for SocketServer {
+    fn drop(&mut self) {
+        if fs::metadata(&self.path)
+            .map(|metadata| (metadata.dev(), metadata.ino()) == self.identity)
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
@@ -1718,6 +1767,11 @@ mod tests {
     fn split_parser_handles_multibyte_delimiters() {
         let mut parser = SplitParser::new(b"--".to_vec()).unwrap();
         assert_eq!(parser.push(b"a-b--c--"), [b"a-b".to_vec(), b"c".to_vec()]);
+        assert!(parser.push(b"left|ri").is_empty());
+        assert_eq!(parser.set_delimiter(b"|".to_vec()), [b"left".to_vec()]);
+        assert_eq!(parser.push(b"ght|"), [b"right".to_vec()]);
+        assert_eq!(parser.set_delimiter(Vec::new()), Vec::<Vec<u8>>::new());
+        assert_eq!(parser.push(b"raw"), [b"raw".to_vec()]);
     }
 
     #[test]
@@ -1770,6 +1824,19 @@ mod tests {
         assert!(server.try_accept().unwrap().is_none());
         let _client = Socket::connect(&path).unwrap();
         assert!(server.try_accept().unwrap().is_some());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn socket_server_drop_preserves_rebound_path() {
+        let path =
+            std::env::temp_dir().join(format!("mold-io-server-rebound-{}", std::process::id()));
+        let server = SocketServer::bind(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let replacement = UnixListener::bind(&path).unwrap();
+        drop(server);
+        assert!(path.exists());
+        drop(replacement);
         std::fs::remove_file(path).unwrap();
     }
 

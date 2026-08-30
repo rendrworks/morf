@@ -2113,11 +2113,21 @@ struct FileDocumentToken {
 }
 
 struct SocketToken {
-    socket: RefCell<Socket>,
+    state: RefCell<SocketState>,
+}
+
+struct SocketState {
+    path: String,
+    socket: Option<Socket>,
 }
 
 struct SocketServerToken {
-    server: SocketServer,
+    state: RefCell<SocketServerState>,
+}
+
+struct SocketServerState {
+    path: String,
+    server: Option<SocketServer>,
 }
 
 struct LineParserToken {
@@ -5391,11 +5401,65 @@ fn install_reactive_api(
             if bytes.len() > 64 * 1024 {
                 return Err(HostError("socket send exceeds 64 KiB".to_owned()).into());
             }
-            socket
-                .socket
-                .borrow_mut()
-                .send(bytes.as_bytes())
-                .map_err(|error| HostError(error.to_string()))?;
+            if let Some(stream) = socket.state.borrow_mut().socket.as_mut() {
+                stream
+                    .send(bytes.as_bytes())
+                    .map_err(|error| HostError(error.to_string()))?;
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let socket_flush = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let socket: UserRef<SocketToken> = stack.consume(ctx)?;
+            if let Some(stream) = socket.state.borrow_mut().socket.as_mut() {
+                stream
+                    .flush()
+                    .map_err(|error| HostError(error.to_string()))?;
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let socket_connected = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let socket: UserRef<SocketToken> = stack.consume(ctx)?;
+            stack.replace(ctx, socket.state.borrow().socket.is_some());
+            Ok(CallbackReturn::Return)
+        });
+        let socket_set_connected = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (socket, connected): (UserRef<SocketToken>, bool) = stack.consume(ctx)?;
+            let mut state = socket.state.borrow_mut();
+            if connected && state.socket.is_none() {
+                if state.path.is_empty() {
+                    stack.replace(ctx, false);
+                    return Ok(CallbackReturn::Return);
+                }
+                state.socket = Some(
+                    Socket::connect(&state.path).map_err(|error| HostError(error.to_string()))?,
+                );
+            } else if !connected && let Some(stream) = state.socket.take() {
+                let _ = stream.shutdown();
+            }
+            stack.replace(ctx, state.socket.is_some());
+            Ok(CallbackReturn::Return)
+        });
+        let socket_close = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let socket: UserRef<SocketToken> = stack.consume(ctx)?;
+            if let Some(stream) = socket.state.borrow_mut().socket.take() {
+                let _ = stream.shutdown();
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let socket_path = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let socket: UserRef<SocketToken> = stack.consume(ctx)?;
+            stack.replace(ctx, socket.state.borrow().path.as_str());
+            Ok(CallbackReturn::Return)
+        });
+        let socket_set_path = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (socket, path): (UserRef<SocketToken>, String) = stack.consume(ctx)?;
+            let mut state = socket.state.borrow_mut();
+            if state.socket.is_some() {
+                stack.replace(ctx, false);
+            } else {
+                state.path = path;
+                stack.replace(ctx, true);
+            }
             Ok(CallbackReturn::Return)
         });
         let socket_receive = Callback::from_fn(&ctx, |ctx, _, mut stack| {
@@ -5407,11 +5471,12 @@ fn install_reactive_api(
                 .ok_or_else(|| HostError("socket receive limit must be 1..65536".to_owned()))?;
             let timeout = bounded_timeout(timeout_ms).map_err(HostError)?;
             let mut bytes = vec![0; maximum];
-            match socket
-                .socket
-                .borrow_mut()
-                .receive_timeout(&mut bytes, timeout)
-            {
+            let mut state = socket.state.borrow_mut();
+            let Some(stream) = state.socket.as_mut() else {
+                stack.replace(ctx, LuaValue::Nil);
+                return Ok(CallbackReturn::Return);
+            };
+            match stream.receive_timeout(&mut bytes, timeout) {
                 Ok(read) => {
                     bytes.truncate(read);
                     stack.replace(ctx, String::from_utf8_lossy(&bytes).as_ref());
@@ -5430,15 +5495,25 @@ fn install_reactive_api(
         });
         let socket_methods = Table::new(&ctx);
         socket_methods.set_field(ctx, "send", socket_send);
+        socket_methods.set_field(ctx, "flush", socket_flush);
         socket_methods.set_field(ctx, "receive", socket_receive);
+        socket_methods.set_field(ctx, "connected", socket_connected);
+        socket_methods.set_field(ctx, "set_connected", socket_set_connected);
+        socket_methods.set_field(ctx, "close", socket_close);
+        socket_methods.set_field(ctx, "path", socket_path);
+        socket_methods.set_field(ctx, "set_path", socket_set_path);
         let socket_metatable = Table::new(&ctx);
         socket_metatable.set_field(ctx, "__index", socket_methods);
         let socket_metatable = ctx.stash(socket_metatable);
         let accepted_socket_metatable = socket_metatable.clone();
         let server_accept = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let server: UserRef<SocketServerToken> = stack.consume(ctx)?;
-            let Some(socket) = server
-                .server
+            let state = server.state.borrow();
+            let Some(listener) = state.server.as_ref() else {
+                stack.replace(ctx, LuaValue::Nil);
+                return Ok(CallbackReturn::Return);
+            };
+            let Some(socket) = listener
                 .try_accept()
                 .map_err(|error| HostError(error.to_string()))?
             else {
@@ -5448,22 +5523,82 @@ fn install_reactive_api(
             let userdata = UserData::new_static(
                 &ctx,
                 SocketToken {
-                    socket: RefCell::new(socket),
+                    state: RefCell::new(SocketState {
+                        path: String::new(),
+                        socket: Some(socket),
+                    }),
                 },
             );
             userdata.set_metatable(ctx, Some(ctx.fetch(&accepted_socket_metatable)));
             stack.replace(ctx, userdata);
             Ok(CallbackReturn::Return)
         });
+        let server_active = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let server: UserRef<SocketServerToken> = stack.consume(ctx)?;
+            stack.replace(ctx, server.state.borrow().server.is_some());
+            Ok(CallbackReturn::Return)
+        });
+        let server_set_active = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (server, active): (UserRef<SocketServerToken>, bool) = stack.consume(ctx)?;
+            let mut state = server.state.borrow_mut();
+            if active && state.server.is_none() {
+                if state.path.is_empty() {
+                    stack.replace(ctx, false);
+                    return Ok(CallbackReturn::Return);
+                }
+                state.server = Some(
+                    SocketServer::bind(&state.path)
+                        .map_err(|error| HostError(error.to_string()))?,
+                );
+            } else if !active {
+                state.server = None;
+            }
+            stack.replace(ctx, state.server.is_some());
+            Ok(CallbackReturn::Return)
+        });
+        let server_close = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let server: UserRef<SocketServerToken> = stack.consume(ctx)?;
+            server.state.borrow_mut().server = None;
+            Ok(CallbackReturn::Return)
+        });
+        let server_path = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let server: UserRef<SocketServerToken> = stack.consume(ctx)?;
+            stack.replace(ctx, server.state.borrow().path.as_str());
+            Ok(CallbackReturn::Return)
+        });
+        let server_set_path = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (server, path): (UserRef<SocketServerToken>, String) = stack.consume(ctx)?;
+            let mut state = server.state.borrow_mut();
+            if state.server.is_some() {
+                stack.replace(ctx, false);
+            } else {
+                state.path = path;
+                stack.replace(ctx, true);
+            }
+            Ok(CallbackReturn::Return)
+        });
         let server_methods = Table::new(&ctx);
         server_methods.set_field(ctx, "accept", server_accept);
+        server_methods.set_field(ctx, "active", server_active);
+        server_methods.set_field(ctx, "set_active", server_set_active);
+        server_methods.set_field(ctx, "close", server_close);
+        server_methods.set_field(ctx, "path", server_path);
+        server_methods.set_field(ctx, "set_path", server_set_path);
         let server_metatable = Table::new(&ctx);
         server_metatable.set_field(ctx, "__index", server_methods);
         let server_metatable = ctx.stash(server_metatable);
         let socket_server = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let path: String = stack.consume(ctx)?;
-            let server = SocketServer::bind(path).map_err(|error| HostError(error.to_string()))?;
-            let userdata = UserData::new_static(&ctx, SocketServerToken { server });
+            let server = SocketServer::bind(&path).map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                SocketServerToken {
+                    state: RefCell::new(SocketServerState {
+                        path,
+                        server: Some(server),
+                    }),
+                },
+            );
             userdata.set_metatable(ctx, Some(ctx.fetch(&server_metatable)));
             stack.replace(ctx, userdata);
             Ok(CallbackReturn::Return)
@@ -5471,11 +5606,14 @@ fn install_reactive_api(
         mold.set_field(ctx, "socket_server", socket_server);
         let socket = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let path: String = stack.consume(ctx)?;
-            let socket = Socket::connect(path).map_err(|error| HostError(error.to_string()))?;
+            let socket = Socket::connect(&path).map_err(|error| HostError(error.to_string()))?;
             let userdata = UserData::new_static(
                 &ctx,
                 SocketToken {
-                    socket: RefCell::new(socket),
+                    state: RefCell::new(SocketState {
+                        path,
+                        socket: Some(socket),
+                    }),
                 },
             );
             userdata.set_metatable(ctx, Some(ctx.fetch(&socket_metatable)));
@@ -5536,9 +5674,30 @@ fn install_reactive_api(
             }
             Ok(CallbackReturn::Return)
         });
+        let split_delimiter = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let parser: UserRef<SplitParserToken> = stack.consume(ctx)?;
+            stack.replace(
+                ctx,
+                String::from_utf8_lossy(parser.parser.borrow().delimiter()).as_ref(),
+            );
+            Ok(CallbackReturn::Return)
+        });
+        let split_set_delimiter = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (parser, delimiter): (UserRef<SplitParserToken>, String) = stack.consume(ctx)?;
+            let values = parser
+                .parser
+                .borrow_mut()
+                .set_delimiter(delimiter.into_bytes())
+                .into_iter()
+                .map(|value| String::from_utf8_lossy(&value).into_owned());
+            stack.replace(ctx, string_table(ctx, values));
+            Ok(CallbackReturn::Return)
+        });
         let split_methods = Table::new(&ctx);
         split_methods.set_field(ctx, "push", split_push);
         split_methods.set_field(ctx, "finish", split_finish);
+        split_methods.set_field(ctx, "delimiter", split_delimiter);
+        split_methods.set_field(ctx, "set_delimiter", split_set_delimiter);
         let split_metatable = Table::new(&ctx);
         split_metatable.set_field(ctx, "__index", split_methods);
         let split_metatable = ctx.stash(split_metatable);
@@ -12806,22 +12965,45 @@ mod tests {
         use std::os::unix::net::UnixListener;
 
         let path = std::env::temp_dir().join(format!("mold-lua-socket-{}", std::process::id()));
+        let next =
+            std::env::temp_dir().join(format!("mold-lua-socket-next-{}", std::process::id()));
         let listener = UnixListener::bind(&path).unwrap();
+        let next_listener = UnixListener::bind(&next).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0; 4];
             stream.read_exact(&mut request).unwrap();
             assert_eq!(&request, b"ping");
             stream.write_all(b"pong").unwrap();
+            let (mut stream, _) = next_listener.accept().unwrap();
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"next");
+            stream.write_all(b"done").unwrap();
         });
         let source = format!(
             r#"
                 local mold = require("mold")
-                local socket = mold.socket("{}")
+                local socket = mold.socket({:?})
+                assert(socket:connected())
+                assert(socket:path() == {:?})
+                assert(not socket:set_path({:?}))
                 socket:send("ping")
+                socket:flush()
                 assert(socket:receive(4, 500) == "pong")
+                socket:close()
+                assert(not socket:connected())
+                assert(socket:receive(4, 1) == nil)
+                assert(socket:set_path({:?}))
+                assert(socket:set_connected(true))
+                assert(socket:connected())
+                socket:send("next")
+                assert(socket:receive(4, 500) == "done")
+                assert(not socket:set_connected(false))
             "#,
-            path.display()
+            path.to_string_lossy(),
+            path.to_string_lossy(),
+            next.to_string_lossy(),
+            next.to_string_lossy(),
         );
         let mut runtime = Runtime::default();
 
@@ -12829,11 +13011,14 @@ mod tests {
 
         server.join().unwrap();
         std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(next).unwrap();
     }
 
     #[test]
     fn lua_exposes_stream_parsers_and_socket_servers() {
         let path = std::env::temp_dir().join(format!("mold-lua-server-{}", std::process::id()));
+        let next =
+            std::env::temp_dir().join(format!("mold-lua-server-next-{}", std::process::id()));
         let source = format!(
             r#"
                 local mold = require("mold")
@@ -12848,6 +13033,13 @@ mod tests {
                 local parts = split:push("a-b--c--tail")
                 assert(#parts == 2 and parts[1] == "a-b" and parts[2] == "c")
                 assert(split:finish() == "tail")
+                assert(split:delimiter() == "--")
+                assert(#split:push("left|ri") == 0)
+                local replaced = split:set_delimiter("|")
+                assert(#replaced == 1 and replaced[1] == "left")
+                assert(split:push("ght|")[1] == "right")
+                assert(#split:set_delimiter("") == 0)
+                assert(split:push("raw")[1] == "raw")
 
                 local collector = mold.stream_collector {{
                     maximum_bytes = 16,
@@ -12863,10 +13055,22 @@ mod tests {
                 assert(collector:push("two") == true)
                 assert(collector:data() == "two")
 
-                local server = mold.socket_server("{}")
+                local server = mold.socket_server({:?})
+                assert(server:active())
+                assert(server:path() == {:?})
+                assert(not server:set_path({:?}))
                 assert(server:accept() == nil)
+                server:close()
+                assert(not server:active())
+                assert(server:set_path({:?}))
+                assert(server:set_active(true))
+                assert(server:active())
+                assert(not server:set_active(false))
             "#,
-            path.display()
+            path.to_string_lossy(),
+            path.to_string_lossy(),
+            next.to_string_lossy(),
+            next.to_string_lossy(),
         );
         let mut runtime = Runtime::default();
 
@@ -12874,7 +13078,8 @@ mod tests {
             .execute("io-surfaces.lua", source.as_bytes())
             .unwrap();
 
-        std::fs::remove_file(path).unwrap();
+        assert!(!path.exists());
+        assert!(!next.exists());
     }
 
     #[test]

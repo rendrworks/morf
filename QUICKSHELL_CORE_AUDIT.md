@@ -57,7 +57,6 @@ the dependent surface, and a hidden or missing parent suppresses its child.
 
 ## Remaining audit lanes
 
-- verify process parser replacement and every socket connection transition;
 - verify reactive mutation behavior for quantizers, desktop models, and menus;
 - verify every visual primitive property against the bundled Quickshell visual
   support types.
@@ -67,3 +66,10 @@ changes. Empty paths unload the document, non-empty paths rebind active
 watchers, and every read or write returns only after its native operation has
 settled. Quickshell's asynchronous blocking toggles therefore have no distinct
 state in the synchronous mold interface.
+
+Process output remains a raw bounded event stream, so parsers can be attached,
+replaced, or removed without changing native process ownership. Delimiter
+replacement reprocesses buffered bytes with the new marker. Client sockets
+cover connect, disconnect, path mutation while disconnected, reconnect, flush,
+and close; socket servers cover active, inactive, path mutation, rebind, accept,
+and cleanup transitions.

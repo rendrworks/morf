@@ -106,8 +106,10 @@ behavioral reductions do not count as parity.
   categories, and watcher rebinding;
 - native JSON encoding and decoding with preserved array, object, and null
   values, plus direct stateful file-view adapters;
-- Unix sockets and socket servers;
-- line and delimiter parsers;
+- reconnectable Unix sockets and mutable socket servers with explicit path,
+  connection, flush, close, and active-state transitions;
+- line parsers and delimiter parsers whose split marker can be replaced without
+  dropping buffered input;
 - bounded byte stream collectors with live or end-of-stream publication.
 
 ### `mold.ui`
