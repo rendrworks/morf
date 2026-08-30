@@ -175,18 +175,18 @@ pub struct InputRect {
 }
 
 /// Capability-derived compositor output description.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScreenInfo {
-    /// Registry-global output identifier.
     pub id: u32,
-    /// Compositor-provided stable output name when available.
     pub name: Option<String>,
-    /// Logical top-left position.
+    pub make: String,
+    pub model: String,
+    pub description: Option<String>,
     pub position: Option<(i32, i32)>,
-    /// Logical output dimensions.
     pub size: Option<(i32, i32)>,
-    /// Integer fallback scale advertised by wl_output.
+    pub physical_size: Option<(i32, i32)>,
     pub scale: i32,
+    pub transform: &'static str,
 }
 
 /// Pixel encoding returned by a compositor screencopy.
@@ -2525,9 +2525,15 @@ impl LayerState {
             .map(|info| ScreenInfo {
                 id: info.id,
                 name: info.name,
+                make: info.make,
+                model: info.model,
+                description: info.description,
                 position: info.logical_position,
                 size: info.logical_size,
+                physical_size: (info.physical_size.0 > 0 && info.physical_size.1 > 0)
+                    .then_some(info.physical_size),
                 scale: info.scale_factor,
+                transform: output_transform_name(info.transform),
             })
             .collect::<Vec<_>>();
         if screens != self.screens {
@@ -2867,6 +2873,20 @@ fn physical_size(logical: (u32, u32), scale_120: u32) -> (u32, u32) {
     )
 }
 
+fn output_transform_name(transform: wl_output::Transform) -> &'static str {
+    match transform {
+        wl_output::Transform::Normal => "normal",
+        wl_output::Transform::_90 => "90",
+        wl_output::Transform::_180 => "180",
+        wl_output::Transform::_270 => "270",
+        wl_output::Transform::Flipped => "flipped",
+        wl_output::Transform::Flipped90 => "flipped_90",
+        wl_output::Transform::Flipped180 => "flipped_180",
+        wl_output::Transform::Flipped270 => "flipped_270",
+        _ => "unknown",
+    }
+}
+
 fn default_keymap() -> Option<String> {
     let context = xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS);
     xkbcommon::xkb::Keymap::new_from_names(
@@ -2902,6 +2922,19 @@ mod tests {
     #[test]
     fn physical_size_rounds_fractional_scale_upward() {
         assert_eq!(physical_size((101, 31), 150), (127, 39));
+    }
+
+    #[test]
+    fn output_transforms_have_stable_public_names() {
+        assert_eq!(
+            output_transform_name(wl_output::Transform::Normal),
+            "normal"
+        );
+        assert_eq!(output_transform_name(wl_output::Transform::_90), "90");
+        assert_eq!(
+            output_transform_name(wl_output::Transform::Flipped270),
+            "flipped_270"
+        );
     }
 
     #[test]

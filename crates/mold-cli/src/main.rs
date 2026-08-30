@@ -1296,10 +1296,17 @@ fn run_surface(
         .clone()
         .ok_or_else(|| format!("output {} has no compositor name", screen.id))?;
     let runtime_screen = Screen {
+        id: screen.id,
         name: name.clone(),
+        make: screen.make.clone(),
+        model: screen.model.clone(),
+        description: screen.description.clone(),
+        position: screen.position,
         width: screen.size.map(|size| size.0),
         height: screen.size.map(|size| size.1),
+        physical_size: screen.physical_size,
         scale: screen.scale,
+        transform: screen.transform.to_owned(),
     };
     let mut runtime = Runtime::for_screen(Limits::default(), runtime_screen.clone());
     execute_config(&mut runtime, path, source, policy)?;
@@ -2070,6 +2077,7 @@ mod tests {
                 position: Some((0, 0)),
                 size: Some((1920, 1080)),
                 scale: 1,
+                ..ScreenInfo::default()
             },
             ScreenInfo {
                 id: 9,
@@ -2077,6 +2085,7 @@ mod tests {
                 position: Some((1920, 0)),
                 size: Some((2560, 1440)),
                 scale: 2,
+                ..ScreenInfo::default()
             },
         ];
 
@@ -2270,6 +2279,7 @@ mod tests {
             width: None,
             height: None,
             scale: 1,
+            ..Screen::default()
         };
         let source = br#"
             local value = mold.reloadable("counter", 0)
@@ -2310,6 +2320,7 @@ mod tests {
             width: None,
             height: None,
             scale: 1,
+            ..Screen::default()
         };
         let mut runtime = Runtime::for_screen(Limits::default(), screen.clone());
         runtime
@@ -2361,6 +2372,7 @@ mod tests {
                             width: None,
                             height: None,
                             scale: 1,
+                            ..Screen::default()
                         },
                         LoadPolicy::default(),
                         command,

@@ -112,6 +112,7 @@ end
 mold.variants(mold.screens, function(screen)
   local screen_width = screen.width or 1920
   local screen_height = screen.height or 1080
+  local display_model = screen.model ~= "" and screen.model or "display"
   local width = math.floor(screen_width * 0.576 + 0.5)
   local height = math.floor(screen_height * 0.544 + 0.5)
   local left = math.floor((screen_width - width) / 2)
@@ -169,8 +170,8 @@ mold.variants(mold.screens, function(screen)
     card(inset, inset + clock_height + gap, left_width, system_height, "SYSTEM", {
       label(core.env("USER") or "user", 18, 48, 22),
       label(screen.name, 18, 82, 14, palette.accent),
-      label("scale  " .. tostring(screen.scale), 18, 116, 14, palette.muted),
-      label(core.env("XDG_SESSION_TYPE") or "linux", 18, 148, 14, palette.muted),
+      label(display_model, 18, 116, 14, palette.muted),
+      label(screen.orientation .. "  scale " .. tostring(screen.scale), 18, 148, 14, palette.muted),
     }),
 
     card(right_x, inset, info_width, user_height, "SESSION", {

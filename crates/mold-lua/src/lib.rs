@@ -96,16 +96,54 @@ pub struct Runtime {
 }
 
 /// Output metadata exposed to one per-screen Lua configuration instance.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Screen {
-    /// Compositor output name.
+    pub id: u32,
     pub name: String,
-    /// Logical output width when advertised.
+    pub make: String,
+    pub model: String,
+    pub description: Option<String>,
+    pub position: Option<(i32, i32)>,
     pub width: Option<i32>,
-    /// Logical output height when advertised.
     pub height: Option<i32>,
-    /// Integer fallback scale advertised by wl_output.
+    pub physical_size: Option<(i32, i32)>,
     pub scale: i32,
+    pub transform: String,
+}
+
+fn screen_density(screen: &Screen) -> Option<f64> {
+    let (width, height) = (screen.width?, screen.height?);
+    let (physical_width, physical_height) = screen.physical_size?;
+    if width <= 0 || height <= 0 || physical_width <= 0 || physical_height <= 0 {
+        return None;
+    }
+    let scale = f64::from(screen.scale.max(1));
+    let horizontal = f64::from(width) * scale * 25.4 / f64::from(physical_width);
+    let vertical = f64::from(height) * scale * 25.4 / f64::from(physical_height);
+    Some((horizontal + vertical) / 2.0)
+}
+
+fn screen_primary_orientation(screen: &Screen) -> &'static str {
+    let dimensions = screen
+        .physical_size
+        .or_else(|| screen.width.zip(screen.height));
+    match dimensions {
+        Some((width, height)) if width < height => "portrait",
+        _ => "landscape",
+    }
+}
+
+fn screen_orientation(screen: &Screen) -> &'static str {
+    let primary = screen_primary_orientation(screen);
+    match screen.transform.as_str() {
+        "180" | "flipped_180" if primary == "portrait" => "inverted_portrait",
+        "180" | "flipped_180" => "inverted_landscape",
+        "90" | "flipped_90" if primary == "portrait" => "landscape",
+        "90" | "flipped_90" => "portrait",
+        "270" | "flipped_270" if primary == "portrait" => "inverted_landscape",
+        "270" | "flipped_270" => "inverted_portrait",
+        _ => primary,
+    }
 }
 
 /// Edges used to anchor a configured layer surface.
@@ -3869,7 +3907,34 @@ fn install_reactive_api(
         let screens = Table::new(&ctx);
         if let Some(screen) = screen {
             let value = Table::new(&ctx);
+            value.set_field(ctx, "id", screen.id as i64);
             value.set_field(ctx, "name", screen.name.as_str());
+            value.set_field(ctx, "make", screen.make.as_str());
+            value.set_field(ctx, "model", screen.model.as_str());
+            value.set_field(
+                ctx,
+                "description",
+                screen
+                    .description
+                    .as_deref()
+                    .map_or(LuaValue::Nil, |description| {
+                        LuaValue::String(ctx.intern(description.as_bytes()))
+                    }),
+            );
+            value.set_field(
+                ctx,
+                "x",
+                screen.position.map_or(LuaValue::Nil, |position| {
+                    LuaValue::Integer(position.0 as i64)
+                }),
+            );
+            value.set_field(
+                ctx,
+                "y",
+                screen.position.map_or(LuaValue::Nil, |position| {
+                    LuaValue::Integer(position.1 as i64)
+                }),
+            );
             value.set_field(
                 ctx,
                 "width",
@@ -3885,6 +3950,40 @@ fn install_reactive_api(
                     .map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
             );
             value.set_field(ctx, "scale", screen.scale as i64);
+            value.set_field(ctx, "device_pixel_ratio", screen.scale as i64);
+            value.set_field(ctx, "transform", screen.transform.as_str());
+            let physical_width = screen.physical_size.map(|size| size.0);
+            let physical_height = screen.physical_size.map(|size| size.1);
+            value.set_field(
+                ctx,
+                "physical_width_mm",
+                physical_width.map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+            );
+            value.set_field(
+                ctx,
+                "physical_height_mm",
+                physical_height.map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+            );
+            let physical_density = screen_density(&screen);
+            value.set_field(
+                ctx,
+                "physical_pixel_density",
+                physical_density.map_or(LuaValue::Nil, LuaValue::Number),
+            );
+            value.set_field(
+                ctx,
+                "logical_pixel_density",
+                physical_density.map_or(LuaValue::Nil, |density| {
+                    LuaValue::Number(density / f64::from(screen.scale.max(1)))
+                }),
+            );
+            value.set_field(ctx, "orientation", screen_orientation(&screen));
+            value.set_field(
+                ctx,
+                "primary_orientation",
+                screen_primary_orientation(&screen),
+            );
+            value.set_field(ctx, "serial_number", LuaValue::Nil);
             screens
                 .set(ctx, 1, value)
                 .expect("screen table accepts integer keys");
@@ -9315,6 +9414,7 @@ mod tests {
                 width: Some(1920),
                 height: Some(1080),
                 scale: 1,
+                ..Screen::default()
             },
         );
         runtime
@@ -9839,10 +9939,17 @@ mod tests {
         let mut runtime = Runtime::for_screen(
             Limits::default(),
             Screen {
+                id: 12,
                 name: "DP-1".to_owned(),
+                make: "Example".to_owned(),
+                model: "Panel".to_owned(),
+                description: Some("Example Panel".to_owned()),
+                position: Some((10, 20)),
                 width: Some(1920),
                 height: Some(1080),
+                physical_size: Some((600, 340)),
                 scale: 2,
+                transform: "normal".to_owned(),
             },
         );
         runtime
@@ -9852,6 +9959,19 @@ mod tests {
                     local mold = require("mold")
                     local ui = require("mold.ui")
                     mold.variants(mold.screens, function(screen)
+                        assert(screen.id == 12)
+                        assert(screen.make == "Example")
+                        assert(screen.model == "Panel")
+                        assert(screen.description == "Example Panel")
+                        assert(screen.x == 10 and screen.y == 20)
+                        assert(screen.physical_width_mm == 600)
+                        assert(screen.physical_height_mm == 340)
+                        assert(screen.device_pixel_ratio == 2)
+                        assert(screen.physical_pixel_density > 160)
+                        assert(screen.logical_pixel_density > 80)
+                        assert(screen.orientation == "landscape")
+                        assert(screen.primary_orientation == "landscape")
+                        assert(screen.transform == "normal")
                         return ui.Text { text = screen.name, width = screen.width }
                     end)
                 "#,

@@ -66,7 +66,9 @@ behavioral reductions do not count as parity.
 - retainable scene objects and scoped locks for delayed destruction and exit
   transitions;
 - reactive native local-time snapshots and bounded date/time formatting;
-- screen variants, list models, virtual lists, and flick state;
+- screen variants with logical geometry, physical metadata, density,
+  orientation and transform data, plus list models, virtual lists, and flick
+  state;
 - process identity, environment lookup, shell paths, version checks, elapsed
   timers, and detached process launch;
 - native easing curves across quadratic, cubic, quartic, quintic, sine,
