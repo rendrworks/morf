@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         width: 240,
         height: 120,
+        ..PopupConfig::default()
     })?;
     let (width, height) = wait_for_popup(&mut client)?;
     let scale = client.scale_120();

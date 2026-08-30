@@ -221,6 +221,138 @@ pub struct PopupConfig {
     pub width: u32,
     /// Requested popup height in logical pixels.
     pub height: u32,
+    /// Edge or corner of the anchor rectangle used for placement.
+    pub anchor_edge: PopupAnchor,
+    /// Popup edge or corner pulled toward the anchor.
+    pub gravity: PopupGravity,
+    /// Horizontal positioner offset in logical pixels.
+    pub offset_x: i32,
+    /// Vertical positioner offset in logical pixels.
+    pub offset_y: i32,
+    /// Compositor adjustments allowed when the popup would be constrained.
+    pub constraints: PopupConstraints,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PopupAnchor {
+    None,
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    #[default]
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PopupGravity {
+    None,
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomRight,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PopupConstraints {
+    pub slide_x: bool,
+    pub slide_y: bool,
+    pub flip_x: bool,
+    pub flip_y: bool,
+    pub resize_x: bool,
+    pub resize_y: bool,
+}
+
+impl Default for PopupConstraints {
+    fn default() -> Self {
+        Self {
+            slide_x: true,
+            slide_y: true,
+            flip_x: true,
+            flip_y: true,
+            resize_x: false,
+            resize_y: false,
+        }
+    }
+}
+
+impl Default for PopupConfig {
+    fn default() -> Self {
+        Self {
+            anchor: InputRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            width: 1,
+            height: 1,
+            anchor_edge: PopupAnchor::default(),
+            gravity: PopupGravity::default(),
+            offset_x: 0,
+            offset_y: 0,
+            constraints: PopupConstraints::default(),
+        }
+    }
+}
+
+fn popup_anchor(anchor: PopupAnchor) -> xdg_positioner::Anchor {
+    match anchor {
+        PopupAnchor::None => xdg_positioner::Anchor::None,
+        PopupAnchor::Top => xdg_positioner::Anchor::Top,
+        PopupAnchor::Bottom => xdg_positioner::Anchor::Bottom,
+        PopupAnchor::Left => xdg_positioner::Anchor::Left,
+        PopupAnchor::Right => xdg_positioner::Anchor::Right,
+        PopupAnchor::TopLeft => xdg_positioner::Anchor::TopLeft,
+        PopupAnchor::TopRight => xdg_positioner::Anchor::TopRight,
+        PopupAnchor::BottomLeft => xdg_positioner::Anchor::BottomLeft,
+        PopupAnchor::BottomRight => xdg_positioner::Anchor::BottomRight,
+    }
+}
+
+fn popup_gravity(gravity: PopupGravity) -> xdg_positioner::Gravity {
+    match gravity {
+        PopupGravity::None => xdg_positioner::Gravity::None,
+        PopupGravity::Top => xdg_positioner::Gravity::Top,
+        PopupGravity::Bottom => xdg_positioner::Gravity::Bottom,
+        PopupGravity::Left => xdg_positioner::Gravity::Left,
+        PopupGravity::Right => xdg_positioner::Gravity::Right,
+        PopupGravity::TopLeft => xdg_positioner::Gravity::TopLeft,
+        PopupGravity::TopRight => xdg_positioner::Gravity::TopRight,
+        PopupGravity::BottomLeft => xdg_positioner::Gravity::BottomLeft,
+        PopupGravity::BottomRight => xdg_positioner::Gravity::BottomRight,
+    }
+}
+
+fn popup_constraints(constraints: PopupConstraints) -> xdg_positioner::ConstraintAdjustment {
+    let mut value = xdg_positioner::ConstraintAdjustment::empty();
+    if constraints.slide_x {
+        value |= xdg_positioner::ConstraintAdjustment::SlideX;
+    }
+    if constraints.slide_y {
+        value |= xdg_positioner::ConstraintAdjustment::SlideY;
+    }
+    if constraints.flip_x {
+        value |= xdg_positioner::ConstraintAdjustment::FlipX;
+    }
+    if constraints.flip_y {
+        value |= xdg_positioner::ConstraintAdjustment::FlipY;
+    }
+    if constraints.resize_x {
+        value |= xdg_positioner::ConstraintAdjustment::ResizeX;
+    }
+    if constraints.resize_y {
+        value |= xdg_positioner::ConstraintAdjustment::ResizeY;
+    }
+    value
 }
 
 /// Geometry and identity for an xdg toplevel surface.
@@ -991,7 +1123,7 @@ impl LayerClient {
         region.destroy();
     }
 
-    /// Creates an xdg popup anchored below a parent-surface rectangle.
+    /// Creates an xdg popup anchored to a parent-surface rectangle.
     pub fn open_popup(&mut self, config: PopupConfig) -> Result<(), WaylandError> {
         self.close_popup();
         let qh = self.queue.handle();
@@ -1004,14 +1136,10 @@ impl LayerClient {
             config.anchor.width.max(1),
             config.anchor.height.max(1),
         );
-        positioner.set_anchor(xdg_positioner::Anchor::BottomLeft);
-        positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
-        positioner.set_constraint_adjustment(
-            xdg_positioner::ConstraintAdjustment::SlideX
-                | xdg_positioner::ConstraintAdjustment::SlideY
-                | xdg_positioner::ConstraintAdjustment::FlipX
-                | xdg_positioner::ConstraintAdjustment::FlipY,
-        );
+        positioner.set_anchor(popup_anchor(config.anchor_edge));
+        positioner.set_gravity(popup_gravity(config.gravity));
+        positioner.set_offset(config.offset_x, config.offset_y);
+        positioner.set_constraint_adjustment(popup_constraints(config.constraints));
         let surface = self.state.compositor.create_surface(&qh);
         surface.set_buffer_scale(1);
         let popup = Popup::from_surface(None, &positioner, &qh, surface, &self.state.xdg_shell)
@@ -2665,6 +2793,19 @@ mod tests {
     #[test]
     fn physical_size_rounds_fractional_scale_upward() {
         assert_eq!(physical_size((101, 31), 150), (127, 39));
+    }
+
+    #[test]
+    fn popup_defaults_preserve_general_constraint_policy() {
+        let popup = PopupConfig::default();
+        assert_eq!(popup.anchor_edge, PopupAnchor::BottomLeft);
+        assert_eq!(popup.gravity, PopupGravity::BottomRight);
+        assert!(popup.constraints.slide_x);
+        assert!(popup.constraints.slide_y);
+        assert!(popup.constraints.flip_x);
+        assert!(popup.constraints.flip_y);
+        assert!(!popup.constraints.resize_x);
+        assert!(!popup.constraints.resize_y);
     }
 
     #[test]

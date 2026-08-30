@@ -92,6 +92,8 @@ behavioral reductions do not count as parity.
 
 - layer-surface namespace, size, anchors, margins, exclusive zone, compositor
   layer, output selection, and keyboard focus policy;
+- popup anchor rectangles, edge and gravity selection, offsets, and compositor
+  slide, flip, and resize constraints;
 - fractional scaling, output tracking, frame callbacks, and input regions.
 
 The Rust engine already contains additional platform mechanisms. They do not
