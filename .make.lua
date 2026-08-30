@@ -282,6 +282,32 @@ make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
              run = function() sh.cargo("fmt", "--all", "--", "--check") end }
 
 make.recipe{
+  name = "rust-loc-check",
+  desc = "fail when a Rust source exceeds 500 lines",
+  run = function()
+    local listed = oslo.run{
+      "git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.rs",
+      capture = true,
+    }
+    assert(listed.ok, "could not inventory Rust sources")
+    local oversized = {}
+    for path in (listed.out or ""):gmatch("[^\n]+") do
+      if not path:match("^xtra/") then
+        local source = oslo.fs.read(path) or ""
+        local _, lines = source:gsub("\n", "")
+        if #source > 0 and source:sub(-1) ~= "\n" then lines = lines + 1 end
+        if lines > 500 then
+          oversized[#oversized + 1] = ("%s: %d lines"):format(path, lines)
+        end
+      end
+    end
+    table.sort(oversized)
+    assert(#oversized == 0,
+           "Rust sources exceed 500 lines:\n" .. table.concat(oversized, "\n"))
+  end,
+}
+
+make.recipe{
   name = "boundary-check",
   desc = "enforce the engine-only repository boundary",
   run = function()
@@ -305,7 +331,7 @@ make.alias("c", "compile")
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "boundary-check", "fmt-check", "check", "test", "check-all", "test-all",
-           "clippy", "rustdoc" },
+  deps = { "boundary-check", "rust-loc-check", "fmt-check", "check", "test",
+           "check-all", "test-all", "clippy", "rustdoc" },
 }
 make.alias("v", "verify")
