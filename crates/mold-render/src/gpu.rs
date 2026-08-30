@@ -1926,6 +1926,7 @@ fn create_glyph_batch(
             text,
             family,
             size,
+            font_weight,
             color,
             color_overlay,
             wrap,
@@ -1947,6 +1948,7 @@ fn create_glyph_batch(
                 wrap: *wrap,
                 alignment: *horizontal_alignment,
                 elide: *elide,
+                font_weight: *font_weight,
             },
         );
         let spare_height = (bounds.height - measured.height).max(0.0);

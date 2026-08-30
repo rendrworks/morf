@@ -153,12 +153,25 @@ pub enum TextElide {
 }
 
 /// Width, wrapping, and alignment supplied to the text subsystem.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextOptions {
     pub width: Option<f64>,
     pub wrap: bool,
     pub alignment: TextAlignment,
     pub elide: TextElide,
+    pub font_weight: f64,
+}
+
+impl Default for TextOptions {
+    fn default() -> Self {
+        Self {
+            width: None,
+            wrap: false,
+            alignment: TextAlignment::Left,
+            elide: TextElide::None,
+            font_weight: 400.0,
+        }
+    }
 }
 
 /// Text measurement supplied by the text subsystem.
@@ -399,6 +412,7 @@ impl Layout {
                     wrap: scene.bool_value(node, "wrap")?,
                     alignment: text_alignment(scene.string_value(node, "horizontal_alignment")?)?,
                     elide: text_elide(scene.string_value(node, "elide")?)?,
+                    font_weight: scene.number(node, "font_weight")?,
                 },
             ),
             Element::Image | Element::Icon => {
@@ -1083,6 +1097,22 @@ mod tests {
         }
     }
 
+    struct WeightText(f64);
+
+    impl TextMeasurer for WeightText {
+        fn measure(
+            &mut self,
+            _node: NodeHandle,
+            _text: &str,
+            _family: &str,
+            _size: f64,
+            options: TextOptions,
+        ) -> Size {
+            self.0 = options.font_weight;
+            Size::default()
+        }
+    }
+
     #[test]
     fn image_implicit_size_uses_source_dimensions() {
         let mut scene = Scene::new();
@@ -1183,6 +1213,18 @@ mod tests {
         assert_eq!(layout.implicit_size(row).unwrap().width, 35.0);
         assert_eq!(layout.geometry(first).unwrap().x, 0.0);
         assert_eq!(layout.geometry(second).unwrap().x, 15.0);
+    }
+
+    #[test]
+    fn text_font_weight_reaches_the_measurer() {
+        let mut scene = Scene::new();
+        let text = scene.create(Element::Text);
+        scene.assign(text, "font_weight", 650.0).unwrap();
+        let mut measurer = WeightText(0.0);
+
+        Layout::compute(&scene, text, Size::default(), &mut measurer).unwrap();
+
+        assert_eq!(measurer.0, 650.0);
     }
 
     #[test]

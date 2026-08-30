@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use cosmic_text::{
-    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
+    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight,
+    Wrap,
 };
 use mold_layout::{Size, TextAlignment, TextElide, TextMeasurer, TextOptions};
 use mold_scene::NodeHandle;
@@ -24,6 +25,7 @@ struct TextInput {
     wrap: bool,
     alignment: TextAlignment,
     elide: TextElide,
+    font_weight: u16,
 }
 
 /// Shared font database, per-node shaped buffers, and glyph image cache.
@@ -150,6 +152,7 @@ impl TextMeasurer for TextSystem {
         options: TextOptions,
     ) -> Size {
         let size = size.max(1.0) as f32;
+        let font_weight = normalize_font_weight(options.font_weight);
         let input = TextInput {
             text: text.to_owned(),
             family: family.to_owned(),
@@ -158,6 +161,7 @@ impl TextMeasurer for TextSystem {
             wrap: options.wrap,
             alignment: options.alignment,
             elide: options.elide,
+            font_weight,
         };
         let cached = self.buffers.entry(node).or_insert_with(|| CachedBuffer {
             buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),
@@ -177,7 +181,9 @@ impl TextMeasurer for TextSystem {
             let displayed = elided_text(&mut self.fonts, text, family, size, options);
             cached.buffer.set_text(
                 &displayed,
-                &Attrs::new().family(Family::Name(family)),
+                &Attrs::new()
+                    .family(Family::Name(family))
+                    .weight(Weight(font_weight)),
                 Shaping::Advanced,
                 Some(match options.alignment {
                     TextAlignment::Left => Align::Left,
@@ -216,7 +222,7 @@ fn elided_text(
     else {
         return text.to_owned();
     };
-    if shaped_width(fonts, text, family, size) <= width as f32 {
+    if shaped_width(fonts, text, family, size, options.font_weight) <= width as f32 {
         return text.to_owned();
     }
     let graphemes: Vec<&str> = text.graphemes(true).collect();
@@ -225,7 +231,7 @@ fn elided_text(
     while low < high {
         let middle = (low + high).div_ceil(2);
         let candidate = elide_candidate(&graphemes, middle, options.elide);
-        if shaped_width(fonts, &candidate, family, size) <= width as f32 {
+        if shaped_width(fonts, &candidate, family, size, options.font_weight) <= width as f32 {
             low = middle;
         } else {
             high = middle - 1;
@@ -252,12 +258,20 @@ fn elide_candidate(graphemes: &[&str], kept: usize, mode: TextElide) -> String {
     }
 }
 
-fn shaped_width(fonts: &mut FontSystem, text: &str, family: &str, size: f32) -> f32 {
+fn shaped_width(
+    fonts: &mut FontSystem,
+    text: &str,
+    family: &str,
+    size: f32,
+    font_weight: f64,
+) -> f32 {
     let mut buffer = Buffer::new(fonts, Metrics::relative(size, 1.2));
     buffer.set_wrap(Wrap::None);
     buffer.set_text(
         text,
-        &Attrs::new().family(Family::Name(family)),
+        &Attrs::new()
+            .family(Family::Name(family))
+            .weight(Weight(normalize_font_weight(font_weight))),
         Shaping::Advanced,
         Some(Align::Left),
     );
@@ -266,6 +280,14 @@ fn shaped_width(fonts: &mut FontSystem, text: &str, family: &str, size: f32) -> 
         .layout_runs()
         .map(|run| run.line_w)
         .fold(0.0, f32::max)
+}
+
+fn normalize_font_weight(weight: f64) -> u16 {
+    if weight.is_finite() {
+        weight.round().clamp(100.0, 900.0) as u16
+    } else {
+        400
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +307,29 @@ mod tests {
         assert!(measured.width > 0.0);
         assert!(measured.height > 0.0);
         assert!(text.buffer(node).is_some());
+    }
+
+    #[test]
+    fn font_weight_participates_in_the_shaping_cache() {
+        let mut scene = Scene::new();
+        let node = scene.create(Element::Text);
+        let mut text = TextSystem::new();
+
+        text.measure(
+            node,
+            "mold",
+            "sans-serif",
+            16.0,
+            TextOptions {
+                font_weight: 700.0,
+                ..TextOptions::default()
+            },
+        );
+
+        assert_eq!(text.buffers[&node].input.as_ref().unwrap().font_weight, 700);
+        assert_eq!(normalize_font_weight(50.0), 100);
+        assert_eq!(normalize_font_weight(950.0), 900);
+        assert_eq!(normalize_font_weight(f64::NAN), 400);
     }
 
     #[test]
@@ -397,7 +442,7 @@ mod tests {
                 },
             );
             assert!(displayed.contains('…'));
-            assert!(shaped_width(&mut fonts, &displayed, "sans-serif", 16.0) <= 100.0);
+            assert!(shaped_width(&mut fonts, &displayed, "sans-serif", 16.0, 400.0) <= 100.0);
             match mode {
                 TextElide::Left => assert!(text.ends_with(displayed.trim_start_matches('…'))),
                 TextElide::Middle => {

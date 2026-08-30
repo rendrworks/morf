@@ -73,6 +73,8 @@ pub enum DrawCommand {
         family: String,
         /// Logical font size.
         size: f64,
+        /// Numeric OpenType font weight.
+        font_weight: f64,
         /// Glyph colour after node opacity.
         color: Color,
         /// Inherited colour overlay.
@@ -734,6 +736,7 @@ fn append_node(
             text: scene.string_value(node, "text")?.to_owned(),
             family: scene.string_value(node, "font_family")?.to_owned(),
             size: scene.number(node, "font_size")?,
+            font_weight: scene.number(node, "font_weight")?,
             color: with_opacity(scene.color_value(node, "color")?, opacity),
             color_overlay,
             wrap: scene.bool_value(node, "wrap")?,
@@ -1657,6 +1660,7 @@ mod tests {
         scene.assign(text, "height", 80.0).unwrap();
         scene.assign(text, "wrap", true).unwrap();
         scene.assign(text, "elide", "right").unwrap();
+        scene.assign(text, "font_weight", 700.0).unwrap();
         scene
             .assign(text, "horizontal_alignment", "center")
             .unwrap();
@@ -1676,6 +1680,7 @@ mod tests {
         let DrawCommand::Text {
             wrap,
             elide,
+            font_weight,
             horizontal_alignment,
             vertical_alignment,
             ..
@@ -1685,6 +1690,7 @@ mod tests {
         };
         assert!(wrap);
         assert_eq!(elide, TextElide::Right);
+        assert_eq!(font_weight, 700.0);
         assert_eq!(horizontal_alignment, TextAlignment::Center);
         assert_eq!(vertical_alignment, VerticalAlignment::Bottom);
     }

@@ -1397,6 +1397,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 string("text", ""),
                 color("color", Color::rgba8(0, 0, 0, 255)),
                 number("font_size", 16.0),
+                number("font_weight", 400.0),
                 string("font_family", "sans-serif"),
                 boolean("wrap", false),
                 string("elide", "none"),
@@ -1578,6 +1579,16 @@ mod tests {
         assert_eq!(unknown.to_string(), "unknown Text property `radius`");
         let wrong = scene.assign(text, "font_size", "large").unwrap_err();
         assert!(wrong.to_string().contains("Text property `font_size`"));
+    }
+
+    #[test]
+    fn text_has_regular_font_weight_by_default() {
+        let mut scene = Scene::new();
+        let text = scene.create(Element::Text);
+
+        assert_eq!(scene.number(text, "font_weight").unwrap(), 400.0);
+        scene.assign(text, "font_weight", 700.0).unwrap();
+        assert_eq!(scene.number(text, "font_weight").unwrap(), 700.0);
     }
 
     #[test]
