@@ -72,7 +72,8 @@ behavioral reductions do not count as parity.
   transitions;
 - reactive native local-time snapshots and bounded date/time formatting;
 - bounded variants instantiate every model entry; screen variants expose logical geometry, physical metadata, density,
-  orientation and transform data, plus list models with stable keyed
+  orientation and transform data and restart on same-name metadata changes,
+  plus list models with stable keyed
   reconciliation, value lookup, virtual lists, and flick state;
 - process, instance, shell and application identity, launch time, environment
   lookup, shell paths, version checks, elapsed timers, and detached process

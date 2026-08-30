@@ -157,6 +157,7 @@ struct Worker {
     stop: Arc<AtomicBool>,
     commands: mpsc::Sender<WorkerCommand>,
     join: JoinHandle<()>,
+    screen: ScreenInfo,
 }
 
 enum WorkerCommand {
@@ -730,9 +731,9 @@ fn reconcile_workers(
     tx: &mpsc::Sender<SupervisorMessage>,
 ) {
     let stale = workers
-        .keys()
-        .filter(|name| !desired.contains_key(*name))
-        .cloned()
+        .iter()
+        .filter(|(name, worker)| desired.get(*name) != Some(&worker.screen))
+        .map(|(name, _)| name.clone())
         .collect::<Vec<_>>();
     for name in stale {
         let worker = workers.remove(&name).expect("worker key is present");
@@ -745,6 +746,7 @@ fn reconcile_workers(
         }
         let output = name.clone();
         let screen = screen.clone();
+        let worker_screen = screen.clone();
         let path = Arc::clone(&path);
         let source = Arc::clone(&source);
         let tx = tx.clone();
@@ -774,6 +776,7 @@ fn reconcile_workers(
                 stop,
                 commands,
                 join,
+                screen: worker_screen,
             },
         );
     }
@@ -2579,6 +2582,10 @@ mod tests {
                 stop,
                 commands,
                 join,
+                screen: ScreenInfo {
+                    name: Some("test".to_owned()),
+                    ..ScreenInfo::default()
+                },
             },
         )]);
 
