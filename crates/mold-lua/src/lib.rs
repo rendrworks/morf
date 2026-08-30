@@ -5015,6 +5015,7 @@ fn install_reactive_api(
         let ui = Table::new(&ctx);
         for (name, element) in [
             ("Item", Element::Item),
+            ("Inset", Element::Inset),
             ("Rect", Element::Rect),
             ("Text", Element::Text),
             ("Image", Element::Image),
@@ -6163,6 +6164,17 @@ fn element_constructor<'gc>(
         let properties: Table = stack.consume(ctx)?;
         let node = create_node(&state, element);
         configure_element(&state, ctx, limits, node, properties).map_err(HostError)?;
+        if element == Element::Inset
+            && state
+                .borrow()
+                .scene
+                .children(node)
+                .map_err(|error| HostError(error.to_string()))?
+                .len()
+                > 1
+        {
+            return Err(HostError("Inset accepts at most one child".into()).into());
+        }
         stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
         Ok(CallbackReturn::Return)
     })
@@ -9642,6 +9654,43 @@ mod tests {
             &SceneValue::String("12:01".to_owned())
         );
         assert_eq!(scene.number(children[1], "width").unwrap(), 20.0);
+    }
+
+    #[test]
+    fn inset_is_native_and_rejects_ambiguous_children() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "inset.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    ui.Inset {
+                        margin = 8,
+                        left_margin = 12,
+                        ui.Text { text = "content" },
+                    }
+                "#,
+            )
+            .unwrap();
+        let root = runtime.scene().roots()[0];
+        assert_eq!(runtime.scene().element(root).unwrap(), Element::Inset);
+        assert_eq!(runtime.scene().number(root, "margin").unwrap(), 8.0);
+        assert_eq!(runtime.scene().children(root).unwrap().len(), 1);
+
+        let error = Runtime::default()
+            .execute(
+                "ambiguous-inset.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    ui.Inset { ui.Item {}, ui.Item {} }
+                "#,
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Inset accepts at most one child")
+        );
     }
 
     #[test]

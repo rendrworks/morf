@@ -415,6 +415,18 @@ impl Layout {
                 scene.number(node, "column_spacing")?,
                 scene.number(node, "row_spacing")?,
             ),
+            Element::Inset => {
+                let width = child_sizes.first().map_or(0.0, |size| size.width);
+                let height = child_sizes.first().map_or(0.0, |size| size.height);
+                Size {
+                    width: width
+                        + inset_margin(scene, node, "left_margin")?
+                        + inset_margin(scene, node, "right_margin")?,
+                    height: height
+                        + inset_margin(scene, node, "top_margin")?
+                        + inset_margin(scene, node, "bottom_margin")?,
+                }
+            }
             Element::Item
             | Element::Rect
             | Element::Shape
@@ -441,11 +453,15 @@ impl Layout {
         implicit: Size,
     ) -> Result<Size, LayoutError> {
         let attached = attached_layout(scene.current(node, "layout")?)?;
+        let implicit_width = positive(scene.number(node, "implicit_width")?);
+        let implicit_height = positive(scene.number(node, "implicit_height")?);
         let width = positive(scene.number(node, "width")?)
             .or_else(|| layout_number(&attached, "preferred_width"))
+            .or(implicit_width)
             .unwrap_or(implicit.width);
         let height = positive(scene.number(node, "height")?)
             .or_else(|| layout_number(&attached, "preferred_height"))
+            .or(implicit_height)
             .unwrap_or(implicit.height);
         Ok(Size {
             width: clamp_layout(width, &attached, "minimum_width", "maximum_width"),
@@ -531,7 +547,23 @@ impl Layout {
                 height: size.height,
             };
             let attached = attached_layout(scene.current(child, "layout")?)?;
-            if parent_element == Element::RowLayout {
+            if parent_element == Element::Inset {
+                let left = inset_margin(scene, parent, "left_margin")?;
+                let right = inset_margin(scene, parent, "right_margin")?;
+                let top = inset_margin(scene, parent, "top_margin")?;
+                let bottom = inset_margin(scene, parent, "bottom_margin")?;
+                if scene.bool_value(parent, "resize_child")? {
+                    geometry.x = left;
+                    geometry.y = top;
+                    geometry.width = (parent_geometry.width - left - right).max(0.0);
+                    geometry.height = (parent_geometry.height - top - bottom).max(0.0);
+                } else {
+                    geometry.x =
+                        distributed_margin(parent_geometry.width - geometry.width, left, right);
+                    geometry.y =
+                        distributed_margin(parent_geometry.height - geometry.height, top, bottom);
+                }
+            } else if parent_element == Element::RowLayout {
                 geometry.width += growth.get(&child).copied().unwrap_or(0.0);
                 if flag(&attached, "fill_height") {
                     geometry.height = parent_geometry.height;
@@ -584,6 +616,25 @@ impl Layout {
     }
 }
 
+fn inset_margin(
+    scene: &Scene,
+    node: NodeHandle,
+    property: &'static str,
+) -> Result<f64, LayoutError> {
+    let margin = match scene.current(node, property)? {
+        Value::Nil => scene.number(node, "margin")?,
+        Value::Number(value) if value.is_finite() => *value,
+        _ => return Err(LayoutError::InvalidInsetMargin(property)),
+    };
+    Ok(margin + scene.number(node, "extra_margin")?)
+}
+
+fn distributed_margin(available: f64, leading: f64, trailing: f64) -> f64 {
+    let total = leading + trailing;
+    let ratio = if total == 0.0 { 0.5 } else { leading / total };
+    (available * ratio).round()
+}
+
 fn node_transform(
     scene: &Scene,
     node: NodeHandle,
@@ -606,6 +657,8 @@ pub enum LayoutError {
     Scene(String),
     /// The anchors property was not a string-keyed table.
     InvalidAnchors,
+    /// An inset margin was neither nil nor a finite number.
+    InvalidInsetMargin(&'static str),
     /// Anchors and a positioner both control the same axis.
     AxisConflict { axis: &'static str },
 }
@@ -615,6 +668,9 @@ impl fmt::Display for LayoutError {
         match self {
             Self::Scene(message) => write!(f, "scene layout error: {message}"),
             Self::InvalidAnchors => f.write_str("anchors must be a string-keyed map"),
+            Self::InvalidInsetMargin(property) => {
+                write!(f, "{property} must be nil or a finite number")
+            }
             Self::AxisConflict { axis } => {
                 write!(f, "anchors and positioner both control the {axis} axis")
             }
@@ -875,6 +931,81 @@ mod tests {
         assert_eq!(layout.implicit_size(row).unwrap().width, 35.0);
         assert_eq!(layout.geometry(first).unwrap().x, 0.0);
         assert_eq!(layout.geometry(second).unwrap().x, 15.0);
+    }
+
+    #[test]
+    fn inset_sizes_and_positions_its_single_child() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Inset);
+        let child = scene.create(Element::Rect);
+        scene.reparent(child, Some(root)).unwrap();
+        scene.assign(root, "margin", 4.0).unwrap();
+        scene.assign(root, "extra_margin", 2.0).unwrap();
+        scene.assign(root, "left_margin", 10.0).unwrap();
+        scene.assign(child, "implicit_width", 40.0).unwrap();
+        scene.assign(child, "implicit_height", 20.0).unwrap();
+
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(
+            layout.implicit_size(root),
+            Some(Size {
+                width: 58.0,
+                height: 32.0
+            })
+        );
+        assert_eq!(
+            layout.geometry(child),
+            Some(Geometry {
+                x: 12.0,
+                y: 6.0,
+                width: 82.0,
+                height: 38.0
+            })
+        );
+    }
+
+    #[test]
+    fn inset_can_preserve_child_size_and_distribute_space() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::Inset);
+        let child = scene.create(Element::Item);
+        scene.reparent(child, Some(root)).unwrap();
+        scene.assign(root, "left_margin", 2.0).unwrap();
+        scene.assign(root, "right_margin", 1.0).unwrap();
+        scene.assign(root, "resize_child", false).unwrap();
+        scene.assign(child, "implicit_width", 40.0).unwrap();
+        scene.assign(child, "implicit_height", 20.0).unwrap();
+
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 100.0,
+                height: 50.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(
+            layout.geometry(child),
+            Some(Geometry {
+                x: 40.0,
+                y: 15.0,
+                width: 40.0,
+                height: 20.0
+            })
+        );
     }
 
     #[test]

@@ -27,6 +27,8 @@ pub struct NodeHandle(NodeId);
 pub enum Element {
     /// Non-painting container.
     Item,
+    /// Single-child container applying configurable margins.
+    Inset,
     /// Rounded rectangle primitive.
     Rect,
     /// Shaped text primitive.
@@ -63,6 +65,7 @@ impl Element {
     fn name(self) -> &'static str {
         match self {
             Self::Item => "Item",
+            Self::Inset => "Inset",
             Self::Rect => "Rect",
             Self::Text => "Text",
             Self::Image => "Image",
@@ -1310,6 +1313,15 @@ fn schema(element: Element) -> Vec<PropertySpec> {
     ];
     match element {
         Element::Item => {}
+        Element::Inset => properties.extend([
+            number("margin", 0.0),
+            number("extra_margin", 0.0),
+            any("top_margin", Value::Nil),
+            any("right_margin", Value::Nil),
+            any("bottom_margin", Value::Nil),
+            any("left_margin", Value::Nil),
+            boolean("resize_child", true),
+        ]),
         Element::Loader => properties.extend([
             boolean("active", true),
             boolean("loading", false),

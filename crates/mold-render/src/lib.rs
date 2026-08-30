@@ -762,6 +762,7 @@ fn append_node(
             even_odd: scene.string_value(node, "fill_rule")? == "even_odd",
         }),
         Element::Item
+        | Element::Inset
         | Element::MouseArea
         | Element::Row
         | Element::Column

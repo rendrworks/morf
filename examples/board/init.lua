@@ -195,15 +195,18 @@ mold.variants(mold.screens, function(screen)
     card(right_x, inset + user_height + gap, calendar_width, bottom_height, calendar_title, calendar_children),
 
     card(right_x + calendar_width + gap, inset + user_height + gap, media_width, bottom_height, "MEDIA", {
-      ui.Rect {
+      ui.Inset {
         x = 18,
         y = 50,
         width = media_width - 36,
         height = math.max(80, math.floor(bottom_height * 0.42)),
-        radius = 10,
-        color = palette.raised,
-        label("consumer-owned", 18, 20, 18, palette.accent),
-        label("Connect a media plugin here", 18, 52, 13, palette.muted),
+        margin = 8,
+        ui.Rect {
+          radius = 10,
+          color = palette.raised,
+          label("consumer-owned", 18, 20, 18, palette.accent),
+          label("Connect a media plugin here", 18, 52, 13, palette.muted),
+        },
       },
       label("The engine provides composition,", 18, math.floor(bottom_height * 0.62), 13, palette.muted),
       label("not a built-in media widget.", 18, math.floor(bottom_height * 0.62) + 24, 13, palette.muted),

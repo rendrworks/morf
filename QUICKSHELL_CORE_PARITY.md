@@ -95,6 +95,8 @@ behavioral reductions do not count as parity.
 - item, rectangle, text, image, icon, shape, and input primitives;
 - rows, columns, grids, layouts, repeaters, virtualized views, flickables,
   synchronous and deferred lazy loaders, and timers;
+- native single-child inset containers with side overrides, extra margins,
+  implicit sizing, and optional child resizing;
 - native properties, bindings, states, transitions, animation, focus, pointer,
   touch, and keyboard routing.
 
