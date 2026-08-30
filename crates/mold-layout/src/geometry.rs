@@ -26,6 +26,25 @@ pub struct Transform2D {
     pub matrix: [f64; 6],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransformParameters {
+    pub translation: [f64; 2],
+    pub scale: [f64; 2],
+    pub rotation: f64,
+    pub skew: [f64; 2],
+}
+
+impl Default for TransformParameters {
+    fn default() -> Self {
+        Self {
+            translation: [0.0; 2],
+            scale: [1.0; 2],
+            rotation: 0.0,
+            skew: [0.0; 2],
+        }
+    }
+}
+
 impl Default for Transform2D {
     fn default() -> Self {
         Self::IDENTITY
@@ -39,18 +58,38 @@ impl Transform2D {
 
     /// Builds a uniform scale and clockwise rotation around a surface point.
     pub fn around(center: (f64, f64), scale: f64, rotation_degrees: f64) -> Self {
-        let radians = rotation_degrees.to_radians();
-        let cosine = radians.cos() * scale;
-        let sine = radians.sin() * scale;
-        let (x, y) = center;
+        Self::affine(
+            center,
+            TransformParameters {
+                scale: [scale; 2],
+                rotation: rotation_degrees,
+                ..TransformParameters::default()
+            },
+        )
+    }
+
+    /// Builds translation, non-uniform scale, skew, and rotation around a surface point.
+    pub fn affine(origin: (f64, f64), parameters: TransformParameters) -> Self {
+        let radians = parameters.rotation.to_radians();
+        let cosine = radians.cos();
+        let sine = radians.sin();
+        let skew_x = parameters.skew[0].to_radians().tan();
+        let skew_y = parameters.skew[1].to_radians().tan();
+        let scale_x = parameters.scale[0];
+        let scale_y = parameters.scale[1];
+        let a = scale_x * (cosine - sine * skew_y);
+        let b = scale_x * (sine + cosine * skew_y);
+        let c = scale_y * (cosine * skew_x - sine);
+        let d = scale_y * (sine * skew_x + cosine);
+        let (x, y) = origin;
         Self {
             matrix: [
-                cosine,
-                sine,
-                -sine,
-                cosine,
-                x - cosine * x + sine * y,
-                y - sine * x - cosine * y,
+                a,
+                b,
+                c,
+                d,
+                x - a * x - c * y + parameters.translation[0],
+                y - b * x - d * y + parameters.translation[1],
             ],
         }
     }
@@ -189,4 +228,3 @@ pub trait TextMeasurer {
         None
     }
 }
-

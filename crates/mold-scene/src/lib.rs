@@ -18,6 +18,7 @@ include!("types.rs");
 include!("animation.rs");
 include!("scene_default.rs");
 include!("scene.rs");
+include!("scene_access.rs");
 include!("motion.rs");
 include!("schema.rs");
 #[cfg(test)]

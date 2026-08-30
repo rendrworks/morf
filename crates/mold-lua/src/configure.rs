@@ -235,6 +235,7 @@ fn configure_states<'gc>(
                 behavior: Behavior {
                     duration: Duration::from_secs_f64(duration / 1_000.0),
                     easing: parse_easing(ctx, transition.get_value(ctx, "easing"))?,
+                    rotation_direction: parse_rotation_direction(ctx, transition)?,
                 },
             });
         }
@@ -311,6 +312,7 @@ fn configure_behaviors<'gc>(
             return Err("behavior duration cannot be negative".to_owned());
         }
         let easing = parse_easing(ctx, behavior.get_value(ctx, "easing"))?;
+        let rotation_direction = parse_rotation_direction(ctx, behavior)?;
         state
             .borrow_mut()
             .scene
@@ -320,6 +322,7 @@ fn configure_behaviors<'gc>(
                 Some(Behavior {
                     duration: Duration::from_secs_f64(duration / 1_000.0),
                     easing,
+                    rotation_direction,
                 }),
             )
             .map_err(|error| error.to_string())?;
@@ -327,3 +330,22 @@ fn configure_behaviors<'gc>(
     Ok(())
 }
 
+fn parse_rotation_direction<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<RotationDirection, String> {
+    match options.get_value(ctx, "rotation_direction") {
+        LuaValue::Nil => Ok(RotationDirection::Numerical),
+        LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
+            "numerical" => Ok(RotationDirection::Numerical),
+            "shortest" => Ok(RotationDirection::Shortest),
+            "clockwise" => Ok(RotationDirection::Clockwise),
+            "counterclockwise" => Ok(RotationDirection::CounterClockwise),
+            _ => Err(
+                "rotation_direction must be numerical, shortest, clockwise, or counterclockwise"
+                    .to_owned(),
+            ),
+        },
+        _ => Err("rotation_direction must be a string".to_owned()),
+    }
+}

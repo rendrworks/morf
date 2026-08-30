@@ -35,6 +35,52 @@ fn draw_list_composes_ancestor_transforms() {
 }
 
 #[test]
+fn draw_list_keeps_non_uniform_origin_aware_transform() {
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let rect = scene.create(Element::Rect);
+    scene.assign(rect, "x", 10.0).unwrap();
+    scene.assign(rect, "y", 20.0).unwrap();
+    scene.assign(rect, "width", 100.0).unwrap();
+    scene.assign(rect, "height", 40.0).unwrap();
+    scene.assign(rect, "scale_x", 2.0).unwrap();
+    scene.assign(rect, "scale_y", 0.5).unwrap();
+    scene.assign(rect, "transform_origin_x", 0.0).unwrap();
+    scene.assign(rect, "transform_origin_y", 0.0).unwrap();
+    scene.assign(rect, "translate_x", 7.0).unwrap();
+    scene.assign(rect, "translate_y", -3.0).unwrap();
+    scene.reparent(rect, Some(root)).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 200.0,
+            height: 100.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+
+    let list = DrawList::from_scene(&scene, &layout).unwrap();
+    let DrawCommand::Quad {
+        bounds, transform, ..
+    } = list.commands[0]
+    else {
+        panic!("rectangle did not emit a quad");
+    };
+
+    assert_eq!(
+        transform.bounds(bounds),
+        Geometry {
+            x: 17.0,
+            y: 17.0,
+            width: 200.0,
+            height: 20.0,
+        }
+    );
+}
+
+#[test]
 fn draw_list_intersects_nested_ancestor_clips() {
     let mut scene = Scene::new();
     let root = scene.create(Element::Item);

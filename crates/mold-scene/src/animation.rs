@@ -143,6 +143,20 @@ fn out_bounce(progress: f64) -> f64 {
     }
 }
 
+/// Angular path used to interpolate rotation values.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RotationDirection {
+    /// Interpolate the numeric values directly.
+    #[default]
+    Numerical,
+    /// Use the smallest angular displacement.
+    Shortest,
+    /// Increase the angle until the target orientation is reached.
+    Clockwise,
+    /// Decrease the angle until the target orientation is reached.
+    CounterClockwise,
+}
+
 /// Write interceptor installed on an animatable property.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Behavior {
@@ -150,6 +164,8 @@ pub struct Behavior {
     pub duration: Duration,
     /// Timing curve for uninterrupted motion.
     pub easing: Easing,
+    /// Angular path used when the property is rotation.
+    pub rotation_direction: RotationDirection,
 }
 
 /// Physics-driven motion installed on a numeric property.
@@ -287,4 +303,3 @@ impl From<GraphError> for SceneError {
         Self::Reactive(error.to_string())
     }
 }
-

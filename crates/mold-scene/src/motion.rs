@@ -64,6 +64,31 @@ fn interpolatable(from: &Value, to: &Value) -> bool {
     )
 }
 
+fn animation_start(
+    property: &str,
+    from: Value,
+    to: &Value,
+    direction: RotationDirection,
+) -> Value {
+    let (Value::Number(from_number), Value::Number(to_number)) = (&from, to) else {
+        return from;
+    };
+    if property != "rotation" {
+        return from;
+    }
+    let delta = match direction {
+        RotationDirection::Numerical => return from,
+        RotationDirection::Shortest => {
+            (to_number - from_number + 180.0).rem_euclid(360.0) - 180.0
+        }
+        RotationDirection::Clockwise => (to_number - from_number).rem_euclid(360.0),
+        RotationDirection::CounterClockwise => {
+            -((from_number - to_number).rem_euclid(360.0))
+        }
+    };
+    Value::Number(to_number - delta)
+}
+
 fn validate_physics(physics: Physics) -> Result<(), String> {
     match physics {
         Physics::Spring {
@@ -203,9 +228,21 @@ fn interpolate_hermite(
 
 fn property_class(property: &str) -> PropertyClass {
     match property {
-        "x" | "y" | "scale" | "rotation" | "opacity" | "transition_x" | "transition_y" => {
-            PropertyClass::Transform
-        }
+        "x"
+        | "y"
+        | "scale"
+        | "scale_x"
+        | "scale_y"
+        | "skew_x"
+        | "skew_y"
+        | "translate_x"
+        | "translate_y"
+        | "transform_origin_x"
+        | "transform_origin_y"
+        | "rotation"
+        | "opacity"
+        | "transition_x"
+        | "transition_y" => PropertyClass::Transform,
         "color"
         | "color_overlay"
         | "layer"
@@ -261,4 +298,3 @@ fn cubic_bezier(progress: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     }
     curve((low + high) / 2.0, y1, y2)
 }
-

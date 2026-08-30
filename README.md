@@ -22,6 +22,16 @@ Run a configuration directly with:
 cargo run --package mold-cli -- shell.lua
 ```
 
+Run the interactive transformation example with:
+
+```sh
+EXAMPLE=examples/fluid-transform.lua oslo make run
+```
+
+Clicking its shape animates square-to-circle radius, color, origin-aware
+non-uniform scale, skew, rotation, shadows, and spring translation. The
+animation clock and interpolation remain in Rust; Lua only changes targets.
+
 Use `--no-plugin` to load the configuration without auto-sourced plugins. Use
 `--clean` to also exclude external Lua roots; modules beside the selected config
 remain available.

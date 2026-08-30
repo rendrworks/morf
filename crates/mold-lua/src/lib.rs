@@ -29,7 +29,8 @@ use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
 use mold_scene::{
     AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
-    NodeHandle, Physics, Scene, Value as SceneValue, ViewTransition, VirtualList,
+    NodeHandle, Physics, RotationDirection, Scene, Value as SceneValue, ViewTransition,
+    VirtualList,
 };
 use mold_services::{
     AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire,

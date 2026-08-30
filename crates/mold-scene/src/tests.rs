@@ -83,6 +83,7 @@ fn behavior_intercepts_writes_and_keeps_target_live() {
             Some(Behavior {
                 duration: Duration::from_millis(200),
                 easing: Easing::Linear,
+                rotation_direction: RotationDirection::Numerical,
             }),
         )
         .unwrap();
@@ -104,6 +105,7 @@ fn interrupted_animation_retargets_without_a_jump() {
     let behavior = Behavior {
         duration: Duration::from_millis(200),
         easing: Easing::Linear,
+        rotation_direction: RotationDirection::Numerical,
     };
     scene.set_behavior(rect, "opacity", Some(behavior)).unwrap();
     scene.assign(rect, "opacity", 0.0).unwrap();
@@ -121,6 +123,31 @@ fn interrupted_animation_retargets_without_a_jump() {
 }
 
 #[test]
+fn rotation_behavior_can_take_the_shortest_path() {
+    let mut scene = Scene::new();
+    let rect = scene.create(Element::Rect);
+    scene.assign(rect, "rotation", 350.0).unwrap();
+    scene
+        .set_behavior(
+            rect,
+            "rotation",
+            Some(Behavior {
+                duration: Duration::from_millis(100),
+                easing: Easing::Linear,
+                rotation_direction: RotationDirection::Shortest,
+            }),
+        )
+        .unwrap();
+
+    scene.assign(rect, "rotation", 10.0).unwrap();
+    scene.tick_animations(Duration::from_millis(50)).unwrap();
+
+    assert!(scene.number(rect, "rotation").unwrap().abs() < 0.000_001);
+    scene.tick_animations(Duration::from_millis(50)).unwrap();
+    assert_eq!(scene.number(rect, "rotation").unwrap(), 10.0);
+}
+
+#[test]
 fn paint_animation_finishes_at_the_exact_target() {
     let mut scene = Scene::new();
     let rect = scene.create(Element::Rect);
@@ -131,6 +158,7 @@ fn paint_animation_finishes_at_the_exact_target() {
             Some(Behavior {
                 duration: Duration::from_millis(120),
                 easing: Easing::OutCubic,
+                rotation_direction: RotationDirection::Numerical,
             }),
         )
         .unwrap();

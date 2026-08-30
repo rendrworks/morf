@@ -145,6 +145,7 @@ fn apply_state(
                     behavior: transition.unwrap_or(Behavior {
                         duration: Duration::ZERO,
                         easing: Easing::Linear,
+                        rotation_direction: RotationDirection::Numerical,
                     }),
                 });
             }
@@ -261,4 +262,3 @@ fn flush_reactive(
         }
     }
 }
-

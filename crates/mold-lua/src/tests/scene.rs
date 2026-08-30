@@ -384,3 +384,41 @@ fn failed_pam_authentication_cannot_request_unlock() {
     assert!(!runtime.take_session_unlock_request());
 }
 
+#[test]
+fn fluid_transform_example_animates_square_to_circle_in_rust() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "examples/fluid-transform.lua",
+            include_bytes!("../../../../examples/fluid-transform.lua"),
+        )
+        .unwrap();
+    runtime
+        .tick_animations(Duration::from_secs(2))
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let shape = runtime.scene().children(root).unwrap()[1];
+    assert_eq!(runtime.scene().number(shape, "radius").unwrap(), 12.0);
+
+    assert!(runtime.dispatch_ui_event(shape, UiEvent::Clicked));
+    assert_eq!(
+        runtime.scene().target(shape, "radius").unwrap(),
+        &SceneValue::Number(60.0)
+    );
+    assert_eq!(
+        runtime.scene().target(shape, "translate_x").unwrap(),
+        &SceneValue::Number(270.0)
+    );
+
+    let frame = runtime
+        .tick_animations(Duration::from_millis(16))
+        .unwrap();
+    let radius = runtime.scene().number(shape, "radius").unwrap();
+    assert!(radius > 12.0 && radius < 60.0);
+    assert!(frame.active);
+    assert!(frame.changes.iter().any(|change| {
+        change.node == shape
+            && change.property == "translate_x"
+            && change.class == mold_scene::PropertyClass::Transform
+    }));
+}

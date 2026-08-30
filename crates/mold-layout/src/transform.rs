@@ -141,6 +141,14 @@ fn transform_signature(
             geometry.height,
             scene.number(node, "rotation")?,
             scene.number(node, "scale")?,
+            scene.number(node, "scale_x")?,
+            scene.number(node, "scale_y")?,
+            scene.number(node, "skew_x")?,
+            scene.number(node, "skew_y")?,
+            scene.number(node, "translate_x")?,
+            scene.number(node, "translate_y")?,
+            scene.number(node, "transform_origin_x")?,
+            scene.number(node, "transform_origin_y")?,
         ] {
             value.to_bits().hash(&mut hasher);
         }
@@ -177,18 +185,31 @@ fn distributed_margin(available: f64, leading: f64, trailing: f64) -> f64 {
     (available * ratio).round()
 }
 
-fn node_transform(
+pub fn node_transform(
     scene: &Scene,
     node: NodeHandle,
     geometry: Geometry,
 ) -> Result<Transform2D, LayoutError> {
-    Ok(Transform2D::around(
+    let scale = scene.number(node, "scale")?;
+    Ok(Transform2D::affine(
         (
-            geometry.x + geometry.width / 2.0,
-            geometry.y + geometry.height / 2.0,
+            geometry.x + geometry.width * scene.number(node, "transform_origin_x")?,
+            geometry.y + geometry.height * scene.number(node, "transform_origin_y")?,
         ),
-        scene.number(node, "scale")?,
-        scene.number(node, "rotation")?,
+        TransformParameters {
+            translation: [
+                scene.number(node, "translate_x")?,
+                scene.number(node, "translate_y")?,
+            ],
+            scale: [
+                scale * scene.number(node, "scale_x")?,
+                scale * scene.number(node, "scale_y")?,
+            ],
+            rotation: scene.number(node, "rotation")?,
+            skew: [
+                scene.number(node, "skew_x")?,
+                scene.number(node, "skew_y")?,
+            ],
+        },
     ))
 }
-

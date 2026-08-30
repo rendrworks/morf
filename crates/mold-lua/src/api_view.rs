@@ -370,10 +370,10 @@ fn install_view_api<'gc>(
                 behavior: Behavior {
                     duration: Duration::from_secs_f64(duration / 1_000.0),
                     easing,
+                    rotation_direction: RotationDirection::Numerical,
                 },
             });
         Ok(CallbackReturn::Return)
     });
     mold.set_field(ctx, "transition_parent", transition_parent);
 }
-

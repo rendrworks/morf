@@ -15,6 +15,14 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         boolean("clip", element == Element::ClipRect),
         number("rotation", 0.0),
         number("scale", 1.0),
+        number("scale_x", 1.0),
+        number("scale_y", 1.0),
+        number("skew_x", 0.0),
+        number("skew_y", 0.0),
+        number("translate_x", 0.0),
+        number("translate_y", 0.0),
+        number("transform_origin_x", 0.5),
+        number("transform_origin_y", 0.5),
         number("transition_x", 0.0),
         number("transition_y", 0.0),
         boolean("enabled", true),
@@ -219,4 +227,3 @@ fn coerce(
         },
     })
 }
-

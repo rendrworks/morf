@@ -96,7 +96,7 @@ could not support a whole-Quickshell claim.
 | Desktop entries | Collection excludes both Hidden and NoDisplay at `core/desktopentry.hpp:287-318` and changes automatically. | Metadata/actions/lookup/launch are native at `mold-desktop/src/lib.rs:13-162`; refresh is explicit. | **partial.** This audit fixed the incorrect inclusion of `NoDisplay` entries; automatic monitoring remains absent. |
 | Menus | Menu entries plus platform display/open/close/anchor behavior at `core/qsmenu.hpp:43-115` and `core/qsmenuanchor.hpp:35-71`. | Native in-memory hierarchy, mutation, radio/checkbox rules at `mold-menu/src/lib.rs:28-195`. | **partial.** Data is present; platform menu display/anchor lifecycle and DBusMenu are absent. |
 | Region | Rectangle, ellipse, rounded corners, nesting, and boolean operations at `core/region.hpp`. | Every per-corner radius and combine/subtract/intersect/XOR is exposed at `mold-lua/src/lib.rs:9865-9972`. | **implemented capability.** |
-| Transform watcher | Cross-tree endpoints/common parent/transform at `core/transformwatcher.hpp:21-54`. | Native transform-chain signatures and watcher at `mold-layout/src/lib.rs:210-233,770-827`. | **implemented core.** |
+| Transform watcher | Cross-tree endpoints/common parent/transform at `core/transformwatcher.hpp:21-54`. | Native geometry and ancestor-transform tracking at `crates/mold-layout/src/transform.rs:1-162`. | **implemented core.** |
 | Screen metadata | Public geometry, physical/logical density, orientation, DPR, serial, and changes at `core/qmlscreen.hpp:23-76`. | Native screen tables expose geometry, densities, orientation, primary orientation, DPR, and a nil serial at `mold-lua/src/lib.rs:4407-4440`. | **partial/close.** Backend serial data and exact signal/toString surface differ; the larger shell-global screen-list gap remains. |
 | Color quantizer | Mutable source/depth/crop/rescale and automatic results at `core/colorquantizer.hpp:66-119`. | Bounded native quantization at `mold-image/src/lib.rs:34-85`, exposed at `mold-lua/src/lib.rs:3748-3849`. | **partial/close.** Capability is present; result publication is explicit and synchronous. |
 
@@ -130,8 +130,8 @@ remain downstream.
 
 | Surface | Upstream use/evidence | Mold evidence | Status and gap |
 |---|---|---|---|
-| Item tree | Widgets use arbitrary QQuickItem children and reparenting at `widgets/wrapper.hpp:84-126`. | Native nodes/common properties at `mold-scene/src/lib.rs:25-64,1297-1318`; bounded reparenting at `mold-lua/src/lib.rs:6250-6265`. | **partial.** Basic geometry/tree exists; transform lists/origins, baseline/resources/focus scopes and broader mapping/polish semantics do not. |
-| Transforms | QtQuick items accept transform origin, nonuniform scale, and transform lists. | Scalar rotation and uniform scale, always around center, at `mold-scene/src/lib.rs:1311-1313` and `mold-layout/src/lib.rs:859-871`. | **partial.** Missing transform origin, scale X/Y, arbitrary matrix/translate/rotate/scale/shear lists. |
+| Item tree | Widgets use arbitrary QQuickItem children and reparenting at `widgets/wrapper.hpp:84-126`. | Native nodes/common properties at `crates/mold-scene/src/schema.rs:4-28`; bounded reparenting at `crates/mold-scene/src/scene.rs:87-126`. | **partial.** Basic geometry/tree exists; ordered transform lists, baseline/resources/focus scopes and broader mapping/polish semantics do not. |
+| Transforms | QtQuick items accept transform origin, nonuniform scale, and transform lists. | Native normalized origin, uniform and X/Y scale, rotation, translation, and skew are composed at `crates/mold-layout/src/transform.rs:185-216`. | **partial.** Common affine primitives are implemented; arbitrary matrices and ordered transform-object lists remain absent. |
 | Anchors | Quickshell QML uses full anchors at `widgets/ClippingRectangle.qml:55-74` and `widgets/IconImage.qml:59-65`. | Parent fill/center/edges and margins at `mold-layout/src/lib.rs:995-1058`. | **partial.** Missing sibling targets, horizontal/vertical center, baseline and offsets, and complete dynamic semantics. |
 | Rectangles and clipping | Per-corner radius, border, antialiasing, content-under/inside-border at `widgets/ClippingRectangle.qml:15-53`. | Rect/ClipRect schema at `mold-scene/src/lib.rs:1357-1392`; inner mask and overlay border at `mold-layout/src/lib.rs:524-535` and `mold-render/src/lib.rs:806-840`. | **implemented native subset.** This is a valid primitive mapping. |
 | Gradients | QtQuick Rectangle accepts arbitrary gradient stops. | Two endpoints for linear/radial/conical gradients at `mold-scene/src/lib.rs:1360-1370`. | **partial.** Stop lists, positions, spread/interpolation and reactive gradient objects are absent. |
@@ -147,7 +147,7 @@ remain downstream.
 | Pointer/touch/wheel | QQuick MouseArea and pointer handlers are available. | Basic hover/move/press/release/click/drag, touch identity and pixel/step wheel axes at `mold-lua/src/lib.rs:508-561,1064-1163`. | **partial.** Double/hold/cancel/composed propagation, cursor state, complete drag constraints, gesture arbitration, pointer handlers and device metadata are absent. |
 | Keyboard/focus | QQuick Item/Keys/FocusScope exposes press/release/repeat/modifiers/navigation and focus state. | Wayland emits press/release/repeat and modifiers at `mold-wayland/src/lib.rs:547-562`, but Lua UI handlers expose only key press/keysym/text at `mold-lua/src/lib.rs:531-560,1047-1062`; focus is one boolean/tree cycle. | **partial.** Release, repeat, modifiers, native codes, propagation, shortcuts, navigation, active/requested focus, reasons and focus scopes are absent from the primitive API. |
 | States/transitions | QML has conditions, extension, parent/anchor changes, selector and group semantics. | Name-keyed state tables and numeric/color interpolation at `mold-lua/src/lib.rs:9111-9170` and `mold-scene/src/lib.rs:1092-1197`. | **partial.** No state extension/priority, parent/anchor/script changes, selector/group lifecycle, or general value animation. |
-| Animation | QtQuick supplies animation objects, groups, pause/path/spring/smoothed lifecycle. | Duration/easing behavior plus spring/smoothed physics exist at `mold-scene/src/lib.rs:720-920`. | **partial.** Running/paused/loops/direction, groups, pause/script/path and per-type lifecycle are absent. |
+| Animation | QtQuick supplies animation objects, groups, pause/path/spring/smoothed lifecycle. | Rust duration/easing behavior, spring/smoothed physics, retargeting, and rotation direction exist in `crates/mold-scene/src/animation.rs`, `motion.rs`, and `scene.rs`. | **partial.** Rotation path is implemented; running/paused/loops, groups, pause/script/path, completion/cancellation, and per-type lifecycle remain absent. |
 | `Color` storage | Mold parses ordinary sRGB hex colors and linearizes before sRGB framebuffer upload at `mold-render/src/lib.rs:1224-1238`. | The scene doc called stored channels linear. | **fixed by this audit.** Stored channels are now documented as sRGB encoded. |
 
 ### Widget boundary
@@ -272,7 +272,7 @@ supported by the source:
    background-effect primitives in Rust.
 5. Expose session-lock construction independently of authentication policy.
 6. Add image ready/error/reload state, full key release/repeat/modifiers, focus
-   scopes, sibling anchors, transform origins and nonuniform transforms.
+   scopes, sibling anchors, and ordered transform-object lists.
 
 ### P2: breadth after correctness
 

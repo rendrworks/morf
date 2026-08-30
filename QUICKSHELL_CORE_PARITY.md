@@ -12,6 +12,9 @@ The exhaustive current-state ledger is
 whole pinned checkout and is authoritative when this summary and the detailed
 ledger differ.
 
+The focused animation comparison and runnable transformation proof are in
+[`docs/ANIMATION_PARITY.md`](docs/ANIMATION_PARITY.md).
+
 ## Boundary
 
 Included in the engine target:

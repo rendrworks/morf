@@ -5,7 +5,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::ops::Range;
 
-use mold_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D};
+use mold_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D, node_transform};
 use mold_scene::{Color, Element, NodeHandle, Scene, SceneError, Value};
 
 mod gpu;

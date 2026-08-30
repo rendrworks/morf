@@ -65,14 +65,11 @@ fn append_node(
     let Some(bounds) = layout.geometry(node) else {
         return Ok(());
     };
-    let transform = inherited.transform.then(Transform2D::around(
-        (
-            bounds.x + bounds.width / 2.0,
-            bounds.y + bounds.height / 2.0,
-        ),
-        scene.number(node, "scale")?,
-        rotation,
-    ));
+    let transform = inherited
+        .transform
+        .then(node_transform(scene, node, bounds).map_err(|error| {
+            RenderError::Scene(error.to_string())
+        })?);
     if let Some(layer) = layer
         && rounded_clip
     {

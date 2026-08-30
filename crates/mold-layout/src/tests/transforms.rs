@@ -94,6 +94,34 @@ fn transform_tracker_maps_node_local_geometry() {
 }
 
 #[test]
+fn affine_item_transform_uses_origin_scale_skew_and_translation() {
+    let mut scene = Scene::new();
+    let item = scene.create(Element::Item);
+    scene.assign(item, "scale_x", 2.0).unwrap();
+    scene.assign(item, "scale_y", 0.5).unwrap();
+    scene.assign(item, "translate_x", 7.0).unwrap();
+    scene.assign(item, "translate_y", -3.0).unwrap();
+    scene.assign(item, "transform_origin_x", 0.0).unwrap();
+    scene.assign(item, "transform_origin_y", 0.0).unwrap();
+    let geometry = Geometry {
+        x: 10.0,
+        y: 20.0,
+        width: 100.0,
+        height: 40.0,
+    };
+    let transform = node_transform(&scene, item, geometry).unwrap();
+
+    assert_eq!(transform.point(10.0, 20.0), (17.0, 17.0));
+    assert_eq!(transform.point(110.0, 60.0), (217.0, 37.0));
+
+    scene.assign(item, "skew_x", 45.0).unwrap();
+    let transform = node_transform(&scene, item, geometry).unwrap();
+    let top = transform.point(10.0, 20.0);
+    let bottom = transform.point(10.0, 60.0);
+    assert!((bottom.0 - top.0 - 20.0).abs() < 0.000_001);
+}
+
+#[test]
 fn fill_anchors_respect_margins() {
     let mut scene = Scene::new();
     let parent = scene.create(Element::Item);
