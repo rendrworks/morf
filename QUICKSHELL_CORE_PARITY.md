@@ -65,6 +65,8 @@ behavioral reductions do not count as parity.
 - screen variants, list models, virtual lists, and flick state;
 - process identity, environment lookup, shell paths, version checks, elapsed
   timers, and detached process launch;
+- native easing curves across quadratic, cubic, quartic, quintic, sine,
+  exponential, circular, back, bounce, and cubic-Bezier families;
 - bounded XDG desktop-entry discovery, precedence masking, lookup, actions, and
   detached launching;
 - bounded IPC registration and atomic runtime replacement.

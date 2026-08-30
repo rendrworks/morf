@@ -1344,6 +1344,10 @@ struct ElapsedTimerToken {
     started: RefCell<Instant>,
 }
 
+struct EasingCurveToken {
+    easing: Easing,
+}
+
 struct JsonNullToken;
 
 struct DesktopEntriesToken {
@@ -2139,6 +2143,38 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "elapsed_timer", elapsed_timer);
+        let easing_value = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (curve, progress): (UserRef<EasingCurveToken>, f64) = stack.consume(ctx)?;
+            if !progress.is_finite() {
+                return Err(HostError("easing progress must be finite".into()).into());
+            }
+            stack.replace(ctx, curve.easing.value_at(progress));
+            Ok(CallbackReturn::Return)
+        });
+        let easing_interpolate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (curve, progress, start, end): (UserRef<EasingCurveToken>, f64, f64, f64) =
+                stack.consume(ctx)?;
+            if !progress.is_finite() || !start.is_finite() || !end.is_finite() {
+                return Err(HostError("easing interpolation values must be finite".into()).into());
+            }
+            stack.replace(ctx, curve.easing.interpolate(progress, start, end));
+            Ok(CallbackReturn::Return)
+        });
+        let easing_methods = Table::new(&ctx);
+        easing_methods.set_field(ctx, "value_at", easing_value);
+        easing_methods.set_field(ctx, "interpolate", easing_interpolate);
+        let easing_metatable = Table::new(&ctx);
+        easing_metatable.set_field(ctx, "__index", easing_methods);
+        let easing_metatable = ctx.stash(easing_metatable);
+        let easing_curve = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let value: LuaValue = stack.consume(ctx)?;
+            let easing = parse_easing(ctx, value).map_err(HostError)?;
+            let curve = UserData::new_static(&ctx, EasingCurveToken { easing });
+            curve.set_metatable(ctx, Some(ctx.fetch(&easing_metatable)));
+            stack.replace(ctx, curve);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "easing_curve", easing_curve);
         let exec_detached = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let command: Table = stack.consume(ctx)?;
             let mut command = table_string_array(ctx, command, 64).map_err(HostError)?;
@@ -2826,7 +2862,7 @@ fn install_reactive_api(
                     HostError("parent-transition duration cannot be negative".into()).into(),
                 );
             }
-            let easing = parse_easing(options.get_value(ctx, "easing")).map_err(HostError)?;
+            let easing = parse_easing(ctx, options.get_value(ctx, "easing")).map_err(HostError)?;
             let anchors = match options.get_value(ctx, "anchors") {
                 LuaValue::Nil => None,
                 value => match lua_to_scene(ctx, value, 0).map_err(HostError)? {
@@ -4113,6 +4149,7 @@ fn install_reactive_api(
             "shell_path",
             "has_version",
             "elapsed_timer",
+            "easing_curve",
             "exec_detached",
             "signal",
             "reloadable",
@@ -5516,7 +5553,7 @@ fn configure_states<'gc>(
                 reversible,
                 behavior: Behavior {
                     duration: Duration::from_secs_f64(duration / 1_000.0),
-                    easing: parse_easing(transition.get_value(ctx, "easing"))?,
+                    easing: parse_easing(ctx, transition.get_value(ctx, "easing"))?,
                 },
             });
         }
@@ -5592,7 +5629,7 @@ fn configure_behaviors<'gc>(
         if duration < 0.0 {
             return Err("behavior duration cannot be negative".to_owned());
         }
-        let easing = parse_easing(behavior.get_value(ctx, "easing"))?;
+        let easing = parse_easing(ctx, behavior.get_value(ctx, "easing"))?;
         state
             .borrow_mut()
             .scene
@@ -5777,17 +5814,59 @@ fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
         .ok_or_else(|| "timeout must be between 0 and 5000 milliseconds".to_owned())
 }
 
-fn parse_easing(value: LuaValue<'_>) -> Result<Easing, String> {
+fn parse_easing<'gc>(ctx: Context<'gc>, value: LuaValue<'gc>) -> Result<Easing, String> {
     match value {
         LuaValue::Nil => Ok(Easing::Linear),
         LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
             "linear" => Ok(Easing::Linear),
+            "in_quad" => Ok(Easing::InQuad),
+            "out_quad" => Ok(Easing::OutQuad),
+            "in_out_quad" => Ok(Easing::InOutQuad),
             "in_cubic" => Ok(Easing::InCubic),
             "out_cubic" => Ok(Easing::OutCubic),
             "in_out_cubic" => Ok(Easing::InOutCubic),
+            "in_quart" => Ok(Easing::InQuart),
+            "out_quart" => Ok(Easing::OutQuart),
+            "in_out_quart" => Ok(Easing::InOutQuart),
+            "in_quint" => Ok(Easing::InQuint),
+            "out_quint" => Ok(Easing::OutQuint),
+            "in_out_quint" => Ok(Easing::InOutQuint),
+            "in_sine" => Ok(Easing::InSine),
+            "out_sine" => Ok(Easing::OutSine),
+            "in_out_sine" => Ok(Easing::InOutSine),
+            "in_expo" => Ok(Easing::InExpo),
+            "out_expo" => Ok(Easing::OutExpo),
+            "in_out_expo" => Ok(Easing::InOutExpo),
+            "in_circ" => Ok(Easing::InCirc),
+            "out_circ" => Ok(Easing::OutCirc),
+            "in_out_circ" => Ok(Easing::InOutCirc),
+            "in_back" => Ok(Easing::InBack),
+            "out_back" => Ok(Easing::OutBack),
+            "in_out_back" => Ok(Easing::InOutBack),
+            "in_bounce" => Ok(Easing::InBounce),
+            "out_bounce" => Ok(Easing::OutBounce),
+            "in_out_bounce" => Ok(Easing::InOutBounce),
             name => Err(format!("unknown easing `{name}`")),
         },
-        _ => Err("easing must be a string".to_owned()),
+        LuaValue::Table(value) => {
+            let read = |field| match value.get_value(ctx, field) {
+                LuaValue::Integer(value) => Ok(value as f64),
+                LuaValue::Number(value) if value.is_finite() => Ok(value),
+                _ => Err(format!("easing {field} must be a finite number")),
+            };
+            let x1 = read("x1")?;
+            let x2 = read("x2")?;
+            if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) {
+                return Err("easing x1 and x2 must be between 0 and 1".into());
+            }
+            Ok(Easing::CubicBezier {
+                x1,
+                y1: read("y1")?,
+                x2,
+                y2: read("y2")?,
+            })
+        }
+        _ => Err("easing must be a string or cubic Bezier table".to_owned()),
     }
 }
 
@@ -6539,6 +6618,12 @@ mod tests {
                     assert(timer:restart() >= 0)
                     assert(timer:restart_ms() >= 0)
                     assert(timer:restart_ns() >= 0)
+                    local curve = core.easing_curve("in_quad")
+                    assert(curve:value_at(0.5) == 0.25, "in_quad")
+                    assert(curve:interpolate(0.5, 10, 20) == 12.5, "interpolate")
+                    local bezier = core.easing_curve({ x1 = 0.42, y1 = 0, x2 = 1, y2 = 1 })
+                    assert(bezier:value_at(0) == 0, "bezier start")
+                    assert(bezier:value_at(1) > 0.999999, "bezier end")
                 "#,
             )
             .unwrap();
@@ -7728,7 +7813,8 @@ mod tests {
 
     #[test]
     fn lua_io_primitives_stream_processes_and_bound_files() {
-        let path = std::env::temp_dir().join(format!("mold-lua-file-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("mold-lua-bound-file-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         std::fs::write(&path, "old").unwrap();
         let source = format!(
             r#"

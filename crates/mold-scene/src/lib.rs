@@ -245,12 +245,36 @@ pub enum PropertyClass {
 pub enum Easing {
     /// Constant interpolation rate.
     Linear,
+    InQuad,
+    OutQuad,
+    InOutQuad,
     /// Cubic acceleration.
     InCubic,
     /// Cubic deceleration.
     OutCubic,
     /// Cubic acceleration followed by deceleration.
     InOutCubic,
+    InQuart,
+    OutQuart,
+    InOutQuart,
+    InQuint,
+    OutQuint,
+    InOutQuint,
+    InSine,
+    OutSine,
+    InOutSine,
+    InExpo,
+    OutExpo,
+    InOutExpo,
+    InCirc,
+    OutCirc,
+    InOutCirc,
+    InBack,
+    OutBack,
+    InOutBack,
+    InBounce,
+    OutBounce,
+    InOutBounce,
     /// CSS-style cubic Bezier timing curve.
     CubicBezier {
         /// First control point x coordinate.
@@ -265,16 +289,88 @@ pub enum Easing {
 }
 
 impl Easing {
-    fn sample(self, progress: f64) -> f64 {
+    pub fn value_at(self, progress: f64) -> f64 {
         let progress = progress.clamp(0.0, 1.0);
         match self {
             Self::Linear => progress,
+            Self::InQuad => progress * progress,
+            Self::OutQuad => 1.0 - (1.0 - progress).powi(2),
+            Self::InOutQuad if progress < 0.5 => 2.0 * progress * progress,
+            Self::InOutQuad => 1.0 - (-2.0 * progress + 2.0).powi(2) / 2.0,
             Self::InCubic => progress.powi(3),
             Self::OutCubic => 1.0 - (1.0 - progress).powi(3),
             Self::InOutCubic if progress < 0.5 => 4.0 * progress.powi(3),
             Self::InOutCubic => 1.0 - (-2.0 * progress + 2.0).powi(3) / 2.0,
+            Self::InQuart => progress.powi(4),
+            Self::OutQuart => 1.0 - (1.0 - progress).powi(4),
+            Self::InOutQuart if progress < 0.5 => 8.0 * progress.powi(4),
+            Self::InOutQuart => 1.0 - (-2.0 * progress + 2.0).powi(4) / 2.0,
+            Self::InQuint => progress.powi(5),
+            Self::OutQuint => 1.0 - (1.0 - progress).powi(5),
+            Self::InOutQuint if progress < 0.5 => 16.0 * progress.powi(5),
+            Self::InOutQuint => 1.0 - (-2.0 * progress + 2.0).powi(5) / 2.0,
+            Self::InSine => 1.0 - (progress * std::f64::consts::FRAC_PI_2).cos(),
+            Self::OutSine => (progress * std::f64::consts::FRAC_PI_2).sin(),
+            Self::InOutSine => -((std::f64::consts::PI * progress).cos() - 1.0) / 2.0,
+            Self::InExpo if progress == 0.0 => 0.0,
+            Self::InExpo => 2.0_f64.powf(10.0 * progress - 10.0),
+            Self::OutExpo if progress == 1.0 => 1.0,
+            Self::OutExpo => 1.0 - 2.0_f64.powf(-10.0 * progress),
+            Self::InOutExpo if progress == 0.0 || progress == 1.0 => progress,
+            Self::InOutExpo if progress < 0.5 => 2.0_f64.powf(20.0 * progress - 10.0) / 2.0,
+            Self::InOutExpo => (2.0 - 2.0_f64.powf(-20.0 * progress + 10.0)) / 2.0,
+            Self::InCirc => 1.0 - (1.0 - progress.powi(2)).sqrt(),
+            Self::OutCirc => (1.0 - (progress - 1.0).powi(2)).sqrt(),
+            Self::InOutCirc if progress < 0.5 => {
+                (1.0 - (1.0 - (2.0 * progress).powi(2)).sqrt()) / 2.0
+            }
+            Self::InOutCirc => ((1.0 - (-2.0 * progress + 2.0).powi(2)).sqrt() + 1.0) / 2.0,
+            Self::InBack => {
+                const C1: f64 = 1.70158;
+                (C1 + 1.0) * progress.powi(3) - C1 * progress.powi(2)
+            }
+            Self::OutBack => {
+                const C1: f64 = 1.70158;
+                1.0 + (C1 + 1.0) * (progress - 1.0).powi(3) + C1 * (progress - 1.0).powi(2)
+            }
+            Self::InOutBack => {
+                const C2: f64 = 1.70158 * 1.525;
+                if progress < 0.5 {
+                    (2.0 * progress).powi(2) * ((C2 + 1.0) * 2.0 * progress - C2) / 2.0
+                } else {
+                    ((2.0 * progress - 2.0).powi(2) * ((C2 + 1.0) * (progress * 2.0 - 2.0) + C2)
+                        + 2.0)
+                        / 2.0
+                }
+            }
+            Self::InBounce => 1.0 - out_bounce(1.0 - progress),
+            Self::OutBounce => out_bounce(progress),
+            Self::InOutBounce if progress < 0.5 => (1.0 - out_bounce(1.0 - 2.0 * progress)) / 2.0,
+            Self::InOutBounce => (1.0 + out_bounce(2.0 * progress - 1.0)) / 2.0,
+            Self::CubicBezier { .. } if progress == 0.0 || progress == 1.0 => progress,
             Self::CubicBezier { x1, y1, x2, y2 } => cubic_bezier(progress, x1, y1, x2, y2),
         }
+    }
+
+    pub fn interpolate(self, progress: f64, start: f64, end: f64) -> f64 {
+        start + (end - start) * self.value_at(progress)
+    }
+}
+
+fn out_bounce(progress: f64) -> f64 {
+    const N1: f64 = 7.5625;
+    const D1: f64 = 2.75;
+    if progress < 1.0 / D1 {
+        N1 * progress * progress
+    } else if progress < 2.0 / D1 {
+        let progress = progress - 1.5 / D1;
+        N1 * progress * progress + 0.75
+    } else if progress < 2.5 / D1 {
+        let progress = progress - 2.25 / D1;
+        N1 * progress * progress + 0.9375
+    } else {
+        let progress = progress - 2.625 / D1;
+        N1 * progress * progress + 0.984375
     }
 }
 
@@ -949,7 +1045,11 @@ impl Animation {
                 progress,
             )
         } else {
-            interpolate(&self.from, &self.to, self.behavior.easing.sample(progress))
+            interpolate(
+                &self.from,
+                &self.to,
+                self.behavior.easing.value_at(progress),
+            )
         }
     }
 
@@ -972,12 +1072,12 @@ impl Animation {
                 before,
             )
         } else {
-            interpolate(&self.from, &self.to, self.behavior.easing.sample(before))
+            interpolate(&self.from, &self.to, self.behavior.easing.value_at(before))
         };
         let after_value = if self.preserve_velocity {
             interpolate_hermite(&self.from, &self.to, self.initial_velocity, duration, after)
         } else {
-            interpolate(&self.from, &self.to, self.behavior.easing.sample(after))
+            interpolate(&self.from, &self.to, self.behavior.easing.value_at(after))
         };
         value_velocity(&before_value, &after_value, span)
     }
@@ -1519,6 +1619,46 @@ mod tests {
         assert_eq!(scene.current(rect, "color"), scene.target(rect, "color"));
         assert_eq!(frame.changes[0].class, PropertyClass::Paint);
         assert!(!frame.active);
+    }
+
+    #[test]
+    fn easing_families_preserve_endpoints_and_interpolate() {
+        for easing in [
+            Easing::Linear,
+            Easing::InQuad,
+            Easing::OutQuad,
+            Easing::InOutQuad,
+            Easing::InCubic,
+            Easing::OutCubic,
+            Easing::InOutCubic,
+            Easing::InQuart,
+            Easing::OutQuart,
+            Easing::InOutQuart,
+            Easing::InQuint,
+            Easing::OutQuint,
+            Easing::InOutQuint,
+            Easing::InSine,
+            Easing::OutSine,
+            Easing::InOutSine,
+            Easing::InExpo,
+            Easing::OutExpo,
+            Easing::InOutExpo,
+            Easing::InCirc,
+            Easing::OutCirc,
+            Easing::InOutCirc,
+            Easing::InBack,
+            Easing::OutBack,
+            Easing::InOutBack,
+            Easing::InBounce,
+            Easing::OutBounce,
+            Easing::InOutBounce,
+        ] {
+            assert!((easing.value_at(0.0) - 0.0).abs() < 1e-9);
+            assert!((easing.value_at(1.0) - 1.0).abs() < 1e-9);
+        }
+        assert_eq!(Easing::InQuad.interpolate(0.5, 10.0, 20.0), 12.5);
+        assert_eq!(Easing::OutQuad.value_at(-1.0), 0.0);
+        assert_eq!(Easing::OutQuad.value_at(2.0), 1.0);
     }
 
     #[test]
