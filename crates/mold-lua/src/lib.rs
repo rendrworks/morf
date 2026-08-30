@@ -5325,6 +5325,7 @@ fn install_reactive_api(
             ("Item", Element::Item),
             ("Inset", Element::Inset),
             ("Rect", Element::Rect),
+            ("ClipRect", Element::ClipRect),
             ("Text", Element::Text),
             ("Image", Element::Image),
             ("Icon", Element::Icon),
@@ -10141,6 +10142,33 @@ mod tests {
             error
                 .to_string()
                 .contains("Inset accepts at most one child")
+        );
+    }
+
+    #[test]
+    fn clip_rect_is_native_and_clips_by_default() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "clip-rect.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    ui.ClipRect {
+                        border_width = 2,
+                        ui.Item {},
+                    }
+                "#,
+            )
+            .unwrap();
+
+        let root = runtime.scene().roots()[0];
+        assert_eq!(runtime.scene().element(root).unwrap(), Element::ClipRect);
+        assert!(runtime.scene().bool_value(root, "clip").unwrap());
+        assert!(
+            runtime
+                .scene()
+                .bool_value(root, "content_inside_border")
+                .unwrap()
         );
     }
 

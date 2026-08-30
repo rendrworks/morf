@@ -453,6 +453,7 @@ impl Layout {
             }
             Element::Item
             | Element::Rect
+            | Element::ClipRect
             | Element::Shape
             | Element::MouseArea
             | Element::Flickable
@@ -462,6 +463,13 @@ impl Layout {
                 for (child, size) in children.iter().zip(child_sizes) {
                     bounds.width = bounds.width.max(scene.number(*child, "x")? + size.width);
                     bounds.height = bounds.height.max(scene.number(*child, "y")? + size.height);
+                }
+                if scene.element(node)? == Element::ClipRect
+                    && scene.bool_value(node, "content_inside_border")?
+                {
+                    let border = scene.number(node, "border_width")?.max(0.0);
+                    bounds.width += border * 2.0;
+                    bounds.height += border * 2.0;
                 }
                 bounds
             }
@@ -494,8 +502,17 @@ impl Layout {
     }
 
     fn resolve_children(&mut self, scene: &Scene, parent: NodeHandle) -> Result<(), LayoutError> {
-        let parent_geometry = self.geometry[&parent];
+        let mut parent_geometry = self.geometry[&parent];
         let parent_element = scene.element(parent)?;
+        if parent_element == Element::ClipRect
+            && scene.bool_value(parent, "content_inside_border")?
+        {
+            let border = scene.number(parent, "border_width")?.max(0.0);
+            parent_geometry.x += border;
+            parent_geometry.y += border;
+            parent_geometry.width = (parent_geometry.width - border * 2.0).max(0.0);
+            parent_geometry.height = (parent_geometry.height - border * 2.0).max(0.0);
+        }
         let children = scene.children(parent)?;
         let spacing = match parent_element {
             Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
@@ -1033,6 +1050,52 @@ mod tests {
             Some(Size {
                 width: 64.0,
                 height: 32.0
+            })
+        );
+    }
+
+    #[test]
+    fn clip_rect_keeps_content_inside_its_border() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::ClipRect);
+        let child = scene.create(Element::Rect);
+        scene.assign(root, "border_width", 3.0).unwrap();
+        scene.assign(child, "implicit_width", 20.0).unwrap();
+        scene.assign(child, "implicit_height", 10.0).unwrap();
+        scene
+            .assign(
+                child,
+                "anchors",
+                Value::Map(BTreeMap::from([("fill".to_owned(), Value::Bool(true))])),
+            )
+            .unwrap();
+        scene.reparent(child, Some(root)).unwrap();
+
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 50.0,
+                height: 30.0,
+            },
+            &mut FixedText,
+        )
+        .unwrap();
+
+        assert_eq!(
+            layout.implicit_size(root),
+            Some(Size {
+                width: 26.0,
+                height: 16.0,
+            })
+        );
+        assert_eq!(
+            layout.geometry(child),
+            Some(Geometry {
+                x: 3.0,
+                y: 3.0,
+                width: 44.0,
+                height: 24.0,
             })
         );
     }

@@ -612,14 +612,15 @@ fn append_node(
     let node_opacity = scene.number(node, "opacity")?.clamp(0.0, 1.0);
     let rotation = scene.number(node, "rotation")?;
     let layer_config = layer_config(scene, node)?;
-    let rect_blur = if scene.element(node)? == Element::Rect {
+    let element = scene.element(node)?;
+    let rect_blur = if matches!(element, Element::Rect | Element::ClipRect) {
         scene.number(node, "blur")?.max(0.0)
     } else {
         0.0
     };
     let layer_blur = layer_config.blur.max(rect_blur);
     let rounded_clip = scene.bool_value(node, "clip")?
-        && scene.element(node)? == Element::Rect
+        && matches!(element, Element::Rect | Element::ClipRect)
         && rect_radii(scene, node)?.iter().any(|radius| *radius > 0.0);
     let creates_layer = layer_config.enabled
         || node_opacity < 1.0
@@ -683,8 +684,8 @@ fn append_node(
     } else {
         inherited.clip
     };
-    match scene.element(node)? {
-        Element::Rect => list.commands.push(DrawCommand::Quad {
+    match element {
+        Element::Rect | Element::ClipRect => list.commands.push(DrawCommand::Quad {
             node,
             bounds,
             transform,
@@ -693,7 +694,11 @@ fn append_node(
             color_overlay,
             gradient: scene_gradient(scene, node, opacity)?,
             radii: rect_radii(scene, node)?,
-            border_width: scene.number(node, "border_width")?,
+            border_width: if element == Element::ClipRect {
+                0.0
+            } else {
+                scene.number(node, "border_width")?
+            },
             border_color: with_opacity(scene.color_value(node, "border_color")?, opacity),
             blur: if layer_blur > 0.0 { 0.0 } else { rect_blur },
             shadow_color: with_opacity(scene.color_value(node, "shadow_color")?, opacity),
@@ -788,6 +793,30 @@ fn append_node(
             },
             list,
         )?;
+    }
+    if element == Element::ClipRect && scene.number(node, "border_width")? > 0.0 {
+        list.commands.push(DrawCommand::Quad {
+            node,
+            bounds,
+            transform,
+            clip,
+            color: Color::rgba8(0, 0, 0, 0),
+            color_overlay: Color::rgba8(0, 0, 0, 0),
+            gradient: Gradient::None,
+            radii: rect_radii(scene, node)?,
+            border_width: scene.number(node, "border_width")?,
+            border_color: apply_overlay(
+                with_opacity(scene.color_value(node, "border_color")?, opacity),
+                color_overlay,
+            ),
+            blur: 0.0,
+            shadow_color: Color::rgba8(0, 0, 0, 0),
+            shadow_blur: 0.0,
+            shadow_spread: 0.0,
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 0.0,
+            shadow_inner: false,
+        });
     }
     if let Some(layer) = layer {
         let start = list.layers[layer].commands.start;
@@ -1258,6 +1287,55 @@ mod tests {
 
         assert_eq!(list.commands[0].node(), first);
         assert_eq!(list.commands[1].node(), second);
+    }
+
+    #[test]
+    fn clip_rect_overlays_its_border_after_children() {
+        let mut scene = Scene::new();
+        let root = scene.create(Element::ClipRect);
+        let child = scene.create(Element::Rect);
+        scene.assign(root, "radius", 8.0).unwrap();
+        scene.assign(root, "border_width", 2.0).unwrap();
+        scene.assign(root, "border_color", "#ffffffff").unwrap();
+        scene.assign(child, "width", 20.0).unwrap();
+        scene.assign(child, "height", 10.0).unwrap();
+        scene.reparent(child, Some(root)).unwrap();
+        let layout = Layout::compute(
+            &scene,
+            root,
+            Size {
+                width: 40.0,
+                height: 30.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+
+        let list = DrawList::from_scene(&scene, &layout).unwrap();
+
+        assert_eq!(list.commands.len(), 3);
+        assert_eq!(list.commands[0].node(), root);
+        assert_eq!(list.commands[1].node(), child);
+        assert_eq!(list.commands[2].node(), root);
+        let DrawCommand::Quad {
+            border_width: background_border,
+            ..
+        } = list.commands[0]
+        else {
+            panic!("clip background did not emit a quad");
+        };
+        let DrawCommand::Quad {
+            color,
+            border_width,
+            ..
+        } = list.commands[2]
+        else {
+            panic!("clip border did not emit a quad");
+        };
+        assert_eq!(background_border, 0.0);
+        assert_eq!(color.alpha, 0.0);
+        assert_eq!(border_width, 2.0);
+        assert_eq!(list.layers[0].mask.unwrap().radii, [8.0; 4]);
     }
 
     #[test]

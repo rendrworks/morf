@@ -149,14 +149,12 @@ mold.variants(mold.screens, function(screen)
   local right_x = inset + left_width + gap
   local calendar_title, calendar_children = calendar_content(calendar_width, bottom_height)
 
-  return ui.Rect {
+  return ui.ClipRect {
     width = width,
     height = height,
     color = palette.background,
     opacity = 0.98,
     radius = 14,
-    clip = true,
-
     card(inset, inset, left_width, clock_height, "MOLD", {
       ui.Icon {
         x = math.floor(left_width * 0.30),

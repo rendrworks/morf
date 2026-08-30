@@ -31,6 +31,8 @@ pub enum Element {
     Inset,
     /// Rounded rectangle primitive.
     Rect,
+    /// Rounded rectangle that clips content and overlays its border.
+    ClipRect,
     /// Shaped text primitive.
     Text,
     /// Raster or SVG image primitive.
@@ -67,6 +69,7 @@ impl Element {
             Self::Item => "Item",
             Self::Inset => "Inset",
             Self::Rect => "Rect",
+            Self::ClipRect => "ClipRect",
             Self::Text => "Text",
             Self::Image => "Image",
             Self::Icon => "Icon",
@@ -1302,7 +1305,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         any("layer", Value::Map(BTreeMap::new())),
         color("color_overlay", Color::rgba8(0, 0, 0, 0)),
         number("z", 0.0),
-        boolean("clip", false),
+        boolean("clip", element == Element::ClipRect),
         number("rotation", 0.0),
         number("scale", 1.0),
         number("transition_x", 0.0),
@@ -1348,7 +1351,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("content_height", 0.0),
             ]);
         }
-        Element::Rect => {
+        Element::Rect | Element::ClipRect => {
             properties.extend([
                 color("color", Color::rgba8(255, 255, 255, 255)),
                 string("gradient_type", "none"),
@@ -1377,6 +1380,9 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("shadow_offset_y", 0.0),
                 boolean("shadow_inner", false),
             ]);
+            if element == Element::ClipRect {
+                properties.push(boolean("content_inside_border", true));
+            }
         }
         Element::Text => {
             properties.extend([

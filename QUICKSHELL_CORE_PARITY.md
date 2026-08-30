@@ -94,11 +94,14 @@ behavioral reductions do not count as parity.
 
 ### `mold.ui`
 
-- item, rectangle, text, image, icon, shape, and input primitives;
+- item, rectangle, rounded clipping rectangle, text, image, icon, shape, and
+  input primitives;
 - rows, columns, grids, layouts, repeaters, virtualized views, flickables,
   synchronous and deferred lazy loaders, and timers;
 - native single-child inset containers with side overrides, extra margins,
   implicit sizing, and optional child resizing;
+- rounded clipping rectangles with border-aware content layout and border
+  overlay painting;
 - native properties, bindings, states, transitions, animation, focus, pointer,
   wheel and touchpad axes, touch, and keyboard routing.
 
