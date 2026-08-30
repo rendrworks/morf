@@ -79,7 +79,8 @@ behavioral reductions do not count as parity.
 - shell-scoped XDG data, state, and cache directories with bounded relative
   path resolution;
 - native easing curves across quadratic, cubic, quartic, quintic, sine,
-  exponential, circular, back, bounce, and cubic-Bezier families;
+  exponential, circular, back, bounce, and cubic-Bezier families, with scalar,
+  point, and rectangle interpolation;
 - bounded native image color quantization with crop and rescale controls;
 - bounded XDG icon-theme lookup and availability checks;
 - bounded XDG desktop-entry discovery, precedence masking, change-detecting

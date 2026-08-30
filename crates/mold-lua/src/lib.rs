@@ -3605,12 +3605,56 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         let easing_interpolate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-            let (curve, progress, start, end): (UserRef<EasingCurveToken>, f64, f64, f64) =
-                stack.consume(ctx)?;
-            if !progress.is_finite() || !start.is_finite() || !end.is_finite() {
-                return Err(HostError("easing interpolation values must be finite".into()).into());
+            let (curve, progress, start, end): (
+                UserRef<EasingCurveToken>,
+                f64,
+                LuaValue,
+                LuaValue,
+            ) = stack.consume(ctx)?;
+            if !progress.is_finite() {
+                return Err(
+                    HostError("easing interpolation progress must be finite".into()).into(),
+                );
             }
-            stack.replace(ctx, curve.easing.interpolate(progress, start, end));
+            match (start, end) {
+                (LuaValue::Number(start), LuaValue::Number(end))
+                    if start.is_finite() && end.is_finite() =>
+                {
+                    stack.replace(ctx, curve.easing.interpolate(progress, start, end));
+                }
+                (LuaValue::Integer(start), LuaValue::Integer(end)) => {
+                    stack.replace(
+                        ctx,
+                        curve.easing.interpolate(progress, start as f64, end as f64),
+                    );
+                }
+                (LuaValue::Table(start), LuaValue::Table(end)) => {
+                    let fields = if !matches!(start.get_value(ctx, "width"), LuaValue::Nil)
+                        || !matches!(end.get_value(ctx, "width"), LuaValue::Nil)
+                    {
+                        &["x", "y", "width", "height"][..]
+                    } else {
+                        &["x", "y"][..]
+                    };
+                    let result = Table::new(&ctx);
+                    for field in fields {
+                        let start = table_required_number(ctx, start, field).map_err(HostError)?;
+                        let end = table_required_number(ctx, end, field).map_err(HostError)?;
+                        result.set_field(
+                            ctx,
+                            field,
+                            curve.easing.interpolate(progress, start, end),
+                        );
+                    }
+                    stack.replace(ctx, result);
+                }
+                _ => {
+                    return Err(HostError(
+                        "easing interpolation needs two numbers, points, or rectangles".into(),
+                    )
+                    .into());
+                }
+            }
             Ok(CallbackReturn::Return)
         });
         let easing_methods = Table::new(&ctx);
@@ -8164,6 +8208,18 @@ fn table_number<'gc>(
     }
 }
 
+fn table_required_number<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+) -> Result<f64, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Integer(value) => Ok(value as f64),
+        LuaValue::Number(value) if value.is_finite() => Ok(value),
+        _ => Err(format!("{field} must be a finite number")),
+    }
+}
+
 fn parse_menu_entries<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
@@ -9939,6 +9995,12 @@ mod tests {
                     local curve = core.easing_curve("in_quad")
                     assert(curve:value_at(0.5) == 0.25, "in_quad")
                     assert(curve:interpolate(0.5, 10, 20) == 12.5, "interpolate")
+                    local point = curve:interpolate(0.5, { x = 0, y = 10 }, { x = 20, y = 30 })
+                    assert(point.x == 5 and point.y == 15)
+                    local rect = curve:interpolate(0.5,
+                        { x = 0, y = 10, width = 20, height = 30 },
+                        { x = 20, y = 30, width = 40, height = 50 })
+                    assert(rect.x == 5 and rect.y == 15 and rect.width == 25 and rect.height == 35)
                     local bezier = core.easing_curve({ x1 = 0.42, y1 = 0, x2 = 1, y2 = 1 })
                     assert(bezier:value_at(0) == 0, "bezier start")
                     assert(bezier:value_at(1) > 0.999999, "bezier end")
