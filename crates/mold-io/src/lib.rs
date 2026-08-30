@@ -1825,8 +1825,7 @@ mod tests {
     fn ipc_server_reclaims_stale_socket_paths() {
         let path = std::env::temp_dir().join(format!("mold-ipc-stale-{}", std::process::id()));
         let _ = fs::remove_file(&path);
-        let listener = UnixListener::bind(&path).unwrap();
-        drop(listener);
+        fs::write(&path, b"stale").unwrap();
         let (tx, _rx) = mpsc::channel();
         let server = IpcServer::bind(&path, tx).unwrap();
         assert!(path.exists());
