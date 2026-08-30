@@ -165,6 +165,9 @@ There is no:
 - runtime/lua/patin;
 - built-in Lua implementation tree.
 
+Every Rust source file is limited to 500 physical lines. Larger subsystems are
+split into focused modules rather than accumulated in monolithic `*.rs` files.
+
 The mold and mold.ui module tables are created and inserted into package.loaded
 by mold-lua before config runs. require does not search the filesystem for
 built-in engine modules.
