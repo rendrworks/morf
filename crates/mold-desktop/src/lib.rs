@@ -291,6 +291,7 @@ fn scan_directory(
         };
         if let Some(entry) = DesktopEntry::parse(id, &source)
             && !entry.hidden
+            && !entry.no_display
         {
             entries.push(entry);
         }
@@ -339,8 +340,14 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Shown\nStartupWMClass=shown\n",
         )
         .unwrap();
+        fs::write(
+            second.join("internal.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Internal\nNoDisplay=true\n",
+        )
+        .unwrap();
         let entries = DesktopEntries::scan_paths([first, second]).unwrap();
         assert!(entries.by_id("masked").is_none());
+        assert!(entries.by_id("internal").is_none());
         assert_eq!(entries.heuristic_lookup("shown").unwrap().name, "Shown");
         fs::remove_dir_all(root).unwrap();
     }
