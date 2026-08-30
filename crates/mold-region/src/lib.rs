@@ -8,7 +8,7 @@ const MAX_PIXELS: usize = 16_777_216;
 const MAX_RECTS: usize = 65_536;
 const MAX_DEPTH: usize = 64;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -53,17 +53,6 @@ pub struct Region {
     pub shape: Shape,
     pub operation: Operation,
     pub children: Vec<Region>,
-}
-
-impl Default for Rect {
-    fn default() -> Self {
-        Self {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

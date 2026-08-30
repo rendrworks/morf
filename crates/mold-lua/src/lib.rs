@@ -1043,23 +1043,20 @@ impl Runtime {
     pub fn dispatch_wheel_event(
         &mut self,
         node: NodeHandle,
-        x: f64,
-        y: f64,
-        horizontal: f64,
-        vertical: f64,
-        horizontal_steps: i32,
-        vertical_steps: i32,
+        position: (f64, f64),
+        pixels: (f64, f64),
+        steps: (i32, i32),
     ) -> bool {
         self.dispatch_ui_event_with_args(
             node,
             UiEvent::Wheel,
             &[
-                IpcValue::Number(x),
-                IpcValue::Number(y),
-                IpcValue::Number(horizontal),
-                IpcValue::Number(vertical),
-                IpcValue::Integer(i64::from(horizontal_steps)),
-                IpcValue::Integer(i64::from(vertical_steps)),
+                IpcValue::Number(position.0),
+                IpcValue::Number(position.1),
+                IpcValue::Number(pixels.0),
+                IpcValue::Number(pixels.1),
+                IpcValue::Integer(i64::from(steps.0)),
+                IpcValue::Integer(i64::from(steps.1)),
             ],
         )
     }
@@ -4097,7 +4094,7 @@ fn install_reactive_api(
                 "physical_height_mm",
                 physical_height.map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
             );
-            let physical_density = screen_density(&screen);
+            let physical_density = screen_density(screen);
             value.set_field(
                 ctx,
                 "physical_pixel_density",
@@ -4110,11 +4107,11 @@ fn install_reactive_api(
                     LuaValue::Number(density / f64::from(screen.scale.max(1)))
                 }),
             );
-            value.set_field(ctx, "orientation", screen_orientation(&screen));
+            value.set_field(ctx, "orientation", screen_orientation(screen));
             value.set_field(
                 ctx,
                 "primary_orientation",
-                screen_primary_orientation(&screen),
+                screen_primary_orientation(screen),
             );
             value.set_field(ctx, "serial_number", LuaValue::Nil);
             screens
@@ -5806,7 +5803,6 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         let menu_activate = Callback::from_fn(&ctx, {
-            let limits = limits;
             move |ctx, _, mut stack| {
                 let (menu, id): (UserRef<MenuToken>, String) = stack.consume(ctx)?;
                 let activation = menu
@@ -11287,7 +11283,7 @@ mod tests {
         let root = runtime.scene().roots()[0];
         let text = runtime.scene().children(root).unwrap()[0];
 
-        assert!(runtime.dispatch_wheel_event(root, 8.0, 12.0, -4.0, 15.0, -1, 2));
+        assert!(runtime.dispatch_wheel_event(root, (8.0, 12.0), (-4.0, 15.0), (-1, 2)));
         assert_eq!(
             runtime.scene().string_value(text, "text").unwrap(),
             "8:12:-4:15:-1:2"

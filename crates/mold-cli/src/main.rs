@@ -1616,12 +1616,9 @@ fn run_surface(
                     if let Some(node) = hit {
                         repaint |= runtime.dispatch_wheel_event(
                             node,
-                            x,
-                            y,
-                            horizontal,
-                            vertical,
-                            horizontal_steps,
-                            vertical_steps,
+                            (x, y),
+                            (horizontal, vertical),
+                            (horizontal_steps, vertical_steps),
                         );
                     }
                 }
