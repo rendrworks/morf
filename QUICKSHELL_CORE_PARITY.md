@@ -106,6 +106,7 @@ behavioral reductions do not count as parity.
   input primitives;
 - rows, columns, grids, layouts, repeaters, virtualized views, flickables,
   synchronous and deferred lazy loaders, and timers;
+- bounded native reparenting for dynamic wrappers and unwrapping;
 - native single-child inset containers with side overrides, extra margins,
   implicit sizing, and optional child resizing;
 - rounded clipping rectangles with border-aware content layout and border

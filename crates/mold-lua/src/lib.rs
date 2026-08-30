@@ -5701,6 +5701,27 @@ fn install_reactive_api(
             "Timer",
             timer_constructor(ctx, Rc::clone(&state), limits),
         );
+        let reparent_state = Rc::clone(&state);
+        let reparent = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (child, parent): (UserRef<NodeToken>, LuaValue) = stack.consume(ctx)?;
+            let parent = match parent {
+                LuaValue::Nil => None,
+                LuaValue::UserData(parent) => Some(
+                    parent
+                        .downcast_static::<NodeToken>()
+                        .map_err(|_| HostError("parent must be a mold node or nil".into()))?
+                        .handle,
+                ),
+                _ => return Err(HostError("parent must be a mold node or nil".into()).into()),
+            };
+            reparent_state
+                .borrow_mut()
+                .scene
+                .reparent(child.handle, parent)
+                .map_err(|error| HostError(error.to_string()))?;
+            Ok(CallbackReturn::Return)
+        });
+        ui.set_field(ctx, "reparent", reparent);
         for kind in ["spring", "smoothed"] {
             ui.set_field(
                 ctx,
@@ -9387,6 +9408,29 @@ mod tests {
         assert!(!floating.fullscreen);
         assert!(runtime.take_window_surface_change());
         assert!(!runtime.take_window_surface_change());
+    }
+
+    #[test]
+    fn native_reparenting_wraps_and_unwraps_scene_items() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "reparent.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local child = ui.Text { text = "content" }
+                    local wrapper = ui.Item {}
+                    ui.reparent(child, wrapper)
+                    ui.reparent(child, nil)
+                    ui.reparent(child, wrapper)
+                "#,
+            )
+            .unwrap();
+
+        let scene = runtime.scene();
+        let roots = scene.roots();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(scene.children(roots[0]).unwrap().len(), 1);
     }
 
     #[test]
