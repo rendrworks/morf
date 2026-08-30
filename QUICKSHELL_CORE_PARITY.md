@@ -83,7 +83,7 @@ behavioral reductions do not count as parity.
 - bounded stateful file views with preload, reload, atomic writes, stable error
   categories, and change watching;
 - native JSON encoding and decoding with preserved array, object, and null
-  values;
+  values, plus direct stateful file-view adapters;
 - Unix sockets and socket servers;
 - line and delimiter parsers;
 - bounded byte stream collectors with live or end-of-stream publication.

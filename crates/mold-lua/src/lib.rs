@@ -4573,12 +4573,63 @@ fn install_reactive_api(
                 Ok(CallbackReturn::Return)
             }
         });
+        let json_file_read = Callback::from_fn(&ctx, {
+            let array_metatable = array_metatable.clone();
+            let object_metatable = object_metatable.clone();
+            let null = null.clone();
+            move |ctx, _, mut stack| {
+                let file: UserRef<FileDocumentToken> = stack.consume(ctx)?;
+                let file = file.file.borrow();
+                let data = file
+                    .data()
+                    .ok_or_else(|| HostError("JSON file view is not loaded".into()))?;
+                let value = serde_json::from_slice::<serde_json::Value>(data)
+                    .map_err(|error| HostError(error.to_string()))?;
+                let mut entries = 0;
+                let value = json_to_lua(
+                    ctx,
+                    &value,
+                    ctx.fetch(&array_metatable),
+                    ctx.fetch(&object_metatable),
+                    ctx.fetch(&null),
+                    0,
+                    &mut entries,
+                )
+                .map_err(HostError)?;
+                stack.replace(ctx, value);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let json_file_write = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (file, value, pretty): (UserRef<FileDocumentToken>, LuaValue, LuaValue) =
+                stack.consume(ctx)?;
+            let pretty = match pretty {
+                LuaValue::Nil => true,
+                LuaValue::Boolean(value) => value,
+                _ => return Err(HostError("JSON pretty flag must be boolean".into()).into()),
+            };
+            let mut entries = 0;
+            let value = lua_to_json(ctx, value, 0, &mut entries).map_err(HostError)?;
+            let mut encoded = if pretty {
+                serde_json::to_vec_pretty(&value)
+            } else {
+                serde_json::to_vec(&value)
+            }
+            .map_err(|error| HostError(error.to_string()))?;
+            if pretty {
+                encoded.push(b'\n');
+            }
+            stack.replace(ctx, file.file.borrow_mut().set_data(&encoded));
+            Ok(CallbackReturn::Return)
+        });
         let json = Table::new(&ctx);
         json.set_field(ctx, "decode", json_decode);
         json.set_field(ctx, "encode", json_encode);
         json.set_field(ctx, "array", json_array);
         json.set_field(ctx, "object", json_object);
         json.set_field(ctx, "null", json_null);
+        json.set_field(ctx, "read_file", json_file_read);
+        json.set_field(ctx, "write_file", json_file_write);
         mold.set_field(ctx, "json", json);
         let menu_entries = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let menu: UserRef<MenuToken> = stack.consume(ctx)?;
@@ -7771,13 +7822,20 @@ mod tests {
                 assert(file:set_text("world"))
                 assert(file:reload())
                 assert(file:text() == "world")
+                local json = require("mold.io.json")
+                assert(json.write_file(file, {{ answer = 42, values = json.array({{ 1, 2 }}) }}))
+                local decoded = json.read_file(file)
+                assert(decoded.answer == 42)
+                assert(decoded.values[2] == 2)
             "#,
             path.to_string_lossy(),
             path.to_string_lossy(),
         );
         let mut runtime = Runtime::default();
         runtime.execute("file-view.lua", source.as_bytes()).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"world");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["answer"], 42);
         std::fs::remove_file(path).unwrap();
     }
 
