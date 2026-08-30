@@ -57,7 +57,6 @@ the dependent surface, and a hidden or missing parent suppresses its child.
 
 ## Remaining audit lanes
 
-- verify reactive mutation behavior for quantizers, desktop models, and menus;
 - verify every visual primitive property against the bundled Quickshell visual
   support types.
 
@@ -73,3 +72,8 @@ replacement reprocesses buffered bytes with the new marker. Client sockets
 cover connect, disconnect, path mutation while disconnected, reconnect, flush,
 and close; socket servers cover active, inactive, path mutation, rebind, accept,
 and cleanup transitions.
+
+Color quantizers transactionally recompute after source, depth, crop, or
+rescale changes. Desktop models publish a fresh snapshot only when rescanning
+detects a change. Menu state mutations are immediately reflected by entry and
+child queries, including checkbox and radio activation rules.

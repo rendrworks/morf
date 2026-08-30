@@ -2159,6 +2159,19 @@ struct EasingCurveToken {
     easing: Easing,
 }
 
+struct ColorQuantizerToken {
+    state: RefCell<ColorQuantizerState>,
+}
+
+#[derive(Clone)]
+struct ColorQuantizerState {
+    source: PathBuf,
+    depth: u8,
+    crop: Option<QuantizeRect>,
+    rescale_size: u32,
+    colors: Vec<[u8; 4]>,
+}
+
 struct SystemClockToken {
     enabled: Cell<bool>,
     precision: RefCell<String>,
@@ -3723,78 +3736,128 @@ fn install_reactive_api(
         mold.set_field(ctx, "easing_curve", easing_curve);
         let color_quantize = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let options: Table = stack.consume(ctx)?;
-            let source = match options.get_value(ctx, "source") {
-                LuaValue::String(value) => PathBuf::from(value.display_lossy().to_string()),
-                _ => return Err(HostError("color_quantize source must be a string".into()).into()),
-            };
-            let depth = match options.get_value(ctx, "depth") {
-                LuaValue::Nil => 3,
-                LuaValue::Integer(value) => u8::try_from(value)
-                    .ok()
-                    .filter(|value| *value <= 8)
-                    .ok_or_else(|| HostError("color_quantize depth must be 0..8".into()))?,
-                _ => {
-                    return Err(HostError("color_quantize depth must be an integer".into()).into());
-                }
-            };
-            let rescale_size = match options.get_value(ctx, "rescale_size") {
-                LuaValue::Nil => 64,
-                LuaValue::Integer(value) => u32::try_from(value)
-                    .ok()
-                    .filter(|value| *value <= 512)
-                    .ok_or_else(|| {
-                        HostError("color_quantize rescale_size must be 0..512".into())
-                    })?,
-                _ => {
-                    return Err(
-                        HostError("color_quantize rescale_size must be an integer".into()).into(),
-                    );
-                }
-            };
-            let crop = match options.get_value(ctx, "rect") {
-                LuaValue::Nil => None,
-                LuaValue::Table(rect) => {
-                    let read = |field| match rect.get_value(ctx, field) {
-                        LuaValue::Integer(value) => u32::try_from(value).map_err(|_| {
-                            format!("color_quantize rect {field} must be nonnegative")
-                        }),
-                        _ => Err(format!("color_quantize rect {field} must be an integer")),
-                    };
-                    let rect = QuantizeRect {
-                        x: read("x").map_err(HostError)?,
-                        y: read("y").map_err(HostError)?,
-                        width: read("width").map_err(HostError)?,
-                        height: read("height").map_err(HostError)?,
-                    };
-                    if rect.width == 0 || rect.height == 0 {
-                        return Err(
-                            HostError("color_quantize rect size must be positive".into()).into(),
-                        );
-                    }
-                    Some(rect)
-                }
-                _ => {
-                    return Err(HostError("color_quantize rect must be a table".into()).into());
-                }
-            };
+            let (source, depth, crop, rescale_size) =
+                parse_quantizer_options(ctx, options).map_err(HostError)?;
             let colors = quantize_colors(source, depth, crop, rescale_size)
                 .map_err(|error| HostError(error.to_string()))?;
-            let values = Table::new(&ctx);
-            for (index, color) in colors.into_iter().enumerate() {
-                let encoded = if color[3] == 255 {
-                    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
-                } else {
-                    format!(
-                        "#{:02x}{:02x}{:02x}{:02x}",
-                        color[0], color[1], color[2], color[3]
-                    )
-                };
-                values.set(ctx, index as i64 + 1, encoded)?;
-            }
-            stack.replace(ctx, values);
+            stack.replace(ctx, quantizer_colors_to_lua(ctx, &colors));
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "color_quantize", color_quantize);
+        let quantizer_colors = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let quantizer: UserRef<ColorQuantizerToken> = stack.consume(ctx)?;
+            stack.replace(
+                ctx,
+                quantizer_colors_to_lua(ctx, &quantizer.state.borrow().colors),
+            );
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_source = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let quantizer: UserRef<ColorQuantizerToken> = stack.consume(ctx)?;
+            stack.replace(
+                ctx,
+                quantizer.state.borrow().source.to_string_lossy().as_ref(),
+            );
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_set_source = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (quantizer, source): (UserRef<ColorQuantizerToken>, String) = stack.consume(ctx)?;
+            update_color_quantizer(&quantizer, |state| state.source = PathBuf::from(source))
+                .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_depth = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let quantizer: UserRef<ColorQuantizerToken> = stack.consume(ctx)?;
+            stack.replace(ctx, i64::from(quantizer.state.borrow().depth));
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_set_depth = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (quantizer, depth): (UserRef<ColorQuantizerToken>, i64) = stack.consume(ctx)?;
+            let depth = u8::try_from(depth)
+                .ok()
+                .filter(|value| *value <= 8)
+                .ok_or_else(|| HostError("color_quantizer depth must be 0..8".into()))?;
+            update_color_quantizer(&quantizer, |state| state.depth = depth).map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_rescale_size = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let quantizer: UserRef<ColorQuantizerToken> = stack.consume(ctx)?;
+            stack.replace(ctx, i64::from(quantizer.state.borrow().rescale_size));
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_set_rescale_size = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (quantizer, size): (UserRef<ColorQuantizerToken>, i64) = stack.consume(ctx)?;
+            let size = u32::try_from(size)
+                .ok()
+                .filter(|value| *value <= 512)
+                .ok_or_else(|| HostError("color_quantizer rescale_size must be 0..512".into()))?;
+            update_color_quantizer(&quantizer, |state| state.rescale_size = size)
+                .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_rect = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let quantizer: UserRef<ColorQuantizerToken> = stack.consume(ctx)?;
+            match quantizer.state.borrow().crop {
+                Some(rect) => {
+                    let value = Table::new(&ctx);
+                    value.set_field(ctx, "x", i64::from(rect.x));
+                    value.set_field(ctx, "y", i64::from(rect.y));
+                    value.set_field(ctx, "width", i64::from(rect.width));
+                    value.set_field(ctx, "height", i64::from(rect.height));
+                    stack.replace(ctx, value);
+                }
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_set_rect = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (quantizer, rect): (UserRef<ColorQuantizerToken>, LuaValue) = stack.consume(ctx)?;
+            let rect = parse_quantizer_rect(ctx, rect).map_err(HostError)?;
+            update_color_quantizer(&quantizer, |state| state.crop = rect).map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_refresh = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let quantizer: UserRef<ColorQuantizerToken> = stack.consume(ctx)?;
+            update_color_quantizer(&quantizer, |_| {}).map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let quantizer_methods = Table::new(&ctx);
+        quantizer_methods.set_field(ctx, "colors", quantizer_colors);
+        quantizer_methods.set_field(ctx, "source", quantizer_source);
+        quantizer_methods.set_field(ctx, "set_source", quantizer_set_source);
+        quantizer_methods.set_field(ctx, "depth", quantizer_depth);
+        quantizer_methods.set_field(ctx, "set_depth", quantizer_set_depth);
+        quantizer_methods.set_field(ctx, "rescale_size", quantizer_rescale_size);
+        quantizer_methods.set_field(ctx, "set_rescale_size", quantizer_set_rescale_size);
+        quantizer_methods.set_field(ctx, "rect", quantizer_rect);
+        quantizer_methods.set_field(ctx, "set_rect", quantizer_set_rect);
+        quantizer_methods.set_field(ctx, "refresh", quantizer_refresh);
+        let quantizer_metatable = Table::new(&ctx);
+        quantizer_metatable.set_field(ctx, "__index", quantizer_methods);
+        let quantizer_metatable = ctx.stash(quantizer_metatable);
+        let color_quantizer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let (source, depth, crop, rescale_size) =
+                parse_quantizer_options(ctx, options).map_err(HostError)?;
+            let colors = quantize_colors(&source, depth, crop, rescale_size)
+                .map_err(|error| HostError(error.to_string()))?;
+            let value = UserData::new_static(
+                &ctx,
+                ColorQuantizerToken {
+                    state: RefCell::new(ColorQuantizerState {
+                        source,
+                        depth,
+                        crop,
+                        rescale_size,
+                        colors,
+                    }),
+                },
+            );
+            value.set_metatable(ctx, Some(ctx.fetch(&quantizer_metatable)));
+            stack.replace(ctx, value);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "color_quantizer", color_quantizer);
         let icon_path = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (name, theme, size): (String, Option<String>, Option<i64>) = stack.consume(ctx)?;
             let (theme, size) = icon_lookup_options(&name, theme, size).map_err(HostError)?;
@@ -6588,6 +6651,7 @@ fn install_reactive_api(
             "system_clock",
             "easing_curve",
             "color_quantize",
+            "color_quantizer",
             "icon_path",
             "has_icon",
             "exec_detached",
@@ -7528,6 +7592,92 @@ fn update_process_view_config(
     if let Some(replacement) = replacement {
         state.process = Some(replacement);
     }
+    Ok(())
+}
+
+fn parse_quantizer_options<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<(PathBuf, u8, Option<QuantizeRect>, u32), String> {
+    let source = match options.get_value(ctx, "source") {
+        LuaValue::String(value) => PathBuf::from(value.display_lossy().to_string()),
+        _ => return Err("color_quantize source must be a string".into()),
+    };
+    let depth = match options.get_value(ctx, "depth") {
+        LuaValue::Nil => 3,
+        LuaValue::Integer(value) => u8::try_from(value)
+            .ok()
+            .filter(|value| *value <= 8)
+            .ok_or_else(|| "color_quantize depth must be 0..8".to_owned())?,
+        _ => return Err("color_quantize depth must be an integer".into()),
+    };
+    let rescale_size = match options.get_value(ctx, "rescale_size") {
+        LuaValue::Nil => 64,
+        LuaValue::Integer(value) => u32::try_from(value)
+            .ok()
+            .filter(|value| *value <= 512)
+            .ok_or_else(|| "color_quantize rescale_size must be 0..512".to_owned())?,
+        _ => return Err("color_quantize rescale_size must be an integer".into()),
+    };
+    let crop = parse_quantizer_rect(ctx, options.get_value(ctx, "rect"))?;
+    Ok((source, depth, crop, rescale_size))
+}
+
+fn parse_quantizer_rect<'gc>(
+    ctx: Context<'gc>,
+    value: LuaValue<'gc>,
+) -> Result<Option<QuantizeRect>, String> {
+    let LuaValue::Table(rect) = value else {
+        return match value {
+            LuaValue::Nil => Ok(None),
+            _ => Err("color_quantize rect must be a table or nil".into()),
+        };
+    };
+    let read = |field| match rect.get_value(ctx, field) {
+        LuaValue::Integer(value) => u32::try_from(value)
+            .map_err(|_| format!("color_quantize rect {field} must be nonnegative")),
+        _ => Err(format!("color_quantize rect {field} must be an integer")),
+    };
+    let rect = QuantizeRect {
+        x: read("x")?,
+        y: read("y")?,
+        width: read("width")?,
+        height: read("height")?,
+    };
+    if rect.width == 0 || rect.height == 0 {
+        return Err("color_quantize rect size must be positive".into());
+    }
+    Ok(Some(rect))
+}
+
+fn quantizer_colors_to_lua<'gc>(ctx: Context<'gc>, colors: &[[u8; 4]]) -> Table<'gc> {
+    let values = Table::new(&ctx);
+    for (index, color) in colors.iter().enumerate() {
+        let encoded = if color[3] == 255 {
+            format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
+        } else {
+            format!(
+                "#{:02x}{:02x}{:02x}{:02x}",
+                color[0], color[1], color[2], color[3]
+            )
+        };
+        values
+            .set(ctx, index as i64 + 1, encoded)
+            .expect("color table accepts indexed strings");
+    }
+    values
+}
+
+fn update_color_quantizer(
+    quantizer: &ColorQuantizerToken,
+    update: impl FnOnce(&mut ColorQuantizerState),
+) -> Result<(), String> {
+    let mut state = quantizer.state.borrow_mut();
+    let mut next = state.clone();
+    update(&mut next);
+    next.colors = quantize_colors(&next.source, next.depth, next.crop, next.rescale_size)
+        .map_err(|error| error.to_string())?;
+    *state = next;
     Ok(())
 }
 
@@ -11229,6 +11379,8 @@ mod tests {
                     assert(menu:entry("open").enabled == false)
                     menu:set_visible("open", false)
                     assert(menu:entry("open").visible == false)
+                    menu:set_checked("flag", "partial")
+                    assert(menu:entry("flag").check_state == "partial")
                 "#,
             )
             .unwrap();
@@ -11255,7 +11407,26 @@ mod tests {
                     (colors[1] == "#ff0000" and colors[2] == "#0000ff") or
                     (colors[1] == "#0000ff" and colors[2] == "#ff0000")
                 )
+                local quantizer = core.color_quantizer {{
+                    source = {:?},
+                    depth = 0,
+                    rescale_size = 2,
+                }}
+                assert(quantizer:source() == {:?})
+                assert(quantizer:depth() == 0 and #quantizer:colors() == 1)
+                quantizer:set_depth(1)
+                assert(quantizer:depth() == 1 and #quantizer:colors() == 2)
+                quantizer:set_rect({{ x = 0, y = 0, width = 1, height = 1 }})
+                assert(quantizer:rect().width == 1)
+                assert(#quantizer:colors() == 1 and quantizer:colors()[1] == "#ff0000")
+                quantizer:set_rect(nil)
+                quantizer:set_rescale_size(0)
+                quantizer:refresh()
+                assert(quantizer:rect() == nil and quantizer:rescale_size() == 0)
+                assert(#quantizer:colors() == 2)
             "##,
+            path.to_string_lossy(),
+            path.to_string_lossy(),
             path.to_string_lossy(),
         );
         let mut runtime = Runtime::default();

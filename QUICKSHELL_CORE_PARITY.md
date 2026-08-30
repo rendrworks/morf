@@ -86,7 +86,8 @@ behavioral reductions do not count as parity.
 - native easing curves across quadratic, cubic, quartic, quintic, sine,
   exponential, circular, back, bounce, and cubic-Bezier families, with scalar,
   point, and rectangle interpolation;
-- bounded native image color quantization with crop and rescale controls;
+- bounded native image color quantization with mutable source, depth, crop, and
+  rescale controls plus explicit refresh;
 - bounded XDG icon-theme lookup and availability checks;
 - bounded XDG desktop-entry discovery, precedence masking, change-detecting
   refresh, lookup, actions, and detached launching;
