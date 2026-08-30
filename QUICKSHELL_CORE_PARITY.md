@@ -63,6 +63,8 @@ behavioral reductions do not count as parity.
 
 - signals, effects, hierarchically scoped reloadable IDs, typed persistent
   property scopes, timers, and clock updates;
+- retainable scene objects and scoped locks for delayed destruction and exit
+  transitions;
 - reactive native local-time snapshots and bounded date/time formatting;
 - screen variants, list models, virtual lists, and flick state;
 - process identity, environment lookup, shell paths, version checks, elapsed

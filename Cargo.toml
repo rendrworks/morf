@@ -39,6 +39,7 @@ mold-image = { path = "crates/mold-image" }
 mold-desktop = { path = "crates/mold-desktop" }
 mold-io = { path = "crates/mold-io" }
 mold-layout = { path = "crates/mold-layout" }
+mold-lifecycle = { path = "crates/mold-lifecycle" }
 mold-lua = { path = "crates/mold-lua" }
 mold-menu = { path = "crates/mold-menu" }
 mold-reactive = { path = "crates/mold-reactive" }

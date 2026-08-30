@@ -12,6 +12,7 @@ luna.workspace = true
 mold-desktop.workspace = true
 mold-image.workspace = true
 mold-io.workspace = true
+mold-lifecycle.workspace = true
 mold-menu.workspace = true
 mold-reactive.workspace = true
 mold-region.workspace = true

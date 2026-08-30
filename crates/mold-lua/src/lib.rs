@@ -21,6 +21,7 @@ use mold_io::{
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
     StreamCollector, Timer as IoTimer,
 };
+use mold_lifecycle::Retention;
 use mold_menu::{ButtonType, CheckState, Menu, MenuEntry};
 use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
@@ -925,6 +926,8 @@ impl Runtime {
         let mut udev_events = Vec::new();
         let mut status_updates = Vec::new();
         let mut loaders = Vec::new();
+        let mut loader_drops = Vec::new();
+        let mut retained_destroys = Vec::new();
         let mut service_changed = false;
         {
             let mut state = self.reactive.borrow_mut();
@@ -1012,7 +1015,7 @@ impl Runtime {
                 } else if !requested && state.loaded_loaders.remove(&node) {
                     let children = state.scene.children(node).unwrap_or_default();
                     for child in children {
-                        let _ = state.scene.remove(child);
+                        loader_drops.push(child);
                     }
                     service_changed = true;
                 }
@@ -1078,6 +1081,16 @@ impl Runtime {
                     .into_iter()
                     .map(|error| format!("status notifier: {error}")),
             );
+            retained_destroys.extend(state.retained_destroy_queue.drain());
+        }
+        for node in retained_destroys {
+            self.lua
+                .enter(|ctx| finish_retained_destroy(&self.reactive, ctx, self.limits, node));
+            service_changed = true;
+        }
+        for node in loader_drops {
+            self.lua
+                .enter(|ctx| drop_retainable(&self.reactive, ctx, self.limits, node));
         }
         for (node, factory) in loaders {
             let result = self
@@ -1107,7 +1120,7 @@ impl Runtime {
                         );
                         service_changed = true;
                     } else {
-                        let _ = state.scene.remove(child);
+                        remove_scene_subtree(&mut state, child);
                         state.loaded_loaders.remove(&node);
                     }
                 }
@@ -1260,6 +1273,99 @@ fn key_targets(state: &ReactiveState) -> Vec<NodeHandle> {
     targets
 }
 
+fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
+    let mut nodes = vec![node];
+    let mut index = 0;
+    while index < nodes.len() {
+        nodes.extend(state.scene.children(nodes[index]).unwrap_or_default());
+        index += 1;
+    }
+    if state.scene.remove(node).is_err() {
+        return;
+    }
+    let removed = nodes.into_iter().collect::<HashSet<_>>();
+    for node in &removed {
+        state.retention.unregister(*node);
+        state.retain_callbacks.remove(node);
+        state.states.remove(node);
+        state.views.remove(node);
+        state.timer_callbacks.remove(node);
+        state.loader_factories.remove(node);
+        state.loaded_loaders.remove(node);
+    }
+    state
+        .handlers
+        .retain(|(node, _), _| !removed.contains(node));
+    state
+        .timers
+        .retain(|timer| timer.node.is_none_or(|node| !removed.contains(&node)));
+    state
+        .property_signals
+        .retain(|(node, _, _), _| !removed.contains(node));
+    state
+        .current_property_names
+        .retain(|_, (node, _)| !removed.contains(node));
+}
+
+fn finish_retained_destroy(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'_>,
+    limits: Limits,
+    node: NodeHandle,
+) {
+    let callback = state
+        .borrow()
+        .retain_callbacks
+        .get(&node)
+        .and_then(|callbacks| callbacks.about_to_destroy.clone());
+    if let Some(callback) = callback
+        && let Err(error) = execute_handler_args(ctx, &callback, &[], limits)
+    {
+        state
+            .borrow_mut()
+            .logs
+            .push(format!("Retainable about_to_destroy: {error}"));
+    }
+    remove_scene_subtree(&mut state.borrow_mut(), node);
+}
+
+fn drop_retainable(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'_>,
+    limits: Limits,
+    node: NodeHandle,
+) {
+    let registered = state.borrow().retention.state(node).is_some();
+    if !registered {
+        remove_scene_subtree(&mut state.borrow_mut(), node);
+        return;
+    }
+    let callback = {
+        let mut state = state.borrow_mut();
+        let _ = state.retention.begin_drop(node);
+        state
+            .retain_callbacks
+            .get(&node)
+            .and_then(|callbacks| callbacks.dropped.clone())
+    };
+    if let Some(callback) = callback
+        && let Err(error) = execute_handler_args(ctx, &callback, &[], limits)
+    {
+        state
+            .borrow_mut()
+            .logs
+            .push(format!("Retainable dropped: {error}"));
+    }
+    if state
+        .borrow()
+        .retention
+        .should_destroy(node)
+        .unwrap_or(true)
+    {
+        finish_retained_destroy(state, ctx, limits, node);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum ScriptValue {
     Nil,
@@ -1409,6 +1515,30 @@ struct PersistentToken {
 
 struct ScopeToken {
     prefix: String,
+}
+
+struct RetainableToken {
+    node: NodeHandle,
+}
+
+struct RetainLockToken {
+    node: NodeHandle,
+    locked: Cell<bool>,
+    state: Rc<RefCell<ReactiveState>>,
+}
+
+impl Drop for RetainLockToken {
+    fn drop(&mut self) {
+        if !self.locked.get() {
+            return;
+        }
+        if let Ok(mut state) = self.state.try_borrow_mut()
+            && state.retention.unlock(self.node).is_ok()
+            && state.retention.should_destroy(self.node).unwrap_or(false)
+        {
+            state.retained_destroy_queue.insert(self.node);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1570,6 +1700,12 @@ struct LuaEffect {
     sink: Option<EffectSink>,
 }
 
+#[derive(Clone, Default)]
+struct RetainCallbacks {
+    dropped: Option<StashedClosure>,
+    about_to_destroy: Option<StashedClosure>,
+}
+
 #[derive(Clone)]
 struct PropertySink {
     node: NodeHandle,
@@ -1657,6 +1793,9 @@ struct ReactiveState {
     timer_callbacks: HashMap<NodeHandle, StashedClosure>,
     loader_factories: HashMap<NodeHandle, StashedClosure>,
     loaded_loaders: HashSet<NodeHandle>,
+    retention: Retention<NodeHandle>,
+    retain_callbacks: HashMap<NodeHandle, RetainCallbacks>,
+    retained_destroy_queue: HashSet<NodeHandle>,
     dbus_signals: Vec<PendingDbusSignal>,
     udev_monitors: Vec<PendingUdev>,
     status_notifiers: Vec<PendingStatusNotifier>,
@@ -1712,6 +1851,9 @@ impl ReactiveState {
             timer_callbacks: HashMap::new(),
             loader_factories: HashMap::new(),
             loaded_loaders: HashSet::new(),
+            retention: Retention::default(),
+            retain_callbacks: HashMap::new(),
+            retained_destroy_queue: HashSet::new(),
             dbus_signals: Vec::new(),
             udev_monitors: Vec::new(),
             status_notifiers: Vec::new(),
@@ -2182,6 +2324,227 @@ fn install_reactive_api(
             userdata.set_metatable(ctx, Some(ctx.fetch(&scope_metatable)));
             stack.replace(ctx, userdata);
             Ok(CallbackReturn::Return)
+        });
+
+        let retainable_lock = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let retainable: UserRef<RetainableToken> = stack.consume(ctx)?;
+                let locks = state
+                    .borrow_mut()
+                    .retention
+                    .lock(retainable.node)
+                    .map_err(|error| HostError(error.to_string()))?;
+                stack.replace(ctx, i64::from(locks));
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let retainable_unlock = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let retainable: UserRef<RetainableToken> = stack.consume(ctx)?;
+                let (locks, destroy) = {
+                    let mut state = state.borrow_mut();
+                    let locks = state
+                        .retention
+                        .unlock(retainable.node)
+                        .map_err(|error| HostError(error.to_string()))?;
+                    let destroy = state
+                        .retention
+                        .should_destroy(retainable.node)
+                        .unwrap_or(false);
+                    (locks, destroy)
+                };
+                if destroy {
+                    finish_retained_destroy(&state, ctx, limits, retainable.node);
+                }
+                stack.replace(ctx, i64::from(locks));
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let retainable_force_unlock = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let retainable: UserRef<RetainableToken> = stack.consume(ctx)?;
+                let destroy = {
+                    let mut state = state.borrow_mut();
+                    state
+                        .retention
+                        .force_unlock(retainable.node)
+                        .map_err(|error| HostError(error.to_string()))?;
+                    state
+                        .retention
+                        .should_destroy(retainable.node)
+                        .unwrap_or(false)
+                };
+                if destroy {
+                    finish_retained_destroy(&state, ctx, limits, retainable.node);
+                }
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let retainable_retained = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let retainable: UserRef<RetainableToken> = stack.consume(ctx)?;
+                let retained = state
+                    .borrow()
+                    .retention
+                    .state(retainable.node)
+                    .is_some_and(|state| state.dropped);
+                stack.replace(ctx, retained);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let retainable_locks = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let retainable: UserRef<RetainableToken> = stack.consume(ctx)?;
+                let locks = state
+                    .borrow()
+                    .retention
+                    .state(retainable.node)
+                    .map_or(0, |state| state.locks);
+                stack.replace(ctx, i64::from(locks));
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let retainable_methods = Table::new(&ctx);
+        retainable_methods.set_field(ctx, "lock", retainable_lock);
+        retainable_methods.set_field(ctx, "unlock", retainable_unlock);
+        retainable_methods.set_field(ctx, "force_unlock", retainable_force_unlock);
+        retainable_methods.set_field(ctx, "retained", retainable_retained);
+        retainable_methods.set_field(ctx, "locks", retainable_locks);
+        let retainable_metatable = Table::new(&ctx);
+        retainable_metatable.set_field(ctx, "__index", retainable_methods);
+        let retainable_metatable = ctx.stash(retainable_metatable);
+        let retainable = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            let retainable_metatable = retainable_metatable.clone();
+            move |ctx, _, mut stack| {
+                let (node, options): (UserRef<NodeToken>, LuaValue) = stack.consume(ctx)?;
+                state
+                    .borrow()
+                    .scene
+                    .element(node.handle)
+                    .map_err(|error| HostError(error.to_string()))?;
+                let mut callbacks = RetainCallbacks::default();
+                let mut locked = false;
+                match options {
+                    LuaValue::Nil => {}
+                    LuaValue::Table(options) => {
+                        locked = table_bool(ctx, options, "locked", false).map_err(HostError)?;
+                        callbacks.dropped =
+                            optional_closure(ctx, options, "on_dropped").map_err(HostError)?;
+                        callbacks.about_to_destroy =
+                            optional_closure(ctx, options, "on_about_to_destroy")
+                                .map_err(HostError)?;
+                    }
+                    _ => {
+                        return Err(
+                            HostError("retainable options must be a table or nil".into()).into(),
+                        );
+                    }
+                }
+                {
+                    let mut state = state.borrow_mut();
+                    state.retention.register(node.handle);
+                    if locked {
+                        state
+                            .retention
+                            .lock(node.handle)
+                            .map_err(|error| HostError(error.to_string()))?;
+                    }
+                    state.retain_callbacks.insert(node.handle, callbacks);
+                }
+                let userdata = UserData::new_static(&ctx, RetainableToken { node: node.handle });
+                userdata.set_metatable(ctx, Some(ctx.fetch(&retainable_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
+
+        let retain_lock_locked = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let lock: UserRef<RetainLockToken> = stack.consume(ctx)?;
+            stack.replace(ctx, lock.locked.get());
+            Ok(CallbackReturn::Return)
+        });
+        let retain_lock_set = Callback::from_fn(&ctx, {
+            move |ctx, _, mut stack| {
+                let (lock, locked): (UserRef<RetainLockToken>, bool) = stack.consume(ctx)?;
+                if lock.locked.get() == locked {
+                    return Ok(CallbackReturn::Return);
+                }
+                let destroy = {
+                    let mut state = lock.state.borrow_mut();
+                    if locked {
+                        state
+                            .retention
+                            .lock(lock.node)
+                            .map_err(|error| HostError(error.to_string()))?;
+                        false
+                    } else {
+                        state
+                            .retention
+                            .unlock(lock.node)
+                            .map_err(|error| HostError(error.to_string()))?;
+                        state.retention.should_destroy(lock.node).unwrap_or(false)
+                    }
+                };
+                lock.locked.set(locked);
+                if destroy {
+                    finish_retained_destroy(&lock.state, ctx, limits, lock.node);
+                }
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let retain_lock_retained = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let lock: UserRef<RetainLockToken> = stack.consume(ctx)?;
+            let retained = lock
+                .state
+                .borrow()
+                .retention
+                .state(lock.node)
+                .is_some_and(|state| state.dropped);
+            stack.replace(ctx, retained);
+            Ok(CallbackReturn::Return)
+        });
+        let retain_lock_methods = Table::new(&ctx);
+        retain_lock_methods.set_field(ctx, "locked", retain_lock_locked);
+        retain_lock_methods.set_field(ctx, "set_locked", retain_lock_set);
+        retain_lock_methods.set_field(ctx, "retained", retain_lock_retained);
+        let retain_lock_metatable = Table::new(&ctx);
+        retain_lock_metatable.set_field(ctx, "__index", retain_lock_methods);
+        let retain_lock_metatable = ctx.stash(retain_lock_metatable);
+        let retain_lock = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (retainable, locked): (UserRef<RetainableToken>, LuaValue) =
+                    stack.consume(ctx)?;
+                let locked = match locked {
+                    LuaValue::Nil => true,
+                    LuaValue::Boolean(locked) => locked,
+                    _ => return Err(HostError("retain lock state must be boolean".into()).into()),
+                };
+                if locked {
+                    state
+                        .borrow_mut()
+                        .retention
+                        .lock(retainable.node)
+                        .map_err(|error| HostError(error.to_string()))?;
+                }
+                let userdata = UserData::new_static(
+                    &ctx,
+                    RetainLockToken {
+                        node: retainable.node,
+                        locked: Cell::new(locked),
+                        state: Rc::clone(&state),
+                    },
+                );
+                userdata.set_metatable(ctx, Some(ctx.fetch(&retain_lock_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
         });
 
         let effect = Callback::from_fn(&ctx, {
@@ -2694,6 +3057,8 @@ fn install_reactive_api(
         mold.set_field(ctx, "reloadable", reloadable);
         mold.set_field(ctx, "persistent", persistent);
         mold.set_field(ctx, "scope", scope);
+        mold.set_field(ctx, "retainable", retainable);
+        mold.set_field(ctx, "retain_lock", retain_lock);
         mold.set_field(ctx, "effect", effect);
         let clock = UserData::new_static(
             &ctx,
@@ -4898,6 +5263,8 @@ fn install_reactive_api(
             "reloadable",
             "persistent",
             "scope",
+            "retainable",
+            "retain_lock",
             "effect",
             "clock",
             "timer",
@@ -6565,6 +6932,18 @@ fn table_bool<'gc>(
         LuaValue::Nil => Ok(default),
         LuaValue::Boolean(value) => Ok(value),
         _ => Err(format!("{field} must be boolean")),
+    }
+}
+
+fn optional_closure<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+) -> Result<Option<StashedClosure>, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Function(Function::Closure(closure)) => Ok(Some(ctx.stash(closure))),
+        _ => Err(format!("{field} must be a function or nil")),
     }
 }
 
@@ -9156,6 +9535,66 @@ mod tests {
         assert_eq!(
             runtime.call_ipc("loader.state", &[]).unwrap()[0],
             IpcValue::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn retain_locks_delay_loader_item_destruction() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "retainable-loader.lua",
+                br#"
+                    local core = require("mold.core")
+                    local ui = require("mold.ui")
+                    local dropped = false
+                    local destroying = false
+                    local retained
+                    local lock
+                    local loader = ui.Loader {
+                        source = function()
+                            local item = ui.Text { text = "leaving" }
+                            retained = core.retainable(item, {
+                                on_dropped = function() dropped = true end,
+                                on_about_to_destroy = function() destroying = true end,
+                            })
+                            lock = core.retain_lock(retained, true)
+                            return item
+                        end,
+                    }
+                    mold.ipc["retain.drop"] = function() loader.active = false end
+                    mold.ipc["retain.release"] = function() lock:set_locked(false) end
+                    mold.ipc["retain.state"] = function()
+                        return dropped, destroying, retained:retained(),
+                            lock:locked(), loader.item and loader.item.text or "missing"
+                    end
+                    ui.Item { loader }
+                "#,
+            )
+            .unwrap();
+
+        runtime.call_ipc("retain.drop", &[]).unwrap();
+        assert!(runtime.poll_services());
+        assert_eq!(
+            runtime.call_ipc("retain.state", &[]).unwrap(),
+            [
+                IpcValue::Boolean(true),
+                IpcValue::Boolean(false),
+                IpcValue::Boolean(true),
+                IpcValue::Boolean(true),
+                IpcValue::String("leaving".into()),
+            ]
+        );
+        runtime.call_ipc("retain.release", &[]).unwrap();
+        assert_eq!(
+            runtime.call_ipc("retain.state", &[]).unwrap(),
+            [
+                IpcValue::Boolean(true),
+                IpcValue::Boolean(true),
+                IpcValue::Boolean(false),
+                IpcValue::Boolean(false),
+                IpcValue::String("missing".into()),
+            ]
         );
     }
 

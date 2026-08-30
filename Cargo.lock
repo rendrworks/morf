@@ -1219,6 +1219,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mold-lifecycle"
+version = "0.1.0"
+
+[[package]]
 name = "mold-lua"
 version = "0.1.0"
 dependencies = [
@@ -1227,6 +1231,7 @@ dependencies = [
  "mold-desktop",
  "mold-image",
  "mold-io",
+ "mold-lifecycle",
  "mold-menu",
  "mold-reactive",
  "mold-region",
