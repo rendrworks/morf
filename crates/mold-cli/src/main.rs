@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
 use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
-    InputMethodRequest, IpcValue, Limits, PopupSurfaceConfig, Runtime, Screen,
-    Screencopy as LuaScreencopy, TextInputRequest, UiEvent, VirtualKeyboardRequest,
+    FloatingSurfaceConfig, InputMethodRequest, IpcValue, Limits, PopupSurfaceConfig, Runtime,
+    Screen, Screencopy as LuaScreencopy, TextInputRequest, UiEvent, VirtualKeyboardRequest,
     WindowSurfaceKind,
 };
 use mold_render::{RenderEngine, WgpuBackend};
@@ -1074,6 +1074,7 @@ struct AuxiliarySurface {
     renderer: Option<RenderEngine<WgpuBackend>>,
     layout: Option<Layout>,
     popup_config: Option<PopupSurfaceConfig>,
+    floating_config: Option<FloatingSurfaceConfig>,
 }
 
 fn popup_anchor(value: &str) -> Result<PopupAnchor, String> {
@@ -1181,6 +1182,7 @@ fn sync_window_surfaces(
                 renderer: None,
                 layout: None,
                 popup_config: Some(config.clone()),
+                floating_config: None,
             });
         }
     } else if let (Some(current), Some(surface)) = (popup.as_mut(), desired_popup) {
@@ -1194,7 +1196,18 @@ fn sync_window_surfaces(
     }
 
     let desired_floating = floatings.first().copied();
-    if floating.as_ref().map(|surface| surface.id) != desired_floating.map(|surface| surface.id) {
+    let floating_changed = match desired_floating {
+        Some(surface) => {
+            let WindowSurfaceKind::Floating(config) = &surface.kind else {
+                unreachable!();
+            };
+            floating.as_ref().is_none_or(|current| {
+                current.id != surface.id || current.floating_config.as_ref() != Some(config)
+            })
+        }
+        None => floating.is_some(),
+    };
+    if floating_changed {
         client.close_floating();
         *floating = None;
         if let Some(surface) = desired_floating {
@@ -1224,6 +1237,7 @@ fn sync_window_surfaces(
                 renderer: None,
                 layout: None,
                 popup_config: None,
+                floating_config: Some(config.clone()),
             });
         }
     } else if let (Some(current), Some(surface)) = (floating.as_mut(), desired_floating) {

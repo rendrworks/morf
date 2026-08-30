@@ -6235,6 +6235,13 @@ fn install_reactive_api(
         window_methods.set_field(ctx, "open", window_open);
         window_methods.set_field(ctx, "close", window_close);
         window_methods.set_field(ctx, "kind", window_kind);
+        for property in ["minimized", "maximized", "fullscreen"] {
+            window_methods.set_field(
+                ctx,
+                property,
+                floating_state_method(ctx, Rc::clone(&state), property),
+            );
+        }
         let window_metatable = Table::new(&ctx);
         window_metatable.set_field(ctx, "__index", window_methods);
         let window_metatable = ctx.stash(window_metatable);
@@ -6847,6 +6854,44 @@ fn execute_module<'gc>(
             };
         }
     }
+}
+
+fn floating_state_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    property: &'static str,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (surface, value): (UserRef<WindowSurfaceToken>, Option<bool>) = stack.consume(ctx)?;
+        let mut state = state.borrow_mut();
+        let (current, changed) = {
+            let surface = state
+                .window_surfaces
+                .get_mut(&surface.id)
+                .ok_or_else(|| HostError("window surface is stale".into()))?;
+            let WindowSurfaceKind::Floating(config) = &mut surface.kind else {
+                return Err(
+                    HostError(format!("{property} is only valid for floating windows")).into(),
+                );
+            };
+            let current = match property {
+                "minimized" => &mut config.minimized,
+                "maximized" => &mut config.maximized,
+                "fullscreen" => &mut config.fullscreen,
+                _ => unreachable!(),
+            };
+            let changed = value.is_some_and(|value| *current != value);
+            if let Some(value) = value {
+                *current = value;
+            }
+            (*current, changed)
+        };
+        if changed {
+            state.window_surfaces_changed = true;
+        }
+        stack.replace(ctx, current);
+        Ok(CallbackReturn::Return)
+    })
 }
 
 fn element_constructor<'gc>(
@@ -9390,6 +9435,10 @@ mod tests {
                     }
                     assert(popup:kind() == "popup" and popup:visible())
                     assert(floating:kind() == "floating" and not floating:visible())
+                    assert(floating:maximized())
+                    assert(not floating:fullscreen())
+                    assert(floating:fullscreen(true))
+                    assert(not floating:maximized(false))
                     popup:close()
                     floating:open()
                 "##,
@@ -9419,9 +9468,9 @@ mod tests {
             (floating.maximum_width, floating.maximum_height),
             (Some(1920), Some(1080))
         );
-        assert!(floating.maximized);
+        assert!(!floating.maximized);
         assert!(!floating.minimized);
-        assert!(!floating.fullscreen);
+        assert!(floating.fullscreen);
         assert!(runtime.take_window_surface_change());
         assert!(!runtime.take_window_surface_change());
     }

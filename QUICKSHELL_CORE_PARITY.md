@@ -123,7 +123,7 @@ behavioral reductions do not count as parity.
   side margins;
 - typed dynamic popup and undecorated floating-surface models with validated
   roots, bounded minimum and maximum sizes, identity, visibility, initial
-  minimized, maximized and fullscreen state, placement state, compositor
+  and mutable minimized, maximized and fullscreen state, placement state, compositor
   lifecycle, independent GPU rendering, and surface-scoped pointer, touch, and
   keyboard routing;
 - composable rectangular, rounded, and elliptical input masks with combine,
