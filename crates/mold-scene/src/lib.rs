@@ -1310,7 +1310,11 @@ fn schema(element: Element) -> Vec<PropertySpec> {
     ];
     match element {
         Element::Item => {}
-        Element::Loader => properties.push(boolean("active", true)),
+        Element::Loader => properties.extend([
+            boolean("active", true),
+            boolean("loading", false),
+            boolean("active_async", false),
+        ]),
         Element::Timer => {
             properties.extend([
                 number("interval", 1_000.0),

@@ -1001,9 +1001,15 @@ impl Runtime {
                     stale_loaders.push(node);
                     continue;
                 };
-                if active && state.loaded_loaders.insert(node) {
+                let loading = state.scene.bool_value(node, "loading").unwrap_or(false);
+                let active_async = state
+                    .scene
+                    .bool_value(node, "active_async")
+                    .unwrap_or(false);
+                let requested = active || loading || active_async;
+                if requested && state.loaded_loaders.insert(node) {
                     loaders.push((node, factory));
-                } else if !active && state.loaded_loaders.remove(&node) {
+                } else if !requested && state.loaded_loaders.remove(&node) {
                     let children = state.scene.children(node).unwrap_or_default();
                     for child in children {
                         let _ = state.scene.remove(child);
@@ -1081,16 +1087,43 @@ impl Runtime {
                 Ok(child) => {
                     let mut state = self.reactive.borrow_mut();
                     if state.scene.reparent(child, Some(node)).is_ok() {
+                        let _ = assign_scene_property(
+                            &mut state,
+                            node,
+                            "active",
+                            SceneValue::Bool(true),
+                        );
+                        let _ = assign_scene_property(
+                            &mut state,
+                            node,
+                            "loading",
+                            SceneValue::Bool(false),
+                        );
+                        let _ = assign_scene_property(
+                            &mut state,
+                            node,
+                            "active_async",
+                            SceneValue::Bool(false),
+                        );
                         service_changed = true;
                     } else {
                         let _ = state.scene.remove(child);
+                        state.loaded_loaders.remove(&node);
                     }
                 }
-                Err(error) => self
-                    .reactive
-                    .borrow_mut()
-                    .logs
-                    .push(format!("Loader: {error}")),
+                Err(error) => {
+                    let mut state = self.reactive.borrow_mut();
+                    state.loaded_loaders.remove(&node);
+                    let _ =
+                        assign_scene_property(&mut state, node, "loading", SceneValue::Bool(false));
+                    let _ = assign_scene_property(
+                        &mut state,
+                        node,
+                        "active_async",
+                        SceneValue::Bool(false),
+                    );
+                    state.logs.push(format!("Loader: {error}"));
+                }
             }
         }
         let changed = service_changed
@@ -1810,6 +1843,32 @@ fn node_userdata<'gc>(
     let read_state = Rc::clone(&state);
     let index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (node, key): (UserRef<NodeToken>, String) = stack.consume(ctx)?;
+        let element = read_state
+            .borrow()
+            .scene
+            .element(node.handle)
+            .map_err(|error| HostError(error.to_string()))?;
+        if key == "item" && element == Element::Loader {
+            let child = read_state
+                .borrow()
+                .scene
+                .children(node.handle)
+                .map_err(|error| HostError(error.to_string()))?
+                .into_iter()
+                .next();
+            match child {
+                Some(child) => {
+                    stack.replace(ctx, node_userdata(ctx, Rc::clone(&read_state), child))
+                }
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            return Ok(CallbackReturn::Return);
+        }
+        let key = if key == "active_async" && element == Element::Loader {
+            "active".to_owned()
+        } else {
+            key
+        };
         let (property, target) = key
             .strip_suffix("_target")
             .map_or((key.as_str(), false), |property| (property, true));
@@ -9042,6 +9101,62 @@ mod tests {
         runtime.call_ipc("dynamic.stop", &[]).unwrap();
         assert!(runtime.poll_services());
         assert!(runtime.scene().children(loader).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lazy_loader_defers_requests_and_exposes_its_item() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "lazy-loader.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local loader = ui.Loader {
+                        active = false,
+                        loading = true,
+                        source = function() return ui.Text { text = "deferred" } end,
+                    }
+                    assert(loader.active == false)
+                    assert(loader.loading == true)
+                    assert(loader.item == nil)
+                    mold.ipc["loader.state"] = function()
+                        return loader.active, loader.loading, loader.active_async,
+                            loader.item and loader.item.text or "missing"
+                    end
+                    mold.ipc["loader.close"] = function() loader.active = false end
+                    mold.ipc["loader.open_async"] = function() loader.active_async = true end
+                    ui.Item { loader }
+                "#,
+            )
+            .unwrap();
+
+        assert!(runtime.poll_services());
+        assert_eq!(
+            runtime.call_ipc("loader.state", &[]).unwrap(),
+            [
+                IpcValue::Boolean(true),
+                IpcValue::Boolean(false),
+                IpcValue::Boolean(true),
+                IpcValue::String("deferred".into()),
+            ]
+        );
+        runtime.call_ipc("loader.close", &[]).unwrap();
+        assert!(runtime.poll_services());
+        assert_eq!(
+            runtime.call_ipc("loader.state", &[]).unwrap(),
+            [
+                IpcValue::Boolean(false),
+                IpcValue::Boolean(false),
+                IpcValue::Boolean(false),
+                IpcValue::String("missing".into()),
+            ]
+        );
+        runtime.call_ipc("loader.open_async", &[]).unwrap();
+        assert!(runtime.poll_services());
+        assert_eq!(
+            runtime.call_ipc("loader.state", &[]).unwrap()[0],
+            IpcValue::Boolean(true)
+        );
     }
 
     #[test]
