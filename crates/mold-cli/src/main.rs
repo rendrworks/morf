@@ -857,6 +857,7 @@ struct WorkerUpdate {
     repaint: bool,
     reset_input: bool,
     refresh_idle: bool,
+    recreate_surface: bool,
 }
 
 fn handle_worker_command(
@@ -880,6 +881,7 @@ fn handle_worker_command(
                 repaint,
                 reset_input: false,
                 refresh_idle: false,
+                recreate_surface: false,
             }
         }
         WorkerCommand::Verbs(reply) => {
@@ -927,6 +929,7 @@ fn handle_worker_command(
                 repaint,
                 reset_input: repaint,
                 refresh_idle: repaint,
+                recreate_surface: repaint && hard,
             }
         }
     }
@@ -1329,6 +1332,57 @@ fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, String> {
     Ok(primary[0])
 }
 
+fn runtime_bar_config(runtime: &Runtime, output: &str) -> Result<BarConfig, String> {
+    let surface = runtime.layer_surface_config();
+    let layer = match surface.layer.as_str() {
+        "background" => ShellLayer::Background,
+        "bottom" => ShellLayer::Bottom,
+        "top" => ShellLayer::Top,
+        "overlay" => ShellLayer::Overlay,
+        value => return Err(format!("unsupported layer surface layer `{value}`")),
+    };
+    let keyboard_focus = match surface.keyboard_focus.as_str() {
+        "none" => KeyboardFocus::None,
+        "exclusive" => KeyboardFocus::Exclusive,
+        "on_demand" => KeyboardFocus::OnDemand,
+        value => return Err(format!("unsupported keyboard focus policy `{value}`")),
+    };
+    Ok(BarConfig {
+        namespace: surface.namespace,
+        width: surface.width,
+        height: surface.height,
+        exclusive_zone: surface.exclusive_zone,
+        output: Some(output.to_owned()),
+        anchors: LayerAnchors {
+            top: surface.anchors.top,
+            right: surface.anchors.right,
+            bottom: surface.anchors.bottom,
+            left: surface.anchors.left,
+        },
+        margin_top: surface.margin_top,
+        margin_right: surface.margin_right,
+        margin_bottom: surface.margin_bottom,
+        margin_left: surface.margin_left,
+        layer,
+        keyboard_focus,
+    })
+}
+
+fn connect_runtime_surface(runtime: &Runtime, output: &str) -> Result<LayerClient, String> {
+    let mut client = LayerClient::connect(runtime_bar_config(runtime, output)?)
+        .map_err(|error| error.to_string())?;
+    loop {
+        client.dispatch().map_err(|error| error.to_string())?;
+        while let Some(event) = client.next_event() {
+            match event {
+                LayerEvent::Configure { .. } => return Ok(client),
+                LayerEvent::Closed => return Err("layer surface was closed".to_owned()),
+                _ => {}
+            }
+        }
+    }
+}
+
 fn run_surface(
     path: &Path,
     source: &[u8],
@@ -1359,40 +1413,9 @@ fn run_surface(
     execute_config(&mut runtime, path, source, policy)?;
     primary_surface_root(&runtime)?;
 
-    let surface = runtime.layer_surface_config();
-    let layer = match surface.layer.as_str() {
-        "background" => ShellLayer::Background,
-        "bottom" => ShellLayer::Bottom,
-        "top" => ShellLayer::Top,
-        "overlay" => ShellLayer::Overlay,
-        value => return Err(format!("unsupported layer surface layer `{value}`")),
-    };
-    let keyboard_focus = match surface.keyboard_focus.as_str() {
-        "none" => KeyboardFocus::None,
-        "exclusive" => KeyboardFocus::Exclusive,
-        "on_demand" => KeyboardFocus::OnDemand,
-        value => return Err(format!("unsupported keyboard focus policy `{value}`")),
-    };
-    let mut client = LayerClient::connect(BarConfig {
-        namespace: surface.namespace,
-        width: surface.width,
-        height: surface.height,
-        exclusive_zone: surface.exclusive_zone,
-        output: Some(name.clone()),
-        anchors: LayerAnchors {
-            top: surface.anchors.top,
-            right: surface.anchors.right,
-            bottom: surface.anchors.bottom,
-            left: surface.anchors.left,
-        },
-        margin_top: surface.margin_top,
-        margin_right: surface.margin_right,
-        margin_bottom: surface.margin_bottom,
-        margin_left: surface.margin_left,
-        layer,
-        keyboard_focus,
-    })
-    .map_err(|error| error.to_string())?;
+    let mut client = LayerClient::connect(runtime_bar_config(&runtime, &name)?)
+        .map_err(|error| error.to_string())?;
+
     client.set_idle_timeouts(&runtime.idle_timeouts());
     tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
         output: name.clone(),
@@ -1483,9 +1506,11 @@ fn run_surface(
             .map_err(|error| error.to_string())?;
         let next_clock = clock_text();
         let mut repaint = runtime.poll_services();
+        let mut recreate_surface = false;
         while let Ok(command) = commands.try_recv() {
             let update = handle_worker_command(&mut runtime, &runtime_screen, policy, command);
             repaint |= update.repaint;
+            recreate_surface |= update.recreate_surface;
             if update.reset_input {
                 hovered = None;
                 pressed = None;
@@ -1495,6 +1520,26 @@ fn run_surface(
             if update.refresh_idle {
                 client.set_idle_timeouts(&runtime.idle_timeouts());
             }
+        }
+        if recreate_surface {
+            let mut replacement = connect_runtime_surface(&runtime, &name)?;
+            replacement.set_idle_timeouts(&runtime.idle_timeouts());
+            let (width, height) = replacement.physical_size();
+            let backend = pollster::block_on(WgpuBackend::new_surface(
+                replacement.window_target(),
+                width,
+                height,
+            ))
+            .map_err(|error| error.to_string())?;
+            renderer = RenderEngine::new(backend);
+            popup_surface = None;
+            floating_surface = None;
+            client = replacement;
+            tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
+                output: name.clone(),
+                screens: client.screens().to_vec(),
+            }))
+            .map_err(|_| "output supervisor stopped".to_owned())?;
         }
         if let Some(hard) = runtime.take_reload_request() {
             tx.send(SupervisorMessage::Reload { hard })
@@ -2397,6 +2442,7 @@ mod tests {
 
         assert!(result.recv().unwrap().is_ok());
         assert!(update.repaint);
+        assert!(!update.recreate_surface);
         assert_eq!(
             runtime.call_ipc("counter.get", &[]).unwrap(),
             [IpcValue::Integer(7)]
@@ -2443,6 +2489,7 @@ mod tests {
 
         assert!(result.recv().unwrap().is_ok());
         assert!(update.repaint);
+        assert!(update.recreate_surface);
         assert_eq!(
             runtime.call_ipc("counter.get", &[]).unwrap(),
             [IpcValue::Integer(0)]
@@ -2487,6 +2534,7 @@ mod tests {
 
         assert!(result.recv().unwrap().is_err());
         assert!(!update.repaint);
+        assert!(!update.recreate_surface);
         assert_eq!(
             runtime.call_ipc("value", &[]).unwrap(),
             [IpcValue::Integer(7)]

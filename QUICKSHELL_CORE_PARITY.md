@@ -64,8 +64,9 @@ behavioral reductions do not count as parity.
 - signals, effects, hierarchically scoped reloadable IDs, typed persistent
   property scopes, timers, and clock updates;
 - coalesced soft and hard reload requests routed through the native supervisor,
-  with reloadable state retained only for soft reloads and bounded completion
-  and failure callbacks;
+  with native surfaces and GPU targets recreated only for hard reloads,
+  reloadable state retained only for soft reloads, and bounded completion and
+  failure callbacks;
 - native working-directory control and runtime file-watcher enablement;
 - retainable scene objects and scoped locks for delayed destruction and exit
   transitions;
