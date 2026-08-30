@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 mold-layout.workspace = true
 mold-render.workspace = true
+mold-region.workspace = true
 mold-scene.workspace = true
 raw-window-handle.workspace = true
 rustix.workspace = true

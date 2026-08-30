@@ -97,6 +97,8 @@ behavioral reductions do not count as parity.
   layer, output selection, and keyboard focus policy;
 - popup anchor rectangles, edge and gravity selection, offsets, and compositor
   slide, flip, and resize constraints;
+- composable rectangular, rounded, and elliptical input masks with combine,
+  subtract, intersect, and XOR operations;
 - fractional scaling, output tracking, frame callbacks, and input regions.
 
 The Rust engine already contains additional platform mechanisms. They do not

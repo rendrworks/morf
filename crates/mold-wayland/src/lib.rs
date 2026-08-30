@@ -13,6 +13,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use mold_region::Region;
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
     WaylandWindowHandle, WindowHandle,
@@ -1121,6 +1122,23 @@ impl LayerClient {
         }
         surface.set_input_region(Some(&region));
         region.destroy();
+    }
+
+    /// Builds and applies a composable logical input region.
+    pub fn set_composed_input_region(&self, regions: &[Region]) -> Result<(), WaylandError> {
+        let (width, height) = self.logical_size();
+        let rectangles = mold_region::build(width, height, regions)
+            .map_err(|error| WaylandError(error.to_string()))?
+            .into_iter()
+            .map(|rect| InputRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            })
+            .collect::<Vec<_>>();
+        self.set_input_region(Some(&rectangles));
+        Ok(())
     }
 
     /// Creates an xdg popup anchored to a parent-surface rectangle.

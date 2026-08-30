@@ -1227,6 +1227,7 @@ dependencies = [
  "mold-image",
  "mold-io",
  "mold-reactive",
+ "mold-region",
  "mold-scene",
  "mold-services",
  "serde_json",
@@ -1238,6 +1239,10 @@ version = "0.1.0"
 dependencies = [
  "slotmap",
 ]
+
+[[package]]
+name = "mold-region"
+version = "0.1.0"
 
 [[package]]
 name = "mold-render"
@@ -1289,6 +1294,7 @@ name = "mold-wayland"
 version = "0.1.0"
 dependencies = [
  "mold-layout",
+ "mold-region",
  "mold-render",
  "mold-scene",
  "pollster",

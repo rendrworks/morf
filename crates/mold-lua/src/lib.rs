@@ -22,6 +22,7 @@ use mold_io::{
     Timer as IoTimer,
 };
 use mold_reactive::{EffectContext, Graph, SignalId};
+use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
 use mold_scene::{
     AnimationFrame, Behavior, Easing, Element, FlickState, ListChange, ListModel, ModelId,
     NodeHandle, Physics, Scene, Value as SceneValue, ViewTransition, VirtualList,
@@ -138,6 +139,7 @@ pub struct LayerSurfaceConfig {
     pub margin_left: i32,
     pub layer: String,
     pub keyboard_focus: String,
+    pub input_regions: Option<Vec<Region>>,
 }
 
 impl Default for LayerSurfaceConfig {
@@ -154,6 +156,7 @@ impl Default for LayerSurfaceConfig {
             margin_left: 0,
             layer: "top".to_owned(),
             keyboard_focus: "on_demand".to_owned(),
+            input_regions: None,
         }
     }
 }
@@ -1936,6 +1939,18 @@ fn install_reactive_api(
                     anchors.set_field(ctx, "left", config.anchors.left);
                     LuaValue::Table(anchors)
                 }
+                "mask" => config
+                    .input_regions
+                    .as_ref()
+                    .map_or(LuaValue::Nil, |regions| {
+                        let values = Table::new(&ctx);
+                        for (index, region) in regions.iter().enumerate() {
+                            values
+                                .set(ctx, index as i64 + 1, region_to_lua(ctx, region))
+                                .expect("region list accepts integer keys");
+                        }
+                        LuaValue::Table(values)
+                    }),
                 _ => LuaValue::Nil,
             };
             stack.replace(ctx, value);
@@ -2034,6 +2049,19 @@ fn install_reactive_api(
                         .into());
                     }
                     config.keyboard_focus = value;
+                }
+                "mask" => {
+                    config.input_regions = match value {
+                        LuaValue::Nil => None,
+                        LuaValue::Table(value) => {
+                            Some(vec![parse_region(ctx, value, 0).map_err(HostError)?])
+                        }
+                        _ => {
+                            return Err(
+                                HostError("surface mask must be a region table".into()).into()
+                            );
+                        }
+                    };
                 }
                 _ => return Err(HostError(format!("unknown surface setting `{key}`")).into()),
             }
@@ -4259,8 +4287,15 @@ fn install_reactive_api(
             io.set(ctx, name, mold.get_value(ctx, name))
                 .expect("IO module accepts native fields");
         }
+        let region = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let region = parse_region(ctx, options, 0).map_err(HostError)?;
+            stack.replace(ctx, region_to_lua(ctx, &region));
+            Ok(CallbackReturn::Return)
+        });
         let window = Table::new(&ctx);
         window.set_field(ctx, "layer_surface", surface);
+        window.set_field(ctx, "region", region);
         mold.set_field(ctx, "core", core);
         mold.set_field(ctx, "io", io);
         mold.set_field(ctx, "window", window);
@@ -5805,6 +5840,148 @@ fn table_string_map<'gc>(
     Ok(values)
 }
 
+fn parse_region<'gc>(ctx: Context<'gc>, table: Table<'gc>, depth: usize) -> Result<Region, String> {
+    if depth >= 64 {
+        return Err("region nesting exceeds 64 levels".into());
+    }
+    let integer = |field: &str, default: i32| match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(default),
+        LuaValue::Integer(value) => {
+            i32::try_from(value).map_err(|_| format!("region {field} must fit i32"))
+        }
+        _ => Err(format!("region {field} must be an integer")),
+    };
+    let x = integer("x", 0)?;
+    let y = integer("y", 0)?;
+    let width = integer("width", 0)?;
+    let height = integer("height", 0)?;
+    if width < 0 || height < 0 {
+        return Err("region width and height cannot be negative".into());
+    }
+    let radius = u32::try_from(integer("radius", 0)?)
+        .map_err(|_| "region radius cannot be negative".to_owned())?;
+    let corner = |field: &str| {
+        u32::try_from(integer(field, radius as i32)?)
+            .map_err(|_| format!("region {field} cannot be negative"))
+    };
+    let shape = match table.get_value(ctx, "shape") {
+        LuaValue::Nil => RegionShape::Rectangle {
+            top_left: corner("top_left_radius")?,
+            top_right: corner("top_right_radius")?,
+            bottom_right: corner("bottom_right_radius")?,
+            bottom_left: corner("bottom_left_radius")?,
+        },
+        LuaValue::String(value) if value.display_lossy().to_string() == "rect" => {
+            RegionShape::Rectangle {
+                top_left: corner("top_left_radius")?,
+                top_right: corner("top_right_radius")?,
+                bottom_right: corner("bottom_right_radius")?,
+                bottom_left: corner("bottom_left_radius")?,
+            }
+        }
+        LuaValue::String(value) if value.display_lossy().to_string() == "ellipse" => {
+            RegionShape::Ellipse
+        }
+        _ => return Err("region shape must be rect or ellipse".into()),
+    };
+    let operation = match table.get_value(ctx, "intersection") {
+        LuaValue::Nil => RegionOperation::Combine,
+        LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
+            "combine" => RegionOperation::Combine,
+            "subtract" => RegionOperation::Subtract,
+            "intersect" => RegionOperation::Intersect,
+            "xor" => RegionOperation::Xor,
+            _ => {
+                return Err(
+                    "region intersection must be combine, subtract, intersect, or xor".into(),
+                );
+            }
+        },
+        _ => return Err("region intersection must be a string".into()),
+    };
+    let mut children = Vec::new();
+    match table.get_value(ctx, "regions") {
+        LuaValue::Nil => {}
+        LuaValue::Table(values) => {
+            let mut ordered = Vec::new();
+            for (key, value) in values.iter(ctx) {
+                let LuaValue::Integer(index) = key else {
+                    return Err("region child keys must be integers".into());
+                };
+                let LuaValue::Table(value) = value else {
+                    return Err("region children must be tables".into());
+                };
+                ordered.push((index, value));
+            }
+            if ordered.len() > 256 {
+                return Err("region exceeds 256 direct children".into());
+            }
+            ordered.sort_by_key(|(index, _)| *index);
+            for (offset, (index, value)) in ordered.into_iter().enumerate() {
+                if index != offset as i64 + 1 {
+                    return Err("region children must be a dense sequence".into());
+                }
+                children.push(parse_region(ctx, value, depth + 1)?);
+            }
+        }
+        _ => return Err("region regions must be a table".into()),
+    }
+    Ok(Region {
+        rect: RegionRect {
+            x,
+            y,
+            width,
+            height,
+        },
+        shape,
+        operation,
+        children,
+    })
+}
+
+fn region_to_lua<'gc>(ctx: Context<'gc>, region: &Region) -> Table<'gc> {
+    let table = Table::new(&ctx);
+    table.set_field(ctx, "x", i64::from(region.rect.x));
+    table.set_field(ctx, "y", i64::from(region.rect.y));
+    table.set_field(ctx, "width", i64::from(region.rect.width));
+    table.set_field(ctx, "height", i64::from(region.rect.height));
+    table.set_field(
+        ctx,
+        "intersection",
+        match region.operation {
+            RegionOperation::Combine => "combine",
+            RegionOperation::Subtract => "subtract",
+            RegionOperation::Intersect => "intersect",
+            RegionOperation::Xor => "xor",
+        },
+    );
+    match region.shape {
+        RegionShape::Ellipse => {
+            table.set_field(ctx, "shape", "ellipse");
+        }
+        RegionShape::Rectangle {
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+        } => {
+            table.set_field(ctx, "shape", "rect");
+            table.set_field(ctx, "top_left_radius", i64::from(top_left));
+            table.set_field(ctx, "top_right_radius", i64::from(top_right));
+            table.set_field(ctx, "bottom_right_radius", i64::from(bottom_right));
+            table.set_field(ctx, "bottom_left_radius", i64::from(bottom_left));
+        }
+    }
+    let children = Table::new(&ctx);
+    for (index, child) in region.children.iter().enumerate() {
+        children
+            .set(ctx, index as i64 + 1, region_to_lua(ctx, child))
+            .expect("region child list accepts integer keys");
+    }
+    table.set_field(ctx, "regions", children);
+    table
+}
+
 fn string_table<'gc>(ctx: Context<'gc>, values: impl IntoIterator<Item = String>) -> Table<'gc> {
     let table = Table::new(&ctx);
     for (index, value) in values.into_iter().enumerate() {
@@ -6668,7 +6845,45 @@ mod tests {
                 margin_left: 200,
                 layer: "overlay".to_owned(),
                 keyboard_focus: "none".to_owned(),
+                input_regions: None,
             }
+        );
+    }
+
+    #[test]
+    fn surface_masks_are_native_composable_regions() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "regions.lua",
+                br#"
+                    local mold = require("mold")
+                    local window = require("mold.window")
+                    mold.surface.width = 10
+                    mold.surface.height = 10
+                    mold.surface.mask = window.region {
+                        x = 0, y = 0, width = 10, height = 10, radius = 2,
+                        regions = {
+                            window.region {
+                                x = 4, y = 4, width = 2, height = 2,
+                                intersection = "subtract",
+                            },
+                        },
+                    }
+                    assert(mold.surface.mask[1].shape == "rect")
+                    assert(mold.surface.mask[1].regions[1].intersection == "subtract")
+                "#,
+            )
+            .unwrap();
+        let regions = runtime.layer_surface_config().input_regions.unwrap();
+        let rectangles = mold_region::build(10, 10, &regions).unwrap();
+        assert!(!rectangles.is_empty());
+        assert_eq!(
+            rectangles
+                .iter()
+                .map(|rect| rect.width * rect.height)
+                .sum::<i32>(),
+            92
         );
     }
 

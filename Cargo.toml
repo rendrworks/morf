@@ -41,6 +41,7 @@ mold-io = { path = "crates/mold-io" }
 mold-layout = { path = "crates/mold-layout" }
 mold-lua = { path = "crates/mold-lua" }
 mold-reactive = { path = "crates/mold-reactive" }
+mold-region = { path = "crates/mold-region" }
 mold-render = { path = "crates/mold-render" }
 mold-scene = { path = "crates/mold-scene" }
 mold-services = { path = "crates/mold-services" }

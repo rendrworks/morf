@@ -2,6 +2,7 @@ local mold = require("mold")
 local core = require("mold.core")
 local io = require("mold.io")
 local ui = require("mold.ui")
+local window = require("mold.window")
 
 local palette = {
   background = "#111318",
@@ -77,6 +78,11 @@ mold.variants(mold.screens, function(screen)
   mold.surface.margin_top = top
   mold.surface.layer = "top"
   mold.surface.keyboard_focus = "none"
+  mold.surface.mask = window.region {
+    width = width,
+    height = height,
+    radius = 14,
+  }
 
   local gap = math.max(6, math.floor(math.min(width, height) * 0.012))
   local inset = gap

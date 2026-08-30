@@ -2,7 +2,8 @@
 
 This ports the layout of `~/.config/quickshell/board` onto mold's general native
 core. It composes Rust-backed scene primitives from Lua and reads the optional
-pywal JSON palette through `mold.io.file_view` and `mold.io.json`.
+pywal JSON palette through `mold.io.file_view` and `mold.io.json`. Its rounded
+input mask is built by the native composable region engine.
 
 It intentionally contains no Hyprland, D-Bus, Bluetooth, MPRIS, notification,
 or other shell-service implementation. Those integrations belong in consumer
