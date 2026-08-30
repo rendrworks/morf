@@ -85,7 +85,8 @@ behavioral reductions do not count as parity.
 - native JSON encoding and decoding with preserved array, object, and null
   values;
 - Unix sockets and socket servers;
-- line and delimiter parsers.
+- line and delimiter parsers;
+- bounded byte stream collectors with live or end-of-stream publication.
 
 ### `mold.ui`
 

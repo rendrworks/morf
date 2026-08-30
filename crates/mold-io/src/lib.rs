@@ -255,6 +255,101 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+/// Bounded stream collector with optional end-of-stream publication.
+pub struct StreamCollector {
+    pending: Vec<u8>,
+    data: Vec<u8>,
+    maximum: usize,
+    wait_for_end: bool,
+    finished: bool,
+}
+
+impl StreamCollector {
+    /// Creates a collector with an explicit byte limit.
+    pub fn new(maximum: usize, wait_for_end: bool) -> io::Result<Self> {
+        if maximum == 0 || maximum > 16 * 1024 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stream collector limit must be 1..16777216 bytes",
+            ));
+        }
+        Ok(Self {
+            pending: Vec::new(),
+            data: Vec::new(),
+            maximum,
+            wait_for_end,
+            finished: false,
+        })
+    }
+
+    /// Appends bytes and returns whether the published value changed.
+    pub fn push(&mut self, chunk: &[u8]) -> io::Result<bool> {
+        if self.finished {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "stream collector is finished",
+            ));
+        }
+        if self.pending.len().saturating_add(chunk.len()) > self.maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream collector exceeded its byte limit",
+            ));
+        }
+        self.pending.extend_from_slice(chunk);
+        if self.wait_for_end {
+            Ok(false)
+        } else {
+            self.data.clone_from(&self.pending);
+            Ok(true)
+        }
+    }
+
+    /// Publishes the final buffer and marks the stream finished.
+    pub fn finish(&mut self) -> bool {
+        if self.finished {
+            return false;
+        }
+        self.finished = true;
+        if self.wait_for_end {
+            self.data.clone_from(&self.pending);
+        }
+        true
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.data).into_owned()
+    }
+
+    pub fn wait_for_end(&self) -> bool {
+        self.wait_for_end
+    }
+
+    pub fn set_wait_for_end(&mut self, wait_for_end: bool) {
+        if self.wait_for_end == wait_for_end {
+            return;
+        }
+        self.wait_for_end = wait_for_end;
+        if !wait_for_end {
+            self.data.clone_from(&self.pending);
+        }
+    }
+
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
+
+    pub fn reset(&mut self) {
+        self.pending.clear();
+        self.data.clear();
+        self.finished = false;
+    }
+}
+
 /// Readable and atomically writable filesystem path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileView {
@@ -1808,5 +1903,21 @@ mod tests {
         ]);
         let structure = typed_dbus_value("(si)", &structure_value).unwrap();
         assert_eq!(structure.value_signature().to_string(), "(si)");
+    }
+
+    #[test]
+    fn stream_collector_controls_publication_and_bounds() {
+        let mut delayed = StreamCollector::new(8, true).unwrap();
+        assert!(!delayed.push(b"ab").unwrap());
+        assert_eq!(delayed.data(), b"");
+        assert!(delayed.finish());
+        assert_eq!(delayed.text(), "ab");
+
+        let mut live = StreamCollector::new(4, false).unwrap();
+        assert!(live.push(b"ab").unwrap());
+        assert_eq!(live.data(), b"ab");
+        assert!(live.push(b"cde").is_err());
+        live.reset();
+        assert!(!live.finished());
     }
 }

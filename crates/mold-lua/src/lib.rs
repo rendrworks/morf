@@ -19,7 +19,7 @@ use mold_image::{ImageRect as QuantizeRect, quantize_colors};
 use mold_io::{
     Bus, DbusProxy, DbusSignal, DbusValue, FileDocument, FileEvent, FileView, FileWatcher,
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
-    Timer as IoTimer,
+    StreamCollector, Timer as IoTimer,
 };
 use mold_menu::{ButtonType, CheckState, Menu, MenuEntry};
 use mold_reactive::{EffectContext, Graph, SignalId};
@@ -1435,6 +1435,10 @@ struct LineParserToken {
 
 struct SplitParserToken {
     parser: RefCell<SplitParser>,
+}
+
+struct StreamCollectorToken {
+    collector: RefCell<StreamCollector>,
 }
 
 struct ListModelToken {
@@ -4013,6 +4017,95 @@ fn install_reactive_api(
         });
         mold.set_field(ctx, "split_parser", split_parser);
 
+        let collector_push = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (collector, chunk): (UserRef<StreamCollectorToken>, String) = stack.consume(ctx)?;
+            let changed = collector
+                .collector
+                .borrow_mut()
+                .push(chunk.as_bytes())
+                .map_err(|error| HostError(error.to_string()))?;
+            stack.replace(ctx, changed);
+            Ok(CallbackReturn::Return)
+        });
+        let collector_finish = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let collector: UserRef<StreamCollectorToken> = stack.consume(ctx)?;
+            stack.replace(ctx, collector.collector.borrow_mut().finish());
+            Ok(CallbackReturn::Return)
+        });
+        let collector_text = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let collector: UserRef<StreamCollectorToken> = stack.consume(ctx)?;
+            stack.replace(ctx, collector.collector.borrow().text());
+            Ok(CallbackReturn::Return)
+        });
+        let collector_data = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let collector: UserRef<StreamCollectorToken> = stack.consume(ctx)?;
+            stack.replace(ctx, ctx.intern(collector.collector.borrow().data()));
+            Ok(CallbackReturn::Return)
+        });
+        let collector_waiting = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let collector: UserRef<StreamCollectorToken> = stack.consume(ctx)?;
+            stack.replace(ctx, collector.collector.borrow().wait_for_end());
+            Ok(CallbackReturn::Return)
+        });
+        let collector_set_waiting = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (collector, waiting): (UserRef<StreamCollectorToken>, bool) = stack.consume(ctx)?;
+            collector.collector.borrow_mut().set_wait_for_end(waiting);
+            Ok(CallbackReturn::Return)
+        });
+        let collector_finished = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let collector: UserRef<StreamCollectorToken> = stack.consume(ctx)?;
+            stack.replace(ctx, collector.collector.borrow().finished());
+            Ok(CallbackReturn::Return)
+        });
+        let collector_reset = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let collector: UserRef<StreamCollectorToken> = stack.consume(ctx)?;
+            collector.collector.borrow_mut().reset();
+            Ok(CallbackReturn::Return)
+        });
+        let collector_methods = Table::new(&ctx);
+        collector_methods.set_field(ctx, "push", collector_push);
+        collector_methods.set_field(ctx, "finish", collector_finish);
+        collector_methods.set_field(ctx, "text", collector_text);
+        collector_methods.set_field(ctx, "data", collector_data);
+        collector_methods.set_field(ctx, "wait_for_end", collector_waiting);
+        collector_methods.set_field(ctx, "set_wait_for_end", collector_set_waiting);
+        collector_methods.set_field(ctx, "finished", collector_finished);
+        collector_methods.set_field(ctx, "reset", collector_reset);
+        let collector_metatable = Table::new(&ctx);
+        collector_metatable.set_field(ctx, "__index", collector_methods);
+        let collector_metatable = ctx.stash(collector_metatable);
+        let stream_collector = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let maximum = match options.get_value(ctx, "maximum_bytes") {
+                LuaValue::Nil => 1024 * 1024,
+                LuaValue::Integer(value) => usize::try_from(value)
+                    .ok()
+                    .filter(|value| (1..=16 * 1024 * 1024).contains(value))
+                    .ok_or_else(|| {
+                        HostError("stream collector maximum_bytes must be 1..16777216".into())
+                    })?,
+                _ => {
+                    return Err(HostError(
+                        "stream collector maximum_bytes must be an integer".into(),
+                    )
+                    .into());
+                }
+            };
+            let wait_for_end = table_bool(ctx, options, "wait_for_end", true).map_err(HostError)?;
+            let collector = StreamCollector::new(maximum, wait_for_end)
+                .map_err(|error| HostError(error.to_string()))?;
+            let userdata = UserData::new_static(
+                &ctx,
+                StreamCollectorToken {
+                    collector: RefCell::new(collector),
+                },
+            );
+            userdata.set_metatable(ctx, Some(ctx.fetch(&collector_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "stream_collector", stream_collector);
+
         let dbus_get = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (proxy, property): (UserRef<DbusToken>, String) = stack.consume(ctx)?;
             let value = proxy.proxy.get_value(&property).map_err(HostError)?;
@@ -4721,6 +4814,7 @@ fn install_reactive_api(
             "socket",
             "line_parser",
             "split_parser",
+            "stream_collector",
             "json",
         ] {
             io.set(ctx, name, mold.get_value(ctx, name))
@@ -8981,6 +9075,20 @@ mod tests {
                 local parts = split:push("a-b--c--tail")
                 assert(#parts == 2 and parts[1] == "a-b" and parts[2] == "c")
                 assert(split:finish() == "tail")
+
+                local collector = mold.stream_collector {{
+                    maximum_bytes = 16,
+                    wait_for_end = true,
+                }}
+                assert(collector:push("one") == false)
+                assert(collector:text() == "")
+                assert(collector:finish() == true)
+                assert(collector:text() == "one")
+                assert(collector:finished())
+                collector:reset()
+                collector:set_wait_for_end(false)
+                assert(collector:push("two") == true)
+                assert(collector:data() == "two")
 
                 local server = mold.socket_server("{}")
                 assert(server:accept() == nil)
