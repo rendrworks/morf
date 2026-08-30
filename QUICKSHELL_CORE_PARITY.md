@@ -62,6 +62,7 @@ behavioral reductions do not count as parity.
 ### `mold.core`
 
 - signals, effects, reloadable state, timers, and clock updates;
+- reactive native local-time snapshots and bounded date/time formatting;
 - screen variants, list models, virtual lists, and flick state;
 - process identity, environment lookup, shell paths, version checks, elapsed
   timers, and detached process launch;

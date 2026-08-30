@@ -3,7 +3,8 @@
 This ports the layout of `~/.config/quickshell/board` onto mold's general native
 core. It composes Rust-backed scene primitives from Lua and reads the optional
 pywal JSON palette through `mold.io.file_view` and `mold.io.json`. Its rounded
-input mask is built by the native composable region engine.
+input mask is built by the native composable region engine, and its calendar is
+generated from `mold.core.system_clock`.
 
 It intentionally contains no Hyprland, D-Bus, Bluetooth, MPRIS, notification,
 or other shell-service implementation. Those integrations belong in consumer

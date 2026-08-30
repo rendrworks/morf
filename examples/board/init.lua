@@ -3,6 +3,7 @@ local core = require("mold.core")
 local io = require("mold.io")
 local ui = require("mold.ui")
 local window = require("mold.window")
+local calendar_clock = core.system_clock { precision = "hours" }
 
 local palette = {
   background = "#111318",
@@ -61,6 +62,53 @@ local function card(x, y, width, height, title, children)
   return ui.Rect(values)
 end
 
+local function calendar_content(width, height)
+  local now = calendar_clock:snapshot()
+  local leap = now.year % 4 == 0 and (now.year % 100 ~= 0 or now.year % 400 == 0)
+  local days = { 31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+  local first_weekday = ((now.weekday - ((now.day - 1) % 7) - 1) % 7) + 1
+  local names = { "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN" }
+  local values = {}
+  local cell_width = (width - 36) / 7
+  local cell_height = math.max(26, (height - 86) / 6)
+  for column, name in ipairs(names) do
+    values[#values + 1] = ui.Text {
+      x = 18 + (column - 1) * cell_width,
+      y = 48,
+      width = cell_width,
+      text = name,
+      font_size = 12,
+      color = palette.muted,
+      horizontal_alignment = "center",
+    }
+  end
+  for day = 1, days[now.month] do
+    local index = first_weekday + day - 2
+    local column = index % 7
+    local row = math.floor(index / 7)
+    if day == now.day then
+      values[#values + 1] = ui.Rect {
+        x = 18 + column * cell_width + cell_width * 0.18,
+        y = 76 + row * cell_height,
+        width = cell_width * 0.64,
+        height = cell_height * 0.78,
+        radius = 8,
+        color = palette.accent,
+      }
+    end
+    values[#values + 1] = ui.Text {
+      x = 18 + column * cell_width,
+      y = 78 + row * cell_height,
+      width = cell_width,
+      text = tostring(day),
+      font_size = 14,
+      color = day == now.day and palette.background or palette.foreground,
+      horizontal_alignment = "center",
+    }
+  end
+  return now.month_name .. " " .. tostring(now.year), values
+end
+
 mold.variants(mold.screens, function(screen)
   local screen_width = screen.width or 1920
   local screen_height = screen.height or 1080
@@ -99,6 +147,7 @@ mold.variants(mold.screens, function(screen)
   local calendar_width = math.floor((right_width - gap) * 0.56)
   local media_width = right_width - gap - calendar_width
   local right_x = inset + left_width + gap
+  local calendar_title, calendar_children = calendar_content(calendar_width, bottom_height)
 
   return ui.Rect {
     width = width,
@@ -143,14 +192,7 @@ mold.variants(mold.screens, function(screen)
       },
     }),
 
-    card(right_x, inset + user_height + gap, calendar_width, bottom_height, "CALENDAR", {
-      label("MON   TUE   WED   THU   FRI   SAT   SUN", 18, 52, 13, palette.muted),
-      label("  1      2      3      4      5      6      7", 18, 88, 15),
-      label("  8      9     10     11     12     13     14", 18, 122, 15),
-      label(" 15     16     17     18     19     20     21", 18, 156, 15),
-      label(" 22     23     24     25     26     27     28", 18, 190, 15),
-      label(" 29     30     31", 18, 224, 15),
-    }),
+    card(right_x, inset + user_height + gap, calendar_width, bottom_height, calendar_title, calendar_children),
 
     card(right_x + calendar_width + gap, inset + user_height + gap, media_width, bottom_height, "MEDIA", {
       ui.Rect {

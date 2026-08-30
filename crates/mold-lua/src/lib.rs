@@ -1,6 +1,6 @@
 //! Sandboxed execution of mold configuration code.
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
@@ -1352,6 +1352,11 @@ struct EasingCurveToken {
     easing: Easing,
 }
 
+struct SystemClockToken {
+    enabled: Cell<bool>,
+    precision: RefCell<String>,
+}
+
 struct JsonNullToken;
 
 struct DesktopEntriesToken {
@@ -2172,6 +2177,101 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "elapsed_timer", elapsed_timer);
+        let system_clock_snapshot = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let clock: UserRef<SystemClockToken> = stack.consume(ctx)?;
+                track_clock_dependency(&state, clock.enabled.get());
+                stack.replace(ctx, local_time_table(ctx));
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let system_clock_format = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (clock, format): (UserRef<SystemClockToken>, String) = stack.consume(ctx)?;
+                if format.len() > 256 || format.as_bytes().contains(&0) {
+                    return Err(HostError("clock format exceeds 256 bytes".into()).into());
+                }
+                track_clock_dependency(&state, clock.enabled.get());
+                stack.replace(ctx, jiff::Zoned::now().strftime(&format).to_string());
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let system_clock_enabled = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let clock: UserRef<SystemClockToken> = stack.consume(ctx)?;
+            stack.replace(ctx, clock.enabled.get());
+            Ok(CallbackReturn::Return)
+        });
+        let system_clock_set_enabled = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (clock, enabled): (UserRef<SystemClockToken>, bool) = stack.consume(ctx)?;
+            clock.enabled.set(enabled);
+            Ok(CallbackReturn::Return)
+        });
+        let system_clock_precision = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let clock: UserRef<SystemClockToken> = stack.consume(ctx)?;
+            stack.replace(ctx, clock.precision.borrow().as_str());
+            Ok(CallbackReturn::Return)
+        });
+        let system_clock_set_precision = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let (clock, precision): (UserRef<SystemClockToken>, String) = stack.consume(ctx)?;
+            if !matches!(precision.as_str(), "hours" | "minutes" | "seconds") {
+                return Err(
+                    HostError("clock precision must be hours, minutes, or seconds".into()).into(),
+                );
+            }
+            *clock.precision.borrow_mut() = precision;
+            Ok(CallbackReturn::Return)
+        });
+        let system_clock_methods = Table::new(&ctx);
+        system_clock_methods.set_field(ctx, "snapshot", system_clock_snapshot);
+        system_clock_methods.set_field(ctx, "format", system_clock_format);
+        system_clock_methods.set_field(ctx, "enabled", system_clock_enabled);
+        system_clock_methods.set_field(ctx, "set_enabled", system_clock_set_enabled);
+        system_clock_methods.set_field(ctx, "precision", system_clock_precision);
+        system_clock_methods.set_field(ctx, "set_precision", system_clock_set_precision);
+        let system_clock_metatable = Table::new(&ctx);
+        system_clock_metatable.set_field(ctx, "__index", system_clock_methods);
+        let system_clock_metatable = ctx.stash(system_clock_metatable);
+        let system_clock = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: LuaValue = stack.consume(ctx)?;
+            let (enabled, precision) = match options {
+                LuaValue::Nil => (true, "seconds".to_owned()),
+                LuaValue::Table(options) => {
+                    let enabled = match options.get_value(ctx, "enabled") {
+                        LuaValue::Nil => true,
+                        LuaValue::Boolean(value) => value,
+                        _ => return Err(HostError("clock enabled must be boolean".into()).into()),
+                    };
+                    let precision = match options.get_value(ctx, "precision") {
+                        LuaValue::Nil => "seconds".to_owned(),
+                        LuaValue::String(value) => value.display_lossy().to_string(),
+                        _ => {
+                            return Err(HostError("clock precision must be a string".into()).into());
+                        }
+                    };
+                    if !matches!(precision.as_str(), "hours" | "minutes" | "seconds") {
+                        return Err(HostError(
+                            "clock precision must be hours, minutes, or seconds".into(),
+                        )
+                        .into());
+                    }
+                    (enabled, precision)
+                }
+                _ => return Err(HostError("system_clock options must be a table".into()).into()),
+            };
+            let clock = UserData::new_static(
+                &ctx,
+                SystemClockToken {
+                    enabled: Cell::new(enabled),
+                    precision: RefCell::new(precision),
+                },
+            );
+            clock.set_metatable(ctx, Some(ctx.fetch(&system_clock_metatable)));
+            stack.replace(ctx, clock);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "system_clock", system_clock);
         let easing_value = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (curve, progress): (UserRef<EasingCurveToken>, f64) = stack.consume(ctx)?;
             if !progress.is_finite() {
@@ -4252,6 +4352,7 @@ fn install_reactive_api(
             "shell_path",
             "has_version",
             "elapsed_timer",
+            "system_clock",
             "easing_curve",
             "color_quantize",
             "exec_detached",
@@ -6059,6 +6160,44 @@ fn greetd_response<'gc>(ctx: Context<'gc>, response: GreetdResponse) -> Table<'g
     value
 }
 
+fn track_clock_dependency(state: &Rc<RefCell<ReactiveState>>, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let mut state = state.borrow_mut();
+    let clock = state.clock;
+    if let Some(active) = &mut state.active {
+        active.reads.insert(clock);
+    }
+}
+
+fn local_time_table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
+    let now = jiff::Zoned::now();
+    let numeric = now.strftime("%Y\t%m\t%d\t%H\t%M\t%S\t%u").to_string();
+    let parts = numeric
+        .split('\t')
+        .map(|value| value.parse::<i64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let value = Table::new(&ctx);
+    for (field, index) in [
+        ("year", 0),
+        ("month", 1),
+        ("day", 2),
+        ("hours", 3),
+        ("minutes", 4),
+        ("seconds", 5),
+        ("weekday", 6),
+    ] {
+        value.set_field(ctx, field, parts.get(index).copied().unwrap_or(0));
+    }
+    value.set_field(ctx, "date", now.strftime("%F").to_string());
+    value.set_field(ctx, "time", now.strftime("%T").to_string());
+    value.set_field(ctx, "month_name", now.strftime("%B").to_string());
+    value.set_field(ctx, "weekday_name", now.strftime("%A").to_string());
+    value.set_field(ctx, "timezone", now.strftime("%Z").to_string());
+    value
+}
+
 fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
     u64::try_from(milliseconds)
         .ok()
@@ -6915,6 +7054,20 @@ mod tests {
                     local bezier = core.easing_curve({ x1 = 0.42, y1 = 0, x2 = 1, y2 = 1 })
                     assert(bezier:value_at(0) == 0, "bezier start")
                     assert(bezier:value_at(1) > 0.999999, "bezier end")
+                    local clock = core.system_clock({ precision = "minutes" })
+                    local now = clock:snapshot()
+                    assert(now.year >= 2020)
+                    assert(now.month >= 1 and now.month <= 12)
+                    assert(now.day >= 1 and now.day <= 31)
+                    assert(now.hours >= 0 and now.hours <= 23)
+                    assert(now.minutes >= 0 and now.minutes <= 59)
+                    assert(now.seconds >= 0 and now.seconds <= 60)
+                    assert(now.weekday >= 1 and now.weekday <= 7)
+                    assert(type(clock:format("%Y-%m-%d")) == "string")
+                    assert(clock:precision() == "minutes")
+                    clock:set_precision("seconds")
+                    clock:set_enabled(false)
+                    assert(clock:enabled() == false)
                 "#,
             )
             .unwrap();
