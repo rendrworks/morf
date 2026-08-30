@@ -70,7 +70,7 @@ behavioral reductions do not count as parity.
 - retainable scene objects and scoped locks for delayed destruction and exit
   transitions;
 - reactive native local-time snapshots and bounded date/time formatting;
-- screen variants with logical geometry, physical metadata, density,
+- bounded variants instantiate every model entry; screen variants expose logical geometry, physical metadata, density,
   orientation and transform data, plus list models with stable keyed
   reconciliation, value lookup, virtual lists, and flick state;
 - process, instance, shell and application identity, launch time, environment

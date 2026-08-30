@@ -4352,31 +4352,48 @@ fn install_reactive_api(
         mold.set_field(ctx, "screens", screens);
         let variants = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let (items, factory): (Table, Closure) = stack.consume(ctx)?;
-            let item = items.get_value(ctx, 1);
-            let executor = Executor::start(ctx, factory.into(), Variadic(vec![item]));
-            let budget = limits.effect_fuel;
-            let mut remaining = budget;
-            loop {
-                if remaining == 0 {
-                    executor.stop(&ctx);
-                    return Err(HostError(format!(
-                        "Lua variant factory fuel exhausted after {budget} instructions"
-                    ))
-                    .into());
+            let mut values = items
+                .iter(ctx)
+                .map(|(key, value)| match key {
+                    LuaValue::Integer(index) => Ok((index, value)),
+                    _ => Err(HostError("variants model keys must be integers".into())),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.len() > 256 {
+                return Err(HostError("variants model exceeds 256 entries".into()).into());
+            }
+            values.sort_by_key(|(index, _)| *index);
+            let instances = Table::new(&ctx);
+            for (offset, (index, item)) in values.into_iter().enumerate() {
+                if index != offset as i64 + 1 {
+                    return Err(HostError("variants model must be a dense sequence".into()).into());
                 }
-                let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-                let mut fuel = Fuel::with(allowance);
-                let finished = executor.step(ctx, &mut fuel)?;
-                let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-                remaining = remaining.saturating_sub(consumed.max(1));
-                if finished {
-                    let value = executor
-                        .take_result::<LuaValue>(ctx)
-                        .map_err(|error| HostError(error.to_string()))??;
-                    stack.replace(ctx, value);
-                    break;
+                let executor = Executor::start(ctx, factory.into(), Variadic(vec![item]));
+                let budget = limits.effect_fuel;
+                let mut remaining = budget;
+                loop {
+                    if remaining == 0 {
+                        executor.stop(&ctx);
+                        return Err(HostError(format!(
+                            "Lua variant factory fuel exhausted after {budget} instructions"
+                        ))
+                        .into());
+                    }
+                    let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+                    let mut fuel = Fuel::with(allowance);
+                    let finished = executor.step(ctx, &mut fuel)?;
+                    let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+                    remaining = remaining.saturating_sub(consumed.max(1));
+                    if finished {
+                        let value = executor
+                            .take_result::<LuaValue>(ctx)
+                            .map_err(|error| HostError(error.to_string()))??;
+                        instances.set(ctx, index, value)?;
+                        break;
+                    }
                 }
             }
+            stack.replace(ctx, instances);
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "variants", variants);
@@ -10967,7 +10984,7 @@ mod tests {
                 br#"
                     local mold = require("mold")
                     local ui = require("mold.ui")
-                    mold.variants(mold.screens, function(screen)
+                    local instances = mold.variants(mold.screens, function(screen)
                         assert(screen.id == 12)
                         assert(screen.make == "Example")
                         assert(screen.model == "Panel")
@@ -10983,12 +11000,34 @@ mod tests {
                         assert(screen.transform == "normal")
                         return ui.Text { text = screen.name, width = screen.width }
                     end)
+                    assert(#instances == 1)
                 "#,
             )
             .unwrap();
         let node = runtime.scene().roots()[0];
         assert_eq!(runtime.scene().string_value(node, "text").unwrap(), "DP-1");
         assert_eq!(runtime.scene().number(node, "width").unwrap(), 1920.0);
+    }
+
+    #[test]
+    fn variants_builds_every_model_instance() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "variants-all.lua",
+                br#"
+                    local mold = require("mold")
+                    local ui = require("mold.ui")
+                    local instances = mold.variants({ "a", "b", "c" }, function(value)
+                        return ui.Text { text = value }
+                    end)
+                    assert(#instances == 3)
+                "#,
+            )
+            .unwrap();
+        let scene = runtime.scene();
+        assert_eq!(scene.roots().len(), 3);
+        assert_eq!(scene.string_value(scene.roots()[2], "text").unwrap(), "c");
     }
 
     #[test]
