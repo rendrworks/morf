@@ -1224,6 +1224,7 @@ version = "0.1.0"
 dependencies = [
  "luna",
  "mold-desktop",
+ "mold-image",
  "mold-io",
  "mold-reactive",
  "mold-scene",

@@ -15,6 +15,7 @@ use luna::{
     StashedClosure, Table, UserData, UserRef, Value as LuaValue, Variadic,
 };
 use mold_desktop::{DesktopEntries, DesktopEntry};
+use mold_image::{ImageRect as QuantizeRect, quantize_colors};
 use mold_io::{
     Bus, DbusProxy, DbusSignal, DbusValue, FileDocument, FileEvent, FileView, FileWatcher,
     LineParser, Process, ProcessConfig, ProcessEvent, Socket, SocketServer, SplitParser,
@@ -2175,6 +2176,80 @@ fn install_reactive_api(
             Ok(CallbackReturn::Return)
         });
         mold.set_field(ctx, "easing_curve", easing_curve);
+        let color_quantize = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let options: Table = stack.consume(ctx)?;
+            let source = match options.get_value(ctx, "source") {
+                LuaValue::String(value) => PathBuf::from(value.display_lossy().to_string()),
+                _ => return Err(HostError("color_quantize source must be a string".into()).into()),
+            };
+            let depth = match options.get_value(ctx, "depth") {
+                LuaValue::Nil => 3,
+                LuaValue::Integer(value) => u8::try_from(value)
+                    .ok()
+                    .filter(|value| *value <= 8)
+                    .ok_or_else(|| HostError("color_quantize depth must be 0..8".into()))?,
+                _ => {
+                    return Err(HostError("color_quantize depth must be an integer".into()).into());
+                }
+            };
+            let rescale_size = match options.get_value(ctx, "rescale_size") {
+                LuaValue::Nil => 64,
+                LuaValue::Integer(value) => u32::try_from(value)
+                    .ok()
+                    .filter(|value| *value <= 512)
+                    .ok_or_else(|| {
+                        HostError("color_quantize rescale_size must be 0..512".into())
+                    })?,
+                _ => {
+                    return Err(
+                        HostError("color_quantize rescale_size must be an integer".into()).into(),
+                    );
+                }
+            };
+            let crop = match options.get_value(ctx, "rect") {
+                LuaValue::Nil => None,
+                LuaValue::Table(rect) => {
+                    let read = |field| match rect.get_value(ctx, field) {
+                        LuaValue::Integer(value) => u32::try_from(value).map_err(|_| {
+                            format!("color_quantize rect {field} must be nonnegative")
+                        }),
+                        _ => Err(format!("color_quantize rect {field} must be an integer")),
+                    };
+                    let rect = QuantizeRect {
+                        x: read("x").map_err(HostError)?,
+                        y: read("y").map_err(HostError)?,
+                        width: read("width").map_err(HostError)?,
+                        height: read("height").map_err(HostError)?,
+                    };
+                    if rect.width == 0 || rect.height == 0 {
+                        return Err(
+                            HostError("color_quantize rect size must be positive".into()).into(),
+                        );
+                    }
+                    Some(rect)
+                }
+                _ => {
+                    return Err(HostError("color_quantize rect must be a table".into()).into());
+                }
+            };
+            let colors = quantize_colors(source, depth, crop, rescale_size)
+                .map_err(|error| HostError(error.to_string()))?;
+            let values = Table::new(&ctx);
+            for (index, color) in colors.into_iter().enumerate() {
+                let encoded = if color[3] == 255 {
+                    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
+                } else {
+                    format!(
+                        "#{:02x}{:02x}{:02x}{:02x}",
+                        color[0], color[1], color[2], color[3]
+                    )
+                };
+                values.set(ctx, index as i64 + 1, encoded)?;
+            }
+            stack.replace(ctx, values);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "color_quantize", color_quantize);
         let exec_detached = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let command: Table = stack.consume(ctx)?;
             let mut command = table_string_array(ctx, command, 64).map_err(HostError)?;
@@ -4150,6 +4225,7 @@ fn install_reactive_api(
             "has_version",
             "elapsed_timer",
             "easing_curve",
+            "color_quantize",
             "exec_detached",
             "signal",
             "reloadable",
@@ -6627,6 +6703,35 @@ mod tests {
                 "#,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn color_quantizer_returns_native_palette_values() {
+        let path = std::env::temp_dir().join(format!("mold-colors-{}.svg", std::process::id()));
+        fs::write(
+            &path,
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="1" height="1" fill="#ff0000"/><rect x="1" width="1" height="1" fill="#0000ff"/></svg>"##,
+        )
+        .unwrap();
+        let source = format!(
+            r##"
+                local core = require("mold.core")
+                local colors = core.color_quantize {{
+                    source = {:?},
+                    depth = 1,
+                    rescale_size = 2,
+                }}
+                assert(#colors == 2)
+                assert(
+                    (colors[1] == "#ff0000" and colors[2] == "#0000ff") or
+                    (colors[1] == "#0000ff" and colors[2] == "#ff0000")
+                )
+            "##,
+            path.to_string_lossy(),
+        );
+        let mut runtime = Runtime::default();
+        runtime.execute("colors.lua", source.as_bytes()).unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -67,6 +67,7 @@ behavioral reductions do not count as parity.
   timers, and detached process launch;
 - native easing curves across quadratic, cubic, quartic, quintic, sine,
   exponential, circular, back, bounce, and cubic-Bezier families;
+- bounded native image color quantization with crop and rescale controls;
 - bounded XDG desktop-entry discovery, precedence masking, lookup, actions, and
   detached launching;
 - bounded IPC registration and atomic runtime replacement.
