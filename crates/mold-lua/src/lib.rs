@@ -955,6 +955,17 @@ impl Runtime {
             .or_else(|| targets.first().copied())
     }
 
+    /// Returns the first key handler within one scene root.
+    pub fn first_key_target_in(&self, root: NodeHandle) -> Option<NodeHandle> {
+        let state = self.reactive.borrow();
+        let targets = key_targets_in(&state, root);
+        targets
+            .iter()
+            .copied()
+            .find(|node| state.scene.bool_value(*node, "focus").unwrap_or(false))
+            .or_else(|| targets.first().copied())
+    }
+
     /// Returns the nearest key-handling ancestor of a hit-tested node.
     pub fn key_target_for_node(&self, node: NodeHandle) -> Option<NodeHandle> {
         let state = self.reactive.borrow();
@@ -971,10 +982,40 @@ impl Runtime {
         None
     }
 
+    /// Returns whether a node belongs to the subtree rooted at `root`.
+    pub fn node_in_subtree(&self, root: NodeHandle, node: NodeHandle) -> bool {
+        let state = self.reactive.borrow();
+        let mut current = Some(node);
+        while let Some(candidate) = current {
+            if candidate == root {
+                return true;
+            }
+            current = state.scene.parent(candidate).ok().flatten();
+        }
+        false
+    }
+
     /// Advances keyboard focus through enabled visible key handlers.
     pub fn next_key_target(&self, current: Option<NodeHandle>) -> Option<NodeHandle> {
         let state = self.reactive.borrow();
         let targets = key_targets(&state);
+        if targets.is_empty() {
+            return None;
+        }
+        let next = current
+            .and_then(|current| targets.iter().position(|node| *node == current))
+            .map_or(0, |index| (index + 1) % targets.len());
+        Some(targets[next])
+    }
+
+    /// Advances keyboard focus within one scene root.
+    pub fn next_key_target_in(
+        &self,
+        root: NodeHandle,
+        current: Option<NodeHandle>,
+    ) -> Option<NodeHandle> {
+        let state = self.reactive.borrow();
+        let targets = key_targets_in(&state, root);
         if targets.is_empty() {
             return None;
         }
@@ -1347,6 +1388,24 @@ fn key_targets(state: &ReactiveState) -> Vec<NodeHandle> {
     let mut targets = Vec::new();
     let mut pending = state.scene.roots();
     pending.reverse();
+    while let Some(node) = pending.pop() {
+        if state.handlers.contains_key(&(node, UiEvent::KeyPressed))
+            && state.scene.bool_value(node, "enabled").unwrap_or(false)
+            && state.scene.bool_value(node, "visible").unwrap_or(false)
+        {
+            targets.push(node);
+        }
+        if let Ok(mut children) = state.scene.children(node) {
+            children.reverse();
+            pending.extend(children);
+        }
+    }
+    targets
+}
+
+fn key_targets_in(state: &ReactiveState, root: NodeHandle) -> Vec<NodeHandle> {
+    let mut targets = Vec::new();
+    let mut pending = vec![root];
     while let Some(node) = pending.pop() {
         if state.handlers.contains_key(&(node, UiEvent::KeyPressed))
             && state.scene.bool_value(node, "enabled").unwrap_or(false)
@@ -9732,17 +9791,35 @@ mod tests {
                         on_key_pressed = function() end,
                       },
                     }
+                    ui.Item {
+                      ui.MouseArea {
+                        on_key_pressed = function() end,
+                      },
+                    }
                 "#,
             )
             .unwrap();
         let root = runtime.scene().roots()[0];
+        let second_root = runtime.scene().roots()[1];
         let children = runtime.scene().children(root).unwrap();
+        let second_target = runtime.scene().children(second_root).unwrap()[0];
         let nested = runtime.scene().children(children[0]).unwrap()[0];
 
         assert_eq!(runtime.first_key_target(), Some(children[1]));
         assert_eq!(runtime.key_target_for_node(nested), Some(children[0]));
+        assert!(runtime.node_in_subtree(root, nested));
+        assert!(!runtime.node_in_subtree(second_root, nested));
+        assert_eq!(runtime.first_key_target_in(root), Some(children[1]));
+        assert_eq!(
+            runtime.first_key_target_in(second_root),
+            Some(second_target)
+        );
         assert_eq!(
             runtime.next_key_target(Some(children[1])),
+            Some(second_target)
+        );
+        assert_eq!(
+            runtime.next_key_target_in(root, Some(children[1])),
             Some(children[0])
         );
     }

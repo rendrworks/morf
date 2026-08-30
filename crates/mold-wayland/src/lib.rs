@@ -433,6 +433,14 @@ impl Default for BarConfig {
     }
 }
 
+/// Surface category associated with an input event.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SurfaceRole {
+    Layer,
+    Popup,
+    Floating,
+}
+
 /// Event produced by the layer-surface connection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayerEvent {
@@ -443,26 +451,47 @@ pub enum LayerEvent {
     /// The compositor permits the next animation and paint tick.
     Frame { time_ms: u32 },
     /// The pointer moved over or entered the surface.
-    PointerMotion { x: f64, y: f64 },
+    PointerMotion {
+        surface: SurfaceRole,
+        x: f64,
+        y: f64,
+    },
     /// The pointer left the surface.
-    PointerLeave,
+    PointerLeave { surface: SurfaceRole },
     /// A pointer button changed state.
     PointerButton {
+        surface: SurfaceRole,
         button: u32,
         pressed: bool,
         x: f64,
         y: f64,
     },
     /// A touch contact began on the surface.
-    TouchDown { id: i32, x: f64, y: f64 },
+    TouchDown {
+        surface: SurfaceRole,
+        id: i32,
+        x: f64,
+        y: f64,
+    },
     /// A touch contact moved on the surface.
-    TouchMotion { id: i32, x: f64, y: f64 },
+    TouchMotion {
+        surface: SurfaceRole,
+        id: i32,
+        x: f64,
+        y: f64,
+    },
     /// A touch contact ended on the surface.
-    TouchUp { id: i32, x: f64, y: f64 },
+    TouchUp {
+        surface: SurfaceRole,
+        id: i32,
+        x: f64,
+        y: f64,
+    },
     /// The compositor cancelled every active touch contact.
     TouchCancel,
     /// A keyboard key changed state.
     Key {
+        surface: SurfaceRole,
         keysym: u32,
         text: Option<String>,
         pressed: bool,
@@ -470,6 +499,7 @@ pub enum LayerEvent {
     },
     /// Keyboard modifier state changed.
     Modifiers {
+        surface: SurfaceRole,
         control: bool,
         alt: bool,
         shift: bool,
@@ -615,6 +645,7 @@ impl LayerClient {
             keyboard: None,
             touch: None,
             touch_points: HashMap::new(),
+            keyboard_surface: None,
             idle_notifier,
             idle_notifications: Vec::new(),
             idle_timeouts: Vec::new(),
@@ -1173,6 +1204,9 @@ impl LayerClient {
     /// Destroys the current popup when present.
     pub fn close_popup(&mut self) {
         self.state.popup = None;
+        if self.state.keyboard_surface == Some(SurfaceRole::Popup) {
+            self.state.keyboard_surface = None;
+        }
     }
 
     /// Returns the popup surface used to attach buffers.
@@ -1221,6 +1255,9 @@ impl LayerClient {
     /// Destroys the current floating window when present.
     pub fn close_floating(&mut self) {
         self.state.floating = None;
+        if self.state.keyboard_surface == Some(SurfaceRole::Floating) {
+            self.state.keyboard_surface = None;
+        }
     }
 
     /// Returns the floating-window surface used to attach buffers.
@@ -1385,7 +1422,8 @@ struct LayerState {
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     touch: Option<wl_touch::WlTouch>,
-    touch_points: HashMap<i32, (f64, f64)>,
+    touch_points: HashMap<i32, ((f64, f64), SurfaceRole)>,
+    keyboard_surface: Option<SurfaceRole>,
     idle_notifier: Option<ExtIdleNotifierV1>,
     idle_notifications: Vec<ExtIdleNotificationV1>,
     idle_timeouts: Vec<u32>,
@@ -2024,24 +2062,21 @@ impl PointerHandler for LayerState {
         events: &[PointerEvent],
     ) {
         for event in events {
-            if self
-                .layer
-                .as_ref()
-                .is_none_or(|layer| &event.surface != layer.wl_surface())
-            {
+            let Some(surface) = self.surface_role(&event.surface) else {
                 continue;
-            }
+            };
             let (x, y) = event.position;
             match event.kind {
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                    self.events.push_back(LayerEvent::PointerMotion { x, y })
-                }
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => self
+                    .events
+                    .push_back(LayerEvent::PointerMotion { surface, x, y }),
                 PointerEventKind::Leave { .. } => {
-                    self.events.push_back(LayerEvent::PointerLeave);
+                    self.events.push_back(LayerEvent::PointerLeave { surface });
                 }
                 PointerEventKind::Press { button, serial, .. } => {
                     self.latest_input_serial = Some(serial);
                     self.events.push_back(LayerEvent::PointerButton {
+                        surface,
                         button,
                         pressed: true,
                         x,
@@ -2050,6 +2085,7 @@ impl PointerHandler for LayerState {
                 }
                 PointerEventKind::Release { button, .. } => {
                     self.events.push_back(LayerEvent::PointerButton {
+                        surface,
                         button,
                         pressed: false,
                         x,
@@ -2074,16 +2110,13 @@ impl TouchHandler for LayerState {
         id: i32,
         position: (f64, f64),
     ) {
-        if self
-            .layer
-            .as_ref()
-            .is_none_or(|layer| surface != *layer.wl_surface())
-        {
+        let Some(surface) = self.surface_role(&surface) else {
             return;
-        }
+        };
         self.latest_input_serial = Some(serial);
-        self.touch_points.insert(id, position);
+        self.touch_points.insert(id, (position, surface));
         self.events.push_back(LayerEvent::TouchDown {
+            surface,
             id,
             x: position.0,
             y: position.1,
@@ -2099,8 +2132,9 @@ impl TouchHandler for LayerState {
         _time: u32,
         id: i32,
     ) {
-        if let Some((x, y)) = self.touch_points.remove(&id) {
-            self.events.push_back(LayerEvent::TouchUp { id, x, y });
+        if let Some(((x, y), surface)) = self.touch_points.remove(&id) {
+            self.events
+                .push_back(LayerEvent::TouchUp { surface, id, x, y });
         }
     }
 
@@ -2113,9 +2147,10 @@ impl TouchHandler for LayerState {
         id: i32,
         position: (f64, f64),
     ) {
-        if let Some(point) = self.touch_points.get_mut(&id) {
+        if let Some((point, surface)) = self.touch_points.get_mut(&id) {
             *point = position;
             self.events.push_back(LayerEvent::TouchMotion {
+                surface: *surface,
                 id,
                 x: position.0,
                 y: position.1,
@@ -2161,11 +2196,12 @@ impl KeyboardHandler for LayerState {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _serial: u32,
         _raw: &[u32],
         _keysyms: &[Keysym],
     ) {
+        self.keyboard_surface = self.surface_role(surface);
     }
 
     fn leave(
@@ -2173,9 +2209,12 @@ impl KeyboardHandler for LayerState {
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
+        if self.surface_role(surface) == self.keyboard_surface {
+            self.keyboard_surface = None;
+        }
     }
 
     fn press_key(
@@ -2224,6 +2263,7 @@ impl KeyboardHandler for LayerState {
     ) {
         self.latest_input_serial = Some(serial);
         self.events.push_back(LayerEvent::Modifiers {
+            surface: self.keyboard_surface.unwrap_or(SurfaceRole::Layer),
             control: modifiers.ctrl,
             alt: modifiers.alt,
             shift: modifiers.shift,
@@ -2470,8 +2510,33 @@ impl LayerState {
         }
     }
 
+    fn surface_role(&self, surface: &wl_surface::WlSurface) -> Option<SurfaceRole> {
+        if self
+            .layer
+            .as_ref()
+            .is_some_and(|layer| surface == layer.wl_surface())
+        {
+            Some(SurfaceRole::Layer)
+        } else if self
+            .popup
+            .as_ref()
+            .is_some_and(|popup| surface == popup.wl_surface())
+        {
+            Some(SurfaceRole::Popup)
+        } else if self
+            .floating
+            .as_ref()
+            .is_some_and(|floating| surface == floating.wl_surface())
+        {
+            Some(SurfaceRole::Floating)
+        } else {
+            None
+        }
+    }
+
     fn push_key(&mut self, event: KeyEvent, pressed: bool, repeat: bool) {
         self.events.push_back(LayerEvent::Key {
+            surface: self.keyboard_surface.unwrap_or(SurfaceRole::Layer),
             keysym: event.keysym.raw(),
             text: event.utf8,
             pressed,

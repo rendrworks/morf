@@ -20,7 +20,7 @@ use mold_scene::{Element, NodeHandle};
 use mold_wayland::{
     BarConfig, FloatingConfig, InputRect, KeyboardFocus, LayerAnchors, LayerClient, LayerEvent,
     OutputPowerMode, PopupAnchor, PopupConfig, PopupConstraints, PopupGravity, ScreenInfo,
-    ScreencopyFormat, ShellLayer,
+    ScreencopyFormat, ShellLayer, SurfaceRole,
 };
 
 fn usage() -> &'static str {
@@ -335,7 +335,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 | LayerEvent::Scale(_)
                 | LayerEvent::Frame { .. }
                 | LayerEvent::PointerMotion { .. }
-                | LayerEvent::PointerLeave
+                | LayerEvent::PointerLeave { .. }
                 | LayerEvent::PointerButton { .. }
                 | LayerEvent::TouchDown { .. }
                 | LayerEvent::TouchMotion { .. }
@@ -1060,6 +1060,7 @@ struct AuxiliarySurface {
     width: u32,
     height: u32,
     renderer: Option<RenderEngine<WgpuBackend>>,
+    layout: Option<Layout>,
 }
 
 fn popup_anchor(value: &str) -> Result<PopupAnchor, String> {
@@ -1154,6 +1155,7 @@ fn sync_window_surfaces(
                 width: config.width,
                 height: config.height,
                 renderer: None,
+                layout: None,
             });
         }
     } else if let (Some(current), Some(surface)) = (popup.as_mut(), desired_popup) {
@@ -1163,6 +1165,7 @@ fn sync_window_surfaces(
         current.root = surface.root;
         current.width = config.width;
         current.height = config.height;
+        current.layout = None;
     }
 
     let desired_floating = floatings.first().copied();
@@ -1187,6 +1190,7 @@ fn sync_window_surfaces(
                 width: config.width,
                 height: config.height,
                 renderer: None,
+                layout: None,
             });
         }
     } else if let (Some(current), Some(surface)) = (floating.as_mut(), desired_floating) {
@@ -1196,6 +1200,7 @@ fn sync_window_surfaces(
         current.root = surface.root;
         current.width = config.width;
         current.height = config.height;
+        current.layout = None;
     }
     Ok(())
 }
@@ -1205,6 +1210,32 @@ fn auxiliary_physical_size(width: u32, height: u32, scale_120: u32) -> (u32, u32
         u32::try_from((u64::from(value) * u64::from(scale_120)).div_ceil(120)).unwrap_or(u32::MAX)
     };
     (physical(width), physical(height))
+}
+
+fn surface_layout<'a>(
+    surface: SurfaceRole,
+    layer: &'a Layout,
+    popup: &'a Option<AuxiliarySurface>,
+    floating: &'a Option<AuxiliarySurface>,
+) -> Option<&'a Layout> {
+    match surface {
+        SurfaceRole::Layer => Some(layer),
+        SurfaceRole::Popup => popup.as_ref()?.layout.as_ref(),
+        SurfaceRole::Floating => floating.as_ref()?.layout.as_ref(),
+    }
+}
+
+fn surface_root(
+    surface: SurfaceRole,
+    layer: NodeHandle,
+    popup: &Option<AuxiliarySurface>,
+    floating: &Option<AuxiliarySurface>,
+) -> Option<NodeHandle> {
+    match surface {
+        SurfaceRole::Layer => Some(layer),
+        SurfaceRole::Popup => popup.as_ref().map(|surface| surface.root),
+        SurfaceRole::Floating => floating.as_ref().map(|surface| surface.root),
+    }
 }
 
 fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, String> {
@@ -1313,7 +1344,7 @@ fn run_surface(
                 | LayerEvent::TextInput(_)
                 | LayerEvent::Frame { .. }
                 | LayerEvent::PointerMotion { .. }
-                | LayerEvent::PointerLeave
+                | LayerEvent::PointerLeave { .. }
                 | LayerEvent::PointerButton { .. }
                 | LayerEvent::TouchDown { .. }
                 | LayerEvent::TouchMotion { .. }
@@ -1366,10 +1397,10 @@ fn run_surface(
     apply_text_input_requests(&mut runtime, &mut client);
 
     let mut last_frame = None;
-    let mut hovered = None;
-    let mut pressed = None::<(NodeHandle, f64, f64, bool)>;
-    let mut focused = runtime.first_key_target();
-    let mut touches = HashMap::<i32, (NodeHandle, f64, f64)>::new();
+    let mut hovered = None::<(SurfaceRole, NodeHandle)>;
+    let mut pressed = None::<(SurfaceRole, NodeHandle, f64, f64, bool)>;
+    let mut focused = HashMap::<SurfaceRole, NodeHandle>::new();
+    let mut touches = HashMap::<i32, (SurfaceRole, NodeHandle, f64, f64)>::new();
     loop {
         if stop.load(Ordering::Acquire) {
             return Ok(());
@@ -1385,7 +1416,7 @@ fn run_surface(
             if update.reset_input {
                 hovered = None;
                 pressed = None;
-                focused = runtime.first_key_target();
+                focused.clear();
                 touches.clear();
             }
             if update.refresh_idle {
@@ -1475,18 +1506,24 @@ fn run_surface(
                         state.serial,
                     );
                 }
-                LayerEvent::PointerMotion { x, y } => {
-                    let hit = layout
+                LayerEvent::PointerMotion { surface, x, y } => {
+                    let Some(hit_layout) =
+                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                    else {
+                        continue;
+                    };
+                    let hit = hit_layout
                         .hit_test(&runtime.scene(), x, y)
                         .map_err(|error| error.to_string())?;
-                    if hit != hovered {
-                        if let Some(node) = hovered {
+                    let next_hovered = hit.map(|node| (surface, node));
+                    if next_hovered != hovered {
+                        if let Some((_, node)) = hovered {
                             repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerExited);
                         }
                         if let Some(node) = hit {
                             repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerEntered);
                         }
-                        hovered = hit;
+                        hovered = next_hovered;
                     }
                     if let Some(node) = hit {
                         repaint |= runtime.dispatch_pointer_event(
@@ -1498,7 +1535,9 @@ fn run_surface(
                             0.0,
                         );
                     }
-                    if let Some((node, start_x, start_y, dragging)) = &mut pressed {
+                    if let Some((pressed_surface, node, start_x, start_y, dragging)) = &mut pressed
+                        && *pressed_surface == surface
+                    {
                         let delta_x = x - *start_x;
                         let delta_y = y - *start_y;
                         if !*dragging && delta_x.hypot(delta_y) >= 8.0 {
@@ -1524,77 +1563,107 @@ fn run_surface(
                         }
                     }
                 }
-                LayerEvent::PointerLeave => {
-                    if let Some(node) = hovered.take() {
+                LayerEvent::PointerLeave { surface } => {
+                    if hovered.is_some_and(|(hovered_surface, _)| hovered_surface == surface)
+                        && let Some((_, node)) = hovered.take()
+                    {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerExited);
                     }
                 }
                 LayerEvent::PointerButton {
+                    surface,
                     button,
                     pressed: true,
                     x,
                     y,
                 } => {
-                    let hit = layout
+                    let Some(hit_layout) =
+                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                    else {
+                        continue;
+                    };
+                    let hit = hit_layout
                         .hit_test(&runtime.scene(), x, y)
                         .map_err(|error| error.to_string())?;
                     let hit = hit.filter(|node| runtime.accepts_pointer_button(*node, button));
-                    pressed = hit.map(|node| (node, x, y, false));
-                    focused = hit.and_then(|node| runtime.key_target_for_node(node));
+                    pressed = hit.map(|node| (surface, node, x, y, false));
+                    if let Some(target) = hit.and_then(|node| runtime.key_target_for_node(node)) {
+                        focused.insert(surface, target);
+                    } else {
+                        focused.remove(&surface);
+                    }
                     if let Some(node) = hit {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
                     }
                 }
-                LayerEvent::TouchDown { id, x, y } => {
-                    let hit = layout
+                LayerEvent::TouchDown { surface, id, x, y } => {
+                    let Some(hit_layout) =
+                        surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                    else {
+                        continue;
+                    };
+                    let hit = hit_layout
                         .hit_test(&runtime.scene(), x, y)
                         .map_err(|error| error.to_string())?;
                     if let Some(node) = hit {
-                        touches.insert(id, (node, x, y));
-                        focused = runtime.key_target_for_node(node);
+                        touches.insert(id, (surface, node, x, y));
+                        if let Some(target) = runtime.key_target_for_node(node) {
+                            focused.insert(surface, target);
+                        } else {
+                            focused.remove(&surface);
+                        }
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
                         repaint |=
                             runtime.dispatch_touch_event(node, UiEvent::TouchPressed, id, x, y);
                     }
                 }
-                LayerEvent::TouchMotion { id, x, y } => {
-                    if let Some((node, last_x, last_y)) = touches.get_mut(&id) {
+                LayerEvent::TouchMotion { id, x, y, .. } => {
+                    if let Some((_, node, last_x, last_y)) = touches.get_mut(&id) {
                         *last_x = x;
                         *last_y = y;
                         repaint |=
                             runtime.dispatch_touch_event(*node, UiEvent::TouchMoved, id, x, y);
                     }
                 }
-                LayerEvent::TouchUp { id, x, y } => {
-                    if let Some((node, _, _)) = touches.remove(&id) {
+                LayerEvent::TouchUp { surface, id, x, y } => {
+                    if let Some((touch_surface, node, _, _)) = touches.remove(&id) {
                         repaint |=
                             runtime.dispatch_touch_event(node, UiEvent::TouchReleased, id, x, y);
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
-                        let hit = layout
-                            .hit_test(&runtime.scene(), x, y)
-                            .map_err(|error| error.to_string())?;
+                        let hit =
+                            surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                                .filter(|_| touch_surface == surface)
+                                .map(|layout| layout.hit_test(&runtime.scene(), x, y))
+                                .transpose()
+                                .map_err(|error| error.to_string())?
+                                .flatten();
                         if hit == Some(node) {
                             repaint |= runtime.dispatch_ui_event(node, UiEvent::Clicked);
                         }
                     }
                 }
                 LayerEvent::TouchCancel => {
-                    for (id, (node, x, y)) in touches.drain() {
+                    for (id, (_, node, x, y)) in touches.drain() {
                         repaint |=
                             runtime.dispatch_touch_event(node, UiEvent::TouchCanceled, id, x, y);
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
                     }
                 }
                 LayerEvent::PointerButton {
+                    surface,
                     pressed: false,
                     x,
                     y,
                     ..
                 } => {
-                    let hit = layout
-                        .hit_test(&runtime.scene(), x, y)
-                        .map_err(|error| error.to_string())?;
-                    if let Some((node, start_x, start_y, dragging)) = pressed.take() {
+                    let hit = surface_layout(surface, &layout, &popup_surface, &floating_surface)
+                        .map(|layout| layout.hit_test(&runtime.scene(), x, y))
+                        .transpose()
+                        .map_err(|error| error.to_string())?
+                        .flatten();
+                    if let Some((pressed_surface, node, start_x, start_y, dragging)) =
+                        pressed.take()
+                    {
                         repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
                         if dragging {
                             repaint |= runtime.dispatch_pointer_event(
@@ -1605,21 +1674,40 @@ fn run_surface(
                                 x - start_x,
                                 y - start_y,
                             );
-                        } else if hit == Some(node) {
+                        } else if pressed_surface == surface && hit == Some(node) {
                             repaint |= runtime.dispatch_ui_event(node, UiEvent::Clicked);
                         }
                     }
                 }
                 LayerEvent::Key {
+                    surface,
                     pressed: true,
                     keysym,
                     text,
                     ..
                 } => {
+                    let Some(root) = surface_root(
+                        surface,
+                        primary_surface_root(&runtime)?,
+                        &popup_surface,
+                        &floating_surface,
+                    ) else {
+                        continue;
+                    };
+                    let current = focused
+                        .get(&surface)
+                        .copied()
+                        .filter(|node| runtime.node_in_subtree(root, *node));
                     if keysym == 0xff09 {
-                        focused = runtime.next_key_target(focused);
+                        if let Some(next) = runtime.next_key_target_in(root, current) {
+                            focused.insert(surface, next);
+                        } else {
+                            focused.remove(&surface);
+                        }
                         repaint = true;
-                    } else if let Some(node) = focused {
+                    } else if let Some(node) = current.or_else(|| runtime.first_key_target_in(root))
+                    {
+                        focused.insert(surface, node);
                         repaint |= runtime.dispatch_key_event(node, keysym, text.as_deref());
                     }
                 }
@@ -1854,6 +1942,7 @@ fn paint_popup_surface(
     if damage.is_empty() {
         popup.commit();
     }
+    surface.layout = Some(layout);
     Ok(())
 }
 
@@ -1889,6 +1978,7 @@ fn paint_floating_surface(
     if damage.is_empty() {
         floating.commit();
     }
+    surface.layout = Some(layout);
     Ok(())
 }
 
