@@ -1272,6 +1272,98 @@ impl ScriptValue {
     }
 }
 
+fn register_reloadable_value(
+    state: &mut ReactiveState,
+    name: String,
+    initial: ScriptValue,
+) -> Result<(SignalId, bool), String> {
+    if state.reloadable.contains_key(&name) {
+        return Err(format!("reloadable id `{name}` is already registered"));
+    }
+    let mut restored = false;
+    let value = match state.reload_seed.remove(&name) {
+        Some(value) if std::mem::discriminant(&value) == std::mem::discriminant(&initial) => {
+            restored = true;
+            value
+        }
+        Some(_) => {
+            state.logs.push(format!(
+                "reloadable `{name}` changed value type; using its new default"
+            ));
+            initial
+        }
+        None => initial,
+    };
+    let id = state
+        .graph
+        .as_mut()
+        .ok_or_else(|| "reactive graph is already running".to_owned())?
+        .signal(format!("reloadable.{name}"), value.clone());
+    state.values.insert(id, value);
+    state.signals.push(id);
+    state.reloadable.insert(name, id);
+    Ok((id, restored))
+}
+
+fn create_persistent_token<'gc>(
+    ctx: Context<'gc>,
+    state: &Rc<RefCell<ReactiveState>>,
+    name: &str,
+    defaults: Table<'gc>,
+) -> Result<PersistentToken, String> {
+    if name.is_empty() || name.len() > 256 {
+        return Err("persistent id must be 1..256 bytes".into());
+    }
+    let mut definitions = Vec::new();
+    for (key, value) in defaults.iter(ctx) {
+        let LuaValue::String(key) = key else {
+            return Err("persistent property names must be strings".into());
+        };
+        let key = key.display_lossy().to_string();
+        if key.is_empty() || key.len() > 256 || matches!(key.as_str(), "loaded" | "reloaded") {
+            return Err(format!("invalid persistent property `{key}`"));
+        }
+        definitions.push((key, ScriptValue::from_lua(value)?));
+        if definitions.len() > 256 {
+            return Err("persistent object exceeds 256 properties".into());
+        }
+    }
+    definitions.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut properties = HashMap::new();
+    let mut reloaded = false;
+    let mut state = state.borrow_mut();
+    for (key, initial) in definitions {
+        let full_name = format!("{name}.{key}");
+        let (id, restored) = register_reloadable_value(&mut state, full_name, initial)?;
+        reloaded |= restored;
+        properties.insert(key, id);
+    }
+    Ok(PersistentToken {
+        properties,
+        reloaded,
+    })
+}
+
+fn validate_scope_part(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 256 {
+        return Err("scope IDs must be 1..256 bytes".into());
+    }
+    if value.starts_with('.') || value.ends_with('.') || value.contains("..") {
+        return Err("scope IDs cannot contain empty segments".into());
+    }
+    Ok(())
+}
+
+fn scoped_id(prefix: &str, name: &str) -> Result<String, String> {
+    validate_scope_part(prefix)?;
+    validate_scope_part(name)?;
+    let value = format!("{prefix}.{name}");
+    if value.len() > 256 {
+        return Err("scoped reloadable ID exceeds 256 bytes".into());
+    }
+    Ok(value)
+}
+
 #[derive(Debug)]
 struct SignalToken {
     id: SignalId,
@@ -1280,6 +1372,10 @@ struct SignalToken {
 struct PersistentToken {
     properties: HashMap<String, SignalId>,
     reloaded: bool,
+}
+
+struct ScopeToken {
+    prefix: String,
 }
 
 #[derive(Debug)]
@@ -1865,39 +1961,8 @@ fn install_reactive_api(
                     return Err(HostError("reloadable id cannot be empty".into()).into());
                 }
                 let initial = ScriptValue::from_lua(initial).map_err(HostError)?;
-                let id = {
-                    let mut state = state.borrow_mut();
-                    if state.reloadable.contains_key(&name) {
-                        return Err(HostError(format!(
-                            "reloadable id `{name}` is already registered"
-                        ))
-                        .into());
-                    }
-                    let value = match state.reload_seed.remove(&name) {
-                        Some(value)
-                            if std::mem::discriminant(&value)
-                                == std::mem::discriminant(&initial) =>
-                        {
-                            value
-                        }
-                        Some(_) => {
-                            state.logs.push(format!(
-                                "reloadable `{name}` changed value type; using its new default"
-                            ));
-                            initial
-                        }
-                        None => initial,
-                    };
-                    let id = state
-                        .graph
-                        .as_mut()
-                        .ok_or_else(|| HostError("reactive graph is already running".to_owned()))?
-                        .signal(format!("reloadable.{name}"), value.clone());
-                    state.values.insert(id, value);
-                    state.signals.push(id);
-                    state.reloadable.insert(name, id);
-                    id
-                };
+                let (id, _) = register_reloadable_value(&mut state.borrow_mut(), name, initial)
+                    .map_err(HostError)?;
                 let userdata = UserData::new_static(&ctx, SignalToken { id });
                 userdata.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
                 stack.replace(ctx, userdata);
@@ -1948,7 +2013,9 @@ fn install_reactive_api(
                 let (persistent, key, value): (UserRef<PersistentToken>, String, LuaValue) =
                     stack.consume(ctx)?;
                 if matches!(key.as_str(), "loaded" | "reloaded") {
-                    return Err(HostError(format!("persistent property `{key}` is read-only")).into());
+                    return Err(
+                        HostError(format!("persistent property `{key}` is read-only")).into(),
+                    );
                 }
                 let id = persistent
                     .properties
@@ -1990,76 +2057,68 @@ fn install_reactive_api(
         let persistent_metatable = ctx.stash(persistent_metatable);
         let persistent = Callback::from_fn(&ctx, {
             let state = Rc::clone(&state);
+            let persistent_metatable = persistent_metatable.clone();
             move |ctx, _, mut stack| {
                 let (name, defaults): (String, Table) = stack.consume(ctx)?;
-                if name.is_empty() || name.len() > 256 {
-                    return Err(HostError("persistent id must be 1..256 bytes".into()).into());
-                }
-                let mut definitions = Vec::new();
-                for (key, value) in defaults.iter(ctx) {
-                    let LuaValue::String(key) = key else {
-                        return Err(HostError("persistent property names must be strings".into()).into());
-                    };
-                    let key = key.display_lossy().to_string();
-                    if key.is_empty() || key.len() > 256 || matches!(key.as_str(), "loaded" | "reloaded") {
-                        return Err(HostError(format!("invalid persistent property `{key}`")).into());
-                    }
-                    definitions.push((key, ScriptValue::from_lua(value).map_err(HostError)?));
-                    if definitions.len() > 256 {
-                        return Err(HostError("persistent object exceeds 256 properties".into()).into());
-                    }
-                }
-                definitions.sort_by(|left, right| left.0.cmp(&right.0));
-                let mut properties = HashMap::new();
-                let mut reloaded = false;
-                {
-                    let mut state = state.borrow_mut();
-                    for (key, initial) in definitions {
-                        let full_name = format!("{name}.{key}");
-                        if state.reloadable.contains_key(&full_name) {
-                            return Err(HostError(format!(
-                                "reloadable id `{full_name}` is already registered"
-                            ))
-                            .into());
-                        }
-                        let value = match state.reload_seed.remove(&full_name) {
-                            Some(value)
-                                if std::mem::discriminant(&value)
-                                    == std::mem::discriminant(&initial) =>
-                            {
-                                reloaded = true;
-                                value
-                            }
-                            Some(_) => {
-                                state.logs.push(format!(
-                                    "persistent `{full_name}` changed value type; using its new default"
-                                ));
-                                initial
-                            }
-                            None => initial,
-                        };
-                        let id = state
-                            .graph
-                            .as_mut()
-                            .ok_or_else(|| HostError("reactive graph is already running".into()))?
-                            .signal(format!("reloadable.{full_name}"), value.clone());
-                        state.values.insert(id, value);
-                        state.signals.push(id);
-                        state.reloadable.insert(full_name, id);
-                        properties.insert(key, id);
-                    }
-                }
-                let userdata = UserData::new_static(
-                    &ctx,
-                    PersistentToken {
-                        properties,
-                        reloaded,
-                    },
-                );
+                let token =
+                    create_persistent_token(ctx, &state, &name, defaults).map_err(HostError)?;
+                let userdata = UserData::new_static(&ctx, token);
                 userdata.set_metatable(ctx, Some(ctx.fetch(&persistent_metatable)));
                 stack.replace(ctx, userdata);
                 Ok(CallbackReturn::Return)
             }
+        });
+
+        let scope_reloadable = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            let signal_metatable = signal_metatable.clone();
+            move |ctx, _, mut stack| {
+                let (scope, name, initial): (UserRef<ScopeToken>, String, LuaValue) =
+                    stack.consume(ctx)?;
+                let name = scoped_id(&scope.prefix, &name).map_err(HostError)?;
+                let initial = ScriptValue::from_lua(initial).map_err(HostError)?;
+                let (id, _) = register_reloadable_value(&mut state.borrow_mut(), name, initial)
+                    .map_err(HostError)?;
+                let userdata = UserData::new_static(&ctx, SignalToken { id });
+                userdata.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let scope_persistent = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            let persistent_metatable = persistent_metatable.clone();
+            move |ctx, _, mut stack| {
+                let (scope, name, defaults): (UserRef<ScopeToken>, String, Table) =
+                    stack.consume(ctx)?;
+                let name = scoped_id(&scope.prefix, &name).map_err(HostError)?;
+                let token =
+                    create_persistent_token(ctx, &state, &name, defaults).map_err(HostError)?;
+                let userdata = UserData::new_static(&ctx, token);
+                userdata.set_metatable(ctx, Some(ctx.fetch(&persistent_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let scope_id = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (scope, name): (UserRef<ScopeToken>, String) = stack.consume(ctx)?;
+            stack.replace(ctx, scoped_id(&scope.prefix, &name).map_err(HostError)?);
+            Ok(CallbackReturn::Return)
+        });
+        let scope_methods = Table::new(&ctx);
+        scope_methods.set_field(ctx, "reloadable", scope_reloadable);
+        scope_methods.set_field(ctx, "persistent", scope_persistent);
+        scope_methods.set_field(ctx, "id", scope_id);
+        let scope_metatable = Table::new(&ctx);
+        scope_metatable.set_field(ctx, "__index", scope_methods);
+        let scope_metatable = ctx.stash(scope_metatable);
+        let scope = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let prefix: String = stack.consume(ctx)?;
+            validate_scope_part(&prefix).map_err(HostError)?;
+            let userdata = UserData::new_static(&ctx, ScopeToken { prefix });
+            userdata.set_metatable(ctx, Some(ctx.fetch(&scope_metatable)));
+            stack.replace(ctx, userdata);
+            Ok(CallbackReturn::Return)
         });
 
         let effect = Callback::from_fn(&ctx, {
@@ -2571,6 +2630,7 @@ fn install_reactive_api(
         mold.set_field(ctx, "signal", signal);
         mold.set_field(ctx, "reloadable", reloadable);
         mold.set_field(ctx, "persistent", persistent);
+        mold.set_field(ctx, "scope", scope);
         mold.set_field(ctx, "effect", effect);
         let clock = UserData::new_static(
             &ctx,
@@ -4634,6 +4694,7 @@ fn install_reactive_api(
             "signal",
             "reloadable",
             "persistent",
+            "scope",
             "effect",
             "clock",
             "timer",
@@ -7918,6 +7979,45 @@ mod tests {
                 IpcValue::Integer(4),
                 IpcValue::Boolean(true),
                 IpcValue::Boolean(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn reload_scopes_isolate_repeated_local_ids() {
+        let source = br#"
+            local left = mold.scope("screen.left")
+            local right = mold.scope("screen.right")
+            local left_open = left:reloadable("open", false)
+            local right_open = right:reloadable("open", true)
+            local state = left:persistent("panel", { page = 2 })
+            mold.ipc["scope.get"] = function()
+                return left_open:get(), right_open:get(), state.page,
+                    left:id("open"), right:id("open")
+            end
+        "#;
+        let mut runtime = Runtime::default();
+        runtime.execute("scopes.lua", source).unwrap();
+        assert_eq!(
+            runtime.call_ipc("scope.get", &[]).unwrap(),
+            [
+                IpcValue::Boolean(false),
+                IpcValue::Boolean(true),
+                IpcValue::Integer(2),
+                IpcValue::String("screen.left.open".into()),
+                IpcValue::String("screen.right.open".into()),
+            ]
+        );
+        assert_eq!(
+            runtime
+                .reloadable_state()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            [
+                "screen.left.open".to_owned(),
+                "screen.left.panel.page".to_owned(),
+                "screen.right.open".to_owned(),
             ]
         );
     }
