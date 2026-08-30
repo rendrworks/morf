@@ -129,7 +129,8 @@ behavioral reductions do not count as parity.
   layer, output selection, and keyboard focus policy;
 - popup anchor rectangles, edge and gravity selection, offsets, and compositor
   slide, flip, resize and explicit grab behavior, including item-derived
-  rectangles with side margins;
+  rectangles with side margins, plus bounded live mutation of size, anchor
+  geometry, offsets, placement, constraints, grab policy, and parent;
 - typed dynamic popup and undecorated floating-surface models with validated
   roots, mutable bounded size constraints, identity, title, visibility, initial
   and mutable minimized, maximized and fullscreen state, placement state,
