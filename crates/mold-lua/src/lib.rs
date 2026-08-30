@@ -144,6 +144,66 @@ pub struct LayerSurfaceConfig {
     pub input_regions: Option<Vec<Region>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PopupConstraintConfig {
+    pub slide_x: bool,
+    pub slide_y: bool,
+    pub flip_x: bool,
+    pub flip_y: bool,
+    pub resize_x: bool,
+    pub resize_y: bool,
+}
+
+impl Default for PopupConstraintConfig {
+    fn default() -> Self {
+        Self {
+            slide_x: true,
+            slide_y: true,
+            flip_x: true,
+            flip_y: true,
+            resize_x: false,
+            resize_y: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PopupSurfaceConfig {
+    pub anchor_x: i32,
+    pub anchor_y: i32,
+    pub anchor_width: i32,
+    pub anchor_height: i32,
+    pub width: u32,
+    pub height: u32,
+    pub anchor_edge: String,
+    pub gravity: String,
+    pub offset_x: i32,
+    pub offset_y: i32,
+    pub constraints: PopupConstraintConfig,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FloatingSurfaceConfig {
+    pub width: u32,
+    pub height: u32,
+    pub title: String,
+    pub app_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WindowSurfaceKind {
+    Popup(PopupSurfaceConfig),
+    Floating(FloatingSurfaceConfig),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WindowSurfaceConfig {
+    pub id: u64,
+    pub root: NodeHandle,
+    pub visible: bool,
+    pub kind: WindowSurfaceKind,
+}
+
 impl Default for LayerSurfaceConfig {
     fn default() -> Self {
         Self {
@@ -453,6 +513,22 @@ impl Runtime {
     /// Returns the native layer-surface settings assigned by the configuration.
     pub fn layer_surface_config(&self) -> LayerSurfaceConfig {
         self.reactive.borrow().layer_surface.clone()
+    }
+
+    pub fn window_surface_configs(&self) -> Vec<WindowSurfaceConfig> {
+        let mut surfaces = self
+            .reactive
+            .borrow()
+            .window_surfaces
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        surfaces.sort_by_key(|surface| surface.id);
+        surfaces
+    }
+
+    pub fn take_window_surface_change(&mut self) -> bool {
+        std::mem::take(&mut self.reactive.borrow_mut().window_surfaces_changed)
     }
 
     /// Drains non-fatal binding diagnostics produced since the previous call.
@@ -1521,6 +1597,10 @@ struct RetainableToken {
     node: NodeHandle,
 }
 
+struct WindowSurfaceToken {
+    id: u64,
+}
+
 struct RetainLockToken {
     node: NodeHandle,
     locked: Cell<bool>,
@@ -1796,6 +1876,9 @@ struct ReactiveState {
     retention: Retention<NodeHandle>,
     retain_callbacks: HashMap<NodeHandle, RetainCallbacks>,
     retained_destroy_queue: HashSet<NodeHandle>,
+    window_surfaces: HashMap<u64, WindowSurfaceConfig>,
+    next_window_surface: u64,
+    window_surfaces_changed: bool,
     dbus_signals: Vec<PendingDbusSignal>,
     udev_monitors: Vec<PendingUdev>,
     status_notifiers: Vec<PendingStatusNotifier>,
@@ -1854,6 +1937,9 @@ impl ReactiveState {
             retention: Retention::default(),
             retain_callbacks: HashMap::new(),
             retained_destroy_queue: HashSet::new(),
+            window_surfaces: HashMap::new(),
+            next_window_surface: 0,
+            window_surfaces_changed: false,
             dbus_signals: Vec::new(),
             udev_monitors: Vec::new(),
             status_notifiers: Vec::new(),
@@ -5303,9 +5389,167 @@ fn install_reactive_api(
             stack.replace(ctx, region_to_lua(ctx, &region));
             Ok(CallbackReturn::Return)
         });
+        let window_visible = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let surface: UserRef<WindowSurfaceToken> = stack.consume(ctx)?;
+                let visible = state
+                    .borrow()
+                    .window_surfaces
+                    .get(&surface.id)
+                    .map(|surface| surface.visible)
+                    .ok_or_else(|| HostError("window surface is stale".into()))?;
+                stack.replace(ctx, visible);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let window_set_visible = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let (surface, visible): (UserRef<WindowSurfaceToken>, bool) = stack.consume(ctx)?;
+                let mut state = state.borrow_mut();
+                let surface = state
+                    .window_surfaces
+                    .get_mut(&surface.id)
+                    .ok_or_else(|| HostError("window surface is stale".into()))?;
+                if surface.visible != visible {
+                    surface.visible = visible;
+                    state.window_surfaces_changed = true;
+                }
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let window_open = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let surface: UserRef<WindowSurfaceToken> = stack.consume(ctx)?;
+                let mut state = state.borrow_mut();
+                let surface = state
+                    .window_surfaces
+                    .get_mut(&surface.id)
+                    .ok_or_else(|| HostError("window surface is stale".into()))?;
+                if !surface.visible {
+                    surface.visible = true;
+                    state.window_surfaces_changed = true;
+                }
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let window_close = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let surface: UserRef<WindowSurfaceToken> = stack.consume(ctx)?;
+                let mut state = state.borrow_mut();
+                let surface = state
+                    .window_surfaces
+                    .get_mut(&surface.id)
+                    .ok_or_else(|| HostError("window surface is stale".into()))?;
+                if surface.visible {
+                    surface.visible = false;
+                    state.window_surfaces_changed = true;
+                }
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let window_kind = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            move |ctx, _, mut stack| {
+                let surface: UserRef<WindowSurfaceToken> = stack.consume(ctx)?;
+                let kind = state
+                    .borrow()
+                    .window_surfaces
+                    .get(&surface.id)
+                    .map(|surface| match surface.kind {
+                        WindowSurfaceKind::Popup(_) => "popup",
+                        WindowSurfaceKind::Floating(_) => "floating",
+                    })
+                    .ok_or_else(|| HostError("window surface is stale".into()))?;
+                stack.replace(ctx, kind);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let window_methods = Table::new(&ctx);
+        window_methods.set_field(ctx, "visible", window_visible);
+        window_methods.set_field(ctx, "set_visible", window_set_visible);
+        window_methods.set_field(ctx, "open", window_open);
+        window_methods.set_field(ctx, "close", window_close);
+        window_methods.set_field(ctx, "kind", window_kind);
+        let window_metatable = Table::new(&ctx);
+        window_metatable.set_field(ctx, "__index", window_methods);
+        let window_metatable = ctx.stash(window_metatable);
+        let popup_surface = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            let window_metatable = window_metatable.clone();
+            move |ctx, _, mut stack| {
+                let options: Table = stack.consume(ctx)?;
+                let (root, visible, config) =
+                    parse_popup_surface(ctx, options).map_err(HostError)?;
+                state
+                    .borrow()
+                    .scene
+                    .element(root)
+                    .map_err(|error| HostError(error.to_string()))?;
+                let id = {
+                    let mut state = state.borrow_mut();
+                    let id = state.next_window_surface;
+                    state.next_window_surface = state.next_window_surface.wrapping_add(1);
+                    state.window_surfaces.insert(
+                        id,
+                        WindowSurfaceConfig {
+                            id,
+                            root,
+                            visible,
+                            kind: WindowSurfaceKind::Popup(config),
+                        },
+                    );
+                    state.window_surfaces_changed = true;
+                    id
+                };
+                let userdata = UserData::new_static(&ctx, WindowSurfaceToken { id });
+                userdata.set_metatable(ctx, Some(ctx.fetch(&window_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
+        let floating_surface = Callback::from_fn(&ctx, {
+            let state = Rc::clone(&state);
+            let window_metatable = window_metatable.clone();
+            move |ctx, _, mut stack| {
+                let options: Table = stack.consume(ctx)?;
+                let (root, visible, config) =
+                    parse_floating_surface(ctx, options).map_err(HostError)?;
+                state
+                    .borrow()
+                    .scene
+                    .element(root)
+                    .map_err(|error| HostError(error.to_string()))?;
+                let id = {
+                    let mut state = state.borrow_mut();
+                    let id = state.next_window_surface;
+                    state.next_window_surface = state.next_window_surface.wrapping_add(1);
+                    state.window_surfaces.insert(
+                        id,
+                        WindowSurfaceConfig {
+                            id,
+                            root,
+                            visible,
+                            kind: WindowSurfaceKind::Floating(config),
+                        },
+                    );
+                    state.window_surfaces_changed = true;
+                    id
+                };
+                let userdata = UserData::new_static(&ctx, WindowSurfaceToken { id });
+                userdata.set_metatable(ctx, Some(ctx.fetch(&window_metatable)));
+                stack.replace(ctx, userdata);
+                Ok(CallbackReturn::Return)
+            }
+        });
         let window = Table::new(&ctx);
         window.set_field(ctx, "layer_surface", surface);
         window.set_field(ctx, "region", region);
+        window.set_field(ctx, "popup", popup_surface);
+        window.set_field(ctx, "floating", floating_surface);
         mold.set_field(ctx, "core", core);
         mold.set_field(ctx, "io", io);
         mold.set_field(ctx, "window", window);
@@ -7016,6 +7260,138 @@ fn table_string_map<'gc>(
     Ok(values)
 }
 
+fn window_root<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<NodeHandle, String> {
+    let LuaValue::UserData(root) = options.get_value(ctx, "root") else {
+        return Err("window root must be a mold node".into());
+    };
+    root.downcast_static::<NodeToken>()
+        .map(|root| root.handle)
+        .map_err(|_| "window root must be a mold node".into())
+}
+
+fn window_u32<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+    default: u32,
+) -> Result<u32, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(default),
+        LuaValue::Integer(value) => u32::try_from(value)
+            .ok()
+            .filter(|value| (1..=16_384).contains(value))
+            .ok_or_else(|| format!("{field} must be 1..16384")),
+        _ => Err(format!("{field} must be an integer")),
+    }
+}
+
+fn window_i32<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+    default: i32,
+) -> Result<i32, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(default),
+        LuaValue::Integer(value) => {
+            i32::try_from(value).map_err(|_| format!("{field} is outside the signed 32-bit range"))
+        }
+        _ => Err(format!("{field} must be an integer")),
+    }
+}
+
+fn popup_position(value: &str) -> bool {
+    matches!(
+        value,
+        "none"
+            | "top"
+            | "bottom"
+            | "left"
+            | "right"
+            | "top_left"
+            | "top_right"
+            | "bottom_left"
+            | "bottom_right"
+    )
+}
+
+fn parse_popup_surface<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<(NodeHandle, bool, PopupSurfaceConfig), String> {
+    let root = window_root(ctx, options)?;
+    let visible = table_bool(ctx, options, "visible", false)?;
+    let anchor = match options.get_value(ctx, "anchor") {
+        LuaValue::Nil => None,
+        LuaValue::Table(anchor) => Some(anchor),
+        _ => return Err("popup anchor must be a table".into()),
+    };
+    let anchor_x = anchor.map_or(Ok(0), |anchor| window_i32(ctx, anchor, "x", 0))?;
+    let anchor_y = anchor.map_or(Ok(0), |anchor| window_i32(ctx, anchor, "y", 0))?;
+    let anchor_width = anchor.map_or(Ok(1), |anchor| window_i32(ctx, anchor, "width", 1))?;
+    let anchor_height = anchor.map_or(Ok(1), |anchor| window_i32(ctx, anchor, "height", 1))?;
+    if anchor_width <= 0 || anchor_height <= 0 {
+        return Err("popup anchor width and height must be positive".into());
+    }
+    let anchor_edge = table_string(ctx, options, "anchor_edge", "bottom_left")?;
+    let gravity = table_string(ctx, options, "gravity", "bottom_right")?;
+    if !popup_position(&anchor_edge) || !popup_position(&gravity) {
+        return Err("popup anchor_edge and gravity must be valid positions".into());
+    }
+    let constraints = match options.get_value(ctx, "constraints") {
+        LuaValue::Nil => PopupConstraintConfig::default(),
+        LuaValue::Table(constraints) => PopupConstraintConfig {
+            slide_x: table_bool(ctx, constraints, "slide_x", true)?,
+            slide_y: table_bool(ctx, constraints, "slide_y", true)?,
+            flip_x: table_bool(ctx, constraints, "flip_x", true)?,
+            flip_y: table_bool(ctx, constraints, "flip_y", true)?,
+            resize_x: table_bool(ctx, constraints, "resize_x", false)?,
+            resize_y: table_bool(ctx, constraints, "resize_y", false)?,
+        },
+        _ => return Err("popup constraints must be a table".into()),
+    };
+    Ok((
+        root,
+        visible,
+        PopupSurfaceConfig {
+            anchor_x,
+            anchor_y,
+            anchor_width,
+            anchor_height,
+            width: window_u32(ctx, options, "width", 1)?,
+            height: window_u32(ctx, options, "height", 1)?,
+            anchor_edge,
+            gravity,
+            offset_x: window_i32(ctx, options, "offset_x", 0)?,
+            offset_y: window_i32(ctx, options, "offset_y", 0)?,
+            constraints,
+        },
+    ))
+}
+
+fn parse_floating_surface<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<(NodeHandle, bool, FloatingSurfaceConfig), String> {
+    let root = window_root(ctx, options)?;
+    let visible = table_bool(ctx, options, "visible", false)?;
+    let title = table_string(ctx, options, "title", "mold")?;
+    let app_id = table_string(ctx, options, "app_id", "mold")?;
+    if title.len() > 4096 || app_id.len() > 4096 || app_id.contains('\0') || title.contains('\0') {
+        return Err("floating title and app_id must be at most 4096 bytes without NUL".into());
+    }
+    Ok((
+        root,
+        visible,
+        FloatingSurfaceConfig {
+            width: window_u32(ctx, options, "width", 640)?,
+            height: window_u32(ctx, options, "height", 480)?,
+            title,
+            app_id,
+        },
+    ))
+}
+
 fn parse_region<'gc>(ctx: Context<'gc>, table: Table<'gc>, depth: usize) -> Result<Region, String> {
     if depth >= 64 {
         return Err("region nesting exceeds 64 levels".into());
@@ -8099,6 +8475,63 @@ mod tests {
                 .sum::<i32>(),
             92
         );
+    }
+
+    #[test]
+    fn general_window_models_validate_popup_and_floating_state() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "windows.lua",
+                br##"
+                    local ui = require("mold.ui")
+                    local window = require("mold.window")
+                    local popup_root = ui.Rect { color = "#111111" }
+                    local popup = window.popup {
+                        root = popup_root,
+                        visible = true,
+                        width = 240,
+                        height = 120,
+                        anchor = { x = 10, y = 20, width = 30, height = 40 },
+                        anchor_edge = "bottom_right",
+                        gravity = "top_right",
+                        offset_x = 4,
+                        offset_y = -2,
+                        constraints = { resize_x = true, flip_y = false },
+                    }
+                    local floating_root = ui.Item {}
+                    local floating = window.floating {
+                        root = floating_root,
+                        width = 800,
+                        height = 600,
+                        title = "Mold Example",
+                        app_id = "dev.mold.example",
+                    }
+                    assert(popup:kind() == "popup" and popup:visible())
+                    assert(floating:kind() == "floating" and not floating:visible())
+                    popup:close()
+                    floating:open()
+                "##,
+            )
+            .unwrap();
+
+        let surfaces = runtime.window_surface_configs();
+        assert_eq!(surfaces.len(), 2);
+        assert!(!surfaces[0].visible);
+        let WindowSurfaceKind::Popup(popup) = &surfaces[0].kind else {
+            panic!("first surface was not a popup");
+        };
+        assert_eq!((popup.width, popup.height), (240, 120));
+        assert_eq!((popup.anchor_x, popup.anchor_y), (10, 20));
+        assert!(popup.constraints.resize_x);
+        assert!(!popup.constraints.flip_y);
+        assert!(surfaces[1].visible);
+        let WindowSurfaceKind::Floating(floating) = &surfaces[1].kind else {
+            panic!("second surface was not floating");
+        };
+        assert_eq!(floating.title, "Mold Example");
+        assert!(runtime.take_window_surface_change());
+        assert!(!runtime.take_window_surface_change());
     }
 
     #[test]

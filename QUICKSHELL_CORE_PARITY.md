@@ -104,6 +104,8 @@ behavioral reductions do not count as parity.
   layer, output selection, and keyboard focus policy;
 - popup anchor rectangles, edge and gravity selection, offsets, and compositor
   slide, flip, and resize constraints;
+- typed dynamic popup and undecorated floating-surface models with validated
+  roots, sizes, identity, visibility, and placement state;
 - composable rectangular, rounded, and elliptical input masks with combine,
   subtract, intersect, and XOR operations;
 - fractional scaling, output tracking, frame callbacks, and input regions.
