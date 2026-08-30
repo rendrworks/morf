@@ -346,8 +346,7 @@ fn process_view_applies_launch_context_and_restarts() {
 
 #[test]
 fn desktop_entries_scan_and_lookup_native_data() {
-    let directory =
-        std::env::temp_dir().join(format!("mold-lua-desktop-{}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("mold-lua-desktop-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     fs::write(
         directory.join("browser.desktop"),

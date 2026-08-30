@@ -449,7 +449,15 @@ end
 ---
 --- The four arguments are the ribbon geometry `line.lua` already computes, so
 --- the settings pills land on the same bar at the same pitch.
-function settings.build(bar_width, track_top, item_height, pill_gap)
+--- Builds the volume and brightness column.
+---
+--- `on_right` puts it on the output's right edge. In the original that is not a
+--- choice: SettingsManager.qml declares `settingsOnRight: !barOnRight`, so the
+--- two channels always sit on the edge opposite the workspace ribbon. Only the
+--- outer placement flips — the panels lay themselves out the same way either
+--- side, exactly as the original's popup surfaces do when they anchor to the
+--- other edge.
+function settings.build(bar_width, item_height, pill_gap, on_right)
   -- Dimensions, from the readonly block at the top of `Settings.qml`.
   local pill_width = bar_width * PILL_WIDTH_FACTOR
   local pill_h = item_height
@@ -490,10 +498,11 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
   local compact_w = button_size + popup_slide + (popup_gap * 0.33)
   local compact_h = pill_h
 
-  -- The workspace track occupies the middle half of the output, so the two
-  -- settings pills go directly beneath it at the same pitch.
-  local track_bottom = track_top + (ROW_COUNT * item_height) + ((ROW_COUNT - 1) * pill_gap)
-  local settings_top = track_bottom + (pill_gap * 2)
+  -- Settings.qml gives this ribbon a track of its own — `trackHeight:
+  -- (pillH * 2) + pillGap` centred with the same `(monitorHeight - trackHeight)
+  -- / 2` rule the workspace track uses. It is not stacked under the workspaces;
+  -- it sits at the same height on the opposite edge.
+  local settings_top = (HEIGHT - (item_height * 2 + pill_gap)) / 2
 
   local function app_card_h()
     local count = app_count:get()
@@ -515,6 +524,14 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
   -- morphs. These are read from bindings, so each registers its caller on the
   -- morph signals and nothing else has to say what depends on what.
   local function ease(ch) return smooth(ch.expand:get()) end
+  local strip_w = math.ceil(expanded_inset + panel_width)
+
+  --- Mirrors a left-relative x onto the other edge of this column.
+  local function place(x, w)
+    if not on_right then return x end
+    return strip_w - x - w
+  end
+
   local function inset(ch)
     return compact_inset + (expanded_inset - compact_inset) * ch.expand:get()
   end
@@ -661,7 +678,7 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
   local function bubble(ch, icon, fill, show_slash)
     local enter, leave = hover(ch)
     local children = {
-      x = function() return bubble_x(ch) end,
+      x = function() return place(bubble_x(ch), bubble_w(ch)) end,
       y = function() return bubble_y(ch) end,
       width = function() return bubble_w(ch) end,
       height = pill_h,
@@ -894,7 +911,7 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
   --- The board-style surface the bubble grows into.
   local function panel(ch, cards)
     local children = {
-      x = function() return panel_x(ch) end,
+      x = function() return place(panel_x(ch), panel_w(ch)) end,
       y = ch.top,
       width = function() return panel_w(ch) end,
       height = function() return panel_h(ch) end,
@@ -920,7 +937,7 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
   local function tracker(ch)
     local enter, leave = hover(ch)
     return ui.MouseArea {
-      x = function() return inset(ch) end,
+      x = function() return place(inset(ch), surface_w(ch)) end,
       y = ch.top,
       width = function() return surface_w(ch) end,
       height = function() return surface_h(ch) end,
@@ -942,7 +959,7 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
   local function pill(ch, y)
     local hovered = mold.signal("quickshell.settings." .. ch.prefix .. ".hovered", false)
     return ui.Rect {
-      x = (bar_width - pill_width) / 2,
+      x = place((bar_width - pill_width) / 2, pill_width),
       y = y,
       width = pill_width,
       height = pill_h,
@@ -1062,7 +1079,8 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
   -- tracker before everything it sits behind, and the pills last so they stay
   -- hoverable where a panel reaches back under the bar.
   return ui.Item {
-    width = math.ceil(expanded_inset + panel_width),
+    x = on_right and (WIDTH - strip_w) or 0,
+    width = strip_w,
     height = HEIGHT,
 
     tracker(vol),
@@ -1094,29 +1112,6 @@ function settings.build(bar_width, track_top, item_height, pill_gap)
         schedule(now)
       end,
     },
-  }
-end
-
---- The horizontal extent the panels can reach, for a caller that has to declare
---- an input region by hand instead of letting the paint derive one.
-function settings.input_region(bar_width, track_top, item_height, pill_gap)
-  local border_padding = math.floor(SHORT * (6 / 2160) + 0.5)
-  local popup_gap = theme.scaled(24)
-  local panel_pad = theme.scaled(12)
-  local card_pad = theme.scaled(8)
-  local app_spacing = theme.scaled(6)
-  local row_h = item_height * 0.65
-  local app_row_h = item_height * 0.5
-  local main_card_h = card_pad * 2 + row_h
-  local app_card = card_pad * 2 + MAX_APPS * app_row_h + (MAX_APPS - 1) * app_spacing
-  local tallest = panel_pad * 3 + main_card_h + app_card
-  local track_bottom = track_top + (ROW_COUNT * item_height) + ((ROW_COUNT - 1) * pill_gap)
-  local top = track_bottom + (pill_gap * 2)
-  return {
-    x = 0,
-    y = math.floor(top),
-    width = math.ceil(bar_width + border_padding + popup_gap + WIDTH * 0.2),
-    height = math.ceil((item_height + pill_gap) + tallest),
   }
 end
 

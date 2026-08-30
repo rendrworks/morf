@@ -191,6 +191,8 @@ impl Layout {
             | Element::Rect
             | Element::ClipRect
             | Element::Shape
+            | Element::Sdf
+            | Element::SdfShape
             | Element::MouseArea
             | Element::Flickable
             | Element::Loader
@@ -392,4 +394,3 @@ impl Layout {
         Ok(())
     }
 }
-

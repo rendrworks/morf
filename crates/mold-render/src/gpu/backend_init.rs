@@ -114,6 +114,21 @@ impl WgpuBackend {
         );
         let path_index_capacity = 1;
         let path_index_buffer = create_index_buffer(&device, path_index_capacity);
+        let (field_pipeline, field_layout) = create_field_pipeline(&device);
+        let field_capacity = 1;
+        let field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
+            &device,
+            field_capacity,
+            "mold field instances",
+        );
+        let field_layer_capacity = 1;
+        let field_layer_buffer = create_field_layer_buffer(&device, field_layer_capacity);
+        let field_bind_group = create_field_bind_group(
+            &device,
+            &field_layout,
+            &viewport_buffer,
+            &field_layer_buffer,
+        );
         let (texture, view) = create_target(&device, width, height);
         let surface = surface
             .map(|surface| create_surface_state(&device, &adapter, surface, &view, width, height))
@@ -145,6 +160,13 @@ impl WgpuBackend {
             path_vertex_capacity,
             path_index_buffer,
             path_index_capacity,
+            field_pipeline,
+            field_layout,
+            field_buffer,
+            field_capacity,
+            field_layer_buffer,
+            field_layer_capacity,
+            field_bind_group,
             paths: PathCache::default(),
             images: ImageCache::default(),
             image_textures: HashMap::new(),
@@ -205,6 +227,31 @@ impl WgpuBackend {
         }
         self.instance_capacity = required.next_power_of_two();
         self.instance_buffer = create_instance_buffer(&self.device, self.instance_capacity);
+    }
+
+    /// Grows the field instance and layer buffers, rebinding when either moves.
+    fn ensure_fields(&mut self, instances: usize, layers: usize) {
+        if instances > self.field_capacity {
+            self.field_capacity = instances.next_power_of_two();
+            self.field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
+                &self.device,
+                self.field_capacity,
+                "mold field instances",
+            );
+        }
+        if layers > self.field_layer_capacity {
+            self.field_layer_capacity = layers.next_power_of_two();
+            self.field_layer_buffer =
+                create_field_layer_buffer(&self.device, self.field_layer_capacity);
+            // The bind group holds the old buffer, so it has to be rebuilt
+            // whenever the storage grows or the shader reads freed memory.
+            self.field_bind_group = create_field_bind_group(
+                &self.device,
+                &self.field_layout,
+                &self.viewport_buffer,
+                &self.field_layer_buffer,
+            );
+        }
     }
 
     fn ensure_glyphs(&mut self, required: usize) {

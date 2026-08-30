@@ -56,22 +56,24 @@ local bar_width = line.bar_width()
 local track_height = HEIGHT * 0.5
 local pill_gap = SHORT_SIDE * (10 / 2160)
 local item_height = (track_height - pill_gap * 9) / 10
-local track_top = (HEIGHT - track_height) / 2
 
--- Only the parts that must take a click do. Everything else — the frame, the
--- badge as it slides over a window, a panel while it is hidden — stays
--- transparent to the pointer, so the desktop underneath keeps working.
-local regions = {}
-for _, region in ipairs(line.regions()) do regions[#regions + 1] = region end
-for _, region in ipairs(osd.regions()) do regions[#regions + 1] = region end
-regions[#regions + 1] = settings.input_region(bar_width, track_top, item_height, pill_gap)
-mold.surface.mask = { x = 0, y = 0, width = 0, height = 0, regions = regions }
+-- Only the parts that must take a click do. mold derives the input region from
+-- the live geometry of the visible MouseAreas on every paint
+-- (`crates/mold-cli/src/paint.rs`), skipping any node that is hidden or
+-- disabled along with everything under it. So a panel that is down contributes
+-- nothing and the desktop underneath keeps working, and the region grows to
+-- match as the panel opens, with no bookkeeping here. Declaring
+-- `mold.surface.mask` instead would freeze one static shape over all of it.
+--
+-- SettingsManager.qml declares `settingsOnRight: !barOnRight`, so the volume
+-- and brightness column always sits on the edge opposite the workspace ribbon.
+local settings_on_right = not hypr.bar_on_right()
 
 ui.Item {
   width = WIDTH,
   height = HEIGHT,
   border.build(WIDTH, HEIGHT),
   line.build(),
-  settings.build(bar_width, track_top, item_height, pill_gap),
+  settings.build(bar_width, item_height, pill_gap, settings_on_right),
   osd.build(),
 }

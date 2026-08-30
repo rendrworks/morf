@@ -25,6 +25,15 @@ pub enum Element {
     Icon,
     /// Tessellated SVG path primitive.
     Shape,
+    /// Signed-distance field composed from its `SdfShape` children.
+    Sdf,
+    /// One analytic distance field inside an [`Element::Sdf`].
+    ///
+    /// Never painted on its own: the parent reads its geometry, its shape and
+    /// its combining operation, and resolves the whole composition in one
+    /// fragment shader. Because the layer is an ordinary node, every number it
+    /// carries animates through the same behaviors as any other property.
+    SdfShape,
     /// Pointer and focus event target with no visual output.
     MouseArea,
     /// Sequential horizontal positioner.
@@ -58,6 +67,8 @@ impl Element {
             Self::Image => "Image",
             Self::Icon => "Icon",
             Self::Shape => "Shape",
+            Self::Sdf => "Sdf",
+            Self::SdfShape => "SdfShape",
             Self::MouseArea => "MouseArea",
             Self::Row => "Row",
             Self::Column => "Column",
@@ -227,4 +238,3 @@ enum PropertyType {
     String,
     Color,
 }
-

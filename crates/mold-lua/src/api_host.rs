@@ -332,89 +332,96 @@ fn install_host_service_api<'gc>(
     ipc.set_metatable(ctx, Some(ipc_metatable));
     mold.set_field(ctx, "ipc", ipc);
     let screens = Table::new(&ctx);
+    // `mold.screens` is ordered: index 1 is always the output this
+    // configuration instance drives, and `Runtime::set_screens` appends the
+    // compositor's remaining outputs after it.
     if let Some(screen) = screen {
-        let value = Table::new(&ctx);
-        value.set_field(ctx, "id", screen.id as i64);
-        value.set_field(ctx, "name", screen.name.as_str());
-        value.set_field(ctx, "make", screen.make.as_str());
-        value.set_field(ctx, "model", screen.model.as_str());
-        value.set_field(
-            ctx,
-            "description",
-            screen
-                .description
-                .as_deref()
-                .map_or(LuaValue::Nil, |description| {
-                    LuaValue::String(ctx.intern(description.as_bytes()))
-                }),
-        );
-        value.set_field(
-            ctx,
-            "x",
-            screen.position.map_or(LuaValue::Nil, |position| {
-                LuaValue::Integer(position.0 as i64)
-            }),
-        );
-        value.set_field(
-            ctx,
-            "y",
-            screen.position.map_or(LuaValue::Nil, |position| {
-                LuaValue::Integer(position.1 as i64)
-            }),
-        );
-        value.set_field(
-            ctx,
-            "width",
-            screen
-                .width
-                .map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
-        );
-        value.set_field(
-            ctx,
-            "height",
-            screen
-                .height
-                .map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
-        );
-        value.set_field(ctx, "scale", screen.scale as i64);
-        value.set_field(ctx, "device_pixel_ratio", screen.scale as i64);
-        value.set_field(ctx, "transform", screen.transform.as_str());
-        let physical_width = screen.physical_size.map(|size| size.0);
-        let physical_height = screen.physical_size.map(|size| size.1);
-        value.set_field(
-            ctx,
-            "physical_width_mm",
-            physical_width.map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
-        );
-        value.set_field(
-            ctx,
-            "physical_height_mm",
-            physical_height.map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
-        );
-        let physical_density = screen_density(screen);
-        value.set_field(
-            ctx,
-            "physical_pixel_density",
-            physical_density.map_or(LuaValue::Nil, LuaValue::Number),
-        );
-        value.set_field(
-            ctx,
-            "logical_pixel_density",
-            physical_density.map_or(LuaValue::Nil, |density| {
-                LuaValue::Number(density / f64::from(screen.scale.max(1)))
-            }),
-        );
-        value.set_field(ctx, "orientation", screen_orientation(screen));
-        value.set_field(
-            ctx,
-            "primary_orientation",
-            screen_primary_orientation(screen),
-        );
-        value.set_field(ctx, "serial_number", LuaValue::Nil);
         screens
-            .set(ctx, 1, value)
+            .set(ctx, 1, screen_entry(ctx, screen))
             .expect("screen table accepts integer keys");
     }
     mold.set_field(ctx, "screens", screens);
 }
 
+/// Builds the Lua table describing one output.
+fn screen_entry<'gc>(ctx: Context<'gc>, screen: &Screen) -> Table<'gc> {
+    let value = Table::new(&ctx);
+    value.set_field(ctx, "id", screen.id as i64);
+    value.set_field(ctx, "name", screen.name.as_str());
+    value.set_field(ctx, "make", screen.make.as_str());
+    value.set_field(ctx, "model", screen.model.as_str());
+    value.set_field(
+        ctx,
+        "description",
+        screen
+            .description
+            .as_deref()
+            .map_or(LuaValue::Nil, |description| {
+                LuaValue::String(ctx.intern(description.as_bytes()))
+            }),
+    );
+    value.set_field(
+        ctx,
+        "x",
+        screen.position.map_or(LuaValue::Nil, |position| {
+            LuaValue::Integer(position.0 as i64)
+        }),
+    );
+    value.set_field(
+        ctx,
+        "y",
+        screen.position.map_or(LuaValue::Nil, |position| {
+            LuaValue::Integer(position.1 as i64)
+        }),
+    );
+    value.set_field(
+        ctx,
+        "width",
+        screen
+            .width
+            .map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+    );
+    value.set_field(
+        ctx,
+        "height",
+        screen
+            .height
+            .map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+    );
+    value.set_field(ctx, "scale", screen.scale as i64);
+    value.set_field(ctx, "device_pixel_ratio", screen.scale as i64);
+    value.set_field(ctx, "transform", screen.transform.as_str());
+    let physical_width = screen.physical_size.map(|size| size.0);
+    let physical_height = screen.physical_size.map(|size| size.1);
+    value.set_field(
+        ctx,
+        "physical_width_mm",
+        physical_width.map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+    );
+    value.set_field(
+        ctx,
+        "physical_height_mm",
+        physical_height.map_or(LuaValue::Nil, |value| LuaValue::Integer(value as i64)),
+    );
+    let physical_density = screen_density(screen);
+    value.set_field(
+        ctx,
+        "physical_pixel_density",
+        physical_density.map_or(LuaValue::Nil, LuaValue::Number),
+    );
+    value.set_field(
+        ctx,
+        "logical_pixel_density",
+        physical_density.map_or(LuaValue::Nil, |density| {
+            LuaValue::Number(density / f64::from(screen.scale.max(1)))
+        }),
+    );
+    value.set_field(ctx, "orientation", screen_orientation(screen));
+    value.set_field(
+        ctx,
+        "primary_orientation",
+        screen_primary_orientation(screen),
+    );
+    value.set_field(ctx, "serial_number", LuaValue::Nil);
+    value
+}

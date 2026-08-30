@@ -11,6 +11,8 @@ enum WorkerCommand {
         args: Vec<IpcValue>,
         reply: mpsc::SyncSender<Result<Vec<IpcValue>, String>>,
     },
+    /// The compositor's output list, as the supervisor last recorded it.
+    Screens(Vec<ScreenInfo>),
     Verbs(mpsc::SyncSender<Vec<String>>),
     Logs(mpsc::SyncSender<Vec<String>>),
     Bindings(mpsc::SyncSender<Vec<String>>),
@@ -92,10 +94,9 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         let next_clock = clock_text();
         if next_clock != clock {
             clock = next_clock;
-            runtime
+            repaint |= runtime
                 .update_clock(&clock)
                 .map_err(|error| error.to_string())?;
-            repaint = true;
         }
         while let Some(event) = client.next_event() {
             match event {
@@ -282,4 +283,3 @@ fn paint_lock(
     runtime.observe_layout(&layout);
     Ok(())
 }
-

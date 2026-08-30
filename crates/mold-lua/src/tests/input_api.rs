@@ -176,7 +176,8 @@ fn lua_greetd_client_handles_authentication_prompts() {
                 .unwrap()
                 .contains("create_session")
         );
-        let response = br#"{"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}"#;
+        let response =
+            br#"{"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}"#;
         stream
             .write_all(&(response.len() as u32).to_ne_bytes())
             .unwrap();
@@ -406,3 +407,80 @@ fn lua_builds_a_scene_tree_with_bound_properties() {
     assert_eq!(scene.number(children[1], "width").unwrap(), 20.0);
 }
 
+#[test]
+fn pointer_handlers_receive_both_coordinate_spaces() {
+    // Gap 9. A slider reads the press position directly; before this it had to
+    // cache the last motion and hope one had arrived. The node sits at an
+    // offset inside its parent so surface space and node-local space cannot be
+    // confused for one another.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "pointer.lua",
+            br#"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local seen = mold.signal("pointer.seen", "")
+                local function record(name)
+                  return function(sx, sy, lx, ly)
+                    seen:set(("%s %g,%g %g,%g"):format(name, sx, sy, lx, ly))
+                  end
+                end
+                mold.ipc["pointer.seen"] = function() return seen:get() end
+                ui.Item {
+                  width = 400,
+                  height = 300,
+                  ui.MouseArea {
+                    x = 100,
+                    y = 40,
+                    width = 200,
+                    height = 60,
+                    on_pressed = record("pressed"),
+                    on_released = record("released"),
+                    on_clicked = record("clicked"),
+                    on_dragged = function(sx, sy, dx, dy, lx, ly)
+                      seen:set(("dragged %g,%g d%g,%g %g,%g"):format(sx, sy, dx, dy, lx, ly))
+                    end,
+                  },
+                }
+            "#,
+        )
+        .unwrap();
+
+    let area = {
+        let scene = runtime.scene();
+        let root = scene.roots()[0];
+        scene.children(root).unwrap()[0]
+    };
+    fn seen(runtime: &mut Runtime) -> String {
+        match runtime.call_ipc("pointer.seen", &[]).unwrap().as_slice() {
+            [IpcValue::String(value)] => value.clone(),
+            other => panic!("pointer.seen returned {other:?}"),
+        }
+    }
+
+    // The press lands 30 px in and 15 px down from the area's own corner.
+    let point = EventPoint::new((130.0, 55.0), (30.0, 15.0));
+
+    assert!(runtime.dispatch_pointer(area, UiEvent::Pressed, point, (0.0, 0.0)));
+    assert_eq!(seen(&mut runtime), "pressed 130,55 30,15");
+
+    assert!(runtime.dispatch_pointer(area, UiEvent::Released, point, (0.0, 0.0)));
+    assert_eq!(seen(&mut runtime), "released 130,55 30,15");
+
+    assert!(runtime.dispatch_pointer(area, UiEvent::Clicked, point, (0.0, 0.0)));
+    assert_eq!(seen(&mut runtime), "clicked 130,55 30,15");
+
+    // A drag keeps its displacement in surface space and lets the local pair
+    // run past the node it started on.
+    let dragged = EventPoint::new((350.0, 55.0), (250.0, 15.0));
+    assert!(runtime.dispatch_pointer(area, UiEvent::Dragged, dragged, (220.0, 0.0)));
+    assert_eq!(seen(&mut runtime), "dragged 350,55 d220,0 250,15");
+
+    // One entry takes every pointer event there is, so a host cannot reach for
+    // the wrong one and get silence — which is exactly how every click in the
+    // shell came to be dropped. An event that carries no pointer position is
+    // still refused.
+    assert!(!runtime.dispatch_pointer(area, UiEvent::PointerEntered, point, (0.0, 0.0)));
+    assert!(!runtime.dispatch_pointer(area, UiEvent::KeyPressed, point, (0.0, 0.0)));
+}

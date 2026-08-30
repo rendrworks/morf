@@ -19,7 +19,6 @@ libloading = "0.8"
 lyon_tessellation = "=1.0.20"
 luna = { git = "https://github.com/onix-os/luna", rev = "e8b7e98ec977c8973ce1a182d935d0ca1f06f465" }
 pollster = "1.0"
-polymorpher = "=0.1.4"
 raw-window-handle = "0.6"
 resvg = { version = "=0.48.1", default-features = false, features = ["raster-images", "text"] }
 rustix = { version = "1.1", features = ["event", "fs"] }

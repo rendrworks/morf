@@ -10,9 +10,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mold_io::{IpcIncoming, IpcReply, IpcRequest, IpcServer, IpcValue as WireValue, ipc_call};
-use mold_layout::{Layout, ReparentTransition, Size};
+use mold_layout::{Hit, Layout, ReparentTransition, Size};
 use mold_lua::{
-    FloatingSurfaceConfig, InputMethodRequest, IpcValue, LayerSurfaceConfig, Limits,
+    EventPoint, FloatingSurfaceConfig, InputMethodRequest, IpcValue, LayerSurfaceConfig, Limits,
     PopupSurfaceConfig, Runtime, Screen, Screencopy as LuaScreencopy, TextInputRequest, UiEvent,
     VirtualKeyboardRequest, WindowSurfaceAction, WindowSurfaceConfig, WindowSurfaceKind,
 };
@@ -33,6 +33,7 @@ include!("surfaces.rs");
 include!("surface_layers.rs");
 include!("surface_run.rs");
 include!("surface_events.rs");
+include!("surface_touch.rs");
 include!("surface_actions.rs");
 include!("paint.rs");
 

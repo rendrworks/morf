@@ -44,14 +44,9 @@ impl RenderBackend for WgpuBackend {
         damage: &[DamageRect],
         scale_120: u32,
     ) -> Result<(), Self::Error> {
-        let mut quad_indices = vec![None; list.commands.len()];
-        let mut instances = Vec::new();
-        for (command_index, command) in list.commands.iter().enumerate() {
-            if let Some(instance) = SdfQuadInstance::from_command(command, scale_120) {
-                quad_indices[command_index] = Some(instances.len() as u32);
-                instances.push(instance);
-            }
-        }
+        let (quad_indices, instances) = collect_quad_instances(list, scale_120);
+        let (field_indices, field_instances, field_layers) =
+            collect_field_instances(list, scale_120);
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
                 queue: &self.queue,
@@ -219,6 +214,19 @@ impl RenderBackend for WgpuBackend {
             path_batch.vertices.len().max(1),
             path_batch.indices.len().max(1),
         );
+        self.ensure_fields(field_instances.len().max(1), field_layers.len().max(1));
+        if !field_instances.is_empty() {
+            self.queue.write_buffer(
+                &self.field_buffer,
+                0,
+                bytemuck::cast_slice(&field_instances),
+            );
+            self.queue.write_buffer(
+                &self.field_layer_buffer,
+                0,
+                bytemuck::cast_slice(&field_layers),
+            );
+        }
         if !instances.is_empty() {
             self.queue
                 .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
@@ -276,6 +284,14 @@ impl RenderBackend for WgpuBackend {
                         $pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                         $pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
                         $pass.draw(0..6, instance..instance + 1);
+                    }
+                    if let Some(instance) = field_indices[command_index] {
+                        $pass.set_pipeline(&self.field_pipeline);
+                        $pass.set_bind_group(0, &self.field_bind_group, &[]);
+                        $pass.set_vertex_buffer(0, self.field_buffer.slice(..));
+                        // Four vertices as a strip: the shader expands the quad
+                        // by the outline and the softened edge itself.
+                        $pass.draw(0..4, instance..instance + 1);
                     }
                     if let Some(instance) = texture_batch.command_instances[command_index] {
                         let image = &texture_batch.images[instance as usize];
@@ -474,4 +490,3 @@ impl RenderBackend for WgpuBackend {
         Ok(())
     }
 }
-

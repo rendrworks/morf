@@ -58,6 +58,16 @@ fn reconcile_workers(
     }
 }
 
+/// Hands every live worker the compositor's new output list, so each runtime's
+/// `mold.screens` follows a monitor being plugged in, moved, or unplugged.
+fn broadcast_screens(workers: &BTreeMap<String, Worker>, screens: &[ScreenInfo]) {
+    for worker in workers.values() {
+        let _ = worker
+            .commands
+            .send(WorkerCommand::Screens(screens.to_vec()));
+    }
+}
+
 fn handle_ipc(
     workers: &BTreeMap<String, Worker>,
     daemon_logs: &mut Vec<String>,
@@ -163,6 +173,10 @@ fn handle_worker_command(
                 recreate_surface: false,
             }
         }
+        WorkerCommand::Screens(screens) => {
+            runtime.set_screens(&lua_screens(&screens));
+            WorkerUpdate::default()
+        }
         WorkerCommand::Verbs(reply) => {
             let _ = reply.send(runtime.ipc_verbs());
             WorkerUpdate::default()
@@ -190,6 +204,7 @@ fn handle_worker_command(
                 .and_then(|()| {
                     candidate
                         .update_clock(clock_text())
+                        .map(|_| ())
                         .map_err(|error| error.to_string())
                 });
             let repaint = match &result {
@@ -213,4 +228,3 @@ fn handle_worker_command(
         }
     }
 }
-

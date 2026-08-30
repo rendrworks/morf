@@ -47,10 +47,10 @@ struct SurfaceEventState {
     floating_surfaces: HashMap<u64, AuxiliarySurface>,
     layer_surfaces: HashMap<u64, AuxiliarySurface>,
     last_frame: Option<u32>,
-    hovered: Option<(SurfaceRole, NodeHandle)>,
-    pressed: Option<(SurfaceRole, NodeHandle, f64, f64, bool)>,
+    hovered: Option<(SurfaceRole, Hit)>,
+    pressed: Option<(SurfaceRole, Hit, f64, f64, bool)>,
     focused: HashMap<SurfaceRole, NodeHandle>,
-    touches: HashMap<i32, (SurfaceRole, NodeHandle, f64, f64)>,
+    touches: HashMap<i32, (SurfaceRole, Hit, f64, f64)>,
 }
 
 fn popup_anchor(value: &str) -> Result<PopupAnchor, String> {
@@ -108,6 +108,100 @@ fn window_surface_effectively_visible(
     visible
 }
 
+/// Builds the client-side geometry request for one configured popup.
+///
+/// Every field here is a positioner field, which is what lets the same builder
+/// serve both creating a popup and moving one.
+fn popup_client_config(config: &PopupSurfaceConfig) -> Result<PopupConfig, String> {
+    Ok(PopupConfig {
+        anchor: InputRect {
+            x: config.anchor_x,
+            y: config.anchor_y,
+            width: config.anchor_width,
+            height: config.anchor_height,
+        },
+        width: config.width,
+        height: config.height,
+        anchor_edge: popup_anchor(&config.anchor_edge)?,
+        gravity: popup_gravity(&config.gravity)?,
+        offset_x: config.offset_x,
+        offset_y: config.offset_y,
+        constraints: PopupConstraints {
+            slide_x: config.constraints.slide_x,
+            slide_y: config.constraints.slide_y,
+            flip_x: config.constraints.flip_x,
+            flip_y: config.constraints.flip_y,
+            resize_x: config.constraints.resize_x,
+            resize_y: config.constraints.resize_y,
+        },
+        grab_focus: config.grab_focus,
+    })
+}
+
+/// Whether a popup's new configuration needs a brand-new `xdg_popup`.
+///
+/// Everything a positioner carries — anchor rectangle, anchor edge, gravity,
+/// offset, constraint policy, size — is replaceable on a mapped popup, so a
+/// change to any of them is *positional* and goes through `xdg_popup.reposition`.
+/// Two fields are not: the parent is bound when the popup object is created, and
+/// the grab is taken once against an input serial. Only those force a teardown.
+fn popup_change_is_structural(current: &PopupSurfaceConfig, next: &PopupSurfaceConfig) -> bool {
+    current.parent != next.parent || current.grab_focus != next.grab_focus
+}
+
+/// Resolves the surface a popup anchors to, defaulting to the shell's own layer.
+fn popup_parent_role(
+    config: &PopupSurfaceConfig,
+    surfaces_by_id: &HashMap<u64, &WindowSurfaceConfig>,
+) -> Result<SurfaceRole, String> {
+    let Some(parent) = config.parent else {
+        return Ok(SurfaceRole::Layer(PRIMARY_LAYER));
+    };
+    let parent = surfaces_by_id
+        .get(&parent)
+        .ok_or_else(|| "popup parent is stale".to_owned())?;
+    Ok(match parent.kind {
+        WindowSurfaceKind::Popup(_) => SurfaceRole::Popup(parent.id),
+        WindowSurfaceKind::Floating(_) => SurfaceRole::Floating(parent.id),
+        WindowSurfaceKind::Layer(_) => SurfaceRole::Layer(window_layer_id(parent.id)),
+    })
+}
+
+/// Creates a popup's Wayland surface and records the host state that tracks it.
+///
+/// The renderer starts empty and is rebuilt from the first configure. It cannot
+/// be carried over: a new `xdg_popup` carries a new `wl_surface`, and a wgpu
+/// swapchain cannot outlive the surface it was created from. That cost is why
+/// this path is taken only when the popup truly cannot be moved in place.
+fn open_popup_surface(
+    client: &mut LayerClient,
+    surface: &WindowSurfaceConfig,
+    config: &PopupSurfaceConfig,
+    parent: SurfaceRole,
+    popups: &mut HashMap<u64, AuxiliarySurface>,
+) -> Result<(), String> {
+    client
+        .open_popup(surface.id, parent, popup_client_config(config)?)
+        .map_err(|error| error.to_string())?;
+    popups.insert(
+        surface.id,
+        AuxiliarySurface {
+            id: surface.id,
+            root: surface.root,
+            updates_enabled: surface.updates_enabled,
+            width: config.width,
+            height: config.height,
+            renderer: None,
+            layout: None,
+            popup_config: Some(config.clone()),
+            floating_config: None,
+            layer_config: None,
+            needs_paint: true,
+        },
+    );
+    Ok(())
+}
+
 fn sync_window_surfaces(
     runtime: &Runtime,
     client: &mut LayerClient,
@@ -122,42 +216,27 @@ fn sync_window_surfaces(
         .iter()
         .map(|surface| (surface.id, surface))
         .collect::<HashMap<_, _>>();
-    let mut desired_popups = surfaces
-        .iter()
-        .filter(|surface| {
-            matches!(&surface.kind, WindowSurfaceKind::Popup(_))
-                && window_surface_effectively_visible(
-                    surface.id,
-                    &surfaces_by_id,
-                    &mut HashSet::new(),
-                )
-        })
-        .collect::<Vec<_>>();
-    let mut desired_floatings = surfaces
-        .iter()
-        .filter(|surface| {
-            matches!(&surface.kind, WindowSurfaceKind::Floating(_))
-                && window_surface_effectively_visible(
-                    surface.id,
-                    &surfaces_by_id,
-                    &mut HashSet::new(),
-                )
-        })
-        .collect::<Vec<_>>();
-    let mut desired_layers = surfaces
-        .iter()
-        .filter(|surface| {
-            matches!(&surface.kind, WindowSurfaceKind::Layer(_))
-                && window_surface_effectively_visible(
-                    surface.id,
-                    &surfaces_by_id,
-                    &mut HashSet::new(),
-                )
-        })
-        .collect::<Vec<_>>();
-    desired_popups.sort_by_key(|surface| surface.id);
-    desired_floatings.sort_by_key(|surface| surface.id);
-    desired_layers.sort_by_key(|surface| surface.id);
+    // A surface is wanted only when it and every ancestor it hangs off are
+    // visible, and the three kinds are then handled in identifier order so a
+    // parent is always opened before the child anchored to it.
+    let desired = |wanted: fn(&WindowSurfaceKind) -> bool| {
+        let mut surfaces = surfaces
+            .iter()
+            .filter(|surface| {
+                wanted(&surface.kind)
+                    && window_surface_effectively_visible(
+                        surface.id,
+                        &surfaces_by_id,
+                        &mut HashSet::new(),
+                    )
+            })
+            .collect::<Vec<_>>();
+        surfaces.sort_by_key(|surface| surface.id);
+        surfaces
+    };
+    let desired_popups = desired(|kind| matches!(kind, WindowSurfaceKind::Popup(_)));
+    let desired_floatings = desired(|kind| matches!(kind, WindowSurfaceKind::Floating(_)));
+    let desired_layers = desired(|kind| matches!(kind, WindowSurfaceKind::Layer(_)));
     let desired_popup_ids = desired_popups
         .iter()
         .map(|surface| surface.id)
@@ -252,78 +331,42 @@ fn sync_window_surfaces(
         let WindowSurfaceKind::Popup(config) = &surface.kind else {
             unreachable!();
         };
-        let changed = popups
+        // A popup the compositor has dismissed is gone from the client while the
+        // host still tracks it, and has nothing left to reposition.
+        let tracked = popups
             .get(&id)
-            .is_none_or(|current| current.popup_config.as_ref() != Some(config))
+            .and_then(|current| current.popup_config.as_ref())
+            .filter(|_| client.popup_surface(id).is_some());
+        // A popup whose parent was just re-created is anchored to a surface that
+        // no longer exists, so it follows its parent down whatever its geometry.
+        let mut structural = tracked
+            .is_none_or(|tracked| popup_change_is_structural(tracked, config))
             || config
                 .parent
                 .is_some_and(|parent| reopened.contains(&parent));
-        if changed {
-            client.close_popup(id);
-            let parent = if let Some(parent) = config.parent {
-                let parent = surfaces_by_id
-                    .get(&parent)
-                    .ok_or_else(|| "popup parent is stale".to_owned())?;
-                match parent.kind {
-                    WindowSurfaceKind::Popup(_) => SurfaceRole::Popup(parent.id),
-                    WindowSurfaceKind::Floating(_) => SurfaceRole::Floating(parent.id),
-                    WindowSurfaceKind::Layer(_) => SurfaceRole::Layer(window_layer_id(parent.id)),
-                }
-            } else {
-                SurfaceRole::Layer(PRIMARY_LAYER)
-            };
-            client
-                .open_popup(
-                    id,
-                    parent,
-                    PopupConfig {
-                        anchor: InputRect {
-                            x: config.anchor_x,
-                            y: config.anchor_y,
-                            width: config.anchor_width,
-                            height: config.anchor_height,
-                        },
-                        width: config.width,
-                        height: config.height,
-                        anchor_edge: popup_anchor(&config.anchor_edge)?,
-                        gravity: popup_gravity(&config.gravity)?,
-                        offset_x: config.offset_x,
-                        offset_y: config.offset_y,
-                        constraints: PopupConstraints {
-                            slide_x: config.constraints.slide_x,
-                            slide_y: config.constraints.slide_y,
-                            flip_x: config.constraints.flip_x,
-                            flip_y: config.constraints.flip_y,
-                            resize_x: config.constraints.resize_x,
-                            resize_y: config.constraints.resize_y,
-                        },
-                        grab_focus: config.grab_focus,
-                    },
-                )
+        if !structural && tracked != Some(config) {
+            // Only the positioner moved, so the popup moves with its wl_surface,
+            // its GPU surface and its swapchain all intact. A compositor whose
+            // `xdg_popup` predates version 3 has no `reposition` request and says
+            // so by changing nothing; then the popup has to be rebuilt after all.
+            structural = !client
+                .reposition_popup(id, popup_client_config(config)?)
                 .map_err(|error| error.to_string())?;
+        }
+        if structural {
+            let parent = popup_parent_role(config, &surfaces_by_id)?;
+            open_popup_surface(client, surface, config, parent, popups)?;
             reopened.insert(id);
-            popups.insert(
-                id,
-                AuxiliarySurface {
-                    id: surface.id,
-                    root: surface.root,
-                    updates_enabled: surface.updates_enabled,
-                    width: config.width,
-                    height: config.height,
-                    renderer: None,
-                    layout: None,
-                    popup_config: Some(config.clone()),
-                    floating_config: None,
-                    layer_config: None,
-                    needs_paint: true,
-                },
-            );
         } else if let Some(current) = popups.get_mut(&id) {
+            // The stored size is deliberately left alone. A repositioned popup
+            // keeps its current dimensions until the compositor answers with the
+            // configure carrying the geometry it settled on, and that configure
+            // is also what resizes the swapchain — writing the requested size
+            // here would let the two disagree for a frame.
             resumed |= !current.updates_enabled && surface.updates_enabled;
             current.root = surface.root;
             current.updates_enabled = surface.updates_enabled;
-            current.width = config.width;
-            current.height = config.height;
+            current.popup_config = Some(config.clone());
             current.layout = None;
         }
     }

@@ -29,8 +29,9 @@ use mold_reactive::{EffectContext, Graph, SignalId};
 use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
 use mold_scene::{
     AnimationEnd, AnimationFrame, AnimationStep, Behavior, Color, Easing, Element, FlickState,
-    GroupId, ListChange, ListModel, ModelId, NodeHandle, Physics, Repeat, RotationDirection, Scene,
-    SceneError, Value as SceneValue, ViewTransition, VirtualList,
+    GroupId, Keyframe, ListChange, ListModel, ModelId, NodeHandle, Physics, Repeat,
+    RotationDirection, Scene, SceneError, Value as SceneValue, ViewTransition, VirtualList,
+    keyframe_steps,
 };
 use mold_services::{
     AuthMessageType, GreetdClient, GreetdResponse, PamAuthenticator, PamTask, PipeWire,
@@ -41,7 +42,9 @@ include!("types.rs");
 include!("surface_types.rs");
 include!("events.rs");
 include!("runtime_config.rs");
+include!("runtime_screens.rs");
 include!("runtime_events.rs");
+include!("runtime_input.rs");
 include!("runtime_animation.rs");
 include!("runtime_services.rs");
 include!("runtime_ipc.rs");

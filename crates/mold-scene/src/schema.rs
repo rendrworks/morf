@@ -154,9 +154,55 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 color("stroke_color", Color::rgba8(0, 0, 0, 0)),
                 number("stroke_width", 0.0),
                 string("fill_rule", "nonzero"),
-                string("morph_from", ""),
+            ]);
+        }
+        Element::Sdf => {
+            properties.extend([
+                color("fill_color", Color::rgba8(255, 255, 255, 255)),
+                color("stroke_color", Color::rgba8(0, 0, 0, 0)),
+                number("stroke_width", 0.0),
+                // Extra edge softness in logical pixels, on top of the
+                // derivative-based antialiasing the shader always applies. A
+                // field is resolution independent, so this is the one knob that
+                // turns a crisp edge into a glow.
+                number("softness", 0.0),
+                // The seam radius every absorbed layer uses unless it names its
+                // own. A field with a blend fuses what it contains; a field
+                // without one composes the same shapes with hard edges.
+                number("blend", 0.0),
+            ]);
+        }
+        Element::SdfShape => {
+            properties.extend([
+                string("shape", "circle"),
+                // The layer's own fill. Fully transparent means "take the
+                // field's", which is what keeps a single-colour composition
+                // from having to repeat itself on every layer.
+                color("fill_color", Color::rgba8(0, 0, 0, 0)),
+                // The field this layer becomes at `morph_progress` of one.
+                // Interpolating two distance fields passes through shapes that
+                // neither end describes, and survives a change of topology —
+                // one blob splitting into two — which interpolating outlines
+                // cannot do at all.
                 string("morph_to", ""),
                 number("morph_progress", 0.0),
+                string("operation", "union"),
+                // How far either side of the seam a smooth operation blends.
+                // Zero is the hard boolean; animating it is what makes two
+                // shapes merge and part like liquid.
+                number("blend", 0.0),
+                number("radius", 0.0),
+                // Per-corner overrides, as a Rect carries them: negative means
+                // "use the uniform radius". A field box keeps all four, so a
+                // rect absorbed into a composition keeps its own shape.
+                number("top_left_radius", -1.0),
+                number("top_right_radius", -1.0),
+                number("bottom_right_radius", -1.0),
+                number("bottom_left_radius", -1.0),
+                number("points", 5.0),
+                number("inner_radius", 0.5),
+                number("thickness", 0.0),
+                number("angle", 90.0),
             ]);
         }
         Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {

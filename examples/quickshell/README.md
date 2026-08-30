@@ -20,10 +20,15 @@ MOLD_MONITOR=eDP-1 EXAMPLE=examples/quickshell/init.lua oslo make run
 | `line/modules/line/Numbers.qml` | `line.lua` | the morphing workspace badge |
 | `settings/…/Theme.qml`, `osd/…/Theme.qml` | `theme.lua` | pywal palette, geometry tokens |
 | `shared/ribbon/Ribbon.qml` | `line.lua` | the ribbon's track and pill layout |
+| `osd/` | `osd.lua` | volume, brightness, and the battery warning |
+| `settings/…/Settings.qml` | `settings.lua` | the volume and brightness column |
+| `border/…/Border.qml` reservers | `border.reserved()` | the exclusive zones that move windows |
 
-Not yet ported: `osd/` (volume, brightness, battery), `settings/`
-(`Settings.qml` alone is 847 lines), and `shared/ribbon/RibbonPopup.qml`'s
-expanded state.
+`SettingsManager.qml` declares `settingsOnRight: !barOnRight`, so the volume and
+brightness column sits on the edge opposite the workspace ribbon and shares its
+`(monitorHeight - trackHeight) / 2` centring, with a track two pills tall.
+
+Not yet ported: `shared/ribbon/RibbonPopup.qml`'s expanded state.
 
 ## Structure
 

@@ -100,44 +100,57 @@ fn handle_surface_event(
             let hit = hit_layout
                 .hit_test(&runtime.scene(), x, y)
                 .map_err(|error| error.to_string())?;
-            let next_hovered = hit.map(|node| (surface, node));
-            if next_hovered != state.hovered {
-                if let Some((_, node)) = state.hovered {
+            // Hover is compared by node, not by hit: the same node under a
+            // moving pointer is still the same hover, even though its local
+            // coordinates change with every motion event.
+            let next_hovered = hit.map(|hit| (surface, hit));
+            let entered = next_hovered.map(|(role, hit)| (role, hit.node));
+            let left = state
+                .hovered
+                .map(|(role, hit): (SurfaceRole, Hit)| (role, hit.node));
+            if entered != left {
+                if let Some((_, node)) = left {
                     repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerExited);
                 }
-                if let Some(node) = hit {
-                    repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerEntered);
+                if let Some(hit) = hit {
+                    repaint |= runtime.dispatch_ui_event(hit.node, UiEvent::PointerEntered);
                 }
-                state.hovered = next_hovered;
             }
-            if let Some(node) = hit {
-                repaint |=
-                    runtime.dispatch_pointer_event(node, UiEvent::PointerMoved, x, y, 0.0, 0.0);
+            state.hovered = next_hovered;
+            if let Some(hit) = hit {
+                repaint |= runtime.dispatch_pointer(
+                    hit.node,
+                    UiEvent::PointerMoved,
+                    EventPoint::new((x, y), (hit.local_x, hit.local_y)),
+                    (0.0, 0.0),
+                );
             }
-            if let Some((pressed_surface, node, start_x, start_y, dragging)) = &mut state.pressed
+            if let Some((pressed_surface, pressed_hit, start_x, start_y, dragging)) =
+                &mut state.pressed
                 && *pressed_surface == surface
             {
                 let delta_x = x - *start_x;
                 let delta_y = y - *start_y;
+                // A drag that has pulled off its handle still reports where the
+                // pointer is relative to that handle, so the node keeps its own
+                // frame of reference for the whole gesture.
+                let local = hit_layout.local_point(&runtime.scene(), pressed_hit.node, x, y);
+                let point = EventPoint::new((x, y), local);
                 if !*dragging && delta_x.hypot(delta_y) >= 8.0 {
                     *dragging = true;
-                    repaint |= runtime.dispatch_pointer_event(
-                        *node,
+                    repaint |= runtime.dispatch_pointer(
+                        pressed_hit.node,
                         UiEvent::DragStarted,
-                        x,
-                        y,
-                        delta_x,
-                        delta_y,
+                        point,
+                        (delta_x, delta_y),
                     );
                 }
                 if *dragging {
-                    repaint |= runtime.dispatch_pointer_event(
-                        *node,
+                    repaint |= runtime.dispatch_pointer(
+                        pressed_hit.node,
                         UiEvent::Dragged,
-                        x,
-                        y,
-                        delta_x,
-                        delta_y,
+                        point,
+                        (delta_x, delta_y),
                     );
                 }
             }
@@ -146,9 +159,9 @@ fn handle_surface_event(
             if state
                 .hovered
                 .is_some_and(|(hovered_surface, _)| hovered_surface == surface)
-                && let Some((_, node)) = state.hovered.take()
+                && let Some((_, hit)) = state.hovered.take()
             {
-                repaint |= runtime.dispatch_ui_event(node, UiEvent::PointerExited);
+                repaint |= runtime.dispatch_ui_event(hit.node, UiEvent::PointerExited);
             }
         }
         LayerEvent::PointerAxis {
@@ -172,10 +185,10 @@ fn handle_surface_event(
             let hit = hit_layout
                 .hit_test(&runtime.scene(), x, y)
                 .map_err(|error| error.to_string())?;
-            if let Some(node) = hit {
+            if let Some(hit) = hit {
                 repaint |= runtime.dispatch_wheel_event(
-                    node,
-                    (x, y),
+                    hit.node,
+                    EventPoint::new((x, y), (hit.local_x, hit.local_y)),
                     (horizontal, vertical),
                     (horizontal_steps, vertical_steps),
                 );
@@ -200,74 +213,29 @@ fn handle_surface_event(
             let hit = hit_layout
                 .hit_test(&runtime.scene(), x, y)
                 .map_err(|error| error.to_string())?;
-            let hit = hit.filter(|node| runtime.accepts_pointer_button(*node, button));
-            state.pressed = hit.map(|node| (surface, node, x, y, false));
-            if let Some(target) = hit.and_then(|node| runtime.key_target_for_node(node)) {
+            let hit = hit.filter(|hit| runtime.accepts_pointer_button(hit.node, button));
+            state.pressed = hit.map(|hit| (surface, hit, x, y, false));
+            if let Some(target) = hit.and_then(|hit| runtime.key_target_for_node(hit.node)) {
                 state.focused.insert(surface, target);
             } else {
                 state.focused.remove(&surface);
             }
-            if let Some(node) = hit {
-                repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
+            if let Some(hit) = hit {
+                // The press carries its position now, so a handler can act on
+                // where it landed without waiting for a motion event first.
+                repaint |= runtime.dispatch_pointer(
+                    hit.node,
+                    UiEvent::Pressed,
+                    EventPoint::new((x, y), (hit.local_x, hit.local_y)),
+                    (0.0, 0.0),
+                );
             }
         }
-        LayerEvent::TouchDown { surface, id, x, y } => {
-            let Some(hit_layout) = surface_layout(
-                surface,
-                &state.layout,
-                &state.popup_surfaces,
-                &state.floating_surfaces,
-                &state.layer_surfaces,
-            ) else {
-                return Ok(false);
-            };
-            let hit = hit_layout
-                .hit_test(&runtime.scene(), x, y)
-                .map_err(|error| error.to_string())?;
-            if let Some(node) = hit {
-                state.touches.insert(id, (surface, node, x, y));
-                if let Some(target) = runtime.key_target_for_node(node) {
-                    state.focused.insert(surface, target);
-                } else {
-                    state.focused.remove(&surface);
-                }
-                repaint |= runtime.dispatch_ui_event(node, UiEvent::Pressed);
-                repaint |= runtime.dispatch_touch_event(node, UiEvent::TouchPressed, id, x, y);
-            }
-        }
-        LayerEvent::TouchMotion { id, x, y, .. } => {
-            if let Some((_, node, last_x, last_y)) = state.touches.get_mut(&id) {
-                *last_x = x;
-                *last_y = y;
-                repaint |= runtime.dispatch_touch_event(*node, UiEvent::TouchMoved, id, x, y);
-            }
-        }
-        LayerEvent::TouchUp { surface, id, x, y } => {
-            if let Some((touch_surface, node, _, _)) = state.touches.remove(&id) {
-                repaint |= runtime.dispatch_touch_event(node, UiEvent::TouchReleased, id, x, y);
-                repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
-                let hit = surface_layout(
-                    surface,
-                    &state.layout,
-                    &state.popup_surfaces,
-                    &state.floating_surfaces,
-                    &state.layer_surfaces,
-                )
-                .filter(|_| touch_surface == surface)
-                .map(|layout| layout.hit_test(&runtime.scene(), x, y))
-                .transpose()
-                .map_err(|error| error.to_string())?
-                .flatten();
-                if hit == Some(node) {
-                    repaint |= runtime.dispatch_ui_event(node, UiEvent::Clicked);
-                }
-            }
-        }
-        LayerEvent::TouchCancel => {
-            for (id, (_, node, x, y)) in state.touches.drain() {
-                repaint |= runtime.dispatch_touch_event(node, UiEvent::TouchCanceled, id, x, y);
-                repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
-            }
+        LayerEvent::TouchDown { .. }
+        | LayerEvent::TouchMotion { .. }
+        | LayerEvent::TouchUp { .. }
+        | LayerEvent::TouchCancel => {
+            repaint |= handle_touch_event(runtime, state, event)?;
         }
         LayerEvent::PointerButton {
             surface,
@@ -287,20 +255,43 @@ fn handle_surface_event(
             .transpose()
             .map_err(|error| error.to_string())?
             .flatten();
-            if let Some((pressed_surface, node, start_x, start_y, dragging)) = state.pressed.take()
+            if let Some((pressed_surface, pressed_hit, start_x, start_y, dragging)) =
+                state.pressed.take()
             {
-                repaint |= runtime.dispatch_ui_event(node, UiEvent::Released);
+                let local = surface_layout(
+                    pressed_surface,
+                    &state.layout,
+                    &state.popup_surfaces,
+                    &state.floating_surfaces,
+                    &state.layer_surfaces,
+                )
+                .map(|layout| layout.local_point(&runtime.scene(), pressed_hit.node, x, y))
+                .unwrap_or((x, y));
+                let point = EventPoint::new((x, y), local);
+                repaint |= runtime.dispatch_pointer(
+                    pressed_hit.node,
+                    UiEvent::Released,
+                    point,
+                    (0.0, 0.0),
+                );
                 if dragging {
-                    repaint |= runtime.dispatch_pointer_event(
-                        node,
+                    repaint |= runtime.dispatch_pointer(
+                        pressed_hit.node,
                         UiEvent::DragFinished,
-                        x,
-                        y,
-                        x - start_x,
-                        y - start_y,
+                        point,
+                        (x - start_x, y - start_y),
                     );
-                } else if pressed_surface == surface && hit == Some(node) {
-                    repaint |= runtime.dispatch_ui_event(node, UiEvent::Clicked);
+                // A click is a release over the node the press landed on, so the
+                // comparison is by node rather than by the whole hit.
+                } else if pressed_surface == surface
+                    && hit.map(|hit| hit.node) == Some(pressed_hit.node)
+                {
+                    repaint |= runtime.dispatch_pointer(
+                        pressed_hit.node,
+                        UiEvent::Clicked,
+                        point,
+                        (0.0, 0.0),
+                    );
                 }
             }
         }
@@ -429,6 +420,10 @@ fn handle_surface_event(
         | LayerEvent::SessionLockSurfaceRemoved { .. }
         | LayerEvent::SessionLockFrame { .. } => {}
         LayerEvent::Screens(screens) => {
+            // This client sees every output, not just the one it draws to. The
+            // supervisor records the list and hands it back to every worker, so
+            // each runtime's `mold.screens` follows the hotplug rather than
+            // keeping the entry for a monitor that has gone away.
             tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
                 output: name.to_owned(),
                 screens,

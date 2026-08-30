@@ -1,6 +1,9 @@
 fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), String> {
     let probe = LayerClient::connect(BarConfig::default()).map_err(|error| error.to_string())?;
     let mut desired = named_screens(probe.screens())?;
+    // Seeded before the first worker exists, so the very first configuration
+    // load already sees every output and not only the one it draws to.
+    store_outputs(probe.screens());
     drop(probe);
     if desired.is_empty() {
         return Err("compositor advertised no named outputs".to_owned());
@@ -34,8 +37,22 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
     });
     let (ipc_tx, ipc_rx) = mpsc::channel();
     let socket = socket_path()?;
-    let server = IpcServer::bind(&socket, ipc_tx)
-        .map_err(|error| format!("could not bind IPC socket {}: {error}", socket.display()))?;
+    let server = IpcServer::bind(&socket, ipc_tx).map_err(|error| {
+        // A socket left behind by a killed process is reclaimed by `bind`
+        // itself, so the only way this address is in use is another live
+        // instance. Saying which display it is on is what makes the message
+        // actionable: one mold owns one `WAYLAND_DISPLAY`, and the fix is to
+        // stop that one rather than to go looking for a stale file.
+        if error.kind() == std::io::ErrorKind::AddrInUse {
+            let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "?".to_owned());
+            return format!(
+                "another mold is already running on display {display}; \
+                 stop it before starting another (socket {})",
+                socket.display()
+            );
+        }
+        format!("could not bind IPC socket {}: {error}", socket.display())
+    })?;
     let owner = fs::metadata(&socket)
         .map_err(|error| format!("could not inspect IPC socket: {error}"))?
         .uid();
@@ -63,6 +80,13 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
             Ok(SupervisorMessage::Worker(WorkerMessage::Screens { output, screens }))
                 if workers.contains_key(&output) =>
             {
+                // One worker's Wayland client noticed the change; every other
+                // worker has to hear about it too, including the ones this
+                // reconcile leaves running, or their `mold.screens` keeps
+                // describing a monitor that has gone away.
+                if store_outputs(&screens) {
+                    broadcast_screens(&workers, &screens);
+                }
                 desired = named_screens(&screens)?;
                 reconcile_workers(
                     &mut workers,
@@ -140,6 +164,63 @@ fn named_screens(screens: &[ScreenInfo]) -> Result<BTreeMap<String, ScreenInfo>,
         .collect()
 }
 
+/// Every output the compositor currently advertises, in the order it advertised
+/// them.
+///
+/// One mold process drives every output, one worker thread each, so the output
+/// topology is a fact about the process rather than per-worker state. The
+/// supervisor is the only writer: it seeds this from its probe connection
+/// before the first worker starts and refreshes it whenever a worker reports a
+/// change. Workers read it when they load a configuration, which is what lets
+/// `mold.screens` describe more than the one output a worker draws to.
+static OUTPUTS: std::sync::Mutex<Vec<ScreenInfo>> = std::sync::Mutex::new(Vec::new());
+
+/// Records the compositor's output list, reporting whether it changed.
+fn store_outputs(screens: &[ScreenInfo]) -> bool {
+    let mut outputs = OUTPUTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if outputs.as_slice() == screens {
+        return false;
+    }
+    outputs.clear();
+    outputs.extend_from_slice(screens);
+    true
+}
+
+/// The recorded output list in the shape `mold.screens` is built from.
+fn known_outputs() -> Vec<Screen> {
+    let outputs = OUTPUTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    lua_screens(&outputs)
+}
+
+/// Converts compositor output descriptions into the Lua-facing shape, keeping
+/// the order the compositor advertised them in.
+fn lua_screens(screens: &[ScreenInfo]) -> Vec<Screen> {
+    screens.iter().map(lua_screen).collect()
+}
+
+/// An output with no compositor name cannot be addressed by a configuration,
+/// but it still occupies the desktop, so it is described with an empty name
+/// rather than dropped from the list.
+fn lua_screen(screen: &ScreenInfo) -> Screen {
+    Screen {
+        id: screen.id,
+        name: screen.name.clone().unwrap_or_default(),
+        make: screen.make.clone(),
+        model: screen.model.clone(),
+        description: screen.description.clone(),
+        position: screen.position,
+        width: screen.size.map(|size| size.0),
+        height: screen.size.map(|size| size.1),
+        physical_size: screen.physical_size,
+        scale: screen.scale,
+        transform: screen.transform.to_owned(),
+    }
+}
+
 fn runtimepath_roots(config: &Path, external: bool) -> Vec<PathBuf> {
     let mut roots = config
         .parent()
@@ -174,6 +255,10 @@ fn execute_config(
     policy: LoadPolicy,
 ) -> Result<(), String> {
     let roots = runtimepath_roots(path, policy.external_roots);
+    // Applied before any Lua runs, so a configuration can measure itself
+    // against the whole monitor layout while it loads. Index 1 of
+    // `mold.screens` stays this runtime's own output.
+    runtime.set_screens(&known_outputs());
     runtime.set_module_roots(roots.clone());
     runtime.set_shell_root(
         path.parent()
@@ -278,4 +363,3 @@ fn lua_snapshot(roots: &[PathBuf]) -> BTreeMap<PathBuf, (u64, SystemTime)> {
     }
     snapshot
 }
-

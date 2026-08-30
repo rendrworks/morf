@@ -115,6 +115,15 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().window_surfaces_changed)
     }
 
+    /// Takes a pending change to the shell's own layer-surface geometry.
+    ///
+    /// Size, anchors, margins, exclusive zone and keyboard interactivity may all
+    /// be re-issued on a mapped surface, so an assignment to `mold.surface`
+    /// reaches the compositor without a reconnect.
+    pub fn take_layer_surface_change(&mut self) -> bool {
+        std::mem::take(&mut self.reactive.borrow_mut().layer_surface_changed)
+    }
+
     pub fn take_window_surface_actions(&mut self) -> Vec<WindowSurfaceAction> {
         std::mem::take(&mut self.reactive.borrow_mut().window_surface_actions)
     }
@@ -240,4 +249,3 @@ impl Runtime {
         !callbacks.is_empty()
     }
 }
-

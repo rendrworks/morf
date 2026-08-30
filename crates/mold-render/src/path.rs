@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
 
 use lyon_tessellation::geom::{Angle, ArcFlags};
 use lyon_tessellation::math::{point, vector};
@@ -10,15 +10,6 @@ use lyon_tessellation::{
     StrokeTessellator, StrokeVertex, VertexBuffers,
 };
 use svgtypes::{PathParser, PathSegment};
-
-use mold_layout::Geometry;
-use mold_scene::NodeHandle;
-use polymorpher::geometry::Size;
-use polymorpher::{CornerRounding, Morph, RoundedPolygon, shapes};
-
-use crate::ShapeMorph;
-
-include!("path/shapes.rs");
 
 /// Triangles in path coordinates, each vertex carrying its coverage position.
 ///
@@ -47,28 +38,9 @@ struct PathKey {
     scale_120: u32,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct MorphKey {
-    from: String,
-    to: String,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct MorphedMeshKey {
-    morph: MorphKey,
-    progress: u32,
-    width: u32,
-    height: u32,
-    stroke_width: u64,
-    even_odd: bool,
-    scale_120: u32,
-}
-
 #[derive(Default)]
 pub(crate) struct PathCache {
     meshes: HashMap<PathKey, PathMesh>,
-    morphs: HashMap<MorphKey, Morph>,
-    morphed: HashMap<NodeHandle, (MorphedMeshKey, PathMesh)>,
 }
 
 impl PathCache {
@@ -91,51 +63,6 @@ impl PathCache {
             self.meshes.insert(key.clone(), mesh);
         }
         Ok(&self.meshes[&key])
-    }
-
-    pub(crate) fn tessellate_morph(
-        &mut self,
-        node: NodeHandle,
-        spec: &ShapeMorph,
-        bounds: Geometry,
-        stroke_width: f64,
-        even_odd: bool,
-        scale_120: u32,
-    ) -> Result<&PathMesh, String> {
-        let morph = MorphKey {
-            from: spec.from.clone(),
-            to: spec.to.clone(),
-        };
-        let key = MorphedMeshKey {
-            morph: morph.clone(),
-            progress: spec.progress.to_bits(),
-            width: (bounds.width as f32).to_bits(),
-            height: (bounds.height as f32).to_bits(),
-            stroke_width: stroke_width.to_bits(),
-            even_odd,
-            scale_120,
-        };
-        let current = self.morphed.get(&node).map(|(current, _)| current);
-        if current != Some(&key) {
-            if !self.morphs.contains_key(&morph) {
-                let start = morph_shape(&morph.from)?;
-                let end = morph_shape(&morph.to)?;
-                self.morphs.insert(morph.clone(), Morph::new(start, end));
-            }
-            let path = morph_path(
-                &self.morphs[&morph],
-                spec.progress,
-                bounds.width as f32,
-                bounds.height as f32,
-            );
-            let mesh = tessellate_path(&path, stroke_width, even_odd, scale_120)?;
-            self.morphed.insert(node, (key, mesh));
-        }
-        Ok(&self.morphed[&node].1)
-    }
-
-    pub(crate) fn retain_morphs(&mut self, nodes: &HashSet<NodeHandle>) {
-        self.morphed.retain(|node, _| nodes.contains(node));
     }
 }
 
@@ -286,27 +213,6 @@ fn add_coverage_band(mesh: &mut Mesh, width: f32) {
         mesh.indices
             .extend_from_slice(&[inner_from, outer_to, outer_from]);
     }
-}
-
-fn morph_path(morph: &Morph, progress: f32, width: f32, height: f32) -> Path {
-    let cubics = morph.as_cubics(progress.clamp(0.0, 1.0));
-    let mut builder = Path::builder();
-    if let Some(first) = cubics.first() {
-        let anchor = first.anchor0();
-        builder.begin(point(anchor.x * width, anchor.y * height));
-        for cubic in cubics {
-            let control0 = cubic.control0();
-            let control1 = cubic.control1();
-            let anchor1 = cubic.anchor1();
-            builder.cubic_bezier_to(
-                point(control0.x * width, control0.y * height),
-                point(control1.x * width, control1.y * height),
-                point(anchor1.x * width, anchor1.y * height),
-            );
-        }
-        builder.end(true);
-    }
-    builder.build()
 }
 
 fn parse_path(data: &str) -> Result<Path, String> {

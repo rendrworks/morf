@@ -142,3 +142,103 @@ fn a_group_specification_is_validated_where_it_is_declared() {
         )
         .unwrap();
 }
+
+#[test]
+fn a_keyframe_track_runs_one_property_through_its_stops() {
+    // The documented gap: several waypoints over one property, each segment
+    // with its own curve, expressed as fractions of one duration so a stop can
+    // be moved without recomputing the ones after it.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "keyframes.lua",
+            br#"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local node = ui.Rect { width = 10, height = 10, x = 0 }
+                mold.ipc["track.start"] = function()
+                  mold.animation.play {
+                    {
+                      node = node,
+                      property = "x",
+                      duration = 1000,
+                      keyframes = {
+                        { at = 0.0, value = 0 },
+                        { at = 0.25, value = 100, easing = "linear" },
+                        { at = 0.5, value = 40, easing = "linear" },
+                        { at = 1.0, value = 400, easing = "linear" },
+                      },
+                    },
+                  }
+                end
+            "#,
+        )
+        .unwrap();
+    let node = {
+        let scene = runtime.scene();
+        scene.roots()[0]
+    };
+    runtime.call_ipc("track.start", &[]).unwrap();
+
+    let x = |runtime: &Runtime| runtime.scene().number(node, "x").unwrap();
+    // A linear segment is checkable at its midpoint, which is what makes the
+    // stops rather than the endpoints the thing under test: the track goes up,
+    // back down, then up again, so a single interpolation cannot produce it.
+    runtime
+        .tick_animations(std::time::Duration::from_millis(125))
+        .unwrap();
+    assert!((x(&runtime) - 50.0).abs() < 1.0, "{}", x(&runtime));
+    runtime
+        .tick_animations(std::time::Duration::from_millis(125))
+        .unwrap();
+    assert!((x(&runtime) - 100.0).abs() < 1.0, "{}", x(&runtime));
+    // Second segment falls back to 40.
+    runtime
+        .tick_animations(std::time::Duration::from_millis(250))
+        .unwrap();
+    assert!((x(&runtime) - 40.0).abs() < 1.0, "{}", x(&runtime));
+    // Third segment climbs to 400 over the remaining half.
+    runtime
+        .tick_animations(std::time::Duration::from_millis(250))
+        .unwrap();
+    assert!((x(&runtime) - 220.0).abs() < 2.0, "{}", x(&runtime));
+    runtime
+        .tick_animations(std::time::Duration::from_millis(300))
+        .unwrap();
+    assert!((x(&runtime) - 400.0).abs() < 1.0, "{}", x(&runtime));
+}
+
+#[test]
+fn a_keyframe_track_rejects_the_shapes_it_cannot_run() {
+    for (track, expected) in [
+        ("{ { at = 0, value = 0 } }", "at least two stops"),
+        (
+            "{ { at = 0, value = 0 }, { at = 1.5, value = 1 } }",
+            "outside zero through one",
+        ),
+        (
+            "{ { at = 0.8, value = 0 }, { at = 0.2, value = 1 } }",
+            "out of order",
+        ),
+    ] {
+        let mut runtime = Runtime::default();
+        let source = format!(
+            r#"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local node = ui.Rect {{ width = 10, height = 10, x = 0 }}
+                mold.ipc["track.start"] = function()
+                  mold.animation.play {{
+                    {{ node = node, property = "x", duration = 1000, keyframes = {track} }},
+                  }}
+                end
+            "#
+        );
+        runtime.execute("bad.lua", source.as_bytes()).unwrap();
+        let error = runtime.call_ipc("track.start", &[]).unwrap_err();
+        assert!(
+            format!("{error}").contains(expected),
+            "expected `{expected}` in: {error}"
+        );
+    }
+}

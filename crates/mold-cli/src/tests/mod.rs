@@ -483,3 +483,5 @@ fn supervisor_dispatches_registered_ipc_handler() {
 
 include!("frame.rs");
 include!("layers.rs");
+include!("popups.rs");
+include!("screens.rs");

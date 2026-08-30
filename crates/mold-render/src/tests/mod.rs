@@ -55,5 +55,7 @@ impl RenderBackend for RecordingBackend {
 }
 
 mod damage;
+mod field_packing;
+mod fields;
 mod transform_text;
 mod tree;

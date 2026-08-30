@@ -73,6 +73,40 @@ fn open_reserve_layers(
     Ok(())
 }
 
+/// How a configured layer surface reaches its new configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LayerUpdate {
+    /// The surface already matches; the compositor hears nothing.
+    None,
+    /// Geometry moved, and every part of it may change on a live surface.
+    Geometry,
+    /// Something fixed at creation moved, so the surface has to be rebuilt.
+    Recreate,
+}
+
+/// Decides how one layer surface is brought up to date.
+///
+/// wlr-layer-shell lets a mapped surface change its size, anchors, margins,
+/// exclusive zone and keyboard interactivity, and nothing else: namespace,
+/// layer and output are fixed when the surface is created. Sorting the two
+/// apart is what keeps an animated margin or a growing border from destroying
+/// the zwlr surface, the wl_surface, the fractional scale, the viewport and the
+/// renderer once per frame — a visible unmap and remap for a geometry change
+/// the protocol supports outright.
+fn layer_update(current: Option<&LayerSurfaceConfig>, next: &LayerSurfaceConfig) -> LayerUpdate {
+    let Some(current) = current else {
+        return LayerUpdate::Recreate;
+    };
+    if current.namespace != next.namespace || current.layer != next.layer {
+        return LayerUpdate::Recreate;
+    }
+    if current == next {
+        LayerUpdate::None
+    } else {
+        LayerUpdate::Geometry
+    }
+}
+
 /// Opens, updates, and closes the layer surfaces a configuration asks for.
 fn sync_layer_surfaces(
     client: &mut LayerClient,
@@ -100,10 +134,13 @@ fn sync_layer_surfaces(
         let WindowSurfaceKind::Layer(config) = &surface.kind else {
             unreachable!("only layer surfaces reach the layer sync");
         };
-        let changed = layers
-            .get(&id)
-            .is_none_or(|current| current.layer_config.as_ref() != Some(config));
-        if changed {
+        let update = layer_update(
+            layers
+                .get(&id)
+                .and_then(|current| current.layer_config.as_ref()),
+            config,
+        );
+        if update == LayerUpdate::Recreate {
             client
                 .open_layer(window_layer_id(id), runtime_bar_config(config, output)?)
                 .map_err(|error| error.to_string())?;
@@ -123,12 +160,28 @@ fn sync_layer_surfaces(
                     needs_paint: true,
                 },
             );
-        } else if let Some(current) = layers.get_mut(&id) {
-            resumed |= !current.updates_enabled && surface.updates_enabled;
-            current.root = surface.root;
-            current.updates_enabled = surface.updates_enabled;
-            current.layout = None;
+            continue;
         }
+        if update == LayerUpdate::Geometry {
+            client
+                .set_layer_geometry(window_layer_id(id), &runtime_bar_config(config, output)?)
+                .map_err(|error| error.to_string())?;
+        }
+        let Some(current) = layers.get_mut(&id) else {
+            continue;
+        };
+        if update == LayerUpdate::Geometry {
+            // The mask travels in the same configuration, and it is applied
+            // when the surface paints, so a geometry change owes one repaint
+            // even before the compositor answers with a configure.
+            current.layer_config = Some(config.clone());
+            current.needs_paint = true;
+            resumed = true;
+        }
+        resumed |= !current.updates_enabled && surface.updates_enabled;
+        current.root = surface.root;
+        current.updates_enabled = surface.updates_enabled;
+        current.layout = None;
     }
     Ok(resumed)
 }

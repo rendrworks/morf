@@ -72,3 +72,61 @@ fn layer_roles_are_distinct_per_surface_identifier() {
         _ => false,
     }));
 }
+
+#[test]
+fn one_anchor_conversion_serves_creation_and_reconfiguration() {
+    assert_eq!(
+        layer_anchor_mask(LayerAnchors {
+            top: true,
+            right: true,
+            bottom: false,
+            left: true,
+        }),
+        Anchor::TOP | Anchor::RIGHT | Anchor::LEFT
+    );
+    assert_eq!(
+        layer_anchor_mask(LayerAnchors {
+            top: false,
+            right: false,
+            bottom: true,
+            left: false,
+        }),
+        Anchor::BOTTOM
+    );
+    assert_eq!(
+        layer_anchor_mask(LayerAnchors {
+            top: false,
+            right: false,
+            bottom: false,
+            left: false,
+        }),
+        Anchor::empty()
+    );
+    assert_eq!(
+        layer_interactivity(KeyboardFocus::Exclusive),
+        WlrKeyboardInteractivity::Exclusive
+    );
+    assert_eq!(
+        layer_interactivity(KeyboardFocus::None),
+        WlrKeyboardInteractivity::None
+    );
+}
+
+#[test]
+fn reposition_tokens_count_per_popup_and_record_the_echo() {
+    let mut repositions = HashMap::new();
+
+    assert_eq!(next_reposition_token(&mut repositions, 4), 1);
+    assert_eq!(next_reposition_token(&mut repositions, 4), 2);
+    // A second popup counts on its own, so an echo identifies one request.
+    assert_eq!(next_reposition_token(&mut repositions, 9), 1);
+    assert_eq!(repositions[&4].acknowledged, None);
+
+    record_reposition_ack(&mut repositions, 4, 2);
+    assert_eq!(repositions[&4].acknowledged, Some(2));
+    assert_eq!(repositions[&9].acknowledged, None);
+
+    // Zero stays unused: a wrapped counter must not look like a fresh one.
+    repositions.get_mut(&4).unwrap().sent = u32::MAX;
+    assert_eq!(next_reposition_token(&mut repositions, 4), 1);
+}

@@ -1,13 +1,4 @@
-/// Topology-matched rounded polygon transition.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShapeMorph {
-    /// Built-in Polymorpher start shape.
-    pub from: String,
-    /// Built-in Polymorpher end shape.
-    pub to: String,
-    /// Transition position clamped by the renderer.
-    pub progress: f32,
-}
+include!("sdf_types.rs");
 
 /// One ordered paint operation emitted from the scene graph.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,8 +116,6 @@ pub enum DrawCommand {
         clip: Option<Geometry>,
         /// SVG path data in the node coordinate space.
         path: String,
-        /// Optional topology-matched rounded polygon transition.
-        morph: Option<ShapeMorph>,
         /// Fill colour after node opacity.
         fill_color: Color,
         /// Stroke colour after node opacity.
@@ -135,6 +124,27 @@ pub enum DrawCommand {
         stroke_width: f64,
         /// True for even-odd fill, false for nonzero fill.
         even_odd: bool,
+    },
+    /// Composed signed-distance field resolved in one fragment shader.
+    Field {
+        /// Source scene node.
+        node: NodeHandle,
+        /// Logical surface bounds.
+        bounds: Geometry,
+        /// Composed node and ancestor transform.
+        transform: Transform2D,
+        /// Intersected ancestor clip in logical surface coordinates.
+        clip: Option<Geometry>,
+        /// Fill colour after node opacity.
+        fill_color: Color,
+        /// Outline colour after node opacity.
+        stroke_color: Color,
+        /// Logical outline width, centred on the zero crossing.
+        stroke_width: f64,
+        /// Extra edge softness in logical pixels.
+        softness: f64,
+        /// Layers in composition order; the first establishes the field.
+        layers: Vec<SdfLayer>,
     },
 }
 
@@ -222,7 +232,8 @@ impl DrawCommand {
             Self::Quad { node, .. }
             | Self::Text { node, .. }
             | Self::Texture { node, .. }
-            | Self::Path { node, .. } => *node,
+            | Self::Path { node, .. }
+            | Self::Field { node, .. } => *node,
         }
     }
 
@@ -266,6 +277,30 @@ impl DrawCommand {
                     height: bounds.height + stroke_width.max(0.0),
                 })
             }
+            Self::Field {
+                bounds,
+                transform,
+                stroke_width,
+                softness,
+                layers,
+                ..
+            } => {
+                // The field is only evaluated inside the node's own rectangle,
+                // so a layer that reaches past it is what the bounds have to
+                // cover — plus the outline and the softened edge, which spread
+                // outwards from every crossing.
+                let mut area = *bounds;
+                for layer in layers {
+                    area = union_geometry(area, layer.bounds);
+                }
+                let spread = field_spread(*stroke_width, *softness, layers);
+                transform.bounds(Geometry {
+                    x: area.x - spread,
+                    y: area.y - spread,
+                    width: area.width + spread * 2.0,
+                    height: area.height + spread * 2.0,
+                })
+            }
         };
         self.clip()
             .map_or(bounds, |clip| intersect_geometry(bounds, clip))
@@ -276,7 +311,8 @@ impl DrawCommand {
             Self::Quad { clip, .. }
             | Self::Text { clip, .. }
             | Self::Texture { clip, .. }
-            | Self::Path { clip, .. } => *clip,
+            | Self::Path { clip, .. }
+            | Self::Field { clip, .. } => *clip,
         }
     }
 }
@@ -341,6 +377,7 @@ impl DrawList {
                     clip: None,
                     overlay: Color::rgba8(0, 0, 0, 0),
                     layer: None,
+                    in_field: false,
                 },
                 &mut list,
             )?;

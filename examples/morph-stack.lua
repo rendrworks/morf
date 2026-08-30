@@ -146,22 +146,34 @@ ui.Item {
     shadow_blur = 18,
     shadow_offset_y = 6,
   },
-  ui.Shape {
+  -- The badge is a field, not a path. `morph_progress` interpolates the two
+  -- distance fields, so the circle does not merely deform into the star — the
+  -- intermediate frames are shapes neither end describes, and the outline is
+  -- free to gain or lose a lobe on the way.
+  ui.Sdf {
     x = 54,
     y = 211,
     width = 70,
     height = 70,
-    morph_from = "circle",
-    morph_to = "soft_burst",
-    morph_progress = function() return (active:get() - 1) / 3 end,
     fill_color = function() return stages[active:get()].color end,
-    rotation = function() return (active:get() - 1) * 75 end,
     scale = function() return hovered:get() == active:get() and 1.12 or 1 end,
     behavior = {
-      morph_progress = { duration = 520, easing = "in_out_cubic" },
       fill_color = { duration = 240, easing = "out_quad" },
-      rotation = { duration = 560, easing = "out_back", rotation_direction = "shortest" },
       scale = { kind = "spring", mass = 1, damping = 16, stiffness = 220, epsilon = 0.001 },
+    },
+    ui.SdfShape {
+      width = 70,
+      height = 70,
+      shape = "circle",
+      morph_to = "star",
+      points = 8,
+      inner_radius = 0.62,
+      morph_progress = function() return (active:get() - 1) / 3 end,
+      rotation = function() return (active:get() - 1) * 75 end,
+      behavior = {
+        morph_progress = { duration = 520, easing = "in_out_cubic" },
+        rotation = { duration = 560, easing = "out_back", rotation_direction = "shortest" },
+      },
     },
   },
   ui.Text {

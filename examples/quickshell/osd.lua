@@ -102,6 +102,7 @@ end
 local POLL_INTERVAL = 750     -- volume and brightness checks
 local SINK_INTERVAL = 3000    -- headphone detection
 local BATTERY_INTERVAL = 10000
+local SUBSCRIBE_RETRY = 5000  -- before a dead `pactl subscribe` is tried again
 local HIDE_INTERVAL = 1500    -- hideTimer
 local FADE_DURATION = 200     -- Behavior on opacity
 local PULSE_DURATION = 600    -- the battery SequentialAnimation's two halves
@@ -275,6 +276,59 @@ local sink_get = job({
     write(volume_headphone, headphone)
   end
 end)
+
+-- PulseAudio announces its own changes, so the volume does not have to be
+-- asked for. `pactl subscribe` is one long-lived child that prints a line
+-- whenever a sink or the server changes; asking on a timer instead meant two
+-- `pamixer` forks every 750ms, and mold runs one worker per output, so on a
+-- three-monitor desktop that was the single most expensive thing the shell
+-- did. The timer stays as a fallback for when the subscription is unavailable.
+local sink_events = io.process_view {
+  command = { "pactl", "subscribe" },
+  environment = CHILD_ENVIRONMENT,
+}
+local sink_running = false
+-- One event feeds two consumers on different clocks: the volume reads it the
+-- moment it arrives, the headphone pipeline only when its own timer comes
+-- round, so each clears its own flag.
+-- Both start set so the first tick reads the current state; after that they
+-- are raised only by the subscription.
+local sink_changed = true
+local sink_ports_changed = true
+local sink_retry = core.elapsed_timer()
+
+local function start_sink_events()
+  sink_retry:restart()
+  sink_running = pcall(function() sink_events:start() end)
+end
+
+--- Reads what the subscription has to say, and restarts it when it dies.
+---
+--- A `pactl` that is missing, or a PulseAudio that goes away, must not turn
+--- into a spawn loop, so a failed start waits out the retry interval.
+local function drain_sink_events()
+  if not sink_running then
+    if sink_retry:elapsed_ms() >= SUBSCRIBE_RETRY then start_sink_events() end
+    return
+  end
+  for _ = 1, DRAIN_SLICES do
+    local event = sink_events:next(DRAIN_SLICE_MS)
+    if not event then break end
+    if event.kind == "stdout" then
+      local text = tostring(event.data or ""):lower()
+      if text:find("sink", 1, true) or text:find("server", 1, true) then
+        sink_changed = true
+        sink_ports_changed = true
+      end
+    elseif event.kind == "exit" then
+      sink_running = false
+      sink_retry:restart()
+      break
+    end
+  end
+end
+
+start_sink_events()
 
 local volume_set = job({ "pamixer", "--set-volume", "50" })
 local mute_toggle = job({ "pamixer", "-t" })
@@ -716,6 +770,11 @@ function osd.build()
       running = true,
       on_triggered = function()
         drain()
+        drain_sink_events()
+        if sink_changed then
+          sink_changed = false
+          poll_volume()
+        end
         expire(volume_shown, volume_hide, volume_interacting)
         expire(brightness_shown, brightness_hide, brightness_interacting)
       end,
@@ -726,7 +785,10 @@ function osd.build()
       ["repeat"] = true,
       running = true,
       on_triggered = function()
-        poll_volume()
+        -- Brightness has no event source to subscribe to, but it is two sysfs
+        -- reads and no child. The volume is only asked for here when the
+        -- subscription is not carrying it.
+        if not sink_running then poll_volume() end
         poll_brightness()
       end,
     },
@@ -735,7 +797,15 @@ function osd.build()
       interval = SINK_INTERVAL,
       ["repeat"] = true,
       running = true,
-      on_triggered = function() run(sink_get) end,
+      -- The headphone check is a shell pipeline, so it runs only when a sink
+      -- actually changed — throttled to this interval however chatty the
+      -- subscription gets.
+      on_triggered = function()
+        if sink_ports_changed or not sink_running then
+          sink_ports_changed = false
+          run(sink_get)
+        end
+      end,
     },
 
     ui.Timer {
@@ -747,20 +817,6 @@ function osd.build()
   }
 end
 
---- The rectangles the OSDs need to receive a click.
----
---- `init.lua` sets `mold.surface.mask` explicitly, which overrides the region
---- mold otherwise derives from live MouseArea geometry every paint
---- (`paint_layer` in `mold-cli/src/paint.rs`). While that mask stands, these
---- panels are
---- transparent to the pointer. Adding these two rectangles to it makes the
---- sliders and the mute button clickable.
-function osd.regions()
-  return {
-    { x = PANEL_X, y = PANEL_Y, width = OSD_WIDTH, height = OSD_HEIGHT },
-    { x = BATTERY_X, y = PANEL_Y, width = BATTERY_SIZE, height = BATTERY_SIZE },
-  }
-end
 
 -- The battery timer is the one the original marks `triggeredOnStart`, so its
 -- first read happens here rather than ten seconds in. Volume and brightness are

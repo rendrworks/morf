@@ -40,7 +40,7 @@ show which parts the pinned Quickshell tree actually uses or exposes.
 | Translation and skew | Native Rust `translate_x`, `translate_y`, `skew_x`, and `skew_y` properties |
 | Rotation path | `numerical`, `shortest`, `clockwise`, and `counterclockwise` paths |
 | Interactive transformation proof | `examples/fluid-transform.lua` |
-| Rounded polygon morphing | Polymorpher 0.1.4 topology matching and cubic path generation |
+| Shape morphing | Analytic distance fields interpolated per fragment (`Sdf`), so a morph may change topology |
 | Parametric shape families | `polygon`, `star`, `circle`, `rectangle`, `pill`, and `pill_star` with numeric parameters |
 | Cached raster distance fields | `signed-distance-field` 0.6.3 alpha-mask conversion outside the frame hot path |
 | Animated field edges | Weight, softness, and an outline band sampled per frame from the cached field |
@@ -52,7 +52,7 @@ testing, and rendering remain in Rust.
 
 Animato does not own Mold's runtime or compositor loop. Mold supplies frame
 deltas from its Rust compositor clock and advances Animato state inside the
-scene engine. Polymorpher and `signed-distance-field` are renderer/image
+scene engine. `signed-distance-field` is a renderer/image
 dependencies, not Lua modules. Their exact roles and limits are documented in
 [`MOTION_STACK.md`](MOTION_STACK.md).
 
@@ -138,19 +138,44 @@ further out with every leg.
 
 ## Remaining gaps
 
-Mold does not yet provide keyframe tracks with per-segment easing over a single
-property. That is an engine primitive rather than a widget, so it can be added
-as a native Rust scheduling API when required. It must not be implemented as a
-Lua frame runtime.
+Keyframe tracks are now provided. A track names one property, one duration, and
+a list of stops at normalized offsets, each with the curve used to reach it:
 
-Polymorpher covers built-in and parametric rounded polygons, not arbitrary SVG
-path topology. Distance fields cover cached binary alpha masks sampled with a
-live edge; they are not multi-channel fields or a general vector-effect graph.
+```lua
+mold.animation.play {
+  {
+    node = card, property = "x", duration = 1000,
+    keyframes = {
+      { at = 0.0, value = 0 },
+      { at = 0.25, value = 100, easing = "out_back" },
+      { at = 1.0, value = 400, easing = "in_out_cubic" },
+    },
+  },
+}
+```
+
+It is not a second animation runtime. `keyframe_steps` expands the track into
+ordinary property steps — one per pair of neighbouring stops, with an explicit
+`from` and `to` — so the group scheduler runs it and retargeting, damage
+classification and completion events apply to a keyframed property exactly as
+they do to any other. Offsets are fractions of the total duration, which is what
+makes a track editable: a stop moves without every segment after it having to be
+recomputed by hand. Two stops at the same offset are a deliberate jump, and a
+track whose first stop is past zero holds its opening value until then rather
+than stretching the first segment.
+
+Analytic fields cover the nine shape families the shader implements, composed
+with six operations; shapes outside that vocabulary — a crescent, an arch, an
+arrow — are compositions rather than families, which is the point. Arbitrary SVG
+path topology still goes through `Shape` and the tessellator, and cannot morph.
+Cached image distance fields cover binary alpha masks sampled with a live edge;
+they are not multi-channel fields or a general vector-effect graph.
 
 ## Example
 
 ```sh
 EXAMPLE=examples/fluid-transform.lua oslo make run
+EXAMPLE=examples/keyframe-lab.lua oslo make run
 ```
 
 Click the shape to animate square-to-circle radius, color, shadow, non-uniform

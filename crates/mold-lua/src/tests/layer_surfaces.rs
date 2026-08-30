@@ -130,3 +130,58 @@ fn a_layer_surface_root_is_not_a_scene_orphan() {
     assert_eq!(roots.len(), 2);
     assert!(roots.contains(&surfaces[0].root));
 }
+
+#[test]
+fn shell_surface_geometry_reports_only_real_changes() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "geometry.lua",
+            br#"
+                local mold = require("mold")
+                mold.surface.margin_left = 200
+            "#,
+        )
+        .unwrap();
+
+    assert!(runtime.take_layer_surface_change());
+    assert!(!runtime.take_layer_surface_change());
+
+    // Lua re-runs a binding whenever anything it reads moves, so an assignment
+    // that writes back the value already there must not reconfigure a surface.
+    runtime
+        .execute(
+            "unchanged.lua",
+            br#"
+                local mold = require("mold")
+                mold.surface.margin_left = 200
+            "#,
+        )
+        .unwrap();
+    assert!(!runtime.take_layer_surface_change());
+}
+
+#[test]
+fn shell_surface_geometry_accepts_interpolated_numbers() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "animated.lua",
+            br#"
+                local mold = require("mold")
+                mold.surface.margin_left = 120.6
+                mold.surface.margin_top = -3.5
+                mold.surface.width = 640.4
+                assert(not pcall(function() mold.surface.margin_left = "12" end))
+            "#,
+        )
+        .unwrap();
+
+    let config = runtime.layer_surface_config();
+    assert!(runtime.take_layer_surface_change());
+    // A slide animation assigns a float every frame; rounding is what keeps the
+    // margin animatable instead of raising an error mid-transition.
+    assert_eq!(config.margin_left, 121);
+    assert_eq!(config.margin_top, -4);
+    assert_eq!(config.width, 640);
+}

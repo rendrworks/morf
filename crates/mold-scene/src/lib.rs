@@ -22,6 +22,7 @@ include!("scene.rs");
 include!("scene_access.rs");
 include!("playback.rs");
 include!("groups.rs");
+include!("keyframes.rs");
 include!("motion.rs");
 include!("schema.rs");
 #[cfg(test)]

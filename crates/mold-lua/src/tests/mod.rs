@@ -30,4 +30,5 @@ include!("animation_playback.rs");
 include!("animation_groups.rs");
 include!("views_states.rs");
 include!("layer_surfaces.rs");
+include!("screens.rs");
 include!("examples.rs");

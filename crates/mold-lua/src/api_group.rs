@@ -154,6 +154,21 @@ fn parse_group_step<'gc>(
     let LuaValue::String(property) = table.get_value(ctx, "property") else {
         return Err("an animation group step must name a property".to_owned());
     };
+    // A keyframe track is one property through several stops. It expands into
+    // ordinary property steps, so it is a way of writing a sequence rather than
+    // a second kind of animation.
+    if let LuaValue::Table(frames) = table.get_value(ctx, "keyframes") {
+        let duration = match table.get_value(ctx, "duration") {
+            LuaValue::Integer(millis) => milliseconds(millis as f64, "duration")?,
+            LuaValue::Number(millis) => milliseconds(millis, "duration")?,
+            _ => return Err("a keyframe track must have a duration".to_owned()),
+        };
+        let property = property.display_lossy().to_string();
+        let frames = parse_keyframes(ctx, frames)?;
+        return keyframe_steps(node, &property, duration, &frames)
+            .map(AnimationStep::Sequential)
+            .map_err(|error| error.to_string());
+    }
     let to = match table.get_value(ctx, "to") {
         LuaValue::Nil => return Err("an animation group step must have a `to` value".to_owned()),
         value => lua_to_scene(ctx, value, 0)?,
@@ -202,4 +217,31 @@ fn milliseconds(value: f64, what: &str) -> Result<Duration, String> {
         ));
     }
     Ok(Duration::from_secs_f64(value / 1_000.0))
+}
+
+/// Reads the stops of a keyframe track, in the order they are written.
+fn parse_keyframes<'gc>(ctx: Context<'gc>, table: Table<'gc>) -> Result<Vec<Keyframe>, String> {
+    let mut frames = Vec::new();
+    for index in 1.. {
+        let LuaValue::Table(frame) = table.get(ctx, index).map_err(|error| error.to_string())?
+        else {
+            break;
+        };
+        let at = match frame.get_value(ctx, "at") {
+            LuaValue::Integer(value) => value as f64,
+            LuaValue::Number(value) => value,
+            LuaValue::Nil => return Err("a keyframe stop must have an `at` offset".to_owned()),
+            _ => return Err("a keyframe `at` offset must be a number".to_owned()),
+        };
+        let value = match frame.get_value(ctx, "value") {
+            LuaValue::Nil => return Err("a keyframe stop must have a `value`".to_owned()),
+            value => lua_to_scene(ctx, value, 0)?,
+        };
+        let easing = match frame.get_value(ctx, "easing") {
+            LuaValue::Nil => Easing::default(),
+            value => parse_easing(ctx, value)?,
+        };
+        frames.push(Keyframe { at, value, easing });
+    }
+    Ok(frames)
 }

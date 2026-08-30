@@ -32,6 +32,11 @@ fn run_surface(
     let mut client = LayerClient::connect(runtime_bar_config(&layer_config, &name)?)
         .map_err(|error| error.to_string())?;
     open_reserve_layers(&mut client, &layer_config, &name)?;
+    // What the reservers were last built from. A reserver is a separate surface
+    // per edge, so a thickness change is the one part of `mold.surface` that
+    // still has to rebuild something, and it must not rebuild on every
+    // unrelated margin the configuration animates.
+    let mut reserve = layer_config.reserve;
 
     client.set_idle_timeouts(&runtime.idle_timeouts());
     tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
@@ -102,6 +107,7 @@ fn run_surface(
     let mut floating_surfaces = HashMap::new();
     let mut layer_surfaces = HashMap::new();
     runtime.take_window_surface_change();
+    runtime.take_layer_surface_change();
     let _ = sync_window_surfaces(
         &runtime,
         &mut client,
@@ -166,6 +172,7 @@ fn run_surface(
             state.floating_surfaces.clear();
             state.layer_surfaces.clear();
             client = replacement;
+            reserve = runtime.layer_surface_config().reserve;
             tx.send(SupervisorMessage::Worker(WorkerMessage::Screens {
                 output: name.clone(),
                 screens: client.screens().to_vec(),
@@ -179,6 +186,24 @@ fn run_surface(
         if let Some(enabled) = runtime.take_watch_files_change() {
             tx.send(SupervisorMessage::WatchFiles(enabled))
                 .map_err(|_| "output supervisor stopped".to_owned())?;
+        }
+        if runtime.take_layer_surface_change() {
+            // Layer shell allows all of this on a mapped surface, so the shell's
+            // own geometry follows an assignment to `mold.surface` without a
+            // reconnect. The configure this provokes resizes the backend in
+            // place; nothing here tears the renderer down.
+            let config = runtime.layer_surface_config();
+            client
+                .set_layer_geometry(PRIMARY_LAYER, &runtime_bar_config(&config, &name)?)
+                .map_err(|error| error.to_string())?;
+            if config.reserve != reserve {
+                reserve = config.reserve;
+                open_reserve_layers(&mut client, &config, &name)?;
+            }
+            // The mask lives in the same configuration and is re-derived when
+            // the surface paints, so the new geometry owes one frame even when
+            // the compositor has no configure to send back.
+            repaint = true;
         }
         if runtime.take_window_surface_change() {
             repaint |= sync_window_surfaces(
@@ -198,10 +223,9 @@ fn run_surface(
         apply_text_input_requests(&mut runtime, &mut client);
         if next_clock != clock {
             clock = next_clock;
-            runtime
+            repaint |= runtime
                 .update_clock(&clock)
                 .map_err(|error| error.to_string())?;
-            repaint = true;
         }
         while let Some(event) = client.next_event() {
             repaint |= handle_surface_event(
@@ -247,4 +271,3 @@ fn run_surface(
         }
     }
 }
-

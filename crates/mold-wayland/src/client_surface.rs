@@ -27,7 +27,6 @@ fn record_reposition_ack(repositions: &mut HashMap<u64, PopupReposition>, id: u6
 }
 
 impl LayerClient {
-
     /// Removes the next queued surface event.
     pub fn next_event(&mut self) -> Option<LayerEvent> {
         while let Ok(text) = self.state.clipboard_rx.try_recv() {
@@ -192,11 +191,7 @@ impl LayerClient {
     /// Returns `false` — having changed nothing — when the compositor's
     /// `xdg_popup` predates version 3 and has no `reposition` request at all,
     /// so the caller can fall back to closing and reopening the popup.
-    pub fn reposition_popup(
-        &mut self,
-        id: u64,
-        config: PopupConfig,
-    ) -> Result<bool, WaylandError> {
+    pub fn reposition_popup(&mut self, id: u64, config: PopupConfig) -> Result<bool, WaylandError> {
         let version = self
             .state
             .popups
@@ -263,4 +258,3 @@ impl LayerClient {
         })
     }
 }
-

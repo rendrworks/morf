@@ -1,14 +1,40 @@
+/// Assigns one setting and reports whether the value actually moved.
+///
+/// A layer surface is reconfigured from the change flag this returns, so an
+/// assignment that writes the value already there must not raise it: Lua
+/// re-assigns the whole surface table on every binding run, and a flag set by
+/// an unchanged value would re-issue the geometry on every frame.
+fn assign_layer_setting<T: PartialEq>(field: &mut T, value: T) -> bool {
+    let changed = *field != value;
+    *field = value;
+    changed
+}
+
+/// Reads a numeric layer setting that an animation may deliver as a float.
+///
+/// `mold.surface.margin_left = x` is exactly the assignment a slide animation
+/// makes, and an interpolated value arrives as a Lua number rather than an
+/// integer. Rounding it keeps the setting animatable; rejecting it would make
+/// the geometry mutable in name only.
+fn layer_setting_number(value: LuaValue<'_>, key: &str) -> Result<i64, String> {
+    match value {
+        LuaValue::Integer(value) => Ok(value),
+        LuaValue::Number(value) if value.is_finite() => Ok(value.round() as i64),
+        _ => Err(format!("surface {key} must be a number")),
+    }
+}
+
 /// Applies one validated layer-surface setting to a configuration.
 ///
 /// `mold.surface.<key> = value` and `window.layer { <key> = value }` are the
 /// same settings on the same struct, so they share one validator rather than
-/// drifting apart.
+/// drifting apart. The returned flag reports whether the configuration moved.
 fn apply_layer_setting<'gc>(
     ctx: Context<'gc>,
     config: &mut LayerSurfaceConfig,
     key: &str,
     value: LuaValue<'gc>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     match key {
         "namespace" => {
             let LuaValue::String(value) = value else {
@@ -18,35 +44,30 @@ fn apply_layer_setting<'gc>(
             if value.is_empty() || value.len() > 128 {
                 return Err("surface namespace must contain 1 to 128 bytes".into());
             }
-            config.namespace = value;
+            Ok(assign_layer_setting(&mut config.namespace, value))
         }
         "width" | "height" => {
-            let LuaValue::Integer(value) = value else {
-                return Err(format!("surface {key} must be an integer"));
-            };
+            let value = layer_setting_number(value, key)?;
             let value = u32::try_from(value).map_err(|_| format!("surface {key} must fit u32"))?;
-            if key == "height" && value == 0 {
-                return Err("surface height must be positive".into());
+            if key == "height" {
+                if value == 0 {
+                    return Err("surface height must be positive".into());
+                }
+                return Ok(assign_layer_setting(&mut config.height, value));
             }
-            if key == "width" {
-                config.width = value;
-            } else {
-                config.height = value;
-            }
+            Ok(assign_layer_setting(&mut config.width, value))
         }
         "exclusive_zone" | "margin_top" | "margin_right" | "margin_bottom" | "margin_left" => {
-            let LuaValue::Integer(value) = value else {
-                return Err(format!("surface {key} must be an integer"));
-            };
+            let value = layer_setting_number(value, key)?;
             let value = i32::try_from(value).map_err(|_| format!("surface {key} must fit i32"))?;
-            match key {
-                "exclusive_zone" => config.exclusive_zone = value,
-                "margin_top" => config.margin_top = value,
-                "margin_right" => config.margin_right = value,
-                "margin_bottom" => config.margin_bottom = value,
-                "margin_left" => config.margin_left = value,
+            Ok(match key {
+                "exclusive_zone" => assign_layer_setting(&mut config.exclusive_zone, value),
+                "margin_top" => assign_layer_setting(&mut config.margin_top, value),
+                "margin_right" => assign_layer_setting(&mut config.margin_right, value),
+                "margin_bottom" => assign_layer_setting(&mut config.margin_bottom, value),
+                "margin_left" => assign_layer_setting(&mut config.margin_left, value),
                 _ => unreachable!(),
-            }
+            })
         }
         "anchors" => {
             let LuaValue::Table(value) = value else {
@@ -57,12 +78,15 @@ fn apply_layer_setting<'gc>(
                 LuaValue::Boolean(value) => Ok(value),
                 _ => Err(format!("surface anchor {name} must be boolean")),
             };
-            config.anchors = SurfaceAnchors {
-                top: read("top")?,
-                right: read("right")?,
-                bottom: read("bottom")?,
-                left: read("left")?,
-            };
+            Ok(assign_layer_setting(
+                &mut config.anchors,
+                SurfaceAnchors {
+                    top: read("top")?,
+                    right: read("right")?,
+                    bottom: read("bottom")?,
+                    left: read("left")?,
+                },
+            ))
         }
         "layer" => {
             let LuaValue::String(value) = value else {
@@ -72,7 +96,7 @@ fn apply_layer_setting<'gc>(
             if !matches!(value.as_str(), "background" | "bottom" | "top" | "overlay") {
                 return Err("surface layer must be background, bottom, top, or overlay".into());
             }
-            config.layer = value;
+            Ok(assign_layer_setting(&mut config.layer, value))
         }
         "keyboard_focus" => {
             let LuaValue::String(value) = value else {
@@ -82,19 +106,22 @@ fn apply_layer_setting<'gc>(
             if !matches!(value.as_str(), "none" | "exclusive" | "on_demand") {
                 return Err("surface keyboard_focus must be none, exclusive, or on_demand".into());
             }
-            config.keyboard_focus = value;
+            Ok(assign_layer_setting(&mut config.keyboard_focus, value))
         }
         "mask" => {
-            config.input_regions = match value {
+            let regions = match value {
                 LuaValue::Nil => None,
                 LuaValue::Table(value) => Some(vec![parse_region(ctx, value, 0)?]),
                 _ => return Err("surface mask must be a region table".into()),
             };
+            Ok(assign_layer_setting(&mut config.input_regions, regions))
         }
-        "reserve" => config.reserve = parse_surface_reserve(ctx, value)?,
-        _ => return Err(format!("unknown surface setting `{key}`")),
+        "reserve" => Ok(assign_layer_setting(
+            &mut config.reserve,
+            parse_surface_reserve(ctx, value)?,
+        )),
+        _ => Err(format!("unknown surface setting `{key}`")),
     }
-    Ok(())
 }
 
 /// Reads the per-edge thicknesses of `mold.surface.reserve`.

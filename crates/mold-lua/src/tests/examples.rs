@@ -9,15 +9,16 @@ fn fluid_transform_example_animates_square_to_circle_in_rust() {
             include_bytes!("../../../../examples/fluid-transform.lua"),
         )
         .unwrap();
-    runtime
-        .tick_animations(Duration::from_secs(2))
-        .unwrap();
+    runtime.tick_animations(Duration::from_secs(2)).unwrap();
     let root = runtime.scene().roots()[0];
     let shape = runtime.scene().children(root).unwrap()[1];
     let pointer = runtime.scene().children(shape).unwrap()[0];
     assert_eq!(runtime.scene().number(shape, "radius").unwrap(), 12.0);
 
-    assert_eq!(runtime.scene().element(pointer).unwrap(), Element::MouseArea);
+    assert_eq!(
+        runtime.scene().element(pointer).unwrap(),
+        Element::MouseArea
+    );
     assert!(runtime.dispatch_ui_event(pointer, UiEvent::Clicked));
     assert_eq!(
         runtime.scene().target(shape, "radius").unwrap(),
@@ -28,9 +29,7 @@ fn fluid_transform_example_animates_square_to_circle_in_rust() {
         &SceneValue::Number(270.0)
     );
 
-    let frame = runtime
-        .tick_animations(Duration::from_millis(16))
-        .unwrap();
+    let frame = runtime.tick_animations(Duration::from_millis(16)).unwrap();
     let radius = runtime.scene().number(shape, "radius").unwrap();
     assert!(radius > 12.0 && radius < 60.0);
     assert!(frame.active);
@@ -50,34 +49,35 @@ fn morph_stack_example_combines_native_animation_and_geometry() {
             include_bytes!("../../../../examples/morph-stack.lua"),
         )
         .unwrap();
-    runtime
-        .tick_animations(Duration::from_secs(2))
-        .unwrap();
+    runtime.tick_animations(Duration::from_secs(2)).unwrap();
     let root = runtime.scene().roots()[0];
     let root_children = runtime.scene().children(root).unwrap();
-    let shape = root_children[10];
+    let field = root_children[10];
+    let shape = runtime.scene().children(field).unwrap()[0];
     let second_stage = root_children[6];
     let second_stage_children = runtime.scene().children(second_stage).unwrap();
     let pointer = second_stage_children[4];
 
+    assert_eq!(runtime.scene().element(field).unwrap(), Element::Sdf);
     assert_eq!(
-        runtime.scene().string_value(shape, "morph_from").unwrap(),
+        runtime.scene().string_value(shape, "shape").unwrap(),
         "circle"
     );
     assert_eq!(
         runtime.scene().string_value(shape, "morph_to").unwrap(),
-        "soft_burst"
+        "star"
     );
-    assert_eq!(runtime.scene().element(pointer).unwrap(), Element::MouseArea);
+    assert_eq!(
+        runtime.scene().element(pointer).unwrap(),
+        Element::MouseArea
+    );
     assert!(runtime.dispatch_ui_event(pointer, UiEvent::Clicked));
     assert_eq!(
         runtime.scene().target(shape, "morph_progress").unwrap(),
         &SceneValue::Number(1.0 / 3.0)
     );
 
-    let frame = runtime
-        .tick_animations(Duration::from_millis(16))
-        .unwrap();
+    let frame = runtime.tick_animations(Duration::from_millis(16)).unwrap();
     let progress = runtime.scene().number(shape, "morph_progress").unwrap();
     assert!(progress > 0.0 && progress < 1.0);
     assert!(frame.changes.iter().any(|change| {
@@ -104,14 +104,22 @@ fn motion_lab_example_drives_loops_shapes_and_field_edges_in_rust() {
             .find(|node| runtime.scene().element(*node).unwrap() == element)
             .expect("example is missing an element the test needs")
     };
-    let badge = of_element(Element::Shape);
+    let badge = of_element(Element::Sdf);
     let glyph = of_element(Element::Image);
 
-    // A parametric Polymorpher name reaches the renderer as written.
+    // The badge morphs between two shape families as fields, and its point
+    // count is an ordinary number that may sit between whole values.
+    let layer = runtime.scene().children(badge).unwrap()[0];
+    assert_eq!(runtime.scene().element(layer).unwrap(), Element::SdfShape);
     assert_eq!(
-        runtime.scene().string_value(badge, "morph_to").unwrap(),
-        "star:5:0.52:0.24"
+        runtime.scene().string_value(layer, "shape").unwrap(),
+        "circle"
     );
+    assert_eq!(
+        runtime.scene().string_value(layer, "morph_to").unwrap(),
+        "star"
+    );
+    assert_eq!(runtime.scene().number(layer, "points").unwrap(), 5.0);
 
     // The intro group runs first and reports its completion into Lua, which is
     // the one thing in this example that does run Lua on a tick.

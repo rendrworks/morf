@@ -302,13 +302,13 @@ impl Runtime {
                 }
             }
         }
-        let changed = service_changed
-            || !ready.is_empty()
-            || !timers.is_empty()
-            || !dbus_signals.is_empty()
-            || !udev_events.is_empty()
-            || !status_updates.is_empty()
-            || !transform_callbacks.is_empty();
+        // Whether a repaint is owed is decided after the callbacks below have
+        // run, by asking whether the scene actually changed. A callback merely
+        // firing is not a reason to render: a 16ms timer that polls a file and
+        // finds it unchanged would otherwise force a full render of every
+        // output sixty times a second, forever.
+        let revision_before = self.reactive.borrow().scene_revision;
+        let service_changed = service_changed || !transform_callbacks.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;
@@ -397,7 +397,6 @@ impl Runtime {
                     .push(format!("status notifier callback: {message}"));
             }
         }
-        changed
+        service_changed || self.reactive.borrow().scene_revision != revision_before
     }
 }
-

@@ -330,6 +330,14 @@ struct ReactiveState {
     property_signals: HashMap<(NodeHandle, String, bool), SignalId>,
     current_property_names: HashMap<String, (NodeHandle, String)>,
     property_revision: i64,
+    /// Advances whenever the scene actually changes: a property lands on a new
+    /// value, or a node is created, reparented, or removed.
+    ///
+    /// This is what tells the host a repaint is due. A service callback merely
+    /// *running* is not a reason to repaint — a timer that polls a file and
+    /// finds it unchanged would otherwise force a full render of every output,
+    /// at its own interval, forever.
+    scene_revision: u64,
     reload_seed: HashMap<String, ScriptValue>,
     reloadable: HashMap<String, SignalId>,
     reload_request: Option<bool>,
@@ -376,6 +384,7 @@ struct ReactiveState {
     window_surfaces: HashMap<u64, WindowSurfaceConfig>,
     next_window_surface: u64,
     window_surfaces_changed: bool,
+    layer_surface_changed: bool,
     window_surface_actions: Vec<WindowSurfaceAction>,
     popup_node_anchors: HashMap<u64, PopupNodeAnchor>,
     transform_tracker: TransformTracker,
@@ -403,6 +412,7 @@ impl ReactiveState {
             property_signals: HashMap::new(),
             current_property_names: HashMap::new(),
             property_revision: 0,
+            scene_revision: 0,
             reload_seed: HashMap::new(),
             reloadable: HashMap::new(),
             reload_request: None,
@@ -449,6 +459,7 @@ impl ReactiveState {
             window_surfaces: HashMap::new(),
             next_window_surface: 0,
             window_surfaces_changed: false,
+            layer_surface_changed: false,
             window_surface_actions: Vec::new(),
             popup_node_anchors: HashMap::new(),
             transform_tracker: TransformTracker::default(),
@@ -463,4 +474,3 @@ impl ReactiveState {
         }
     }
 }
-

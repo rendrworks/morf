@@ -14,6 +14,8 @@ fn install_ui_json_api<'gc>(
         ("Image", Element::Image),
         ("Icon", Element::Icon),
         ("Shape", Element::Shape),
+        ("Sdf", Element::Sdf),
+        ("SdfShape", Element::SdfShape),
         ("MouseArea", Element::MouseArea),
         ("Row", Element::Row),
         ("Column", Element::Column),
@@ -230,4 +232,3 @@ fn install_ui_json_api<'gc>(
     mold.set_field(ctx, "json", json);
     (ui, json)
 }
-

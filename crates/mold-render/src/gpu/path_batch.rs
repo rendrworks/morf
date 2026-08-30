@@ -129,19 +129,6 @@ fn create_path_batch(
     list: &DrawList,
     scale_120: u32,
 ) -> Result<PathBatch, String> {
-    let morph_nodes = list
-        .commands
-        .iter()
-        .filter_map(|command| match command {
-            DrawCommand::Path {
-                node,
-                morph: Some(_),
-                ..
-            } => Some(*node),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    cache.retain_morphs(&morph_nodes);
     let mut batch = PathBatch {
         command_ranges: vec![Vec::new(); list.commands.len()],
         ..PathBatch::default()
@@ -149,11 +136,9 @@ fn create_path_batch(
     let scale = scale_120.max(1) as f32 / 120.0;
     for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Path {
-            node,
             bounds,
             transform,
             path,
-            morph,
             fill_color,
             stroke_color,
             stroke_width,
@@ -163,26 +148,16 @@ fn create_path_batch(
         else {
             continue;
         };
-        if path.is_empty() && morph.is_none() {
+        if path.is_empty() {
             continue;
         }
         let transform_scale = transform.matrix[0].hypot(transform.matrix[1]);
         let tessellation_scale = (f64::from(scale_120) * transform_scale)
             .ceil()
             .clamp(1.0, f64::from(u32::MAX)) as u32;
-        let mesh = if let Some(morph) = morph {
-            cache.tessellate_morph(
-                *node,
-                morph,
-                *bounds,
-                *stroke_width,
-                *even_odd,
-                tessellation_scale,
-            )?
-        } else {
-            cache.tessellate(path, *stroke_width, *even_odd, tessellation_scale)?
-        }
-        .clone();
+        let mesh = cache
+            .tessellate(path, *stroke_width, *even_odd, tessellation_scale)?
+            .clone();
         append_path_mesh(
             &mut batch,
             command_index,

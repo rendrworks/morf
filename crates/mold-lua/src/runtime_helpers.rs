@@ -59,6 +59,7 @@ fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
         nodes.extend(state.scene.children(nodes[index]).unwrap_or_default());
         index += 1;
     }
+    state.scene_revision = state.scene_revision.wrapping_add(1);
     if state.scene.remove(node).is_err() {
         return;
     }
@@ -312,4 +313,3 @@ fn scoped_id(prefix: &str, name: &str) -> Result<String, String> {
     }
     Ok(value)
 }
-

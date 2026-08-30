@@ -50,6 +50,13 @@ pub struct WgpuBackend {
     path_vertex_capacity: usize,
     path_index_buffer: wgpu::Buffer,
     path_index_capacity: usize,
+    field_pipeline: wgpu::RenderPipeline,
+    field_layout: wgpu::BindGroupLayout,
+    field_buffer: wgpu::Buffer,
+    field_capacity: usize,
+    field_layer_buffer: wgpu::Buffer,
+    field_layer_capacity: usize,
+    field_bind_group: wgpu::BindGroup,
     paths: PathCache,
     images: ImageCache,
     image_textures: HashMap<TextureKey, TextureImage>,
@@ -61,4 +68,3 @@ pub struct WgpuBackend {
     height: u32,
     info: GpuInfo,
 }
-

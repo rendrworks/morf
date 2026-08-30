@@ -89,9 +89,37 @@ impl Runtime {
         )
     }
 
+    /// Dispatches one pointer event, whatever kind it is.
+    ///
+    /// The single entry a host uses. A press, a release and a click carry only
+    /// a position; a motion or a drag also carries how far the pointer has
+    /// travelled since the press. Routing on the event here rather than at the
+    /// call site is deliberate: when the two were separate public methods, a
+    /// host that reached for the wrong one got `false` and silence, and every
+    /// click in the shell was dropped for exactly that reason. There is now no
+    /// wrong one to reach for.
+    pub fn dispatch_pointer(
+        &mut self,
+        node: NodeHandle,
+        event: UiEvent,
+        point: EventPoint,
+        delta: (f64, f64),
+    ) -> bool {
+        match event {
+            UiEvent::Pressed | UiEvent::Released | UiEvent::Clicked => {
+                self.dispatch_button_event(node, event, point)
+            }
+            UiEvent::PointerMoved
+            | UiEvent::DragStarted
+            | UiEvent::Dragged
+            | UiEvent::DragFinished => self.dispatch_pointer_event(node, event, point, delta),
+            _ => false,
+        }
+    }
+
     /// Dispatches a pointer button event as `(surface_x, surface_y, local_x,
     /// local_y)`, the position the button was pressed or released at.
-    pub fn dispatch_button_event(
+    fn dispatch_button_event(
         &mut self,
         node: NodeHandle,
         event: UiEvent,
@@ -113,7 +141,7 @@ impl Runtime {
     /// pointer has travelled since the press, and a drag is free to leave the
     /// node it started on — in which case the local pair runs past the node's
     /// own bounds rather than clamping.
-    pub fn dispatch_pointer_event(
+    fn dispatch_pointer_event(
         &mut self,
         node: NodeHandle,
         event: UiEvent,

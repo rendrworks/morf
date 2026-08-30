@@ -86,7 +86,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 transform: Transform2D::IDENTITY,
                 clip: None,
                 path: "M14 0 L28 28 L0 28 Z".to_owned(),
-                morph: None,
                 fill_color: Color::rgba8(255, 255, 255, 220),
                 stroke_color: Color::rgba8(0, 0, 0, 255),
                 stroke_width: 1.0,

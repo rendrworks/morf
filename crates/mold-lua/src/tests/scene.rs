@@ -383,3 +383,79 @@ fn failed_pam_authentication_cannot_request_unlock() {
 
     assert!(!runtime.take_session_unlock_request());
 }
+
+#[test]
+fn a_distance_field_composes_animatable_layers_from_lua() {
+    // The point of layers being ordinary nodes: a morph and a blend are just
+    // numbers, so they animate through the same behaviors as anything else and
+    // need no mechanism of their own.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "field.lua",
+            br##"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local merge = mold.signal("field.merge", 0)
+                mold.ipc["field.merge"] = function(value) merge:set(value) end
+                ui.Sdf {
+                  width = 200,
+                  height = 120,
+                  fill_color = "#b4e1ea",
+                  stroke_color = "#0e1213",
+                  stroke_width = 2,
+                  softness = 0,
+                  ui.SdfShape {
+                    x = 10, y = 10, width = 100, height = 100,
+                    shape = "circle",
+                    morph_to = "star",
+                    morph_progress = 0.5,
+                    points = 6,
+                  },
+                  ui.SdfShape {
+                    x = 90, y = 10, width = 100, height = 100,
+                    shape = "circle",
+                    operation = "smooth_union",
+                    blend = function() return merge:get() end,
+                    behavior = { blend = { duration = 200, easing = "in_out_cubic" } },
+                  },
+                }
+            "##,
+        )
+        .unwrap();
+
+    let (root, layers) = {
+        let scene = runtime.scene();
+        let root = scene.roots()[0];
+        (root, scene.children(root).unwrap())
+    };
+    assert_eq!(runtime.scene().element(root).unwrap(), Element::Sdf);
+    assert_eq!(layers.len(), 2);
+    assert_eq!(
+        runtime.scene().string_value(layers[0], "morph_to").unwrap(),
+        "star"
+    );
+    assert_eq!(
+        runtime.scene().number(layers[0], "morph_progress").unwrap(),
+        0.5
+    );
+    assert_eq!(runtime.scene().number(layers[1], "blend").unwrap(), 0.0);
+
+    // Driving the signal starts the behavior on the second layer's blend, so
+    // the two circles merge over 200ms rather than snapping together.
+    runtime
+        .call_ipc("field.merge", &[IpcValue::Number(40.0)])
+        .unwrap();
+    runtime
+        .tick_animations(std::time::Duration::from_millis(100))
+        .unwrap();
+    let midway = runtime.scene().number(layers[1], "blend").unwrap();
+    assert!(
+        midway > 0.0 && midway < 40.0,
+        "blend should be easing, got {midway}"
+    );
+    runtime
+        .tick_animations(std::time::Duration::from_millis(200))
+        .unwrap();
+    assert_eq!(runtime.scene().number(layers[1], "blend").unwrap(), 40.0);
+}

@@ -16,7 +16,9 @@ pub use gpu::{GpuError, GpuInfo, WgpuBackend};
 include!("commands.rs");
 include!("damage.rs");
 include!("sdf.rs");
+include!("field.rs");
 include!("paint.rs");
+include!("paint_fields.rs");
 include!("effects.rs");
 #[cfg(test)]
 mod tests;

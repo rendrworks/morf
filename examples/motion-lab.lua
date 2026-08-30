@@ -46,20 +46,23 @@ local pulse = ui.Rect {
   },
 }
 
--- A parametric Polymorpher shape. `star:<points>:<inner ratio>:<rounding>`
--- reaches outlines the built-in name table does not enumerate, and the point
--- count can change while the morph is mid-flight.
-local badge = ui.Shape {
-  x = 60,
-  y = 168,
+-- A field badge. The two ends are named as shape families and interpolated as
+-- distance fields, so the morph passes through outlines that neither a circle
+-- nor a star describes, and the point count may change while it is in flight.
+local badge_layer = ui.SdfShape {
   width = 132,
   height = 132,
-  morph_from = "circle:12",
-  morph_to = function() return string.format("star:%d:0.52:0.24", points:get()) end,
+  shape = "circle",
+  morph_to = "star",
+  inner_radius = 0.52,
+  -- The point count is an ordinary number here, and the shader blends the two
+  -- neighbouring stars as fields, so it may sit between whole values while the
+  -- morph is mid-flight instead of snapping a new spike into place.
+  points = function() return points:get() end,
   morph_progress = function() return extended:get() and 1 or 0 end,
-  fill_color = function() return extended:get() and "#38bdf8" or "#a78bfa" end,
   rotation = function() return extended:get() and 72 or 0 end,
   behavior = {
+    points = { duration = 420, easing = "in_out_cubic" },
     morph_progress = {
       duration = 620,
       easing = "in_out_cubic",
@@ -67,13 +70,22 @@ local badge = ui.Shape {
         if extended:get() then write(laps, laps:get() + 1) end
       end,
     },
-    fill_color = { duration = 260, easing = "out_quad" },
     rotation = {
       duration = 620,
       easing = "out_back",
       rotation_direction = "shortest",
     },
   },
+}
+
+local badge = ui.Sdf {
+  x = 60,
+  y = 168,
+  width = 132,
+  height = 132,
+  fill_color = function() return extended:get() and "#38bdf8" or "#a78bfa" end,
+  behavior = { fill_color = { duration = 260, easing = "out_quad" } },
+  badge_layer,
 }
 
 -- The cached distance field is converted once; weight, softness, and the

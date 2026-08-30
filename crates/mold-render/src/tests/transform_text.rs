@@ -81,38 +81,6 @@ fn draw_list_keeps_non_uniform_origin_aware_transform() {
 }
 
 #[test]
-fn draw_list_keeps_native_polymorpher_progress() {
-    let mut scene = Scene::new();
-    let shape = scene.create(Element::Shape);
-    scene.assign(shape, "width", 120.0).unwrap();
-    scene.assign(shape, "height", 120.0).unwrap();
-    scene.assign(shape, "morph_from", "square").unwrap();
-    scene.assign(shape, "morph_to", "circle").unwrap();
-    scene.assign(shape, "morph_progress", 0.375).unwrap();
-    let layout = Layout::compute(
-        &scene,
-        shape,
-        Size {
-            width: 120.0,
-            height: 120.0,
-        },
-        &mut NoText,
-    )
-    .unwrap();
-    let list = DrawList::from_scene(&scene, &layout).unwrap();
-    let DrawCommand::Path {
-        morph: Some(morph), ..
-    } = &list.commands[0]
-    else {
-        panic!("shape did not emit a native morph");
-    };
-
-    assert_eq!(morph.from, "square");
-    assert_eq!(morph.to, "circle");
-    assert_eq!(morph.progress, 0.375);
-}
-
-#[test]
 fn draw_list_intersects_nested_ancestor_clips() {
     let mut scene = Scene::new();
     let root = scene.create(Element::Item);

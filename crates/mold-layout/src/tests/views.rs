@@ -30,10 +30,28 @@ fn hit_test_uses_absolute_geometry_and_paint_order() {
     .unwrap();
 
     assert_eq!(layout.geometry(second).unwrap().x, 13.0);
-    assert_eq!(layout.hit_test(&scene, 15.0, 9.0).unwrap(), Some(second));
+    assert_eq!(
+        layout
+            .hit_test(&scene, 15.0, 9.0)
+            .unwrap()
+            .map(|hit| hit.node),
+        Some(second)
+    );
     scene.assign(second, "enabled", false).unwrap();
-    assert_eq!(layout.hit_test(&scene, 15.0, 9.0).unwrap(), Some(first));
-    assert_eq!(layout.hit_test(&scene, 2.0, 2.0).unwrap(), None);
+    assert_eq!(
+        layout
+            .hit_test(&scene, 15.0, 9.0)
+            .unwrap()
+            .map(|hit| hit.node),
+        Some(first)
+    );
+    assert_eq!(
+        layout
+            .hit_test(&scene, 2.0, 2.0)
+            .unwrap()
+            .map(|hit| hit.node),
+        None
+    );
     assert_eq!(
         layout.input_geometry(&scene).unwrap(),
         vec![layout.geometry(first).unwrap()]
@@ -60,8 +78,20 @@ fn hit_test_inverts_rotation_and_scale() {
     )
     .unwrap();
 
-    assert_eq!(layout.hit_test(&scene, 20.0, -5.0).unwrap(), Some(area));
-    assert_eq!(layout.hit_test(&scene, 1.0, 1.0).unwrap(), None);
+    assert_eq!(
+        layout
+            .hit_test(&scene, 20.0, -5.0)
+            .unwrap()
+            .map(|hit| hit.node),
+        Some(area)
+    );
+    assert_eq!(
+        layout
+            .hit_test(&scene, 1.0, 1.0)
+            .unwrap()
+            .map(|hit| hit.node),
+        None
+    );
     let input = layout.input_geometry(&scene).unwrap();
     assert_eq!(input.len(), 1);
     assert!((input[0].x - 10.0).abs() < 0.000_001);
@@ -70,8 +100,20 @@ fn hit_test_inverts_rotation_and_scale() {
     assert!((input[0].height - 40.0).abs() < 0.000_001);
 
     scene.assign(area, "scale", 0.5).unwrap();
-    assert_eq!(layout.hit_test(&scene, 20.0, 8.0).unwrap(), Some(area));
-    assert_eq!(layout.hit_test(&scene, 20.0, -5.0).unwrap(), None);
+    assert_eq!(
+        layout
+            .hit_test(&scene, 20.0, 8.0)
+            .unwrap()
+            .map(|hit| hit.node),
+        Some(area)
+    );
+    assert_eq!(
+        layout
+            .hit_test(&scene, 20.0, -5.0)
+            .unwrap()
+            .map(|hit| hit.node),
+        None
+    );
 }
 
 #[test]
@@ -225,4 +267,63 @@ fn reparent_transition_preserves_position_then_flies_to_target() {
         .unwrap();
     let finished = Layout::compute(&scene, root, available, &mut FixedText).unwrap();
     assert_eq!(finished.geometry(tile).unwrap().x, 205.0);
+}
+
+#[test]
+fn a_scene_with_nothing_interactive_claims_no_input_at_all() {
+    // What a shell hands the compositor is derived from live `MouseArea`
+    // geometry, so a purely decorative overlay must derive an empty region and
+    // let every click through. An overlay that claimed its own area by default
+    // would swallow the desktop underneath it.
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    scene.assign(root, "width", 400.0).unwrap();
+    scene.assign(root, "height", 300.0).unwrap();
+    let panel = scene.create(Element::Rect);
+    scene.assign(panel, "width", 200.0).unwrap();
+    scene.assign(panel, "height", 100.0).unwrap();
+    scene.reparent(panel, Some(root)).unwrap();
+    let label = scene.create(Element::Text);
+    scene.assign(label, "width", 80.0).unwrap();
+    scene.assign(label, "height", 20.0).unwrap();
+    scene.reparent(label, Some(panel)).unwrap();
+
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 400.0,
+            height: 300.0,
+        },
+        &mut FixedText,
+    )
+    .unwrap();
+
+    assert!(
+        layout.input_geometry(&scene).unwrap().is_empty(),
+        "a scene with no mouse areas must claim nothing"
+    );
+
+    // And one mouse area is enough to claim exactly its own rectangle.
+    let mut scene = scene;
+    let area = scene.create(Element::MouseArea);
+    scene.assign(area, "x", 30.0).unwrap();
+    scene.assign(area, "y", 40.0).unwrap();
+    scene.assign(area, "width", 60.0).unwrap();
+    scene.assign(area, "height", 20.0).unwrap();
+    scene.reparent(area, Some(panel)).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 400.0,
+            height: 300.0,
+        },
+        &mut FixedText,
+    )
+    .unwrap();
+    let regions = layout.input_geometry(&scene).unwrap();
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].x, 30.0);
+    assert_eq!(regions[0].width, 60.0);
 }

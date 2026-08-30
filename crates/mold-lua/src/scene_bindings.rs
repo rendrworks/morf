@@ -1,5 +1,7 @@
 fn create_node(state: &Rc<RefCell<ReactiveState>>, element: Element) -> NodeHandle {
-    state.borrow_mut().scene.create(element)
+    let mut state = state.borrow_mut();
+    state.scene_revision = state.scene_revision.wrapping_add(1);
+    state.scene.create(element)
 }
 
 fn bump_property_signal(
@@ -61,6 +63,9 @@ fn assign_scene_property(
         .target(node, property)
         .map_err(|error| error.to_string())?
         != &old_target;
+    if current_changed || target_changed {
+        state.scene_revision = state.scene_revision.wrapping_add(1);
+    }
     if current_changed {
         bump_property_signal(state, node, property, false)?;
     }
@@ -98,6 +103,7 @@ fn animate_scene_property(
         .map_err(|error| error.to_string())?
         != &old_current
     {
+        state.scene_revision = state.scene_revision.wrapping_add(1);
         bump_property_signal(state, node, property, false)?;
     }
     if state
@@ -202,4 +208,3 @@ impl fmt::Display for HostError {
 }
 
 impl StdError for HostError {}
-

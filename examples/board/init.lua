@@ -1293,7 +1293,10 @@ end
 -- The board
 --------------------------------------------------------------------------------
 
-mold.variants(mold.screens, function(screen)
+-- One board, on the output this process drives. `mold.screens[1]` is that
+-- output; the entries after it are the other monitors the compositor reports.
+local own_screen = mold.screens[1]
+mold.variants(own_screen and { own_screen } or {}, function(screen)
   local screen_width = screen.width or 1920
   local screen_height = screen.height or 1080
   local short_side = math.min(screen_width, screen_height)

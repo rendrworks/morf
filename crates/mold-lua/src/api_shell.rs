@@ -44,7 +44,9 @@ fn install_shell_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, 
     let surface_new_index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (_surface, key, value): (Table, String, LuaValue) = stack.consume(ctx)?;
         let mut state = surface_write_state.borrow_mut();
-        apply_layer_setting(ctx, &mut state.layer_surface, &key, value).map_err(HostError)?;
+        let changed =
+            apply_layer_setting(ctx, &mut state.layer_surface, &key, value).map_err(HostError)?;
+        state.layer_surface_changed |= changed;
         Ok(CallbackReturn::Return)
     });
     let surface_metatable = Table::new(&ctx);
@@ -222,4 +224,3 @@ fn install_shell_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, 
     });
     mold.set_field(ctx, "working_directory", working_directory);
 }
-

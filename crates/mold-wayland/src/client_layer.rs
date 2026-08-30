@@ -5,6 +5,38 @@
 /// the parent an unqualified popup attaches to.
 pub const PRIMARY_LAYER: u64 = 0;
 
+/// Converts configured anchor edges into the layer-shell bitmask.
+///
+/// `open_layer` and `set_layer_geometry` issue `set_anchor` on the same object
+/// with the same meaning, so they share one conversion: two copies would let a
+/// runtime update silently re-anchor a surface the creation path had pinned
+/// somewhere else.
+fn layer_anchor_mask(anchors: LayerAnchors) -> Anchor {
+    let mut mask = Anchor::empty();
+    if anchors.top {
+        mask |= Anchor::TOP;
+    }
+    if anchors.right {
+        mask |= Anchor::RIGHT;
+    }
+    if anchors.bottom {
+        mask |= Anchor::BOTTOM;
+    }
+    if anchors.left {
+        mask |= Anchor::LEFT;
+    }
+    mask
+}
+
+/// Converts a keyboard focus policy into its layer-shell interactivity.
+fn layer_interactivity(focus: KeyboardFocus) -> WlrKeyboardInteractivity {
+    match focus {
+        KeyboardFocus::None => WlrKeyboardInteractivity::None,
+        KeyboardFocus::Exclusive => WlrKeyboardInteractivity::Exclusive,
+        KeyboardFocus::OnDemand => WlrKeyboardInteractivity::OnDemand,
+    }
+}
+
 impl LayerClient {
     /// Resolves a configured output name against the compositor's current set.
     fn layer_output(
@@ -48,25 +80,8 @@ impl LayerClient {
             Some(config.namespace),
             output.as_ref(),
         );
-        let mut anchors = Anchor::empty();
-        if config.anchors.top {
-            anchors |= Anchor::TOP;
-        }
-        if config.anchors.right {
-            anchors |= Anchor::RIGHT;
-        }
-        if config.anchors.bottom {
-            anchors |= Anchor::BOTTOM;
-        }
-        if config.anchors.left {
-            anchors |= Anchor::LEFT;
-        }
-        layer.set_anchor(anchors);
-        layer.set_keyboard_interactivity(match config.keyboard_focus {
-            KeyboardFocus::None => WlrKeyboardInteractivity::None,
-            KeyboardFocus::Exclusive => WlrKeyboardInteractivity::Exclusive,
-            KeyboardFocus::OnDemand => WlrKeyboardInteractivity::OnDemand,
-        });
+        layer.set_anchor(layer_anchor_mask(config.anchors));
+        layer.set_keyboard_interactivity(layer_interactivity(config.keyboard_focus));
         layer.set_size(config.width, config.height);
         layer.set_margin(
             config.margin_top,
@@ -85,6 +100,16 @@ impl LayerClient {
             .viewporter
             .as_ref()
             .map(|manager| manager.get_viewport(layer.wl_surface(), &qh, ()));
+        // A surface with no input region set accepts the pointer over the whole
+        // of itself. That is the wrong default for a shell: between this commit
+        // and the first paint — which is where the real region is derived from
+        // live interactive geometry — the surface would silently swallow every
+        // click over its own area, and a fullscreen overlay would swallow the
+        // desktop. So it starts claiming nothing and the first paint opens up
+        // whatever the configuration actually asked for.
+        let empty = self.state.compositor.wl_compositor().create_region(&qh, ());
+        layer.wl_surface().set_input_region(Some(&empty));
+        empty.destroy();
         layer.commit();
         self.state.layers.insert(
             id,
@@ -100,6 +125,38 @@ impl LayerClient {
                 blank: None,
             },
         );
+        self.connection
+            .flush()
+            .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
+    }
+
+    /// Re-issues the geometry of a layer surface that is already open.
+    ///
+    /// wlr-layer-shell permits size, anchors, margins, exclusive zone and
+    /// keyboard interactivity to change on a mapped surface; namespace, layer
+    /// and output do not, and stay the business of [`LayerClient::open_layer`].
+    /// Nothing here destroys an object, so the zwlr surface, the wl_surface, the
+    /// fractional scale, the viewport and whatever renders into them all
+    /// survive: the compositor answers with a configure, and the surface
+    /// resizes in place instead of unmapping and coming back.
+    pub fn set_layer_geometry(&self, id: u64, config: &BarConfig) -> Result<(), WaylandError> {
+        let layer = &self
+            .state
+            .layers
+            .get(&id)
+            .ok_or_else(|| WaylandError("layer surface is not open".into()))?
+            .surface;
+        layer.set_size(config.width, config.height);
+        layer.set_anchor(layer_anchor_mask(config.anchors));
+        layer.set_margin(
+            config.margin_top,
+            config.margin_right,
+            config.margin_bottom,
+            config.margin_left,
+        );
+        layer.set_exclusive_zone(config.exclusive_zone);
+        layer.set_keyboard_interactivity(layer_interactivity(config.keyboard_focus));
+        layer.commit();
         self.connection
             .flush()
             .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))

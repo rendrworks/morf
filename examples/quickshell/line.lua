@@ -105,7 +105,7 @@ local expand_progress = 0
 local badge_workspace = mold.signal("quickshell.line.badge_workspace", 1)
 
 -- Nodes, filled in by `build`.
-local strip, column, frame, badge, label, pump
+local strip, column, frame, badge, anchor, field, label, pump
 
 -- ------------------------------------------------------------------ layout --
 
@@ -125,56 +125,6 @@ local function apply_frame(animated)
   if not animated then mold.animation.set_enabled(frame, "x", true) end
 end
 
---- The rectangles that have to take a click for the ribbon to work: just the
---- bar, on whichever edge it currently hangs. The shell root composes the
---- surface mask, so this is the shape it should ask for rather than assuming
---- the left edge, the way `osd.regions` names the OSD panels.
-function line.regions()
-  return {
-    {
-      x = math.floor(bar_on_right and (WIDTH - bar_width) or 0),
-      y = 0,
-      width = math.floor(bar_width),
-      height = math.floor(HEIGHT),
-    },
-  }
-end
-
---- Corrects the bar rectangle in an already composed surface mask.
----
---- `init.lua` writes the mask at load, before the monitor list has arrived, so
---- the rectangle it names is always the left edge. Which edge the bar is
---- actually on is only known here, and only once Hyprland has answered. This
---- swaps that one full-height, bar-wide rectangle for the current one and
---- leaves every other region alone, so panels that added their own (the OSD's
---- sliders) keep taking clicks.
----
---- When no mask is set at all the engine derives the input region from live
---- MouseArea geometry every paint (`paint` in `mold-cli/src/paint.rs`), which
---- already tracks the bar wherever it is, so nothing is done.
-local function apply_mask()
-  local current = mold.surface.mask
-  local root = current and current[1]
-  if not root then return end
-  local children = root.regions or {}
-  if #children == 0 then return end
-  local kept = {}
-  for _, region in ipairs(children) do
-    -- Anything the full height of the output and exactly a bar wide is a bar
-    -- rectangle, whichever edge it names, and is the one being replaced.
-    local is_bar = region.width == math.floor(bar_width) and region.height == math.floor(HEIGHT)
-    if not is_bar then kept[#kept + 1] = region end
-  end
-  kept[#kept + 1] = line.regions()[1]
-  mold.surface.mask = {
-    x = root.x or 0,
-    y = root.y or 0,
-    width = root.width or 0,
-    height = root.height or 0,
-    regions = kept,
-  }
-end
-
 --- Writes every dimension the morph owns for one value of `morphProgress`.
 local function apply_morph(value)
   morph_value = value
@@ -184,10 +134,16 @@ local function apply_morph(value)
   local slide = popup_slide * value
   badge.width = width
   badge.radius = badge_radius + (badge_size * 0.5 - badge_radius) * value
-  badge.border_width = popup_border_width + popup_border_growth * value
   badge.x = bar_on_right and (-slide - width) or slide
-  badge.visible = value > 0
+  -- The seam radius closes as the badge pulls away. The two overlap for most
+  -- of the slide, so the neck holds nearly to the end and thins out rather
+  -- than snapping: that easing of the join is the whole effect.
+  badge.blend = pill_width * 1.9 * (1.0 - value)
+  field.stroke_width = popup_border_width + popup_border_growth * value
+  field.visible = value > 0
   label.width = width
+  label.x = badge.x
+  label.y = badge.y
   label.font_size = math.max(1, math.floor(math.min(width, badge_size) * 0.495 + 0.5))
   label.opacity = value
 end
@@ -199,7 +155,6 @@ local function apply_side()
   column.x = bar_on_right and (strip_width - bar_width) or 0
   apply_frame(false)
   apply_morph(morph_value)
-  apply_mask()
 end
 
 -- ------------------------------------------------------------------- morph --
@@ -215,9 +170,17 @@ end
 
 --- Sets the badge's row without sliding to it, as `displayY = ...` does.
 local function place_row(index)
+  local row = track_top + row_offset(index)
   mold.animation.set_enabled(badge, "y", false)
-  badge.y = track_top + row_offset(index)
+  badge.y = row
   mold.animation.set_enabled(badge, "y", true)
+  anchor.y = row + (item_height - badge_size) / 2
+end
+
+--- Slides the badge to a row, taking the pill it grows from with it.
+local function slide_to(row)
+  badge.y = row
+  anchor.y = row + (item_height - badge_size) / 2
 end
 
 --- `showWorkspaceId` from Numbers.qml.
@@ -233,7 +196,7 @@ local function show_badge(index, id, force)
     -- movement between workspaces rather than an appearance out of nowhere.
     if last_shown >= 1 and last_shown ~= index then
       place_row(last_shown)
-      badge.y = target
+      slide_to(target)
     else
       place_row(index)
     end
@@ -244,10 +207,10 @@ local function show_badge(index, id, force)
     -- Was fading out: cancel and stay.
     morph_mode = "hold"
     apply_morph(1)
-    if last_shown ~= index then badge.y = target end
+    if last_shown ~= index then slide_to(target) end
   else
     -- Already up: slide if the workspace changed.
-    if last_shown ~= index then badge.y = target end
+    if last_shown ~= index then slide_to(target) end
   end
   hold_clock:restart()
   last_shown = index
@@ -387,16 +350,46 @@ function line.build()
   -- `y` is left at zero here on purpose: a behavior is installed before the
   -- constructor's own values are assigned, so setting the row here would
   -- animate the badge in from the top of the screen. `place_row` sets it.
-  badge = ui.Rect {
+  -- The badge and the pill it comes from are one composition, not two
+  -- rectangles that happen to overlap. `Numbers.qml` grows the badge *out of*
+  -- its pill; with a smooth union that is literally what happens — the two
+  -- surfaces bulge into each other while they are close and the neck thins and
+  -- parts as the badge slides clear, with nothing tracking the transition.
+  --
+  -- The anchor is the pill, redrawn inside the field in the same colour, so
+  -- the fused shape sits exactly over the real one.
+  anchor = ui.SdfShape {
+    x = (bar_width - pill_width) / 2,
+    y = 0,
+    width = pill_width,
+    height = item_height,
+    shape = "box",
+    radius = pill_radius,
+  }
+
+  badge = ui.SdfShape {
     x = 0,
+    y = 0,
     width = pill_width,
     height = badge_size,
+    shape = "box",
     radius = badge_radius,
-    color = function() return theme.color1() end,
-    border_width = popup_border_width,
-    border_color = function() return theme.color0() end,
-    visible = false,
+    operation = "smooth_union",
+    blend = 0,
     behavior = { y = { duration = SLIDE_MS, easing = "in_out_quad" } },
+  }
+
+  field = ui.Sdf {
+    x = 0,
+    y = 0,
+    width = strip_width,
+    height = HEIGHT,
+    fill_color = function() return theme.color1() end,
+    stroke_color = function() return theme.color0() end,
+    stroke_width = popup_border_width,
+    visible = false,
+    anchor,
+    badge,
     label,
   }
 
@@ -407,7 +400,7 @@ function line.build()
     width = 0,
     height = HEIGHT,
     behavior = { x = { duration = theme.short_duration, easing = "in_out_quad" } },
-    badge,
+    field,
   }
 
   pump = ui.Item {

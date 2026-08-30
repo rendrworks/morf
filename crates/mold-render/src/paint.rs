@@ -5,6 +5,8 @@ struct PaintContext {
     clip: Option<Geometry>,
     overlay: Color,
     layer: Option<usize>,
+    /// Whether an enclosing field has already taken this node's shape.
+    in_field: bool,
 }
 
 fn append_node(
@@ -65,11 +67,10 @@ fn append_node(
     let Some(bounds) = layout.geometry(node) else {
         return Ok(());
     };
-    let transform = inherited
-        .transform
-        .then(node_transform(scene, node, bounds).map_err(|error| {
-            RenderError::Scene(error.to_string())
-        })?);
+    let transform = inherited.transform.then(
+        node_transform(scene, node, bounds)
+            .map_err(|error| RenderError::Scene(error.to_string()))?,
+    );
     if let Some(layer) = layer
         && rounded_clip
     {
@@ -89,8 +90,12 @@ fn append_node(
     } else {
         inherited.clip
     };
+    // A shape an enclosing field composed is drawn by that field, not again on
+    // its own. Everything else — text, images, anything without a field —
+    // paints normally over the composition.
+    let painted = !(inherited.in_field && absorbed_by_field(element));
     match element {
-        Element::Rect | Element::ClipRect => list.commands.push(DrawCommand::Quad {
+        Element::Rect | Element::ClipRect if painted => list.commands.push(DrawCommand::Quad {
             node,
             bounds,
             transform,
@@ -171,7 +176,6 @@ fn append_node(
             transform,
             clip,
             path: scene.string_value(node, "path")?.to_owned(),
-            morph: shape_morph(scene, node)?,
             fill_color: apply_overlay(
                 with_opacity(scene.color_value(node, "fill_color")?, opacity),
                 color_overlay,
@@ -183,8 +187,42 @@ fn append_node(
             stroke_width: scene.number(node, "stroke_width")?.max(0.0),
             even_odd: scene.string_value(node, "fill_rule")? == "even_odd",
         }),
-        Element::Item
+        Element::Sdf if painted => {
+            let mut layers = Vec::new();
+            let blend = scene.number(node, "blend")?.max(0.0) as f32;
+            let fill = apply_overlay(
+                with_opacity(scene.color_value(node, "fill_color")?, opacity),
+                color_overlay,
+            );
+            field_layers(scene, layout, node, blend, fill, &mut layers)?;
+            // A composition with nothing in it has no zero crossing and would
+            // paint the whole rectangle, so it draws nothing at all.
+            if !layers.is_empty() {
+                list.commands.push(DrawCommand::Field {
+                    node,
+                    bounds,
+                    transform,
+                    clip,
+                    fill_color: apply_overlay(
+                        with_opacity(scene.color_value(node, "fill_color")?, opacity),
+                        color_overlay,
+                    ),
+                    stroke_color: apply_overlay(
+                        with_opacity(scene.color_value(node, "stroke_color")?, opacity),
+                        color_overlay,
+                    ),
+                    stroke_width: scene.number(node, "stroke_width")?.max(0.0),
+                    softness: scene.number(node, "softness")?.max(0.0),
+                    layers,
+                });
+            }
+        }
+        Element::Rect
+        | Element::ClipRect
+        | Element::Sdf
+        | Element::Item
         | Element::Inset
+        | Element::SdfShape
         | Element::MouseArea
         | Element::Row
         | Element::Column
@@ -246,6 +284,10 @@ fn append_node(
                     .map(|(layer, _)| layer)
                     .or(layer)
                     .or(inherited.layer),
+                // A field claims every shape beneath it, however deeply the
+                // positioners nest, which is what lets an ordinary laid-out
+                // row of rects arrive as one fused surface.
+                in_field: inherited.in_field || element == Element::Sdf,
             },
             list,
         )?;
@@ -315,40 +357,10 @@ fn distance_field_style(
     Ok(DistanceFieldStyle {
         weight: scene.number(node, "distance_field_weight")?.clamp(0.0, 1.0) as f32,
         softness: scene.number(node, "distance_field_softness")?.max(0.0) as f32,
-        outline_width: scene
-            .number(node, "distance_field_outline_width")?
-            .max(0.0) as f32,
+        outline_width: scene.number(node, "distance_field_outline_width")?.max(0.0) as f32,
         outline_color: with_opacity(
             scene.color_value(node, "distance_field_outline_color")?,
             opacity,
         ),
     })
-}
-
-fn shape_morph(scene: &Scene, node: NodeHandle) -> Result<Option<ShapeMorph>, RenderError> {
-    let from = scene.string_value(node, "morph_from")?;
-    let to = scene.string_value(node, "morph_to")?;
-    if from.is_empty() && to.is_empty() {
-        return Ok(None);
-    }
-    if from.is_empty() || to.is_empty() {
-        return Err(RenderError::Scene(
-            "shape morph requires both morph_from and morph_to".to_owned(),
-        ));
-    }
-    if !crate::path::is_morph_shape(from) || !crate::path::is_morph_shape(to) {
-        return Err(RenderError::Scene(format!(
-            "unknown Polymorpher shape `{}`",
-            if crate::path::is_morph_shape(from) {
-                to
-            } else {
-                from
-            }
-        )));
-    }
-    Ok(Some(ShapeMorph {
-        from: from.to_owned(),
-        to: to.to_owned(),
-        progress: scene.number(node, "morph_progress")?.clamp(0.0, 1.0) as f32,
-    }))
 }

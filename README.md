@@ -38,9 +38,10 @@ Run the combined animation, polygon morph, and signed-distance-field example:
 EXAMPLE=examples/morph-stack.lua oslo make run
 ```
 
-Animato advances the native tween and spring state, Polymorpher matches and
-morphs rounded polygon topology, and reusable raster masks are converted to
-cached signed distance fields. Mold still owns the compositor frame clock.
+Animato advances the native tween and spring state — the timing — and signed
+distance fields decide what a frame looks like — the view. Analytic fields are
+composed and morphed in the fragment shader; reusable raster masks are converted
+to cached distance fields. Mold still owns the compositor frame clock.
 
 Use `--no-plugin` to load the configuration without auto-sourced plugins. Use
 `--clean` to also exclude external Lua roots; modules beside the selected config

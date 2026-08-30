@@ -118,3 +118,87 @@ fn the_shell_surface_still_configures_the_primary_layer() {
         [("top", 10), ("left", 6)]
     );
 }
+
+#[test]
+fn layer_geometry_changes_without_recreating_the_surface() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "layer-update.lua",
+            br#"
+                    local ui = require("mold.ui")
+                    local window = require("mold.window")
+                    ui.Item {}
+                    window.layer {
+                      root = ui.Item {},
+                      namespace = "ribbon",
+                      width = 400,
+                      height = 200,
+                      margin_left = 0,
+                      layer = "overlay",
+                    }
+                "#,
+        )
+        .unwrap();
+    let surfaces = runtime.window_surface_configs();
+    let WindowSurfaceKind::Layer(config) = &surfaces[0].kind else {
+        panic!("configured surface was not a layer surface");
+    };
+
+    // A surface with no predecessor has to be created.
+    assert_eq!(layer_update(None, config), LayerUpdate::Recreate);
+    assert_eq!(layer_update(Some(config), config), LayerUpdate::None);
+
+    // Everything wlr-layer-shell accepts on a mapped surface stays mapped.
+    for moved in [
+        LayerSurfaceConfig {
+            margin_left: -400,
+            ..config.clone()
+        },
+        LayerSurfaceConfig {
+            width: 640,
+            ..config.clone()
+        },
+        LayerSurfaceConfig {
+            exclusive_zone: 24,
+            ..config.clone()
+        },
+        LayerSurfaceConfig {
+            keyboard_focus: "exclusive".to_owned(),
+            ..config.clone()
+        },
+        LayerSurfaceConfig {
+            anchors: mold_lua::SurfaceAnchors {
+                top: true,
+                right: false,
+                bottom: false,
+                left: true,
+            },
+            ..config.clone()
+        },
+    ] {
+        assert_eq!(layer_update(Some(config), &moved), LayerUpdate::Geometry);
+    }
+
+    // Namespace and layer are fixed when the surface is created.
+    assert_eq!(
+        layer_update(
+            Some(config),
+            &LayerSurfaceConfig {
+                namespace: "ribbon-popup".to_owned(),
+                ..config.clone()
+            }
+        ),
+        LayerUpdate::Recreate
+    );
+    assert_eq!(
+        layer_update(
+            Some(config),
+            &LayerSurfaceConfig {
+                layer: "top".to_owned(),
+                ..config.clone()
+            }
+        ),
+        LayerUpdate::Recreate
+    );
+}

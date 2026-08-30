@@ -15,7 +15,8 @@ use mold_text::{RasterContent, RasterGlyph, TextSystem};
 use crate::path::PathCache;
 use crate::{
     DamageRect, DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode, LayerMask, RenderBackend,
-    SdfQuadInstance, VerticalAlignment, color_array, physical_damage,
+    SdfFieldInstance, SdfFieldLayer, SdfQuadInstance, VerticalAlignment, color_array,
+    physical_damage,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -23,10 +24,16 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 include!("gpu/backend_types.rs");
 include!("gpu/backend_init.rs");
 include!("gpu/backend_render.rs");
+include!("gpu/batches.rs");
 include!("gpu/path_batch.rs");
 include!("gpu/glyphs.rs");
 include!("gpu/pipelines.rs");
+include!("gpu/field_pass.rs");
 include!("gpu/textures.rs");
 include!("gpu/targets.rs");
+#[cfg(test)]
+mod field_color_tests;
+#[cfg(test)]
+mod field_tests;
 #[cfg(test)]
 mod tests;
