@@ -111,3 +111,24 @@ fn quantizer_splits_the_widest_color_channel() {
     .unwrap();
     assert_eq!(cropped, [[230, 10, 20, 255]]);
 }
+
+#[test]
+fn signed_distance_field_marks_inside_edge_and_outside() {
+    let mut rgba = vec![0; 7 * 7 * 4];
+    for y in 2..5 {
+        for x in 2..5 {
+            rgba[(y * 7 + x) * 4 + 3] = 255;
+        }
+    }
+    let image = ImageData {
+        width: 7,
+        height: 7,
+        rgba,
+    };
+    let field = distance_field_from_alpha(&image, 3.0).unwrap();
+    let distance = |x: usize, y: usize| field.rgba[(y * 7 + x) * 4];
+
+    assert!(distance(3, 3) < 128);
+    assert!((120..=136).contains(&distance(2, 3)));
+    assert!(distance(0, 0) > 128);
+}

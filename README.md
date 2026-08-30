@@ -32,6 +32,16 @@ Clicking its shape animates square-to-circle radius, color, origin-aware
 non-uniform scale, skew, rotation, shadows, and spring translation. The
 animation clock and interpolation remain in Rust; Lua only changes targets.
 
+Run the combined animation, polygon morph, and signed-distance-field example:
+
+```sh
+EXAMPLE=examples/morph-stack.lua oslo make run
+```
+
+Animato advances the native tween and spring state, Polymorpher matches and
+morphs rounded polygon topology, and reusable raster masks are converted to
+cached signed distance fields. Mold still owns the compositor frame clock.
+
 Use `--no-plugin` to load the configuration without auto-sourced plugins. Use
 `--clean` to also exclude external Lua roots; modules beside the selected config
 remain available.

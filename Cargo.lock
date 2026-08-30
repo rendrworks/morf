@@ -37,6 +37,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "animato"
+version = "1.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3442e820517e920a1ac56d9e331be066374ecf1e9deda46c4107e3fde0ce12e3"
+dependencies = [
+ "animato-core",
+ "animato-spring",
+ "animato-tween",
+]
+
+[[package]]
+name = "animato-core"
+version = "1.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bec574aad55366acee5e4bcce6f75045f11459db2b1ab4e0ac456fc1d9357ff"
+dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "animato-spring"
+version = "1.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42248f390dffc3d3c667f33334f1a2745a3f45d3269a6acad04208f8ff785940"
+dependencies = [
+ "animato-core",
+]
+
+[[package]]
+name = "animato-tween"
+version = "1.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3dde84d5eb9a52c61447b0026fd4e1026b96bcb591d99637d9d90770cf4ed20e"
+dependencies = [
+ "animato-core",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -783,6 +821,12 @@ dependencies = [
 
 [[package]]
 name = "half"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
+
+[[package]]
+name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
@@ -1198,6 +1242,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "resvg",
+ "signed-distance-field",
 ]
 
 [[package]]
@@ -1267,6 +1312,7 @@ dependencies = [
  "mold-scene",
  "mold-text",
  "pollster",
+ "polymorpher",
  "raw-window-handle",
  "svgtypes",
  "wgpu",
@@ -1276,6 +1322,7 @@ dependencies = [
 name = "mold-scene"
 version = "0.1.0"
 dependencies = [
+ "animato",
  "mold-reactive",
  "slotmap",
 ]
@@ -1343,7 +1390,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "codespan-reporting",
- "half",
+ "half 2.7.1",
  "hashbrown 0.17.1",
  "indexmap",
  "libm",
@@ -1596,6 +1643,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6"
 dependencies = [
  "arrayvec",
+]
+
+[[package]]
+name = "polymorpher"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0217094b986116c00ab0e4556d392ad0efde23f87ad4ad7ab2226d777cf44dc"
+dependencies = [
+ "euclid",
 ]
 
 [[package]]
@@ -1917,6 +1973,15 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "signed-distance-field"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f046bc9a6ce5a9fe78574c8cac8365668ba96b0c7e37464965b7670f56c9ed15"
+dependencies = [
+ "half 1.8.3",
 ]
 
 [[package]]

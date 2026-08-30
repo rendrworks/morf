@@ -13,7 +13,9 @@ whole pinned checkout and is authoritative when this summary and the detailed
 ledger differ.
 
 The focused animation comparison and runnable transformation proof are in
-[`docs/ANIMATION_PARITY.md`](docs/ANIMATION_PARITY.md).
+[`docs/ANIMATION_PARITY.md`](docs/ANIMATION_PARITY.md). The Rust dependency
+boundaries for animation, polygon morphing, and cached distance fields are in
+[`docs/MOTION_STACK.md`](docs/MOTION_STACK.md).
 
 ## Boundary
 

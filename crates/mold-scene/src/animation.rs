@@ -59,87 +59,47 @@ pub enum Easing {
 
 impl Easing {
     pub fn value_at(self, progress: f64) -> f64 {
-        let progress = progress.clamp(0.0, 1.0);
-        match self {
-            Self::Linear => progress,
-            Self::InQuad => progress * progress,
-            Self::OutQuad => 1.0 - (1.0 - progress).powi(2),
-            Self::InOutQuad if progress < 0.5 => 2.0 * progress * progress,
-            Self::InOutQuad => 1.0 - (-2.0 * progress + 2.0).powi(2) / 2.0,
-            Self::InCubic => progress.powi(3),
-            Self::OutCubic => 1.0 - (1.0 - progress).powi(3),
-            Self::InOutCubic if progress < 0.5 => 4.0 * progress.powi(3),
-            Self::InOutCubic => 1.0 - (-2.0 * progress + 2.0).powi(3) / 2.0,
-            Self::InQuart => progress.powi(4),
-            Self::OutQuart => 1.0 - (1.0 - progress).powi(4),
-            Self::InOutQuart if progress < 0.5 => 8.0 * progress.powi(4),
-            Self::InOutQuart => 1.0 - (-2.0 * progress + 2.0).powi(4) / 2.0,
-            Self::InQuint => progress.powi(5),
-            Self::OutQuint => 1.0 - (1.0 - progress).powi(5),
-            Self::InOutQuint if progress < 0.5 => 16.0 * progress.powi(5),
-            Self::InOutQuint => 1.0 - (-2.0 * progress + 2.0).powi(5) / 2.0,
-            Self::InSine => 1.0 - (progress * std::f64::consts::FRAC_PI_2).cos(),
-            Self::OutSine => (progress * std::f64::consts::FRAC_PI_2).sin(),
-            Self::InOutSine => -((std::f64::consts::PI * progress).cos() - 1.0) / 2.0,
-            Self::InExpo if progress == 0.0 => 0.0,
-            Self::InExpo => 2.0_f64.powf(10.0 * progress - 10.0),
-            Self::OutExpo if progress == 1.0 => 1.0,
-            Self::OutExpo => 1.0 - 2.0_f64.powf(-10.0 * progress),
-            Self::InOutExpo if progress == 0.0 || progress == 1.0 => progress,
-            Self::InOutExpo if progress < 0.5 => 2.0_f64.powf(20.0 * progress - 10.0) / 2.0,
-            Self::InOutExpo => (2.0 - 2.0_f64.powf(-20.0 * progress + 10.0)) / 2.0,
-            Self::InCirc => 1.0 - (1.0 - progress.powi(2)).sqrt(),
-            Self::OutCirc => (1.0 - (progress - 1.0).powi(2)).sqrt(),
-            Self::InOutCirc if progress < 0.5 => {
-                (1.0 - (1.0 - (2.0 * progress).powi(2)).sqrt()) / 2.0
-            }
-            Self::InOutCirc => ((1.0 - (-2.0 * progress + 2.0).powi(2)).sqrt() + 1.0) / 2.0,
-            Self::InBack => {
-                const C1: f64 = 1.70158;
-                (C1 + 1.0) * progress.powi(3) - C1 * progress.powi(2)
-            }
-            Self::OutBack => {
-                const C1: f64 = 1.70158;
-                1.0 + (C1 + 1.0) * (progress - 1.0).powi(3) + C1 * (progress - 1.0).powi(2)
-            }
-            Self::InOutBack => {
-                const C2: f64 = 1.70158 * 1.525;
-                if progress < 0.5 {
-                    (2.0 * progress).powi(2) * ((C2 + 1.0) * 2.0 * progress - C2) / 2.0
-                } else {
-                    ((2.0 * progress - 2.0).powi(2) * ((C2 + 1.0) * (progress * 2.0 - 2.0) + C2)
-                        + 2.0)
-                        / 2.0
-                }
-            }
-            Self::InBounce => 1.0 - out_bounce(1.0 - progress),
-            Self::OutBounce => out_bounce(progress),
-            Self::InOutBounce if progress < 0.5 => (1.0 - out_bounce(1.0 - 2.0 * progress)) / 2.0,
-            Self::InOutBounce => (1.0 + out_bounce(2.0 * progress - 1.0)) / 2.0,
-            Self::CubicBezier { .. } if progress == 0.0 || progress == 1.0 => progress,
-            Self::CubicBezier { x1, y1, x2, y2 } => cubic_bezier(progress, x1, y1, x2, y2),
-        }
+        f64::from(self.animato().apply(progress.clamp(0.0, 1.0) as f32))
     }
 
     pub fn interpolate(self, progress: f64, start: f64, end: f64) -> f64 {
         start + (end - start) * self.value_at(progress)
     }
-}
 
-fn out_bounce(progress: f64) -> f64 {
-    const N1: f64 = 7.5625;
-    const D1: f64 = 2.75;
-    if progress < 1.0 / D1 {
-        N1 * progress * progress
-    } else if progress < 2.0 / D1 {
-        let progress = progress - 1.5 / D1;
-        N1 * progress * progress + 0.75
-    } else if progress < 2.5 / D1 {
-        let progress = progress - 2.25 / D1;
-        N1 * progress * progress + 0.9375
-    } else {
-        let progress = progress - 2.625 / D1;
-        N1 * progress * progress + 0.984375
+    fn animato(self) -> animato::Easing {
+        match self {
+            Self::Linear => animato::Easing::Linear,
+            Self::InQuad => animato::Easing::EaseInQuad,
+            Self::OutQuad => animato::Easing::EaseOutQuad,
+            Self::InOutQuad => animato::Easing::EaseInOutQuad,
+            Self::InCubic => animato::Easing::EaseInCubic,
+            Self::OutCubic => animato::Easing::EaseOutCubic,
+            Self::InOutCubic => animato::Easing::EaseInOutCubic,
+            Self::InQuart => animato::Easing::EaseInQuart,
+            Self::OutQuart => animato::Easing::EaseOutQuart,
+            Self::InOutQuart => animato::Easing::EaseInOutQuart,
+            Self::InQuint => animato::Easing::EaseInQuint,
+            Self::OutQuint => animato::Easing::EaseOutQuint,
+            Self::InOutQuint => animato::Easing::EaseInOutQuint,
+            Self::InSine => animato::Easing::EaseInSine,
+            Self::OutSine => animato::Easing::EaseOutSine,
+            Self::InOutSine => animato::Easing::EaseInOutSine,
+            Self::InExpo => animato::Easing::EaseInExpo,
+            Self::OutExpo => animato::Easing::EaseOutExpo,
+            Self::InOutExpo => animato::Easing::EaseInOutExpo,
+            Self::InCirc => animato::Easing::EaseInCirc,
+            Self::OutCirc => animato::Easing::EaseOutCirc,
+            Self::InOutCirc => animato::Easing::EaseInOutCirc,
+            Self::InBack => animato::Easing::EaseInBack,
+            Self::OutBack => animato::Easing::EaseOutBack,
+            Self::InOutBack => animato::Easing::EaseInOutBack,
+            Self::InBounce => animato::Easing::EaseInBounce,
+            Self::OutBounce => animato::Easing::EaseOutBounce,
+            Self::InOutBounce => animato::Easing::EaseInOutBounce,
+            Self::CubicBezier { x1, y1, x2, y2 } => {
+                animato::Easing::CubicBezier(x1 as f32, y1 as f32, x2 as f32, y2 as f32)
+            }
+        }
     }
 }
 
@@ -215,15 +175,30 @@ struct Animation {
     to: Value,
     initial_velocity: Velocity,
     preserve_velocity: bool,
-    elapsed: Duration,
+    clock: Tween<f32>,
     behavior: Behavior,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct PhysicsAnimation {
-    target: f64,
-    velocity: f64,
-    spec: Physics,
+#[derive(Clone, Debug)]
+enum PhysicsAnimation {
+    Spring {
+        target: f64,
+        motion: Spring,
+    },
+    Smoothed {
+        target: f64,
+        velocity: f64,
+        limit: f64,
+    },
+}
+
+impl PhysicsAnimation {
+    fn velocity(&self) -> f64 {
+        match self {
+            Self::Spring { motion, .. } => f64::from(motion.velocity()),
+            Self::Smoothed { velocity, .. } => *velocity,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

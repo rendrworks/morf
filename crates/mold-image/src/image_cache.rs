@@ -13,6 +13,8 @@ pub enum ImageError {
     InvalidSize,
     /// The source URI did not identify a local file.
     InvalidSource(String),
+    /// The source alpha mask had no detectable boundary.
+    DistanceFieldEmpty,
 }
 
 impl fmt::Display for ImageError {
@@ -24,6 +26,7 @@ impl fmt::Display for ImageError {
             Self::IconNotFound(name) => write!(f, "icon `{name}` was not found"),
             Self::InvalidSize => f.write_str("image size must be greater than zero"),
             Self::InvalidSource(source) => write!(f, "invalid local image source `{source}`"),
+            Self::DistanceFieldEmpty => f.write_str("distance-field source has no alpha edge"),
         }
     }
 }
@@ -50,12 +53,19 @@ struct CacheKey {
     scale_120: u32,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct DistanceFieldKey {
+    image: CacheKey,
+    spread: u32,
+}
+
 /// Cache for decoded images and resolved icon names.
 #[derive(Default)]
 pub struct ImageCache {
     images: HashMap<CacheKey, Arc<ImageData>>,
     icons: HashMap<(String, String, u32, u32), PathBuf>,
     intrinsic: HashMap<PathBuf, (u32, u32)>,
+    distance_fields: HashMap<DistanceFieldKey, Arc<ImageData>>,
 }
 
 impl ImageCache {
@@ -117,6 +127,65 @@ impl ImageCache {
         self.load(path, logical_width, logical_height, scale_120)
     }
 
+    /// Loads an image alpha mask and caches its normalized signed distance field.
+    pub fn load_distance_field(
+        &mut self,
+        source: impl AsRef<Path>,
+        logical_width: u32,
+        logical_height: u32,
+        scale_120: u32,
+        spread: f32,
+    ) -> Result<Arc<ImageData>, ImageError> {
+        let source = normalize_source(source.as_ref())?;
+        let width = physical_size(logical_width, scale_120)?;
+        let height = physical_size(logical_height, scale_120)?;
+        let key = DistanceFieldKey {
+            image: CacheKey {
+                source: source.clone(),
+                width,
+                height,
+                scale_120,
+            },
+            spread: spread.max(0.5).to_bits(),
+        };
+        if let Some(image) = self.distance_fields.get(&key) {
+            return Ok(Arc::clone(image));
+        }
+        let image = self.load(source, logical_width, logical_height, scale_120)?;
+        let field = Arc::new(distance_field_from_alpha(&image, spread)?);
+        self.distance_fields.insert(key, Arc::clone(&field));
+        Ok(field)
+    }
+
+    /// Resolves an icon and caches a signed distance field from its alpha mask.
+    pub fn load_icon_distance_field_sized(
+        &mut self,
+        name: &str,
+        theme: &str,
+        logical_width: u32,
+        logical_height: u32,
+        scale_120: u32,
+        spread: f32,
+    ) -> Result<Arc<ImageData>, ImageError> {
+        let logical_size = logical_width.max(logical_height);
+        let physical = physical_size(logical_size, scale_120)?;
+        let key = (name.to_owned(), theme.to_owned(), physical, scale_120);
+        let path = if let Some(path) = self.icons.get(&key) {
+            path.clone()
+        } else {
+            let path = IconResolver::from_environment().find(name, theme, physical)?;
+            self.icons.insert(key, path.clone());
+            path
+        };
+        self.load_distance_field(
+            path,
+            logical_width,
+            logical_height,
+            scale_120,
+            spread,
+        )
+    }
+
     /// Returns a source's unscaled pixel dimensions.
     pub fn intrinsic_size(&mut self, source: impl AsRef<Path>) -> Result<(u32, u32), ImageError> {
         let source = normalize_source(source.as_ref())?;
@@ -162,6 +231,7 @@ impl ImageCache {
         self.images.clear();
         self.icons.clear();
         self.intrinsic.clear();
+        self.distance_fields.clear();
     }
 }
 
@@ -260,4 +330,3 @@ fn decode_svg(bytes: &[u8], width: u32, height: u32) -> Result<ImageData, ImageE
         rgba,
     })
 }
-

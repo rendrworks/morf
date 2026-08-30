@@ -13,6 +13,7 @@ use image::ImageReader;
 use resvg::{tiny_skia, usvg};
 
 include!("quantize.rs");
+include!("distance_field.rs");
 include!("image_cache.rs");
 include!("icons.rs");
 #[cfg(test)]

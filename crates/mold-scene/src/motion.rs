@@ -1,15 +1,35 @@
 impl Animation {
-    fn progress(&self) -> f64 {
-        let duration = self.behavior.duration.as_secs_f64();
-        if duration == 0.0 {
-            1.0
-        } else {
-            (self.elapsed.as_secs_f64() / duration).clamp(0.0, 1.0)
+    fn new(
+        from: Value,
+        to: Value,
+        initial_velocity: Velocity,
+        preserve_velocity: bool,
+        behavior: Behavior,
+    ) -> Self {
+        let clock = Tween::new(0.0, 1.0)
+            .duration(behavior.duration.as_secs_f32())
+            .easing(behavior.easing.animato())
+            .build();
+        Self {
+            from,
+            to,
+            initial_velocity,
+            preserve_velocity,
+            clock,
+            behavior,
         }
     }
 
+    fn progress(&self) -> f64 {
+        f64::from(self.clock.progress())
+    }
+
     fn value(&self) -> Value {
-        let progress = self.progress();
+        let progress = if self.preserve_velocity {
+            self.progress()
+        } else {
+            f64::from(self.clock.value())
+        };
         if self.preserve_velocity {
             interpolate_hermite(
                 &self.from,
@@ -22,7 +42,7 @@ impl Animation {
             interpolate(
                 &self.from,
                 &self.to,
-                self.behavior.easing.value_at(progress),
+                progress,
             )
         }
     }
@@ -115,41 +135,75 @@ fn validate_physics(physics: Physics) -> Result<(), String> {
     }
 }
 
-fn advance_physics(motion: &mut PhysicsAnimation, current: &mut f64, delta: Duration) -> bool {
-    let seconds = delta.as_secs_f64();
-    match motion.spec {
+fn physics_animation(
+    current: f64,
+    target: f64,
+    velocity: f64,
+    spec: Physics,
+) -> PhysicsAnimation {
+    match spec {
         Physics::Spring {
             mass,
             damping,
             stiffness,
             epsilon,
+        } => PhysicsAnimation::Spring {
+            target,
+            motion: Spring::from_velocity(
+                current as f32,
+                velocity as f32,
+                target as f32,
+                SpringConfig {
+                    stiffness: stiffness as f32,
+                    damping: damping as f32,
+                    mass: mass as f32,
+                    epsilon: epsilon as f32,
+                },
+            ),
+        },
+        Physics::Smoothed { velocity: limit } => PhysicsAnimation::Smoothed {
+            target,
+            velocity,
+            limit,
+        },
+    }
+}
+
+fn advance_physics(motion: &mut PhysicsAnimation, current: &mut f64, delta: Duration) -> bool {
+    let seconds = delta.as_secs_f64();
+    match motion {
+        PhysicsAnimation::Spring {
+            target,
+            motion: spring,
         } => {
             let steps = (seconds / (1.0 / 120.0)).ceil().max(1.0) as usize;
-            let step = seconds / steps as f64;
+            let step = (seconds / steps as f64) as f32;
+            let mut active = true;
             for _ in 0..steps {
-                let acceleration =
-                    (stiffness * (motion.target - *current) - damping * motion.velocity) / mass;
-                motion.velocity += acceleration * step;
-                *current += motion.velocity * step;
+                active = spring.update(step);
             }
-            if (*current - motion.target).abs() <= epsilon && motion.velocity.abs() <= epsilon {
-                *current = motion.target;
-                motion.velocity = 0.0;
+            *current = f64::from(spring.position());
+            if !active {
+                *current = *target;
                 true
             } else {
                 false
             }
         }
-        Physics::Smoothed { velocity } => {
-            let distance = motion.target - *current;
-            let step = velocity * seconds;
+        PhysicsAnimation::Smoothed {
+            target,
+            velocity,
+            limit,
+        } => {
+            let distance = *target - *current;
+            let step = *limit * seconds;
             if distance.abs() <= step {
-                *current = motion.target;
-                motion.velocity = 0.0;
+                *current = *target;
+                *velocity = 0.0;
                 true
             } else {
-                motion.velocity = velocity.copysign(distance);
-                *current += motion.velocity * seconds;
+                *velocity = limit.copysign(distance);
+                *current += *velocity * seconds;
                 false
             }
         }
@@ -274,27 +328,10 @@ fn property_class(property: &str) -> PropertyClass {
         | "shadow_offset_y"
         | "shadow_inner"
         | "path"
+        | "morph_progress"
         | "fill_color"
         | "stroke_color"
         | "stroke_width" => PropertyClass::Paint,
         _ => PropertyClass::Layout,
     }
-}
-
-fn cubic_bezier(progress: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
-    let curve = |t: f64, first: f64, second: f64| {
-        let inverse = 1.0 - t;
-        3.0 * inverse * inverse * t * first + 3.0 * inverse * t * t * second + t * t * t
-    };
-    let mut low = 0.0;
-    let mut high = 1.0;
-    for _ in 0..20 {
-        let midpoint = (low + high) / 2.0;
-        if curve(midpoint, x1, x2) < progress {
-            low = midpoint;
-        } else {
-            high = midpoint;
-        }
-    }
-    curve((low + high) / 2.0, y1, y2)
 }

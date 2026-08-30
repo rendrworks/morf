@@ -5,6 +5,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
 
+use animato::{Spring, SpringConfig, Tween, Update};
 use mold_reactive::{Graph, GraphError, SignalId};
 use slotmap::{SlotMap, new_key_type};
 

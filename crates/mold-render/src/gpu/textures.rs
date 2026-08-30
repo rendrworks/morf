@@ -33,6 +33,8 @@ struct TextureKey {
     width: u32,
     height: u32,
     scale_120: u32,
+    distance_field: bool,
+    distance_field_spread: u32,
 }
 
 #[derive(Default)]
@@ -52,9 +54,10 @@ struct TexturePlacement {
 }
 
 #[derive(Clone, Copy)]
-struct TextureTint {
+struct TextureStyle {
     opacity: f32,
     overlay: Color,
+    distance_field: bool,
 }
 
 struct TextureBatchContext<'a> {
@@ -86,6 +89,8 @@ fn create_texture_batch(
             opacity,
             color_overlay,
             fill_mode,
+            distance_field,
+            distance_field_spread,
             ..
         } = command
         else {
@@ -109,6 +114,8 @@ fn create_texture_batch(
             width: logical_width,
             height: logical_height,
             scale_120,
+            distance_field: *distance_field,
+            distance_field_spread: distance_field_spread.to_bits(),
         };
         if let Some(image) = textures.get(&key) {
             push_texture_instance(
@@ -116,20 +123,36 @@ fn create_texture_batch(
                 command_index,
                 image.clone(),
                 placement,
-                TextureTint {
+                TextureStyle {
                     opacity: *opacity,
                     overlay: *color_overlay,
+                    distance_field: *distance_field,
                 },
                 context.target_size,
                 scale,
             );
             continue;
         }
-        let loaded = match icon_theme {
-            Some(theme) => {
+        let loaded = match (icon_theme, distance_field) {
+            (Some(theme), true) => cache.load_icon_distance_field_sized(
+                source,
+                theme,
+                logical_width,
+                logical_height,
+                scale_120,
+                *distance_field_spread,
+            ),
+            (Some(theme), false) => {
                 cache.load_icon_sized(source, theme, logical_width, logical_height, scale_120)
             }
-            None => cache.load(source, logical_width, logical_height, scale_120),
+            (None, true) => cache.load_distance_field(
+                source,
+                logical_width,
+                logical_height,
+                scale_120,
+                *distance_field_spread,
+            ),
+            (None, false) => cache.load(source, logical_width, logical_height, scale_120),
         };
         let Ok(image) = loaded else {
             continue;
@@ -195,9 +218,10 @@ fn create_texture_batch(
             command_index,
             texture_image,
             placement,
-            TextureTint {
+            TextureStyle {
                 opacity: *opacity,
                 overlay: *color_overlay,
+                distance_field: *distance_field,
             },
             (target_width, target_height),
             scale,
@@ -266,7 +290,7 @@ fn push_texture_instance(
     command_index: usize,
     image: TextureImage,
     placement: TexturePlacement,
-    tint: TextureTint,
+    style: TextureStyle,
     target_size: (u32, u32),
     scale: f64,
 ) {
@@ -277,9 +301,14 @@ fn push_texture_instance(
         origin,
         axes,
         uv: placement.uv,
-        color: [1.0, 1.0, 1.0, tint.opacity],
-        color_overlay: color_array(tint.overlay),
-        mode: [0.0; 4],
+        color: [1.0, 1.0, 1.0, style.opacity],
+        color_overlay: color_array(style.overlay),
+        mode: [
+            0.0,
+            0.0,
+            f32::from(style.distance_field),
+            f32::from(style.distance_field),
+        ],
         surface: [0.0; 4],
         mask_bounds: [0.0; 4],
         mask_inverse_0: [0.0; 4],
@@ -442,4 +471,3 @@ fn create_glyph_batch(
         command_spans,
     }))
 }
-

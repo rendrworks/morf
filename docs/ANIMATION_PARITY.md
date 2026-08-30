@@ -20,9 +20,9 @@ show which parts the pinned Quickshell tree actually uses or exposes.
 
 | Capability | Mold status |
 |---|---|
-| Numeric and color property behavior | Native Rust behavior with target/current values |
-| Easing | Native Rust easing families and cubic Bezier curves |
-| Spring and smoothed motion | Native Rust physics with retargeted velocity preservation |
+| Numeric and color property behavior | Native Rust behavior with target/current values; Animato 1.7.2 advances tween progress |
+| Easing | Animato-backed easing families and cubic Bezier curves |
+| Spring and smoothed motion | Animato-backed springs plus Mold smoothed motion, with retargeted velocity preservation |
 | State transitions | Native Rust property transitions and reparent transitions |
 | Frame clock | Animation advances on Rust frame ticks without running Lua |
 | Transform watching | Native Rust watcher includes geometry and ancestor transforms |
@@ -32,10 +32,19 @@ show which parts the pinned Quickshell tree actually uses or exposes.
 | Translation and skew | Native Rust `translate_x`, `translate_y`, `skew_x`, and `skew_y` properties |
 | Rotation path | `numerical`, `shortest`, `clockwise`, and `counterclockwise` paths |
 | Interactive transformation proof | `examples/fluid-transform.lua` |
+| Rounded polygon morphing | Polymorpher 0.1.4 topology matching and cubic path generation |
+| Cached raster distance fields | `signed-distance-field` 0.6.3 alpha-mask conversion outside the frame hot path |
+| Combined native-stack proof | `examples/morph-stack.lua` |
 
 The Lua example only declares property targets and handlers. Interpolation,
 spring integration, transform composition, damage classification, layout hit
 testing, and rendering remain in Rust.
+
+Animato does not own Mold's runtime or compositor loop. Mold supplies frame
+deltas from its Rust compositor clock and advances Animato state inside the
+scene engine. Polymorpher and `signed-distance-field` are renderer/image
+dependencies, not Lua modules. Their exact roles and limits are documented in
+[`MOTION_STACK.md`](MOTION_STACK.md).
 
 ## Remaining gaps
 
@@ -51,6 +60,10 @@ These are engine primitives rather than widgets, so they can be added as native
 Rust scheduling APIs when required. They must not be implemented as a Lua frame
 runtime.
 
+Polymorpher currently covers its built-in rounded polygons, not arbitrary SVG
+path topology. Distance fields currently cover cached binary alpha masks, not
+multi-channel fields or a general live vector-effect graph.
+
 ## Example
 
 ```sh
@@ -59,3 +72,12 @@ EXAMPLE=examples/fluid-transform.lua oslo make run
 
 Click the shape to animate square-to-circle radius, color, shadow, non-uniform
 origin-aware scale, skew, shortest-path rotation, and spring translation.
+
+Run the combined dependency proof with:
+
+```sh
+EXAMPLE=examples/morph-stack.lua oslo make run
+```
+
+Click its shape to tween a native rounded-polygon morph while spring motion and
+a cached signed-distance-field image render in the same scene.

@@ -180,17 +180,18 @@ impl Scene {
             && let Value::Number(target) = value
             && matches!(self.properties.read(slot.current)?, Value::Number(_))
         {
-            let velocity = self.physics.get(&key).map_or(0.0, |motion| motion.velocity);
+            let velocity = self
+                .physics
+                .get(&key)
+                .map_or(0.0, PhysicsAnimation::velocity);
+            let current = self.properties.read(slot.current)?.clone();
+            let Value::Number(current) = current else {
+                unreachable!("numeric physics target had a non-numeric current value")
+            };
             self.animations.remove(&key);
             self.properties.write(slot.target, Value::Number(target))?;
-            self.physics.insert(
-                key,
-                PhysicsAnimation {
-                    target,
-                    velocity,
-                    spec,
-                },
-            );
+            self.physics
+                .insert(key, physics_animation(current, target, velocity, spec));
         } else if let Some(behavior) = self.behaviors.get(&key).copied()
             && behavior.duration > Duration::ZERO
             && interpolatable(self.properties.read(slot.current)?, &value)
@@ -209,14 +210,13 @@ impl Scene {
             self.properties.write(slot.target, value.clone())?;
             self.animations.insert(
                 key,
-                Animation {
+                Animation::new(
                     from,
-                    to: value,
+                    value,
                     initial_velocity,
-                    preserve_velocity: initial_velocity.is_moving(),
-                    elapsed: Duration::ZERO,
+                    initial_velocity.is_moving(),
                     behavior,
-                },
+                ),
             );
         } else {
             self.animations.remove(&key);
@@ -305,14 +305,7 @@ impl Scene {
         } else {
             self.animations.insert(
                 key,
-                Animation {
-                    from,
-                    to,
-                    initial_velocity: Velocity::Number(0.0),
-                    preserve_velocity: false,
-                    elapsed: Duration::ZERO,
-                    behavior,
-                },
+                Animation::new(from, to, Velocity::Number(0.0), false, behavior),
             );
         }
         Ok(())
@@ -366,8 +359,7 @@ impl Scene {
                 .animations
                 .get_mut(&key)
                 .expect("animation key vanished");
-            animation.elapsed = animation.elapsed.saturating_add(delta);
-            let complete = animation.elapsed >= animation.behavior.duration;
+            let complete = !animation.clock.update(delta.as_secs_f32());
             let value = if complete {
                 animation.to.clone()
             } else {

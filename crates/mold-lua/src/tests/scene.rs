@@ -422,3 +422,44 @@ fn fluid_transform_example_animates_square_to_circle_in_rust() {
             && change.class == mold_scene::PropertyClass::Transform
     }));
 }
+
+#[test]
+fn morph_stack_example_combines_native_animation_and_geometry() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "examples/morph-stack.lua",
+            include_bytes!("../../../../examples/morph-stack.lua"),
+        )
+        .unwrap();
+    runtime
+        .tick_animations(Duration::from_secs(2))
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let shape = runtime.scene().children(root).unwrap()[1];
+
+    assert_eq!(
+        runtime.scene().string_value(shape, "morph_from").unwrap(),
+        "square"
+    );
+    assert_eq!(
+        runtime.scene().string_value(shape, "morph_to").unwrap(),
+        "circle"
+    );
+    assert!(runtime.dispatch_ui_event(shape, UiEvent::Clicked));
+    assert_eq!(
+        runtime.scene().target(shape, "morph_progress").unwrap(),
+        &SceneValue::Number(1.0)
+    );
+
+    let frame = runtime
+        .tick_animations(Duration::from_millis(16))
+        .unwrap();
+    let progress = runtime.scene().number(shape, "morph_progress").unwrap();
+    assert!(progress > 0.0 && progress < 1.0);
+    assert!(frame.changes.iter().any(|change| {
+        change.node == shape
+            && change.property == "morph_progress"
+            && change.class == mold_scene::PropertyClass::Paint
+    }));
+}

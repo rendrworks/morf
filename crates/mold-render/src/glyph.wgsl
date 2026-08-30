@@ -81,7 +81,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let coverage = smoothstep(max(fwidth(distance), 0.0001), -max(fwidth(distance), 0.0001), distance);
         sampled *= coverage;
     }
-    let sampled_alpha = select(sampled.a, sampled.r, input.mode.z > 0.5);
+    let distance_coverage = 1.0 - smoothstep(
+        0.5 - max(fwidth(sampled.r), 0.0001),
+        0.5 + max(fwidth(sampled.r), 0.0001),
+        sampled.r,
+    );
+    let mask_alpha = select(sampled.r, distance_coverage, input.mode.w > 0.5);
+    let sampled_alpha = select(sampled.a, mask_alpha, input.mode.z > 0.5);
     let alpha = sampled_alpha * input.color.a;
     if input.mode.x > 0.5 {
         return vec4<f32>(sampled.rgb * input.color.a, alpha);

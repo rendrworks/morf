@@ -124,6 +124,8 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 string("fill_mode", "stretch"),
                 number("source_width", 0.0),
                 number("source_height", 0.0),
+                boolean("distance_field", false),
+                number("distance_field_spread", 8.0),
             ]);
         }
         Element::Icon => {
@@ -133,6 +135,8 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 string("fill_mode", "stretch"),
                 number("source_width", 0.0),
                 number("source_height", 0.0),
+                boolean("distance_field", false),
+                number("distance_field_spread", 8.0),
             ]);
         }
         Element::Shape => {
@@ -142,6 +146,9 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 color("stroke_color", Color::rgba8(0, 0, 0, 0)),
                 number("stroke_width", 0.0),
                 string("fill_rule", "nonzero"),
+                string("morph_from", ""),
+                string("morph_to", ""),
+                number("morph_progress", 0.0),
             ]);
         }
         Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {

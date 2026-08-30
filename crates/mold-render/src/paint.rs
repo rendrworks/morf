@@ -147,6 +147,8 @@ fn append_node(
             opacity: opacity as f32,
             color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
+            distance_field: scene.bool_value(node, "distance_field")?,
+            distance_field_spread: scene.number(node, "distance_field_spread")?.max(0.5) as f32,
         }),
         Element::Icon => list.commands.push(DrawCommand::Texture {
             node,
@@ -158,6 +160,8 @@ fn append_node(
             opacity: opacity as f32,
             color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
+            distance_field: scene.bool_value(node, "distance_field")?,
+            distance_field_spread: scene.number(node, "distance_field_spread")?.max(0.5) as f32,
         }),
         Element::Shape => list.commands.push(DrawCommand::Path {
             node,
@@ -165,6 +169,7 @@ fn append_node(
             transform,
             clip,
             path: scene.string_value(node, "path")?.to_owned(),
+            morph: shape_morph(scene, node)?,
             fill_color: apply_overlay(
                 with_opacity(scene.color_value(node, "fill_color")?, opacity),
                 color_overlay,
@@ -294,4 +299,32 @@ fn append_node(
         };
     }
     Ok(())
+}
+
+fn shape_morph(scene: &Scene, node: NodeHandle) -> Result<Option<ShapeMorph>, RenderError> {
+    let from = scene.string_value(node, "morph_from")?;
+    let to = scene.string_value(node, "morph_to")?;
+    if from.is_empty() && to.is_empty() {
+        return Ok(None);
+    }
+    if from.is_empty() || to.is_empty() {
+        return Err(RenderError::Scene(
+            "shape morph requires both morph_from and morph_to".to_owned(),
+        ));
+    }
+    if !crate::path::is_morph_shape(from) || !crate::path::is_morph_shape(to) {
+        return Err(RenderError::Scene(format!(
+            "unknown Polymorpher shape `{}`",
+            if crate::path::is_morph_shape(from) {
+                to
+            } else {
+                from
+            }
+        )));
+    }
+    Ok(Some(ShapeMorph {
+        from: from.to_owned(),
+        to: to.to_owned(),
+        progress: scene.number(node, "morph_progress")?.clamp(0.0, 1.0) as f32,
+    }))
 }

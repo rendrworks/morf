@@ -1,3 +1,14 @@
+/// Topology-matched rounded polygon transition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeMorph {
+    /// Built-in Polymorpher start shape.
+    pub from: String,
+    /// Built-in Polymorpher end shape.
+    pub to: String,
+    /// Transition position clamped by the renderer.
+    pub progress: f32,
+}
+
 /// One ordered paint operation emitted from the scene graph.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawCommand {
@@ -95,6 +106,10 @@ pub enum DrawCommand {
         color_overlay: Color,
         /// Aspect-ratio policy inside the resolved bounds.
         fill_mode: ImageFillMode,
+        /// Interpret source alpha as a cached signed distance field mask.
+        distance_field: bool,
+        /// Pixel distance represented on either side of the mask edge.
+        distance_field_spread: f32,
     },
     /// Filled and optionally stroked SVG path.
     Path {
@@ -108,6 +123,8 @@ pub enum DrawCommand {
         clip: Option<Geometry>,
         /// SVG path data in the node coordinate space.
         path: String,
+        /// Optional topology-matched rounded polygon transition.
+        morph: Option<ShapeMorph>,
         /// Fill colour after node opacity.
         fill_color: Color,
         /// Stroke colour after node opacity.
@@ -297,4 +314,3 @@ impl DrawList {
         Ok(list)
     }
 }
-
