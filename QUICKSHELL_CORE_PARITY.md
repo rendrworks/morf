@@ -94,7 +94,8 @@ behavioral reductions do not count as parity.
 ### `mold.io`
 
 - restartable streaming processes with process IDs, working directories,
-  bounded environment overrides, stdin, signals, and exit status;
+  bounded mutable commands and environment contexts with atomic restart,
+  stdin, signals, and exit status;
 - bounded stateful file views with preload, reload, atomic writes, stable error
   categories, and change watching;
 - native JSON encoding and decoding with preserved array, object, and null

@@ -4866,6 +4866,86 @@ fn install_reactive_api(
                 .map_err(|error| HostError(error.to_string()))?;
             Ok(CallbackReturn::Return)
         });
+        let process_view_command = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let process: UserRef<ProcessViewToken> = stack.consume(ctx)?;
+            let command = string_table(ctx, process.state.borrow().config.command.clone());
+            stack.replace(ctx, command);
+            Ok(CallbackReturn::Return)
+        });
+        let process_view_set_command = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (process, command): (UserRef<ProcessViewToken>, Table) = stack.consume(ctx)?;
+            let command = table_string_array(ctx, command, 64).map_err(HostError)?;
+            if command.is_empty() {
+                return Err(HostError("process_view command cannot be empty".into()).into());
+            }
+            update_process_view_config(&process, |config| config.command = command)
+                .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let process_view_environment = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let process: UserRef<ProcessViewToken> = stack.consume(ctx)?;
+            let values = Table::new(&ctx);
+            let environment = process.state.borrow().config.environment.clone();
+            for (name, value) in environment {
+                values.set(
+                    ctx,
+                    ctx.intern(name.as_bytes()),
+                    ctx.intern(value.as_bytes()),
+                )?;
+            }
+            stack.replace(ctx, values);
+            Ok(CallbackReturn::Return)
+        });
+        let process_view_set_environment = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (process, environment): (UserRef<ProcessViewToken>, Table) = stack.consume(ctx)?;
+            let environment = table_string_map(ctx, environment, 256).map_err(HostError)?;
+            update_process_view_config(&process, |config| config.environment = environment)
+                .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let process_view_working_directory = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let process: UserRef<ProcessViewToken> = stack.consume(ctx)?;
+            match &process.state.borrow().config.working_directory {
+                Some(directory) => stack.replace(ctx, directory.to_string_lossy().as_ref()),
+                None => stack.replace(ctx, LuaValue::Nil),
+            }
+            Ok(CallbackReturn::Return)
+        });
+        let process_view_set_working_directory = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (process, directory): (UserRef<ProcessViewToken>, LuaValue) = stack.consume(ctx)?;
+            let directory = match directory {
+                LuaValue::Nil => None,
+                LuaValue::String(directory) => {
+                    let directory = directory.display_lossy().to_string();
+                    if directory.is_empty()
+                        || directory.len() > 4_096
+                        || directory.as_bytes().contains(&0)
+                    {
+                        return Err(HostError("working directory is invalid".into()).into());
+                    }
+                    Some(PathBuf::from(directory))
+                }
+                _ => {
+                    return Err(
+                        HostError("working directory must be a string or nil".into()).into(),
+                    );
+                }
+            };
+            update_process_view_config(&process, |config| config.working_directory = directory)
+                .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
+        let process_view_clear_environment = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let process: UserRef<ProcessViewToken> = stack.consume(ctx)?;
+            stack.replace(ctx, process.state.borrow().config.clear_environment);
+            Ok(CallbackReturn::Return)
+        });
+        let process_view_set_clear_environment = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+            let (process, clear): (UserRef<ProcessViewToken>, bool) = stack.consume(ctx)?;
+            update_process_view_config(&process, |config| config.clear_environment = clear)
+                .map_err(HostError)?;
+            Ok(CallbackReturn::Return)
+        });
         let process_view_next = Callback::from_fn(&ctx, |ctx, _, mut stack| {
             let (process, timeout_ms): (UserRef<ProcessViewToken>, i64) = stack.consume(ctx)?;
             let timeout = bounded_timeout(timeout_ms).map_err(HostError)?;
@@ -4915,6 +4995,22 @@ fn install_reactive_api(
         process_view_methods.set_field(ctx, "close_stdin", process_view_close);
         process_view_methods.set_field(ctx, "kill", process_view_kill);
         process_view_methods.set_field(ctx, "signal", process_view_signal);
+        process_view_methods.set_field(ctx, "command", process_view_command);
+        process_view_methods.set_field(ctx, "set_command", process_view_set_command);
+        process_view_methods.set_field(ctx, "environment", process_view_environment);
+        process_view_methods.set_field(ctx, "set_environment", process_view_set_environment);
+        process_view_methods.set_field(ctx, "working_directory", process_view_working_directory);
+        process_view_methods.set_field(
+            ctx,
+            "set_working_directory",
+            process_view_set_working_directory,
+        );
+        process_view_methods.set_field(ctx, "clear_environment", process_view_clear_environment);
+        process_view_methods.set_field(
+            ctx,
+            "set_clear_environment",
+            process_view_set_clear_environment,
+        );
         process_view_methods.set_field(ctx, "next", process_view_next);
         let process_view_metatable = Table::new(&ctx);
         process_view_metatable.set_field(ctx, "__index", process_view_methods);
@@ -7097,6 +7193,26 @@ fn execute_module<'gc>(
             };
         }
     }
+}
+
+fn update_process_view_config(
+    process: &ProcessViewToken,
+    update: impl FnOnce(&mut ProcessConfig),
+) -> Result<(), String> {
+    let mut state = process.state.borrow_mut();
+    let mut config = state.config.clone();
+    update(&mut config);
+    let replacement = state
+        .process
+        .is_some()
+        .then(|| Process::spawn_config(&config))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    state.config = config;
+    if let Some(replacement) = replacement {
+        state.process = Some(replacement);
+    }
+    Ok(())
 }
 
 fn floating_state_method<'gc>(
@@ -10200,12 +10316,37 @@ mod tests {
                 end
                 assert(output == {:?})
                 assert(process:running() == false)
+                assert(process:command()[1] == "sh")
+                assert(process:environment().MOLD_LUA_PROCESS == "ok")
+                assert(process:working_directory() == {:?})
+                assert(not process:clear_environment())
+                process:set_command({{ "sh", "-c", "printf '%s' \"$MOLD_LUA_PROCESS\"" }})
+                process:set_environment({{ MOLD_LUA_PROCESS = "changed" }})
+                process:set_working_directory(nil)
+                process:set_clear_environment(false)
                 assert(process:start())
                 assert(process:running())
-                process:kill()
+                local restarted = ""
+                for _ = 1, 20 do
+                    local event = process:next(1000)
+                    if event and event.kind == "stdout" then restarted = restarted .. event.data end
+                    if event and event.kind == "exit" then break end
+                end
+                assert(restarted == "changed")
+                process:set_command({{ "sh", "-c", "sleep 5" }})
+                assert(process:start())
+                process:set_command({{ "sh", "-c", "printf restarted" }})
+                local replaced = ""
+                for _ = 1, 20 do
+                    local event = process:next(1000)
+                    if event and event.kind == "stdout" then replaced = replaced .. event.data end
+                    if event and event.kind == "exit" then break end
+                end
+                assert(replaced == "restarted")
             "#,
             directory.to_string_lossy(),
             format!("{}:ok", directory.display()),
+            directory.to_string_lossy(),
         );
         let mut runtime = Runtime::default();
         runtime
