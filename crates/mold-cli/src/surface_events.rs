@@ -288,7 +288,7 @@ fn handle_surface_event(
         } => {
             let Some(root) = surface_root(
                 surface,
-                primary_surface_root(&runtime)?,
+                primary_surface_root(runtime)?,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
             ) else {
@@ -335,7 +335,7 @@ fn handle_surface_event(
                     surface.renderer = Some(RenderEngine::new(backend));
                 }
                 if initial || surface.updates_enabled {
-                    paint_popup_surface(&runtime, &client, surface)?;
+                    paint_popup_surface(runtime, client, surface)?;
                 }
             }
         }
@@ -345,7 +345,7 @@ fn handle_surface_event(
                 .get_mut(&id)
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_popup_surface(&runtime, &client, surface)?;
+                paint_popup_surface(runtime, client, surface)?;
             }
         }
         LayerEvent::PopupDone { id } => {
@@ -377,7 +377,7 @@ fn handle_surface_event(
                     surface.renderer = Some(RenderEngine::new(backend));
                 }
                 if initial || surface.updates_enabled {
-                    paint_floating_surface(&runtime, &client, surface)?;
+                    paint_floating_surface(runtime, client, surface)?;
                 }
             }
         }
@@ -387,7 +387,7 @@ fn handle_surface_event(
                 .get_mut(&id)
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_floating_surface(&runtime, &client, surface)?;
+                paint_floating_surface(runtime, client, surface)?;
             }
         }
         LayerEvent::FloatingClose { id } => {
@@ -412,4 +412,3 @@ fn handle_surface_event(
     }
     Ok(repaint)
 }
-

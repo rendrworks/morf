@@ -1,14 +1,26 @@
-fn finish_reactive_api<'gc>(
-    ctx: Context<'gc>,
+struct ApiModules<'gc> {
     mold: Table<'gc>,
     core: Table<'gc>,
     ui: Table<'gc>,
     io: Table<'gc>,
     json: Table<'gc>,
     window: Table<'gc>,
+}
+
+fn finish_reactive_api<'gc>(
+    ctx: Context<'gc>,
+    modules: ApiModules<'gc>,
     module_roots: Rc<RefCell<Vec<PathBuf>>>,
     limits: Limits,
 ) {
+    let ApiModules {
+        mold,
+        core,
+        ui,
+        io,
+        json,
+        window,
+    } = modules;
     ctx.set_global("mold", mold);
 
     let loaded = Table::new(&ctx);
@@ -88,7 +100,18 @@ fn install_reactive_api(
         let (ui, json) = install_ui_json_api(ctx, Rc::clone(&state), mold, limits);
         install_menu_desktop_api(ctx, mold, limits);
         let (core, io, window) = install_module_api(ctx, state, mold);
-        finish_reactive_api(ctx, mold, core, ui, io, json, window, module_roots, limits);
+        finish_reactive_api(
+            ctx,
+            ApiModules {
+                mold,
+                core,
+                ui,
+                io,
+                json,
+                window,
+            },
+            module_roots,
+            limits,
+        );
     });
 }
-
