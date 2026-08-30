@@ -363,10 +363,24 @@ pub struct FloatingConfig {
     pub width: u32,
     /// Initial logical height.
     pub height: u32,
+    /// Smallest compositor-configured logical width.
+    pub minimum_width: u32,
+    /// Smallest compositor-configured logical height.
+    pub minimum_height: u32,
+    /// Largest compositor-configured logical width when bounded.
+    pub maximum_width: Option<u32>,
+    /// Largest compositor-configured logical height when bounded.
+    pub maximum_height: Option<u32>,
     /// Compositor-visible title.
     pub title: String,
     /// Desktop application identifier.
     pub app_id: String,
+    /// Requests initial minimized state.
+    pub minimized: bool,
+    /// Requests initial maximized state.
+    pub maximized: bool,
+    /// Requests initial fullscreen state.
+    pub fullscreen: bool,
 }
 
 /// Compositor output power state.
@@ -1253,7 +1267,22 @@ impl LayerClient {
             .create_window(surface, WindowDecorations::None, &qh);
         window.set_title(config.title);
         window.set_app_id(config.app_id);
-        window.set_min_size(Some((1, 1)));
+        window.set_min_size(Some((config.minimum_width, config.minimum_height)));
+        if config.maximum_width.is_some() || config.maximum_height.is_some() {
+            window.set_max_size(Some((
+                config.maximum_width.unwrap_or_default(),
+                config.maximum_height.unwrap_or_default(),
+            )));
+        }
+        if config.maximized {
+            window.set_maximized();
+        }
+        if config.fullscreen {
+            window.set_fullscreen(None);
+        }
+        if config.minimized {
+            window.set_minimized();
+        }
         self.state.floating_size = (config.width.max(1), config.height.max(1));
         window.wl_surface().commit();
         self.state.floating = Some(window);

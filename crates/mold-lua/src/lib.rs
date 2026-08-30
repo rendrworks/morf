@@ -301,8 +301,15 @@ pub struct PopupSurfaceConfig {
 pub struct FloatingSurfaceConfig {
     pub width: u32,
     pub height: u32,
+    pub minimum_width: u32,
+    pub minimum_height: u32,
+    pub maximum_width: Option<u32>,
+    pub maximum_height: Option<u32>,
     pub title: String,
     pub app_id: String,
+    pub minimized: bool,
+    pub maximized: bool,
+    pub fullscreen: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -7980,6 +7987,22 @@ fn window_i32<'gc>(
     }
 }
 
+fn window_optional_u32<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    field: &str,
+) -> Result<Option<u32>, String> {
+    match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Integer(value) => u32::try_from(value)
+            .ok()
+            .filter(|value| (1..=16_384).contains(value))
+            .map(Some)
+            .ok_or_else(|| format!("{field} must be 1..16384")),
+        _ => Err(format!("{field} must be an integer")),
+    }
+}
+
 fn window_optional_i32<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
@@ -8109,14 +8132,30 @@ fn parse_floating_surface<'gc>(
     if title.len() > 4096 || app_id.len() > 4096 || app_id.contains('\0') || title.contains('\0') {
         return Err("floating title and app_id must be at most 4096 bytes without NUL".into());
     }
+    let minimum_width = window_u32(ctx, options, "minimum_width", 1)?;
+    let minimum_height = window_u32(ctx, options, "minimum_height", 1)?;
+    let maximum_width = window_optional_u32(ctx, options, "maximum_width")?;
+    let maximum_height = window_optional_u32(ctx, options, "maximum_height")?;
+    if maximum_width.is_some_and(|maximum| maximum < minimum_width)
+        || maximum_height.is_some_and(|maximum| maximum < minimum_height)
+    {
+        return Err("floating maximum size cannot be smaller than its minimum size".into());
+    }
     Ok((
         root,
         visible,
         FloatingSurfaceConfig {
             width: window_u32(ctx, options, "width", 640)?,
             height: window_u32(ctx, options, "height", 480)?,
+            minimum_width,
+            minimum_height,
+            maximum_width,
+            maximum_height,
             title,
             app_id,
+            minimized: table_bool(ctx, options, "minimized", false)?,
+            maximized: table_bool(ctx, options, "maximized", false)?,
+            fullscreen: table_bool(ctx, options, "fullscreen", false)?,
         },
     ))
 }
@@ -9248,8 +9287,13 @@ mod tests {
                         root = floating_root,
                         width = 800,
                         height = 600,
+                        minimum_width = 320,
+                        minimum_height = 200,
+                        maximum_width = 1920,
+                        maximum_height = 1080,
                         title = "Mold Example",
                         app_id = "dev.mold.example",
+                        maximized = true,
                     }
                     assert(popup:kind() == "popup" and popup:visible())
                     assert(floating:kind() == "floating" and not floating:visible())
@@ -9274,6 +9318,17 @@ mod tests {
             panic!("second surface was not floating");
         };
         assert_eq!(floating.title, "Mold Example");
+        assert_eq!(
+            (floating.minimum_width, floating.minimum_height),
+            (320, 200)
+        );
+        assert_eq!(
+            (floating.maximum_width, floating.maximum_height),
+            (Some(1920), Some(1080))
+        );
+        assert!(floating.maximized);
+        assert!(!floating.minimized);
+        assert!(!floating.fullscreen);
         assert!(runtime.take_window_surface_change());
         assert!(!runtime.take_window_surface_change());
     }

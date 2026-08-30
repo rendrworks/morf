@@ -120,9 +120,10 @@ behavioral reductions do not count as parity.
   slide, flip, and resize constraints, including item-derived rectangles with
   side margins;
 - typed dynamic popup and undecorated floating-surface models with validated
-  roots, sizes, identity, visibility, placement state, compositor lifecycle,
-  independent GPU rendering, and surface-scoped pointer, touch, and keyboard
-  routing;
+  roots, bounded minimum and maximum sizes, identity, visibility, initial
+  minimized, maximized and fullscreen state, placement state, compositor
+  lifecycle, independent GPU rendering, and surface-scoped pointer, touch, and
+  keyboard routing;
 - composable rectangular, rounded, and elliptical input masks with combine,
   subtract, intersect, and XOR operations;
 - fractional scaling, output tracking, frame callbacks, and input regions.

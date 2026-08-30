@@ -1205,8 +1205,15 @@ fn sync_window_surfaces(
                 .open_floating(FloatingConfig {
                     width: config.width,
                     height: config.height,
+                    minimum_width: config.minimum_width,
+                    minimum_height: config.minimum_height,
+                    maximum_width: config.maximum_width,
+                    maximum_height: config.maximum_height,
                     title: config.title.clone(),
                     app_id: config.app_id.clone(),
+                    minimized: config.minimized,
+                    maximized: config.maximized,
+                    fullscreen: config.fullscreen,
                 })
                 .map_err(|error| error.to_string())?;
             *floating = Some(AuxiliarySurface {
