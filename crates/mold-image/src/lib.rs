@@ -5,6 +5,7 @@ use std::env;
 use std::error::Error as StdError;
 use std::fmt;
 use std::fs;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -40,16 +41,16 @@ pub fn quantize_colors(
     if depth > 8 || rescale_size > 512 {
         return Err(ImageError::InvalidSize);
     }
-    let source = source.as_ref();
+    let source = normalize_source(source.as_ref())?;
     let (intrinsic_width, intrinsic_height) =
         if source.extension().and_then(|value| value.to_str()) == Some("svg") {
-            let bytes = fs::read(source)?;
+            let bytes = fs::read(&source)?;
             let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default())
                 .map_err(|error| ImageError::Svg(error.to_string()))?;
             let size = tree.size();
             (size.width().ceil() as u32, size.height().ceil() as u32)
         } else {
-            image::image_dimensions(source)?
+            image::image_dimensions(&source)?
         };
     if intrinsic_width == 0
         || intrinsic_height == 0
@@ -72,7 +73,7 @@ pub fn quantize_colors(
             rescale_size,
         )
     };
-    let image = decode_path(source, target.0, target.1)?;
+    let image = decode_path(&source, target.0, target.1)?;
     let crop = crop.map(|crop| ImageRect {
         x: (u64::from(crop.x) * u64::from(target.0) / u64::from(intrinsic_width)) as u32,
         y: (u64::from(crop.y) * u64::from(target.1) / u64::from(intrinsic_height)) as u32,
@@ -177,6 +178,8 @@ pub enum ImageError {
     IconNotFound(String),
     /// The requested output size was invalid.
     InvalidSize,
+    /// The source URI did not identify a local file.
+    InvalidSource(String),
 }
 
 impl fmt::Display for ImageError {
@@ -187,6 +190,7 @@ impl fmt::Display for ImageError {
             Self::Svg(error) => write!(f, "SVG decode failed: {error}"),
             Self::IconNotFound(name) => write!(f, "icon `{name}` was not found"),
             Self::InvalidSize => f.write_str("image size must be greater than zero"),
+            Self::InvalidSource(source) => write!(f, "invalid local image source `{source}`"),
         }
     }
 }
@@ -230,7 +234,7 @@ impl ImageCache {
         logical_height: u32,
         scale_120: u32,
     ) -> Result<Arc<ImageData>, ImageError> {
-        let source = source.as_ref().to_path_buf();
+        let source = normalize_source(source.as_ref())?;
         let width = physical_size(logical_width, scale_120)?;
         let height = physical_size(logical_height, scale_120)?;
         let key = CacheKey {
@@ -282,7 +286,7 @@ impl ImageCache {
 
     /// Returns a source's unscaled pixel dimensions.
     pub fn intrinsic_size(&mut self, source: impl AsRef<Path>) -> Result<(u32, u32), ImageError> {
-        let source = source.as_ref().to_path_buf();
+        let source = normalize_source(source.as_ref())?;
         if let Some(size) = self.intrinsic.get(&source) {
             return Ok(*size);
         }
@@ -333,6 +337,47 @@ fn physical_size(logical: u32, scale_120: u32) -> Result<u32, ImageError> {
         return Err(ImageError::InvalidSize);
     }
     Ok(logical.saturating_mul(scale_120).div_ceil(120))
+}
+
+fn normalize_source(source: &Path) -> Result<PathBuf, ImageError> {
+    let Some(value) = source.to_str() else {
+        return Ok(source.to_path_buf());
+    };
+    let Some(uri) = value.strip_prefix("file://") else {
+        return Ok(source.to_path_buf());
+    };
+    let uri = uri.strip_prefix("localhost").unwrap_or(uri);
+    if !uri.starts_with('/') {
+        return Err(ImageError::InvalidSource(value.to_owned()));
+    }
+    let bytes = uri.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some(high) = bytes.get(index + 1).and_then(|value| hex_digit(*value)) else {
+                return Err(ImageError::InvalidSource(value.to_owned()));
+            };
+            let Some(low) = bytes.get(index + 2).and_then(|value| hex_digit(*value)) else {
+                return Err(ImageError::InvalidSource(value.to_owned()));
+            };
+            decoded.push(high * 16 + low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(std::ffi::OsString::from_vec(decoded).into())
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn decode_path(path: &Path, width: u32, height: u32) -> Result<ImageData, ImageError> {
@@ -633,6 +678,39 @@ mod tests {
         assert_eq!(&first.rgba[..4], &[255, 0, 0, 255]);
         assert!(Arc::ptr_eq(&first, &second));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_uri_is_decoded_and_shares_the_path_cache() {
+        let root = temp_dir("file-uri");
+        let path = root.join("square space.svg");
+        fs::write(
+            &path,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#00ff00"/></svg>"##,
+        )
+        .unwrap();
+        let uri = format!("file://{}", path.to_string_lossy().replace(' ', "%20"));
+        let mut cache = ImageCache::default();
+        let from_uri = cache.load(&uri, 4, 4, 120).unwrap();
+        let from_path = cache.load(&path, 4, 4, 120).unwrap();
+
+        assert_eq!(cache.intrinsic_size(&uri).unwrap(), (2, 2));
+        assert_eq!(&from_uri.rgba[..4], &[0, 255, 0, 255]);
+        assert!(Arc::ptr_eq(&from_uri, &from_path));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_uri_rejects_remote_authorities_and_bad_escapes() {
+        let mut cache = ImageCache::default();
+        assert!(matches!(
+            cache.intrinsic_size("file://remote/image.svg"),
+            Err(ImageError::InvalidSource(_))
+        ));
+        assert!(matches!(
+            cache.intrinsic_size("file:///tmp/bad%2.svg"),
+            Err(ImageError::InvalidSource(_))
+        ));
     }
 
     #[test]
