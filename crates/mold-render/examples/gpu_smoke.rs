@@ -100,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 clip: None,
                 text: "mold".to_owned(),
                 family: "sans-serif".to_owned(),
+                font_source: String::new(),
                 size: 18.0,
                 font_weight: 400.0,
                 color: Color::rgba8(255, 255, 255, 255),

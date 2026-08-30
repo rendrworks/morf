@@ -1399,6 +1399,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("font_size", 16.0),
                 number("font_weight", 400.0),
                 string("font_family", "sans-serif"),
+                string("font_source", ""),
                 boolean("wrap", false),
                 string("elide", "none"),
                 string("horizontal_alignment", "left"),

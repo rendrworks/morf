@@ -1,7 +1,9 @@
 //! Text shaping, measurement, and glyph rasterization for mold.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io;
+use std::path::Path;
 
 use cosmic_text::{
     Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight,
@@ -17,6 +19,40 @@ struct CachedBuffer {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+enum ResolvedFamily {
+    Name(String),
+    Serif,
+    SansSerif,
+    Monospace,
+    Cursive,
+    Fantasy,
+}
+
+impl ResolvedFamily {
+    fn family(&self) -> Family<'_> {
+        match self {
+            Self::Name(name) => Family::Name(name),
+            Self::Serif => Family::Serif,
+            Self::SansSerif => Family::SansSerif,
+            Self::Monospace => Family::Monospace,
+            Self::Cursive => Family::Cursive,
+            Self::Fantasy => Family::Fantasy,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Name(name) => name,
+            Self::Serif => "serif",
+            Self::SansSerif => "sans-serif",
+            Self::Monospace => "monospace",
+            Self::Cursive => "cursive",
+            Self::Fantasy => "fantasy",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TextInput {
     text: String,
     family: String,
@@ -26,6 +62,7 @@ struct TextInput {
     alignment: TextAlignment,
     elide: TextElide,
     font_weight: u16,
+    font_source: Option<String>,
 }
 
 /// Shared font database, per-node shaped buffers, and glyph image cache.
@@ -33,6 +70,7 @@ pub struct TextSystem {
     fonts: FontSystem,
     glyphs: SwashCache,
     buffers: HashMap<NodeHandle, CachedBuffer>,
+    font_sources: HashSet<String>,
 }
 
 /// Pixel format of one rasterized glyph image.
@@ -72,10 +110,56 @@ impl Default for TextSystem {
 impl TextSystem {
     /// Loads the system font database and initializes empty caches.
     pub fn new() -> Self {
-        Self {
-            fonts: FontSystem::new(),
+        let mut fonts = FontSystem::new();
+        configure_generic_families(&mut fonts);
+        let mut system = Self {
+            fonts,
             glyphs: SwashCache::new(),
             buffers: HashMap::new(),
+            font_sources: HashSet::new(),
+        };
+        if let Some(paths) = std::env::var_os("MOLD_FONT_PATH") {
+            for path in std::env::split_paths(&paths) {
+                let _ = system.load_font_path(path);
+            }
+        }
+        system
+    }
+
+    /// Loads one font file or every font below a directory.
+    pub fn load_font_path(&mut self, path: impl AsRef<Path>) -> io::Result<usize> {
+        let path = path.as_ref();
+        let before = self.fonts.db().len();
+        if path.is_dir() {
+            self.fonts.db_mut().load_fonts_dir(path);
+        } else {
+            self.fonts.db_mut().load_font_file(path)?;
+        }
+        let loaded = self.fonts.db().len().saturating_sub(before);
+        if loaded > 0 {
+            configure_generic_families(&mut self.fonts);
+            self.buffers.clear();
+        }
+        Ok(loaded)
+    }
+
+    /// Reports whether an exact family name exists in the loaded database.
+    pub fn has_family(&self, family: &str) -> bool {
+        installed_family(&self.fonts, family).is_some()
+    }
+
+    /// Resolves a family stack to an installed family or a generic fallback.
+    pub fn resolved_family(&self, family: &str) -> String {
+        resolve_family(&self.fonts, family).name().to_owned()
+    }
+
+    fn load_font_source(&mut self, source: Option<&str>) {
+        let Some(source) = source.filter(|source| !source.is_empty()) else {
+            return;
+        };
+        if self.font_sources.insert(source.to_owned()) {
+            let path = source.strip_prefix("file://").unwrap_or(source);
+            let _ = self.load_font_path(path);
         }
     }
 
@@ -151,6 +235,7 @@ impl TextMeasurer for TextSystem {
         size: f64,
         options: TextOptions,
     ) -> Size {
+        self.load_font_source(options.font_source.as_deref());
         let size = size.max(1.0) as f32;
         let font_weight = normalize_font_weight(options.font_weight);
         let input = TextInput {
@@ -162,6 +247,7 @@ impl TextMeasurer for TextSystem {
             alignment: options.alignment,
             elide: options.elide,
             font_weight,
+            font_source: options.font_source.clone(),
         };
         let cached = self.buffers.entry(node).or_insert_with(|| CachedBuffer {
             buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),
@@ -178,11 +264,12 @@ impl TextMeasurer for TextSystem {
             } else {
                 Wrap::None
             });
-            let displayed = elided_text(&mut self.fonts, text, family, size, options);
+            let displayed = elided_text(&mut self.fonts, text, family, size, &options);
+            let family = resolve_family(&self.fonts, family);
             cached.buffer.set_text(
                 &displayed,
                 &Attrs::new()
-                    .family(Family::Name(family))
+                    .family(family.family())
                     .weight(Weight(font_weight)),
                 Shaping::Advanced,
                 Some(match options.alignment {
@@ -214,7 +301,7 @@ fn elided_text(
     text: &str,
     family: &str,
     size: f32,
-    options: TextOptions,
+    options: &TextOptions,
 ) -> String {
     let Some(width) = options
         .width
@@ -265,12 +352,13 @@ fn shaped_width(
     size: f32,
     font_weight: f64,
 ) -> f32 {
+    let family = resolve_family(fonts, family);
     let mut buffer = Buffer::new(fonts, Metrics::relative(size, 1.2));
     buffer.set_wrap(Wrap::None);
     buffer.set_text(
         text,
         &Attrs::new()
-            .family(Family::Name(family))
+            .family(family.family())
             .weight(Weight(normalize_font_weight(font_weight))),
         Shaping::Advanced,
         Some(Align::Left),
@@ -280,6 +368,119 @@ fn shaped_width(
         .layout_runs()
         .map(|run| run.line_w)
         .fold(0.0, f32::max)
+}
+
+fn resolve_family(fonts: &FontSystem, requested: &str) -> ResolvedFamily {
+    for candidate in requested
+        .split(',')
+        .map(clean_family)
+        .filter(|name| !name.is_empty())
+    {
+        let generic = match candidate.to_ascii_lowercase().as_str() {
+            "serif" => Some(ResolvedFamily::Serif),
+            "sans-serif" | "sans serif" | "sans" => Some(ResolvedFamily::SansSerif),
+            "monospace" | "mono" => Some(ResolvedFamily::Monospace),
+            "cursive" => Some(ResolvedFamily::Cursive),
+            "fantasy" => Some(ResolvedFamily::Fantasy),
+            _ => None,
+        };
+        if let Some(generic) = generic {
+            return generic;
+        }
+        if let Some(installed) = installed_family(fonts, candidate) {
+            return ResolvedFamily::Name(installed);
+        }
+    }
+    if looks_monospace(requested) {
+        ResolvedFamily::Monospace
+    } else {
+        ResolvedFamily::SansSerif
+    }
+}
+
+fn clean_family(family: &str) -> &str {
+    family
+        .trim()
+        .trim_matches(|character| character == '\'' || character == '"')
+}
+
+fn installed_family(fonts: &FontSystem, requested: &str) -> Option<String> {
+    fonts.db().faces().find_map(|face| {
+        face.families
+            .iter()
+            .find(|(family, _)| family.eq_ignore_ascii_case(requested))
+            .map(|(family, _)| family.clone())
+    })
+}
+
+fn looks_monospace(family: &str) -> bool {
+    let family = family.to_ascii_lowercase();
+    family.contains("mono")
+        || family.contains("iosevka")
+        || family.contains("terminal")
+        || family.contains("typewriter")
+        || family.contains("code")
+}
+
+fn configure_generic_families(fonts: &mut FontSystem) {
+    let sans = preferred_family(
+        fonts,
+        &[
+            "Noto Sans",
+            "DejaVu Sans",
+            "Liberation Sans",
+            "Cantarell",
+            "Nimbus Sans",
+        ],
+        |monospaced| !monospaced,
+    );
+    let serif = preferred_family(
+        fonts,
+        &[
+            "Noto Serif",
+            "DejaVu Serif",
+            "Liberation Serif",
+            "Nimbus Roman",
+        ],
+        |monospaced| !monospaced,
+    );
+    let monospace = preferred_family(
+        fonts,
+        &[
+            "Noto Sans Mono",
+            "DejaVu Sans Mono",
+            "Liberation Mono",
+            "Nimbus Mono PS",
+        ],
+        |monospaced| monospaced,
+    );
+    let db = fonts.db_mut();
+    if let Some(family) = sans {
+        db.set_sans_serif_family(family);
+    }
+    if let Some(family) = serif {
+        db.set_serif_family(family);
+    }
+    if let Some(family) = monospace {
+        db.set_monospace_family(family);
+    }
+}
+
+fn preferred_family(
+    fonts: &FontSystem,
+    preferred: &[&str],
+    fallback: impl Fn(bool) -> bool,
+) -> Option<String> {
+    preferred
+        .iter()
+        .find_map(|family| installed_family(fonts, family))
+        .or_else(|| {
+            fonts.db().faces().find_map(|face| {
+                fallback(face.monospaced)
+                    .then(|| face.families.first().map(|(family, _)| family.clone()))
+                    .flatten()
+            })
+        })
 }
 
 fn normalize_font_weight(weight: f64) -> u16 {
@@ -292,6 +493,7 @@ fn normalize_font_weight(weight: f64) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use cosmic_text::fontdb::Source;
     use mold_scene::{Element, Scene};
 
     use super::*;
@@ -330,6 +532,98 @@ mod tests {
         assert_eq!(normalize_font_weight(50.0), 100);
         assert_eq!(normalize_font_weight(950.0), 900);
         assert_eq!(normalize_font_weight(f64::NAN), 400);
+    }
+
+    #[test]
+    fn missing_mono_family_keeps_monospace_advances() {
+        let mut scene = Scene::new();
+        let narrow = scene.create(Element::Text);
+        let wide = scene.create(Element::Text);
+        let mut text = TextSystem::new();
+
+        let narrow = text.measure(
+            narrow,
+            "iiii",
+            "Unavailable Nerd Font Mono",
+            16.0,
+            TextOptions::default(),
+        );
+        let wide = text.measure(
+            wide,
+            "WWWW",
+            "Unavailable Nerd Font Mono",
+            16.0,
+            TextOptions::default(),
+        );
+
+        assert_eq!(
+            text.resolved_family("Unavailable Nerd Font Mono"),
+            "monospace"
+        );
+        assert!((narrow.width - wide.width).abs() < 0.01);
+    }
+
+    #[test]
+    fn family_stack_uses_an_installed_fallback() {
+        let text = TextSystem::new();
+        let installed = text
+            .fonts
+            .db()
+            .faces()
+            .find_map(|face| face.families.first())
+            .map(|(family, _)| family.clone())
+            .expect("system font database should not be empty");
+        let request = format!("Missing Family, '{installed}'");
+
+        assert_eq!(text.resolved_family(&request), installed);
+        assert!(text.has_family(&installed.to_ascii_uppercase()));
+    }
+
+    #[test]
+    fn missing_font_path_reports_an_error() {
+        let mut text = TextSystem::new();
+        let error = text
+            .load_font_path("/mold-test-font-does-not-exist.ttf")
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn text_font_source_loads_once_before_shaping() {
+        let mut scene = Scene::new();
+        let node = scene.create(Element::Text);
+        let mut text = TextSystem::new();
+        let (source, family) = text
+            .fonts
+            .db()
+            .faces()
+            .find_map(|face| match &face.source {
+                Source::File(path) => face
+                    .families
+                    .first()
+                    .map(|(family, _)| (path.clone(), family.clone())),
+                _ => None,
+            })
+            .expect("system database should contain a file-backed font");
+        let source = format!("file://{}", source.display());
+        let before = text.fonts.db().len();
+        let options = TextOptions {
+            font_source: Some(source.clone()),
+            ..TextOptions::default()
+        };
+
+        text.measure(node, "mold", &family, 16.0, options.clone());
+        let loaded = text.fonts.db().len();
+        text.measure(node, "mold", &family, 16.0, options);
+
+        assert!(loaded > before);
+        assert_eq!(text.fonts.db().len(), loaded);
+        assert_eq!(text.font_sources.len(), 1);
+        assert_eq!(
+            text.buffers[&node].input.as_ref().unwrap().font_source,
+            Some(source)
+        );
     }
 
     #[test]
@@ -435,7 +729,7 @@ mod tests {
                 text,
                 "sans-serif",
                 16.0,
-                TextOptions {
+                &TextOptions {
                     width: Some(100.0),
                     elide: mode,
                     ..TextOptions::default()

@@ -153,13 +153,14 @@ pub enum TextElide {
 }
 
 /// Width, wrapping, and alignment supplied to the text subsystem.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextOptions {
     pub width: Option<f64>,
     pub wrap: bool,
     pub alignment: TextAlignment,
     pub elide: TextElide,
     pub font_weight: f64,
+    pub font_source: Option<String>,
 }
 
 impl Default for TextOptions {
@@ -170,6 +171,7 @@ impl Default for TextOptions {
             alignment: TextAlignment::Left,
             elide: TextElide::None,
             font_weight: 400.0,
+            font_source: None,
         }
     }
 }
@@ -413,6 +415,10 @@ impl Layout {
                     alignment: text_alignment(scene.string_value(node, "horizontal_alignment")?)?,
                     elide: text_elide(scene.string_value(node, "elide")?)?,
                     font_weight: scene.number(node, "font_weight")?,
+                    font_source: match scene.string_value(node, "font_source")? {
+                        "" => None,
+                        source => Some(source.to_owned()),
+                    },
                 },
             ),
             Element::Image | Element::Icon => {
