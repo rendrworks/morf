@@ -14,7 +14,7 @@ use mold_layout::{Layout, ReparentTransition, Size};
 use mold_lua::{
     FloatingSurfaceConfig, InputMethodRequest, IpcValue, Limits, PopupSurfaceConfig, Runtime,
     Screen, Screencopy as LuaScreencopy, TextInputRequest, UiEvent, VirtualKeyboardRequest,
-    WindowSurfaceAction, WindowSurfaceKind,
+    WindowSurfaceAction, WindowSurfaceConfig, WindowSurfaceKind,
 };
 use mold_render::{RenderEngine, WgpuBackend};
 use mold_scene::{Element, NodeHandle};
@@ -1130,6 +1130,30 @@ fn popup_gravity(value: &str) -> Result<PopupGravity, String> {
     })
 }
 
+fn window_surface_parent(surface: &WindowSurfaceConfig) -> Option<u64> {
+    match &surface.kind {
+        WindowSurfaceKind::Popup(config) => config.parent,
+        WindowSurfaceKind::Floating(config) => config.parent,
+    }
+}
+
+fn window_surface_effectively_visible(
+    id: u64,
+    surfaces: &HashMap<u64, &WindowSurfaceConfig>,
+    visiting: &mut HashSet<u64>,
+) -> bool {
+    let Some(surface) = surfaces.get(&id) else {
+        return false;
+    };
+    if !surface.visible || !visiting.insert(id) {
+        return false;
+    }
+    let visible = window_surface_parent(surface)
+        .is_none_or(|parent| window_surface_effectively_visible(parent, surfaces, visiting));
+    visiting.remove(&id);
+    visible
+}
+
 fn sync_window_surfaces(
     runtime: &Runtime,
     client: &mut LayerClient,
@@ -1137,40 +1161,145 @@ fn sync_window_surfaces(
     floatings: &mut HashMap<u64, AuxiliarySurface>,
 ) -> Result<(), String> {
     let surfaces = runtime.window_surface_configs();
-    let desired_popups = surfaces
+    let surfaces_by_id = surfaces
         .iter()
-        .filter(|surface| surface.visible && matches!(&surface.kind, WindowSurfaceKind::Popup(_)))
         .map(|surface| (surface.id, surface))
         .collect::<HashMap<_, _>>();
-    let desired_floatings = surfaces
+    let mut desired_popups = surfaces
         .iter()
         .filter(|surface| {
-            surface.visible && matches!(&surface.kind, WindowSurfaceKind::Floating(_))
+            matches!(&surface.kind, WindowSurfaceKind::Popup(_))
+                && window_surface_effectively_visible(
+                    surface.id,
+                    &surfaces_by_id,
+                    &mut HashSet::new(),
+                )
         })
-        .map(|surface| (surface.id, surface))
-        .collect::<HashMap<_, _>>();
+        .collect::<Vec<_>>();
+    let mut desired_floatings = surfaces
+        .iter()
+        .filter(|surface| {
+            matches!(&surface.kind, WindowSurfaceKind::Floating(_))
+                && window_surface_effectively_visible(
+                    surface.id,
+                    &surfaces_by_id,
+                    &mut HashSet::new(),
+                )
+        })
+        .collect::<Vec<_>>();
+    desired_popups.sort_by_key(|surface| surface.id);
+    desired_floatings.sort_by_key(|surface| surface.id);
+    let desired_popup_ids = desired_popups
+        .iter()
+        .map(|surface| surface.id)
+        .collect::<HashSet<_>>();
+    let desired_floating_ids = desired_floatings
+        .iter()
+        .map(|surface| surface.id)
+        .collect::<HashSet<_>>();
 
-    let stale_popups = popups
+    let mut stale_popups = popups
         .keys()
-        .filter(|id| !desired_popups.contains_key(id))
+        .filter(|id| !desired_popup_ids.contains(id))
         .copied()
         .collect::<Vec<_>>();
+    stale_popups.sort_unstable_by(|a, b| b.cmp(a));
     for id in stale_popups {
         client.close_popup(id);
         popups.remove(&id);
     }
-    for (id, surface) in desired_popups {
+    let mut stale_floatings = floatings
+        .keys()
+        .filter(|id| !desired_floating_ids.contains(id))
+        .copied()
+        .collect::<Vec<_>>();
+    stale_floatings.sort_unstable_by(|a, b| b.cmp(a));
+    for id in stale_floatings {
+        client.close_floating(id);
+        floatings.remove(&id);
+    }
+    let mut reopened = HashSet::new();
+    for surface in desired_floatings {
+        let id = surface.id;
+        let WindowSurfaceKind::Floating(config) = &surface.kind else {
+            unreachable!();
+        };
+        let changed = floatings
+            .get(&id)
+            .is_none_or(|current| current.floating_config.as_ref() != Some(config))
+            || config
+                .parent
+                .is_some_and(|parent| reopened.contains(&parent));
+        if changed {
+            client.close_floating(id);
+            client
+                .open_floating(
+                    id,
+                    config.parent,
+                    FloatingConfig {
+                        width: config.width,
+                        height: config.height,
+                        minimum_width: config.minimum_width,
+                        minimum_height: config.minimum_height,
+                        maximum_width: config.maximum_width,
+                        maximum_height: config.maximum_height,
+                        title: config.title.clone(),
+                        app_id: config.app_id.clone(),
+                        minimized: config.minimized,
+                        maximized: config.maximized,
+                        fullscreen: config.fullscreen,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            reopened.insert(id);
+            floatings.insert(
+                id,
+                AuxiliarySurface {
+                    id: surface.id,
+                    root: surface.root,
+                    width: config.width,
+                    height: config.height,
+                    renderer: None,
+                    layout: None,
+                    popup_config: None,
+                    floating_config: Some(config.clone()),
+                },
+            );
+        } else if let Some(current) = floatings.get_mut(&id) {
+            current.root = surface.root;
+            current.width = config.width;
+            current.height = config.height;
+            current.layout = None;
+        }
+    }
+    for surface in desired_popups {
+        let id = surface.id;
         let WindowSurfaceKind::Popup(config) = &surface.kind else {
             unreachable!();
         };
         let changed = popups
             .get(&id)
-            .is_none_or(|current| current.popup_config.as_ref() != Some(config));
+            .is_none_or(|current| current.popup_config.as_ref() != Some(config))
+            || config
+                .parent
+                .is_some_and(|parent| reopened.contains(&parent));
         if changed {
             client.close_popup(id);
+            let parent = if let Some(parent) = config.parent {
+                let parent = surfaces_by_id
+                    .get(&parent)
+                    .ok_or_else(|| "popup parent is stale".to_owned())?;
+                match parent.kind {
+                    WindowSurfaceKind::Popup(_) => SurfaceRole::Popup(parent.id),
+                    WindowSurfaceKind::Floating(_) => SurfaceRole::Floating(parent.id),
+                }
+            } else {
+                SurfaceRole::Layer
+            };
             client
                 .open_popup(
                     id,
+                    parent,
                     PopupConfig {
                         anchor: InputRect {
                             x: config.anchor_x,
@@ -1196,6 +1325,7 @@ fn sync_window_surfaces(
                     },
                 )
                 .map_err(|error| error.to_string())?;
+            reopened.insert(id);
             popups.insert(
                 id,
                 AuxiliarySurface {
@@ -1210,63 +1340,6 @@ fn sync_window_surfaces(
                 },
             );
         } else if let Some(current) = popups.get_mut(&id) {
-            current.root = surface.root;
-            current.width = config.width;
-            current.height = config.height;
-            current.layout = None;
-        }
-    }
-
-    let stale_floatings = floatings
-        .keys()
-        .filter(|id| !desired_floatings.contains_key(id))
-        .copied()
-        .collect::<Vec<_>>();
-    for id in stale_floatings {
-        client.close_floating(id);
-        floatings.remove(&id);
-    }
-    for (id, surface) in desired_floatings {
-        let WindowSurfaceKind::Floating(config) = &surface.kind else {
-            unreachable!();
-        };
-        let changed = floatings
-            .get(&id)
-            .is_none_or(|current| current.floating_config.as_ref() != Some(config));
-        if changed {
-            client.close_floating(id);
-            client
-                .open_floating(
-                    id,
-                    FloatingConfig {
-                        width: config.width,
-                        height: config.height,
-                        minimum_width: config.minimum_width,
-                        minimum_height: config.minimum_height,
-                        maximum_width: config.maximum_width,
-                        maximum_height: config.maximum_height,
-                        title: config.title.clone(),
-                        app_id: config.app_id.clone(),
-                        minimized: config.minimized,
-                        maximized: config.maximized,
-                        fullscreen: config.fullscreen,
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-            floatings.insert(
-                id,
-                AuxiliarySurface {
-                    id: surface.id,
-                    root: surface.root,
-                    width: config.width,
-                    height: config.height,
-                    renderer: None,
-                    layout: None,
-                    popup_config: None,
-                    floating_config: Some(config.clone()),
-                },
-            );
-        } else if let Some(current) = floatings.get_mut(&id) {
             current.root = surface.root;
             current.width = config.width;
             current.height = config.height;
@@ -2243,6 +2316,51 @@ mod tests {
         let primary = primary_surface_root(&runtime).unwrap();
         assert_eq!(runtime.scene().roots()[0], primary);
         assert_eq!(auxiliary_physical_size(101, 31, 150), (127, 39));
+    }
+
+    #[test]
+    fn child_window_visibility_follows_parent_chain() {
+        let mut runtime = Runtime::default();
+        runtime
+            .execute(
+                "window-parents.lua",
+                br#"
+                    local ui = require("mold.ui")
+                    local window = require("mold.window")
+                    local parent = window.floating {
+                      root = ui.Item {}, visible = false,
+                    }
+                    local child = window.floating {
+                      root = ui.Item {}, visible = true, parent = parent,
+                    }
+                    window.popup {
+                      root = ui.Item {}, visible = true, parent = child,
+                    }
+                "#,
+            )
+            .unwrap();
+        let surfaces = runtime.window_surface_configs();
+        let by_id = surfaces
+            .iter()
+            .map(|surface| (surface.id, surface))
+            .collect::<HashMap<_, _>>();
+
+        assert!(!window_surface_effectively_visible(
+            2,
+            &by_id,
+            &mut HashSet::new()
+        ));
+        runtime.set_window_surface_visible(0, true);
+        let surfaces = runtime.window_surface_configs();
+        let by_id = surfaces
+            .iter()
+            .map(|surface| (surface.id, surface))
+            .collect::<HashMap<_, _>>();
+        assert!(window_surface_effectively_visible(
+            2,
+            &by_id,
+            &mut HashSet::new()
+        ));
     }
 
     #[test]

@@ -131,8 +131,9 @@ behavioral reductions do not count as parity.
   roots, mutable bounded size constraints, identity, title, visibility, initial
   and mutable minimized, maximized and fullscreen state, placement state,
   compositor-owned interactive move and resize requests, compositor lifecycle,
-  multiple independent GPU-rendered instances, and surface-scoped pointer,
-  touch, and keyboard routing;
+  native transient-parent relationships with inherited visibility, popups
+  anchored to layer or floating parents, multiple independent GPU-rendered
+  instances, and surface-scoped pointer, touch, and keyboard routing;
 - composable rectangular, rounded, and elliptical input masks with combine,
   subtract, intersect, and XOR operations;
 - fractional scaling, output tracking, frame callbacks, and input regions.

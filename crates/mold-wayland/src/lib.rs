@@ -47,6 +47,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
 };
 use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::XdgShell;
+use smithay_client_toolkit::shell::xdg::XdgSurface;
 use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
 use smithay_client_toolkit::shell::xdg::window::{
     Window, WindowConfigure, WindowDecorations, WindowHandler,
@@ -1228,7 +1229,12 @@ impl LayerClient {
     }
 
     /// Creates an xdg popup anchored to a parent-surface rectangle.
-    pub fn open_popup(&mut self, id: u64, config: PopupConfig) -> Result<(), WaylandError> {
+    pub fn open_popup(
+        &mut self,
+        id: u64,
+        parent: SurfaceRole,
+        config: PopupConfig,
+    ) -> Result<(), WaylandError> {
         self.close_popup(id);
         let qh = self.queue.handle();
         let positioner = XdgPositioner::new(&self.state.xdg_shell)
@@ -1246,9 +1252,34 @@ impl LayerClient {
         positioner.set_constraint_adjustment(popup_constraints(config.constraints));
         let surface = self.state.compositor.create_surface(&qh);
         surface.set_buffer_scale(1);
-        let popup = Popup::from_surface(None, &positioner, &qh, surface, &self.state.xdg_shell)
-            .map_err(|error| WaylandError(format!("could not create popup: {error}")))?;
-        self.state.layer().get_popup(popup.xdg_popup());
+        let parent_surface = match parent {
+            SurfaceRole::Layer => None,
+            SurfaceRole::Popup(parent) => Some(
+                self.state
+                    .popups
+                    .get(&parent)
+                    .ok_or_else(|| WaylandError("popup parent is not open".into()))?
+                    .xdg_surface(),
+            ),
+            SurfaceRole::Floating(parent) => Some(
+                self.state
+                    .floatings
+                    .get(&parent)
+                    .ok_or_else(|| WaylandError("popup parent is not open".into()))?
+                    .xdg_surface(),
+            ),
+        };
+        let popup = Popup::from_surface(
+            parent_surface,
+            &positioner,
+            &qh,
+            surface,
+            &self.state.xdg_shell,
+        )
+        .map_err(|error| WaylandError(format!("could not create popup: {error}")))?;
+        if parent == SurfaceRole::Layer {
+            self.state.layer().get_popup(popup.xdg_popup());
+        }
         if config.grab_focus {
             let seat = self
                 .state
@@ -1299,7 +1330,12 @@ impl LayerClient {
     }
 
     /// Creates an undecorated xdg toplevel surface.
-    pub fn open_floating(&mut self, id: u64, config: FloatingConfig) -> Result<(), WaylandError> {
+    pub fn open_floating(
+        &mut self,
+        id: u64,
+        parent: Option<u64>,
+        config: FloatingConfig,
+    ) -> Result<(), WaylandError> {
         self.close_floating(id);
         let qh = self.queue.handle();
         let surface = self.state.compositor.create_surface(&qh);
@@ -1308,6 +1344,14 @@ impl LayerClient {
             .state
             .xdg_shell
             .create_window(surface, WindowDecorations::None, &qh);
+        if let Some(parent) = parent {
+            let parent = self
+                .state
+                .floatings
+                .get(&parent)
+                .ok_or_else(|| WaylandError("floating parent is not open".into()))?;
+            window.set_parent(Some(parent));
+        }
         window.set_title(config.title);
         window.set_app_id(config.app_id);
         window.set_min_size(Some((config.minimum_width, config.minimum_height)));

@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (x, y) = popup_anchor(&mut client)?;
     client.open_popup(
         0,
+        mold_wayland::SurfaceRole::Layer,
         PopupConfig {
             anchor: InputRect {
                 x: x.floor() as i32,

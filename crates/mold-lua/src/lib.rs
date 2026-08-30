@@ -297,6 +297,7 @@ impl Default for PopupConstraintConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PopupSurfaceConfig {
+    pub parent: Option<u64>,
     pub anchor_x: i32,
     pub anchor_y: i32,
     pub anchor_width: i32,
@@ -313,6 +314,7 @@ pub struct PopupSurfaceConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FloatingSurfaceConfig {
+    pub parent: Option<u64>,
     pub width: u32,
     pub height: u32,
     pub minimum_width: u32,
@@ -6608,11 +6610,33 @@ fn install_reactive_api(
                 let options: Table = stack.consume(ctx)?;
                 let (root, visible, config, node_anchor) =
                     parse_popup_surface(ctx, options).map_err(HostError)?;
-                state
-                    .borrow()
-                    .scene
-                    .element(root)
-                    .map_err(|error| HostError(error.to_string()))?;
+                {
+                    let state = state.borrow();
+                    state
+                        .scene
+                        .element(root)
+                        .map_err(|error| HostError(error.to_string()))?;
+                    if let Some(parent) = config.parent {
+                        let parent = state
+                            .window_surfaces
+                            .get(&parent)
+                            .ok_or_else(|| HostError("popup parent is stale".into()))?;
+                        if !matches!(parent.kind, WindowSurfaceKind::Floating(_)) {
+                            return Err(HostError(
+                                "popup parent must be a floating surface".into(),
+                            )
+                            .into());
+                        }
+                        if let Some(anchor) = &node_anchor
+                            && !scene_node_in_subtree(&state.scene, parent.root, anchor.node)
+                        {
+                            return Err(HostError(
+                                "popup anchor node must belong to its parent surface".into(),
+                            )
+                            .into());
+                        }
+                    }
+                }
                 let id = {
                     let mut state = state.borrow_mut();
                     let id = state.next_window_surface;
@@ -6649,11 +6673,25 @@ fn install_reactive_api(
                 let options: Table = stack.consume(ctx)?;
                 let (root, visible, config) =
                     parse_floating_surface(ctx, options).map_err(HostError)?;
-                state
-                    .borrow()
-                    .scene
-                    .element(root)
-                    .map_err(|error| HostError(error.to_string()))?;
+                {
+                    let state = state.borrow();
+                    state
+                        .scene
+                        .element(root)
+                        .map_err(|error| HostError(error.to_string()))?;
+                    if let Some(parent) = config.parent {
+                        let parent = state
+                            .window_surfaces
+                            .get(&parent)
+                            .ok_or_else(|| HostError("floating parent is stale".into()))?;
+                        if !matches!(parent.kind, WindowSurfaceKind::Floating(_)) {
+                            return Err(HostError(
+                                "floating parent must be a floating surface".into(),
+                            )
+                            .into());
+                        }
+                    }
+                }
                 let id = {
                     let mut state = state.borrow_mut();
                     let id = state.next_window_surface;
@@ -8692,6 +8730,17 @@ fn popup_position(value: &str) -> bool {
     )
 }
 
+fn window_parent(value: LuaValue<'_>, field: &str) -> Result<Option<u64>, String> {
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::UserData(parent) => parent
+            .downcast_static::<WindowSurfaceToken>()
+            .map(|parent| Some(parent.id))
+            .map_err(|_| format!("{field} must be a mold window surface")),
+        _ => Err(format!("{field} must be a mold window surface")),
+    }
+}
+
 fn parse_popup_surface<'gc>(
     ctx: Context<'gc>,
     options: Table<'gc>,
@@ -8710,6 +8759,12 @@ fn parse_popup_surface<'gc>(
         LuaValue::Nil => None,
         LuaValue::Table(anchor) => Some(anchor),
         _ => return Err("popup anchor must be a table".into()),
+    };
+    let parent = match options.get_value(ctx, "parent") {
+        LuaValue::Nil => anchor.map_or(Ok(None), |anchor| {
+            window_parent(anchor.get_value(ctx, "window"), "popup anchor window")
+        })?,
+        value => window_parent(value, "popup parent")?,
     };
     let anchor_x = anchor.map_or(Ok(0), |anchor| window_i32(ctx, anchor, "x", 0))?;
     let anchor_y = anchor.map_or(Ok(0), |anchor| window_i32(ctx, anchor, "y", 0))?;
@@ -8765,6 +8820,7 @@ fn parse_popup_surface<'gc>(
         root,
         visible,
         PopupSurfaceConfig {
+            parent,
             anchor_x,
             anchor_y,
             anchor_width,
@@ -8788,6 +8844,7 @@ fn parse_floating_surface<'gc>(
 ) -> Result<(NodeHandle, bool, FloatingSurfaceConfig), String> {
     let root = window_root(ctx, options)?;
     let visible = table_bool(ctx, options, "visible", false)?;
+    let parent = window_parent(options.get_value(ctx, "parent"), "floating parent")?;
     let title = table_string(ctx, options, "title", "mold")?;
     let app_id = table_string(ctx, options, "app_id", "mold")?;
     if title.len() > 4096 || app_id.len() > 4096 || app_id.contains('\0') || title.contains('\0') {
@@ -8806,6 +8863,7 @@ fn parse_floating_surface<'gc>(
         root,
         visible,
         FloatingSurfaceConfig {
+            parent,
             width: window_u32(ctx, options, "width", 640)?,
             height: window_u32(ctx, options, "height", 480)?,
             minimum_width,
@@ -10031,10 +10089,20 @@ mod tests {
                 br#"
                     local ui = require("mold.ui")
                     local window = require("mold.window")
-                    window.popup { root = ui.Item {}, visible = true, width = 100, height = 50 }
-                    window.popup { root = ui.Item {}, visible = true, width = 200, height = 60 }
-                    window.floating { root = ui.Item {}, visible = true, title = "one" }
-                    window.floating { root = ui.Item {}, visible = true, title = "two" }
+                    local first = window.floating {
+                      root = ui.Item {}, visible = true, title = "one"
+                    }
+                    local second = window.floating {
+                      root = ui.Item {}, visible = true, title = "two", parent = first
+                    }
+                    local popup = window.popup {
+                      root = ui.Item {}, visible = true, width = 100, height = 50,
+                      parent = second,
+                    }
+                    window.popup {
+                      root = ui.Item {}, visible = true, width = 200, height = 60,
+                      anchor = { window = first },
+                    }
                 "#,
             )
             .unwrap();
@@ -10056,6 +10124,18 @@ mod tests {
             2
         );
         assert!(surfaces.iter().all(|surface| surface.visible));
+        let WindowSurfaceKind::Floating(second) = &surfaces[1].kind else {
+            panic!("second surface was not floating");
+        };
+        assert_eq!(second.parent, Some(0));
+        let WindowSurfaceKind::Popup(first_popup) = &surfaces[2].kind else {
+            panic!("third surface was not a popup");
+        };
+        assert_eq!(first_popup.parent, Some(1));
+        let WindowSurfaceKind::Popup(second_popup) = &surfaces[3].kind else {
+            panic!("fourth surface was not a popup");
+        };
+        assert_eq!(second_popup.parent, Some(0));
         assert_eq!(
             surfaces
                 .iter()
