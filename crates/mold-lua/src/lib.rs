@@ -8,7 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use luna::{
     Callback, CallbackReturn, Closure, Context, Executor, ExecutorMode, Fuel, Function, Lua,
@@ -153,6 +154,18 @@ fn shell_storage_key(shell_root: &Path) -> String {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
         });
     format!("{name}-{hash:016x}")
+}
+
+fn launch_time_ms() -> u64 {
+    static LAUNCH_TIME: OnceLock<u64> = OnceLock::new();
+    *LAUNCH_TIME.get_or_init(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    })
 }
 
 fn rooted_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -3227,6 +3240,29 @@ fn install_reactive_api(
         mold.set_field(ctx, "env", env);
         mold.set_field(ctx, "process_id", i64::from(std::process::id()));
         mold.set_field(ctx, "version", env!("CARGO_PKG_VERSION"));
+        let launched = launch_time_ms();
+        mold.set_field(
+            ctx,
+            "launch_time_ms",
+            i64::try_from(launched).unwrap_or(i64::MAX),
+        );
+        mold.set_field(
+            ctx,
+            "instance_id",
+            format!("{}-{launched}", std::process::id()),
+        );
+        mold.set_field(
+            ctx,
+            "app_id",
+            std::env::var("MOLD_APP_ID").unwrap_or_else(|_| "mold".to_owned()),
+        );
+        let shell_id_state = Rc::clone(&state);
+        let shell_id = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+            let id = shell_storage_key(&shell_id_state.borrow().shell_root);
+            stack.replace(ctx, id);
+            Ok(CallbackReturn::Return)
+        });
+        mold.set_field(ctx, "shell_id", shell_id);
         let shell_dir_state = Rc::clone(&state);
         let shell_dir = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
             let root = shell_dir_state.borrow().shell_root.clone();
@@ -5994,6 +6030,10 @@ fn install_reactive_api(
             "env",
             "process_id",
             "version",
+            "instance_id",
+            "shell_id",
+            "app_id",
+            "launch_time_ms",
             "shell_dir",
             "shell_path",
             "config_path",
@@ -9403,9 +9443,13 @@ mod tests {
                     local core = require("mold.core")
                     assert(type(core.process_id) == "number")
                     assert(type(core.version) == "string")
+                    assert(type(core.instance_id) == "string")
+                    assert(type(core.launch_time_ms) == "number")
+                    assert(type(core.app_id) == "string")
                     assert(core.env("PATH") ~= nil)
                     assert(core.env("MOLD_VARIABLE_THAT_DOES_NOT_EXIST") == nil)
                     assert(core.shell_dir() == "/tmp/mold-shell")
+                    assert(string.find(core.shell_id(), "mold-shell-", 1, true) == 1)
                     assert(core.shell_path("icons/logo.svg") == "/tmp/mold-shell/icons/logo.svg")
                     assert(core.config_path("config.lua") == "/tmp/mold-shell/config.lua")
                     assert(core.data_path("values.json") == core.data_dir() .. "/values.json")
