@@ -1,0 +1,222 @@
+fn schema(element: Element) -> Vec<PropertySpec> {
+    let mut properties = vec![
+        number("x", 0.0),
+        number("y", 0.0),
+        number("width", 0.0),
+        number("height", 0.0),
+        number("implicit_width", 0.0),
+        number("implicit_height", 0.0),
+        any("anchors", Value::Map(BTreeMap::new())),
+        boolean("visible", true),
+        number("opacity", 1.0),
+        any("layer", Value::Map(BTreeMap::new())),
+        color("color_overlay", Color::rgba8(0, 0, 0, 0)),
+        number("z", 0.0),
+        boolean("clip", element == Element::ClipRect),
+        number("rotation", 0.0),
+        number("scale", 1.0),
+        number("transition_x", 0.0),
+        number("transition_y", 0.0),
+        boolean("enabled", true),
+        boolean("focus", false),
+        any("layout", Value::Map(BTreeMap::new())),
+    ];
+    match element {
+        Element::Item => {}
+        Element::Inset => properties.extend([
+            number("margin", 0.0),
+            number("extra_margin", 0.0),
+            any("top_margin", Value::Nil),
+            any("right_margin", Value::Nil),
+            any("bottom_margin", Value::Nil),
+            any("left_margin", Value::Nil),
+            boolean("resize_child", true),
+        ]),
+        Element::Loader => properties.extend([
+            boolean("active", true),
+            boolean("loading", false),
+            boolean("active_async", false),
+        ]),
+        Element::Timer => {
+            properties.extend([
+                number("interval", 1_000.0),
+                boolean("repeat", false),
+                boolean("running", false),
+            ]);
+        }
+        Element::MouseArea => {
+            properties.push(any(
+                "accepted_buttons",
+                Value::List(vec![Value::String("left".to_owned())]),
+            ));
+        }
+        Element::Flickable => {
+            properties.extend([
+                number("content_x", 0.0),
+                number("content_y", 0.0),
+                number("content_width", 0.0),
+                number("content_height", 0.0),
+            ]);
+        }
+        Element::Rect | Element::ClipRect => {
+            properties.extend([
+                color("color", Color::rgba8(255, 255, 255, 255)),
+                string("gradient_type", "none"),
+                color("gradient_start_color", Color::rgba8(255, 255, 255, 255)),
+                color("gradient_end_color", Color::rgba8(0, 0, 0, 255)),
+                number("gradient_start_x", 0.0),
+                number("gradient_start_y", 0.0),
+                number("gradient_end_x", 1.0),
+                number("gradient_end_y", 0.0),
+                number("gradient_center_x", 0.5),
+                number("gradient_center_y", 0.5),
+                number("gradient_radius", 0.5),
+                number("gradient_angle", 0.0),
+                number("radius", 0.0),
+                number("top_left_radius", -1.0),
+                number("top_right_radius", -1.0),
+                number("bottom_right_radius", -1.0),
+                number("bottom_left_radius", -1.0),
+                number("border_width", 0.0),
+                color("border_color", Color::rgba8(0, 0, 0, 0)),
+                number("blur", 0.0),
+                color("shadow_color", Color::rgba8(0, 0, 0, 0)),
+                number("shadow_blur", 0.0),
+                number("shadow_spread", 0.0),
+                number("shadow_offset_x", 0.0),
+                number("shadow_offset_y", 0.0),
+                boolean("shadow_inner", false),
+            ]);
+            if element == Element::ClipRect {
+                properties.extend([
+                    boolean("content_inside_border", true),
+                    boolean("content_under_border", false),
+                    boolean("antialiasing", true),
+                    boolean("border_pixel_aligned", true),
+                ]);
+            }
+        }
+        Element::Text => {
+            properties.extend([
+                string("text", ""),
+                color("color", Color::rgba8(0, 0, 0, 255)),
+                number("font_size", 16.0),
+                number("font_weight", 400.0),
+                string("font_family", "sans-serif"),
+                string("font_source", ""),
+                boolean("wrap", false),
+                string("elide", "none"),
+                string("horizontal_alignment", "left"),
+                string("vertical_alignment", "top"),
+            ]);
+        }
+        Element::Image => {
+            properties.extend([
+                string("source", ""),
+                string("fill_mode", "stretch"),
+                number("source_width", 0.0),
+                number("source_height", 0.0),
+            ]);
+        }
+        Element::Icon => {
+            properties.extend([
+                string("name", ""),
+                string("theme", "hicolor"),
+                string("fill_mode", "stretch"),
+                number("source_width", 0.0),
+                number("source_height", 0.0),
+            ]);
+        }
+        Element::Shape => {
+            properties.extend([
+                string("path", ""),
+                color("fill_color", Color::rgba8(255, 255, 255, 255)),
+                color("stroke_color", Color::rgba8(0, 0, 0, 0)),
+                number("stroke_width", 0.0),
+                string("fill_rule", "nonzero"),
+            ]);
+        }
+        Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
+            properties.push(number("spacing", 0.0));
+        }
+        Element::Grid | Element::GridLayout => {
+            properties.extend([
+                number("columns", 1.0),
+                number("row_spacing", 0.0),
+                number("column_spacing", 0.0),
+            ]);
+        }
+    }
+    properties
+}
+
+fn any(name: &'static str, default: Value) -> PropertySpec {
+    PropertySpec {
+        name,
+        kind: PropertyType::Any,
+        default,
+    }
+}
+
+fn boolean(name: &'static str, default: bool) -> PropertySpec {
+    PropertySpec {
+        name,
+        kind: PropertyType::Bool,
+        default: Value::Bool(default),
+    }
+}
+
+fn number(name: &'static str, default: f64) -> PropertySpec {
+    PropertySpec {
+        name,
+        kind: PropertyType::Number,
+        default: Value::Number(default),
+    }
+}
+
+fn string(name: &'static str, default: &str) -> PropertySpec {
+    PropertySpec {
+        name,
+        kind: PropertyType::String,
+        default: Value::String(default.to_owned()),
+    }
+}
+
+fn color(name: &'static str, default: Color) -> PropertySpec {
+    PropertySpec {
+        name,
+        kind: PropertyType::Color,
+        default: Value::Color(default),
+    }
+}
+
+fn coerce(
+    element: Element,
+    property: &str,
+    kind: PropertyType,
+    value: Value,
+) -> Result<Value, SceneError> {
+    let converted = match (kind, value) {
+        (PropertyType::Any, value) => Some(value),
+        (PropertyType::Bool, Value::Bool(value)) => Some(Value::Bool(value)),
+        (PropertyType::Number, Value::Number(value)) if value.is_finite() => {
+            Some(Value::Number(value))
+        }
+        (PropertyType::String, Value::String(value)) => Some(Value::String(value)),
+        (PropertyType::Color, Value::Color(value)) => Some(Value::Color(value)),
+        (PropertyType::Color, Value::String(value)) => Color::parse(&value).map(Value::Color),
+        _ => None,
+    };
+    converted.ok_or_else(|| SceneError::InvalidPropertyType {
+        element: element.name(),
+        property: property.to_owned(),
+        expected: match kind {
+            PropertyType::Any => "value",
+            PropertyType::Bool => "boolean",
+            PropertyType::Number => "finite number",
+            PropertyType::String => "string",
+            PropertyType::Color => "color",
+        },
+    })
+}
+
