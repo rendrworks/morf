@@ -77,3 +77,8 @@ Color quantizers transactionally recompute after source, depth, crop, or
 rescale changes. Desktop models publish a fresh snapshot only when rescanning
 detects a change. Menu state mutations are immediately reflected by entry and
 child queries, including checkbox and radio activation rules.
+
+Clipping rectangles expose independent `content_inside_border` and
+`content_under_border` policies. The renderer uses a separate rounded inner
+mask when content may not pass beneath the border, draws the border after its
+children, and honors antialiasing and physical-pixel border alignment.

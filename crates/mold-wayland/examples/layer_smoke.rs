@@ -52,6 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gradient: Gradient::None,
                 radii: [0.0; 4],
                 border_width: 0.0,
+                antialiasing: true,
+                border_pixel_aligned: false,
                 border_color: Color::rgba8(0, 0, 0, 0),
                 blur: 0.0,
                 shadow_color: Color::rgba8(0, 0, 0, 0),

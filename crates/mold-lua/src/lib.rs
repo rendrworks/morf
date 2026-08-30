@@ -12519,6 +12519,10 @@ mod tests {
                     local ui = require("mold.ui")
                     ui.ClipRect {
                         border_width = 2,
+                        content_under_border = true,
+                        content_inside_border = false,
+                        antialiasing = false,
+                        border_pixel_aligned = false,
                         ui.Item {},
                     }
                 "#,
@@ -12529,9 +12533,22 @@ mod tests {
         assert_eq!(runtime.scene().element(root).unwrap(), Element::ClipRect);
         assert!(runtime.scene().bool_value(root, "clip").unwrap());
         assert!(
-            runtime
+            !runtime
                 .scene()
                 .bool_value(root, "content_inside_border")
+                .unwrap()
+        );
+        assert!(
+            runtime
+                .scene()
+                .bool_value(root, "content_under_border")
+                .unwrap()
+        );
+        assert!(!runtime.scene().bool_value(root, "antialiasing").unwrap());
+        assert!(
+            !runtime
+                .scene()
+                .bool_value(root, "border_pixel_aligned")
                 .unwrap()
         );
     }

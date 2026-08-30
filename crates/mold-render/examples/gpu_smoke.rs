@@ -45,6 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 radii: [8.0, 16.0, 8.0, 16.0],
                 border_width: 1.0,
+                antialiasing: true,
+                border_pixel_aligned: false,
                 border_color: Color::rgba8(255, 255, 255, 128),
                 blur: 0.0,
                 shadow_color: Color::rgba8(0, 0, 0, 128),

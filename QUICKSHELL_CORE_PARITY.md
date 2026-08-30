@@ -122,8 +122,9 @@ behavioral reductions do not count as parity.
 - bounded native reparenting for dynamic wrappers and unwrapping;
 - native single-child inset containers with side overrides, extra margins,
   implicit sizing, and optional child resizing;
-- rounded clipping rectangles with border-aware content layout and border
-  overlay painting;
+- rounded clipping rectangles with independently controlled inner-border
+  content masks and layout, border overlay painting, edge antialiasing, and
+  physical-pixel-aligned borders;
 - native properties, bindings, states, transitions, animation, focus, pointer,
   wheel and touchpad axes, touch, and keyboard routing.
 

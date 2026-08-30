@@ -100,10 +100,20 @@ fn rounded_distance(point: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let point = input.local - input.shape.xy;
     let signed_distance = rounded_distance(point, input.shape.zw, input.radii);
+    let antialiasing = input.border.y > 0.5;
     let softness = max(input.effects.x, 0.5);
-    let coverage = smoothstep(softness, -softness, signed_distance);
+    let coverage = select(
+        select(0.0, 1.0, signed_distance <= 0.0),
+        smoothstep(softness, -softness, signed_distance),
+        antialiasing,
+    );
     let border_width = max(input.border.x, 0.0);
-    let inner = smoothstep(softness, -softness, signed_distance + border_width);
+    let inner_distance = signed_distance + border_width;
+    let inner = select(
+        select(0.0, 1.0, inner_distance <= 0.0),
+        smoothstep(softness, -softness, inner_distance),
+        antialiasing,
+    );
     let normalized = point / max(input.shape.zw, vec2<f32>(0.000001));
     var fill_color = input.color;
     if input.gradient_data.x == 1.0 {

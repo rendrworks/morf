@@ -172,6 +172,8 @@ fn quad(
         gradient: Gradient::None,
         radii: [8.0; 4],
         border_width: 1.0,
+        antialiasing: true,
+        border_pixel_aligned: false,
         border_color: Color::rgba8(255, 255, 255, 80),
         blur: 0.0,
         shadow_color: Color::rgba8(0, 0, 0, 100),

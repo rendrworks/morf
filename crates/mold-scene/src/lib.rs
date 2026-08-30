@@ -1248,6 +1248,9 @@ fn property_class(property: &str) -> PropertyClass {
         | "bottom_left_radius"
         | "border_width"
         | "border_color"
+        | "antialiasing"
+        | "border_pixel_aligned"
+        | "content_under_border"
         | "gradient_start_color"
         | "gradient_end_color"
         | "gradient_start_x"
@@ -1381,7 +1384,12 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 boolean("shadow_inner", false),
             ]);
             if element == Element::ClipRect {
-                properties.push(boolean("content_inside_border", true));
+                properties.extend([
+                    boolean("content_inside_border", true),
+                    boolean("content_under_border", false),
+                    boolean("antialiasing", true),
+                    boolean("border_pixel_aligned", true),
+                ]);
             }
         }
         Element::Text => {

@@ -36,6 +36,10 @@ pub enum DrawCommand {
         radii: [f64; 4],
         /// Border width.
         border_width: f64,
+        /// If rectangle edges use smooth coverage.
+        antialiasing: bool,
+        /// If the border width is rounded in physical pixels.
+        border_pixel_aligned: bool,
         /// Border colour after node opacity.
         border_color: Color,
         /// Fill-edge blur radius.
@@ -491,6 +495,8 @@ impl SdfQuadInstance {
             gradient,
             radii,
             border_width,
+            antialiasing,
+            border_pixel_aligned,
             border_color,
             blur,
             shadow_color,
@@ -524,7 +530,16 @@ impl SdfQuadInstance {
             ],
             color: color_array(*color),
             radii: radii.map(|radius| (radius.max(0.0) * scale) as f32),
-            border: [(*border_width * scale) as f32, 0.0, 0.0, 0.0],
+            border: [
+                if *border_pixel_aligned {
+                    (*border_width * scale).round() as f32
+                } else {
+                    (*border_width * scale) as f32
+                },
+                if *antialiasing { 1.0 } else { 0.0 },
+                0.0,
+                0.0,
+            ],
             border_color: color_array(*border_color),
             shape: [
                 ((bounds.x - expanded.x) * scale) as f32,
@@ -699,6 +714,9 @@ fn append_node(
             } else {
                 scene.number(node, "border_width")?
             },
+            antialiasing: element != Element::ClipRect || scene.bool_value(node, "antialiasing")?,
+            border_pixel_aligned: element == Element::ClipRect
+                && scene.bool_value(node, "border_pixel_aligned")?,
             border_color: with_opacity(scene.color_value(node, "border_color")?, opacity),
             blur: if layer_blur > 0.0 { 0.0 } else { rect_blur },
             shadow_color: with_opacity(scene.color_value(node, "shadow_color")?, opacity),
@@ -779,7 +797,43 @@ fn append_node(
         | Element::Loader
         | Element::Timer => {}
     }
+    let content_layer = if element == Element::ClipRect
+        && scene.number(node, "border_width")? > 0.0
+        && !scene.bool_value(node, "content_under_border")?
+    {
+        let border = scene.number(node, "border_width")?.max(0.0);
+        let inner = Geometry {
+            x: bounds.x + border,
+            y: bounds.y + border,
+            width: (bounds.width - border * 2.0).max(0.0),
+            height: (bounds.height - border * 2.0).max(0.0),
+        };
+        let index = list.layers.len();
+        list.layers.push(Layer {
+            node,
+            commands: list.commands.len()..list.commands.len(),
+            parent: layer.or(inherited.layer),
+            opacity: 1.0,
+            blur: 0.0,
+            shadow_color: Color::rgba8(0, 0, 0, 0),
+            shadow_blur: 0.0,
+            shadow_offset: [0.0, 0.0],
+            mask: Some(LayerMask {
+                bounds: inner,
+                transform,
+                radii: rect_radii(scene, node)?.map(|radius| (radius - border).max(0.0)),
+            }),
+            bounds: inner,
+        });
+        Some((index, inner))
+    } else {
+        None
+    };
     for child in scene.children(node)? {
+        let child_clip = content_layer.map_or(clip, |(_, inner)| {
+            let inner = transform.bounds(inner);
+            Some(clip.map_or(inner, |clip| intersect_geometry(clip, inner)))
+        });
         append_node(
             scene,
             layout,
@@ -787,12 +841,19 @@ fn append_node(
             PaintContext {
                 opacity,
                 transform,
-                clip,
+                clip: child_clip,
                 overlay: color_overlay,
-                layer: layer.or(inherited.layer),
+                layer: content_layer
+                    .map(|(layer, _)| layer)
+                    .or(layer)
+                    .or(inherited.layer),
             },
             list,
         )?;
+    }
+    if let Some((content_layer, inner)) = content_layer {
+        list.layers[content_layer].commands.end = list.commands.len();
+        list.layers[content_layer].bounds = inner;
     }
     if element == Element::ClipRect && scene.number(node, "border_width")? > 0.0 {
         list.commands.push(DrawCommand::Quad {
@@ -805,6 +866,8 @@ fn append_node(
             gradient: Gradient::None,
             radii: rect_radii(scene, node)?,
             border_width: scene.number(node, "border_width")?,
+            antialiasing: scene.bool_value(node, "antialiasing")?,
+            border_pixel_aligned: scene.bool_value(node, "border_pixel_aligned")?,
             border_color: apply_overlay(
                 with_opacity(scene.color_value(node, "border_color")?, opacity),
                 color_overlay,
@@ -1336,6 +1399,10 @@ mod tests {
         assert_eq!(color.alpha, 0.0);
         assert_eq!(border_width, 2.0);
         assert_eq!(list.layers[0].mask.unwrap().radii, [8.0; 4]);
+        assert_eq!(list.layers[1].parent, Some(0));
+        assert_eq!(list.layers[1].mask.unwrap().radii, [6.0; 4]);
+        assert_eq!(list.layers[1].bounds.width, 36.0);
+        assert_eq!(list.layers[1].bounds.height, 26.0);
     }
 
     #[test]
@@ -1856,6 +1923,8 @@ mod tests {
                 gradient: Gradient::None,
                 radii: [0.0; 4],
                 border_width: 0.0,
+                antialiasing: true,
+                border_pixel_aligned: false,
                 border_color: Color::rgba8(0, 0, 0, 0),
                 blur: 0.0,
                 shadow_color: Color::rgba8(0, 0, 0, 0),
@@ -1898,7 +1967,9 @@ mod tests {
             color_overlay: Color::rgba8(0, 0, 0, 0),
             gradient: Gradient::None,
             radii: [4.0; 4],
-            border_width: 0.0,
+            border_width: 0.6,
+            antialiasing: false,
+            border_pixel_aligned: true,
             border_color: Color::rgba8(0, 0, 0, 0),
             blur: 2.0,
             shadow_color: Color::rgba8(0, 0, 0, 128),
@@ -1922,6 +1993,7 @@ mod tests {
         assert_eq!(instance.bounds, [15.0, 16.0, 56.0, 36.0]);
         assert_eq!(instance.shape, [5.0, 4.0, 40.0, 20.0]);
         assert_eq!(instance.effects[..3], [2.0, 6.0, 2.0]);
+        assert_eq!(instance.border[..2], [1.0, 0.0]);
 
         let mut inner = command;
         if let DrawCommand::Quad {
