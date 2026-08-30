@@ -6570,6 +6570,7 @@ mod tests {
     #[test]
     fn file_view_tracks_state_and_atomic_writes() {
         let path = std::env::temp_dir().join(format!("mold-lua-file-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         let source = format!(
             r#"
                 local io = require("mold.io")
@@ -6667,6 +6668,31 @@ mod tests {
             .execute("desktop-entries.lua", source.as_bytes())
             .unwrap();
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn board_example_uses_only_general_native_modules() {
+        let mut runtime = Runtime::for_screen(
+            Limits::default(),
+            Screen {
+                name: "test-output".into(),
+                width: Some(1920),
+                height: Some(1080),
+                scale: 1,
+            },
+        );
+        runtime
+            .execute(
+                "examples/board/init.lua",
+                include_bytes!("../../../examples/board/init.lua"),
+            )
+            .unwrap();
+        assert_eq!(runtime.scene().roots().len(), 1);
+        let surface = runtime.layer_surface_config();
+        assert_eq!(surface.namespace, "mold-board");
+        assert_eq!(surface.width, 1106);
+        assert_eq!(surface.height, 588);
+        assert_eq!(surface.exclusive_zone, 0);
     }
 
     #[test]

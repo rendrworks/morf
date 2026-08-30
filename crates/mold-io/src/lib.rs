@@ -1581,6 +1581,7 @@ mod tests {
     #[test]
     fn file_document_tracks_load_write_and_errors() {
         let path = std::env::temp_dir().join(format!("mold-file-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         let mut file = FileDocument::new(&path, 16);
         assert!(!file.reload());
         assert_eq!(file.error(), Some(FileViewError::FileNotFound));
