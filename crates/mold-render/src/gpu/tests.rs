@@ -1,6 +1,13 @@
-use super::*;
+use mold_layout::{Geometry, Transform2D};
+use mold_scene::{Color, NodeHandle};
 
-fn test_quad(
+use super::glyphs::{ShelfAllocator, layer_mask_data};
+use super::targets::{clamp_scissor, intersect_damage};
+use super::textures::texture_placement;
+use super::*;
+use crate::*;
+
+pub(crate) fn test_quad(
     node: NodeHandle,
     color: Color,
     border_color: Color,
@@ -36,7 +43,7 @@ fn test_quad(
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn srgb_target_preserves_hex_colors_and_blends_borders() {
+pub(crate) fn srgb_target_preserves_hex_colors_and_blends_borders() {
     let mut backend = pollster::block_on(WgpuBackend::new(4, 4)).unwrap();
     let mut scene = mold_scene::Scene::new();
     let background = scene.create(mold_scene::Element::Rect);
@@ -124,7 +131,7 @@ fn srgb_target_preserves_hex_colors_and_blends_borders() {
 }
 
 #[test]
-fn scissor_is_clamped_to_the_physical_target() {
+pub(crate) fn scissor_is_clamped_to_the_physical_target() {
     assert_eq!(
         clamp_scissor(
             DamageRect {
@@ -141,7 +148,7 @@ fn scissor_is_clamped_to_the_physical_target() {
 }
 
 #[test]
-fn damage_and_clip_scissors_are_intersected() {
+pub(crate) fn damage_and_clip_scissors_are_intersected() {
     assert_eq!(
         intersect_damage(
             DamageRect {
@@ -184,7 +191,7 @@ fn damage_and_clip_scissors_are_intersected() {
 }
 
 #[test]
-fn texture_fit_and_crop_preserve_aspect_ratio() {
+pub(crate) fn texture_fit_and_crop_preserve_aspect_ratio() {
     let bounds = Geometry {
         x: 10.0,
         y: 20.0,
@@ -221,7 +228,7 @@ fn texture_fit_and_crop_preserve_aspect_ratio() {
 }
 
 #[test]
-fn layer_mask_data_inverts_the_owner_transform() {
+pub(crate) fn layer_mask_data_inverts_the_owner_transform() {
     let mask = LayerMask {
         bounds: Geometry {
             x: 10.0,
@@ -243,7 +250,7 @@ fn layer_mask_data_inverts_the_owner_transform() {
 }
 
 #[test]
-fn glyph_shelves_reserve_padding_and_wrap_rows() {
+pub(crate) fn glyph_shelves_reserve_padding_and_wrap_rows() {
     let mut allocator = ShelfAllocator::default();
 
     assert_eq!(allocator.allocate(1022, 10), Some((1, 1)));

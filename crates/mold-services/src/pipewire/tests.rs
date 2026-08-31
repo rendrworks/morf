@@ -1,4 +1,4 @@
-use super::*;
+use super::volume::*;
 
 #[test]
 fn volume_pod_round_trips() {

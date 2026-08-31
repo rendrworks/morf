@@ -16,7 +16,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene = Scene::new();
     let node = scene.create(Element::Rect);
     let image = scene.create(Element::Image);
-    let shape = scene.create(Element::Shape);
     let text = scene.create(Element::Text);
     let list = DrawList {
         commands: vec![
@@ -68,28 +67,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 clip: None,
                 source: image_path.to_string_lossy().into_owned(),
                 icon_theme: None,
-                opacity: 1.0,
                 color_overlay: Color::rgba8(0, 0, 0, 0),
                 fill_mode: ImageFillMode::PreserveAspectFit,
                 distance_field: false,
                 distance_field_spread: 8.0,
                 distance_field_style: DistanceFieldStyle::default(),
-            },
-            DrawCommand::Path {
-                node: shape,
-                bounds: Geometry {
-                    x: 24.0,
-                    y: 18.0,
-                    width: 28.0,
-                    height: 28.0,
-                },
-                transform: Transform2D::IDENTITY,
-                clip: None,
-                path: "M14 0 L28 28 L0 28 Z".to_owned(),
-                fill_color: Color::rgba8(255, 255, 255, 220),
-                stroke_color: Color::rgba8(0, 0, 0, 255),
-                stroke_width: 1.0,
-                even_odd: false,
             },
             DrawCommand::Text {
                 node: text,
@@ -112,11 +94,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 elide: TextElide::None,
                 horizontal_alignment: TextAlignment::Left,
                 vertical_alignment: VerticalAlignment::Center,
+                field_style: DistanceFieldStyle::default(),
             },
         ],
         layers: vec![Layer {
             node,
-            commands: 0..4,
+            commands: 0..3,
             parent: None,
             opacity: 0.8,
             blur: 6.0,

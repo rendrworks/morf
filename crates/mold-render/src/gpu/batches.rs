@@ -1,5 +1,7 @@
+use crate::{DrawList, SdfFieldInstance, SdfFieldLayer, SdfQuadInstance};
+
 /// Groups every quad command in the list into one instance buffer.
-fn collect_quad_instances(
+pub(crate) fn collect_quad_instances(
     list: &DrawList,
     scale_120: u32,
 ) -> (Vec<Option<u32>>, Vec<SdfQuadInstance>) {
@@ -16,7 +18,7 @@ fn collect_quad_instances(
 
 /// Groups every field command, and the layers they compose, into one pair of
 /// buffers. Each field records where its own run of layers begins.
-fn collect_field_instances(
+pub(crate) fn collect_field_instances(
     list: &DrawList,
     scale_120: u32,
 ) -> (Vec<Option<u32>>, Vec<SdfFieldInstance>, Vec<SdfFieldLayer>) {

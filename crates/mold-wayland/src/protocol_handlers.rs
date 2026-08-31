@@ -1,5 +1,50 @@
+use crate::client_layer::PRIMARY_LAYER;
+use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::seat::SeatState;
+use smithay_client_toolkit::seat::keyboard::KeyEvent;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
+use smithay_client_toolkit::shm::{Shm, ShmHandler};
+use smithay_client_toolkit::{delegate_registry, registry_handlers};
+use wayland_client::protocol::{wl_output, wl_region, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+    ext_idle_notifier_v1::ExtIdleNotifierV1,
+};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    zwp_text_input_v3::{self, ZwpTextInputV3},
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
+use wayland_protocols_misc::zwp_input_method_v2::client::{
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+    zwp_input_method_v2::{self, ZwpInputMethodV2},
+};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+};
+use wayland_protocols_wlr::output_power_management::v1::client::{
+    zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
+    zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+};
+
+use crate::{helpers::*, state_types::*, surface_types::*, types::*};
+
 impl LayerState {
-    fn layer(&self) -> &LayerSurface {
+    pub(crate) fn layer(&self) -> &LayerSurface {
         &self
             .layers
             .get(&PRIMARY_LAYER)
@@ -8,13 +53,13 @@ impl LayerState {
     }
 
     /// Identifies which of this client's layer surfaces owns a wl_surface.
-    fn layer_id(&self, surface: &wl_surface::WlSurface) -> Option<u64> {
+    pub(crate) fn layer_id(&self, surface: &wl_surface::WlSurface) -> Option<u64> {
         self.layers
             .iter()
             .find_map(|(id, layer)| (surface == layer.surface.wl_surface()).then_some(*id))
     }
 
-    fn refresh_screens(&mut self) {
+    pub(crate) fn refresh_screens(&mut self) {
         let screens = self
             .outputs
             .outputs()
@@ -39,7 +84,7 @@ impl LayerState {
         }
     }
 
-    fn surface_role(&self, surface: &wl_surface::WlSurface) -> Option<SurfaceRole> {
+    pub(crate) fn surface_role(&self, surface: &wl_surface::WlSurface) -> Option<SurfaceRole> {
         if let Some(id) = self.layer_id(surface) {
             Some(SurfaceRole::Layer(id))
         } else if let Some(id) = self
@@ -56,7 +101,7 @@ impl LayerState {
         }
     }
 
-    fn push_key(&mut self, event: KeyEvent, pressed: bool, repeat: bool) {
+    pub(crate) fn push_key(&mut self, event: KeyEvent, pressed: bool, repeat: bool) {
         self.events.push_back(LayerEvent::Key {
             surface: self
                 .keyboard_surface
@@ -86,10 +131,9 @@ impl Dispatch<WpFractionalScaleV1, u64> for LayerState {
         };
         layer.scale_120 = scale.max(1);
         let scale_120 = layer.scale_120;
-        state.events.push_back(LayerEvent::Scale {
-            id: *id,
-            scale_120,
-        });
+        state
+            .events
+            .push_back(LayerEvent::Scale { id: *id, scale_120 });
     }
 }
 
@@ -134,10 +178,8 @@ impl Dispatch<ZwlrOutputPowerV1, wl_output::WlOutput> for LayerState {
                     }
                     _ => return,
                 };
-                let output_id = state.outputs.info(output).map(|info| info.id).unwrap_or(0);
-                state
-                    .events
-                    .push_back(LayerEvent::OutputPower { output_id, mode });
+                // Recorded, not announced: nothing consumed the event.
+                let _ = (output, mode);
             }
             zwlr_output_power_v1::Event::Failed => {
                 if let Some(index) = state
@@ -364,4 +406,3 @@ wayland_client::delegate_noop!(LayerState: ignore ZwpInputMethodManagerV2);
 wayland_client::delegate_noop!(LayerState: ignore ZwpTextInputManagerV3);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
-

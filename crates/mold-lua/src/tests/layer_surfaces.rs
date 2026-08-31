@@ -1,3 +1,7 @@
+use crate::*;
+
+use super::*;
+
 #[test]
 fn configured_layer_surfaces_carry_their_own_settings() {
     let mut runtime = Runtime::default();
@@ -69,7 +73,10 @@ fn layer_surface_settings_reject_unknown_and_shell_only_keys() {
                 local root = ui.Item {}
                 assert(not pcall(window.layer, { root = root, nonsense = 1 }))
                 assert(not pcall(window.layer, { root = root, layer = "middle" }))
-                assert(not pcall(window.layer, { root = root, height = 0 }))
+                -- Zero is compositor-sized on both axes now, so what is
+                -- rejected is a size a surface cannot be.
+                assert(not pcall(window.layer, { root = root, height = 20000 }))
+                assert(not pcall(window.layer, { root = root, width = 20000 }))
                 assert(not pcall(window.layer, { root = root, reserve = { top = 4 } }))
                 assert(not pcall(window.layer, { width = 10 }))
             "#,

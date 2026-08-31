@@ -1,32 +1,11 @@
 use super::*;
-#[test]
-fn shapes_emit_path_commands() {
-    let mut scene = Scene::new();
-    let shape = scene.create(Element::Shape);
-    scene.assign(shape, "path", "M0 0 L16 0 L8 16 Z").unwrap();
-    scene.assign(shape, "width", 16.0).unwrap();
-    scene.assign(shape, "height", 16.0).unwrap();
-    scene.assign(shape, "stroke_width", 2.0).unwrap();
-    let layout = Layout::compute(
-        &scene,
-        shape,
-        Size {
-            width: 16.0,
-            height: 16.0,
-        },
-        &mut NoText,
-    )
-    .unwrap();
 
-    let list = DrawList::from_scene(&scene, &layout).unwrap();
-
-    assert!(matches!(
-        &list.commands[0],
-        DrawCommand::Path { path, stroke_width, .. }
-            if path == "M0 0 L16 0 L8 16 Z" && *stroke_width == 2.0
-    ));
+/// Diffs one frame and makes it the baseline, the way `RenderEngine` does.
+fn diff_frame(tracker: &mut DamageTracker, mut list: DrawList, scale_120: u32) -> Vec<DamageRect> {
+    let damage = tracker.diff(&list, scale_120);
+    tracker.retain(&mut list);
+    damage
 }
-
 #[test]
 fn unchanged_frames_submit_no_gpu_work() {
     let mut scene = Scene::new();
@@ -45,8 +24,32 @@ fn unchanged_frames_submit_no_gpu_work() {
     .unwrap();
     let mut engine = RenderEngine::new(RecordingBackend::default());
 
-    assert!(!engine.render(&scene, &layout, 120).unwrap().is_empty());
-    assert!(engine.render(&scene, &layout, 120).unwrap().is_empty());
+    // The damage is offered to the host before anything is presented, because
+    // a commit carries whatever damage was declared before it.
+    let mut declared = Vec::new();
+    assert!(
+        !engine
+            .render(&scene, &layout, 120, |damage| declared
+                .extend_from_slice(damage))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !declared.is_empty(),
+        "the host saw the first frame's damage"
+    );
+    declared.clear();
+    assert!(
+        engine
+            .render(&scene, &layout, 120, |damage| declared
+                .extend_from_slice(damage))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        declared.is_empty(),
+        "an unchanged frame declares nothing, so nothing is recomposited"
+    );
     assert_eq!(engine.backend_mut().frames, 1);
 }
 
@@ -86,10 +89,10 @@ fn scale_change_redamages_an_unchanged_frame() {
     .unwrap();
     let list = DrawList::from_scene(&scene, &layout).unwrap();
     let mut tracker = DamageTracker::default();
-    tracker.diff(&list, 120);
+    diff_frame(&mut tracker, list.clone(), 120);
 
     assert_eq!(
-        tracker.diff(&list, 150),
+        diff_frame(&mut tracker, list.clone(), 150),
         vec![DamageRect {
             x: 0,
             y: 0,
@@ -134,13 +137,13 @@ fn changed_command_damages_old_and_new_bounds() {
         }],
         layers: Vec::new(),
     };
-    tracker.diff(&first, 120);
+    diff_frame(&mut tracker, first.clone(), 120);
     let mut second = first.clone();
     if let DrawCommand::Quad { bounds, .. } = &mut second.commands[0] {
         bounds.x = 20.0;
     }
 
-    let damage = tracker.diff(&second, 120);
+    let damage = diff_frame(&mut tracker, second.clone(), 120);
 
     assert_eq!(damage.len(), 2);
 }
@@ -212,4 +215,49 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
     );
     let instance = SdfQuadInstance::from_command(&inner, 120).unwrap();
     assert_eq!(instance.shadow[2], 1.0);
+}
+
+#[test]
+fn a_clip_rect_repaints_when_only_its_fill_changes() {
+    // A ClipRect emits two commands under one node: the fill, and the border it
+    // overlays. Keyed on the node alone the two collapse into one — a HashMap
+    // keeps the last — so the fill is never compared against anything and a
+    // change to it damages nothing at all.
+    let mut scene = Scene::new();
+    let node = scene.create(Element::ClipRect);
+    scene.assign(node, "width", 40.0).unwrap();
+    scene.assign(node, "height", 40.0).unwrap();
+    scene.assign(node, "border_width", 2.0).unwrap();
+    scene.assign(node, "color", "#ff0000").unwrap();
+
+    let draw = |scene: &Scene| {
+        let layout = Layout::compute(
+            scene,
+            scene.roots()[0],
+            Size {
+                width: 40.0,
+                height: 40.0,
+            },
+            &mut NoText,
+        )
+        .unwrap();
+        DrawList::from_scene(scene, &layout).unwrap()
+    };
+
+    let mut tracker = DamageTracker::default();
+    let first = draw(&scene);
+    assert!(
+        !diff_frame(&mut tracker, first, 120).is_empty(),
+        "the first frame damages everything"
+    );
+    assert!(
+        diff_frame(&mut tracker, draw(&scene), 120).is_empty(),
+        "an unchanged frame damages nothing"
+    );
+
+    scene.assign(node, "color", "#00ff00").unwrap();
+    assert!(
+        !diff_frame(&mut tracker, draw(&scene), 120).is_empty(),
+        "changing only the fill has to repaint it"
+    );
 }

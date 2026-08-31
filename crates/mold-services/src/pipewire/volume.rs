@@ -1,4 +1,14 @@
-unsafe fn dict(props: *const SpaDict) -> BTreeMap<String, String> {
+use libloading::Library;
+use std::collections::BTreeMap;
+use std::env;
+use std::ffi::{CStr, c_char};
+use std::path::PathBuf;
+use std::ptr;
+
+use super::ffi::*;
+use super::*;
+
+pub(crate) unsafe fn dict(props: *const SpaDict) -> BTreeMap<String, String> {
     let props = unsafe { &*props };
     let mut result = BTreeMap::new();
     for index in 0..props.n_items as usize {
@@ -10,7 +20,7 @@ unsafe fn dict(props: *const SpaDict) -> BTreeMap<String, String> {
     result
 }
 
-fn c_string(value: *const c_char) -> Option<String> {
+pub(crate) fn c_string(value: *const c_char) -> Option<String> {
     if value.is_null() {
         None
     } else {
@@ -22,7 +32,7 @@ fn c_string(value: *const c_char) -> Option<String> {
     }
 }
 
-fn load_library() -> Result<Library, PipeWireError> {
+pub(crate) fn load_library() -> Result<Library, PipeWireError> {
     let mut candidates = Vec::new();
     if let Some(path) = env::var_os("MOLD_PIPEWIRE_LIBRARY") {
         candidates.push(PathBuf::from(path));
@@ -47,19 +57,19 @@ fn load_library() -> Result<Library, PipeWireError> {
     )))
 }
 
-fn align(value: usize) -> usize {
+pub(crate) fn align(value: usize) -> usize {
     (value + 7) & !7
 }
 
-fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+pub(crate) fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend(value.to_ne_bytes());
 }
 
-fn pad(bytes: &mut Vec<u8>) {
+pub(crate) fn pad(bytes: &mut Vec<u8>) {
     bytes.resize(align(bytes.len()), 0);
 }
 
-fn volume_pod(channels: &[f32], muted: bool) -> Vec<u8> {
+pub(crate) fn volume_pod(channels: &[f32], muted: bool) -> Vec<u8> {
     let mut properties = Vec::new();
     push_u32(&mut properties, PROP_MUTE);
     push_u32(&mut properties, 0);
@@ -88,7 +98,7 @@ fn volume_pod(channels: &[f32], muted: bool) -> Vec<u8> {
     pod
 }
 
-unsafe fn parse_volume(pod: *const SpaPod) -> Option<PipeWireVolume> {
+pub(crate) unsafe fn parse_volume(pod: *const SpaPod) -> Option<PipeWireVolume> {
     let pod = unsafe { &*pod };
     if pod.kind != TYPE_OBJECT || pod.size < 8 {
         return None;
@@ -130,4 +140,3 @@ unsafe fn parse_volume(pod: *const SpaPod) -> Option<PipeWireVolume> {
     }
     Some(PipeWireVolume { channels, muted })
 }
-

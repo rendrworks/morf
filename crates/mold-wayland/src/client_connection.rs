@@ -1,3 +1,30 @@
+use crate::client_layer::PRIMARY_LAYER;
+use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::data_device_manager::DataDeviceManagerState;
+use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::registry::RegistryState;
+use smithay_client_toolkit::seat::SeatState;
+use smithay_client_toolkit::session_lock::SessionLockState;
+use smithay_client_toolkit::shell::wlr_layer::LayerShell;
+use smithay_client_toolkit::shell::xdg::XdgShell;
+use smithay_client_toolkit::shm::Shm;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, mpsc};
+use std::time::Instant;
+use wayland_client::Connection;
+use wayland_client::globals::registry_queue_init;
+use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1;
+use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
+use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
+use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
+use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+
+use crate::{helpers::*, state_types::*, surface_types::*, types::*};
+
 impl LayerClient {
     /// Connects to the current Wayland compositor and creates a top layer bar.
     pub fn connect(config: BarConfig) -> Result<Self, WaylandError> {
@@ -9,7 +36,7 @@ impl LayerClient {
         Self::connect_inner(None)
     }
 
-    fn connect_inner(config: Option<BarConfig>) -> Result<Self, WaylandError> {
+    pub(crate) fn connect_inner(config: Option<BarConfig>) -> Result<Self, WaylandError> {
         let connection = Connection::connect_to_env()
             .map_err(|error| WaylandError(format!("could not connect to Wayland: {error}")))?;
         let (globals, queue) = registry_queue_init(&connection)
@@ -120,4 +147,3 @@ impl LayerClient {
         Ok(client)
     }
 }
-

@@ -108,7 +108,7 @@ local SUFFIXES = { ".sock", "" }
 
 local events = nil
 local command_path = nil
-local event_lines = io.line_parser()
+local event_lines = io.split_parser("\n")
 
 -- `MOLD_HYPR_TRANSPORT=hyprctl` forces the fallback, which is the only way to
 -- exercise it on a machine whose sockets are perfectly healthy.

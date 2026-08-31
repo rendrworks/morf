@@ -1,3 +1,11 @@
+use std::collections::BTreeMap;
+use std::error::Error as StdError;
+use std::fmt;
+
+use mold_scene::{Element, SceneError, Value};
+
+use crate::geometry::{Geometry, Size, TextAlignment, TextElide};
+
 /// A layout input or constraint failure.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayoutError {
@@ -39,11 +47,11 @@ impl From<SceneError> for LayoutError {
     }
 }
 
-fn positive(value: f64) -> Option<f64> {
+pub(crate) fn positive(value: f64) -> Option<f64> {
     (value > 0.0).then_some(value)
 }
 
-fn text_alignment(value: &str) -> Result<TextAlignment, LayoutError> {
+pub(crate) fn text_alignment(value: &str) -> Result<TextAlignment, LayoutError> {
     match value {
         "left" => Ok(TextAlignment::Left),
         "right" => Ok(TextAlignment::Right),
@@ -55,7 +63,7 @@ fn text_alignment(value: &str) -> Result<TextAlignment, LayoutError> {
     }
 }
 
-fn text_elide(value: &str) -> Result<TextElide, LayoutError> {
+pub(crate) fn text_elide(value: &str) -> Result<TextElide, LayoutError> {
     match value {
         "none" => Ok(TextElide::None),
         "left" => Ok(TextElide::Left),
@@ -67,7 +75,7 @@ fn text_elide(value: &str) -> Result<TextElide, LayoutError> {
     }
 }
 
-fn sum_with_spacing(children: &[Size], spacing: f64, horizontal: bool) -> f64 {
+pub(crate) fn sum_with_spacing(children: &[Size], spacing: f64, horizontal: bool) -> f64 {
     let content = children
         .iter()
         .map(|size| if horizontal { size.width } else { size.height })
@@ -75,7 +83,7 @@ fn sum_with_spacing(children: &[Size], spacing: f64, horizontal: bool) -> f64 {
     content + spacing * children.len().saturating_sub(1) as f64
 }
 
-fn grid_columns(value: f64) -> usize {
+pub(crate) fn grid_columns(value: f64) -> usize {
     if value.is_finite() && value >= 1.0 {
         value.floor().min(usize::MAX as f64) as usize
     } else {
@@ -83,7 +91,12 @@ fn grid_columns(value: f64) -> usize {
     }
 }
 
-fn grid_size(children: &[Size], columns: usize, column_spacing: f64, row_spacing: f64) -> Size {
+pub(crate) fn grid_size(
+    children: &[Size],
+    columns: usize,
+    column_spacing: f64,
+    row_spacing: f64,
+) -> Size {
     if children.is_empty() {
         return Size::default();
     }
@@ -100,33 +113,44 @@ fn grid_size(children: &[Size], columns: usize, column_spacing: f64, row_spacing
     }
 }
 
-fn attached_layout(value: &Value) -> Result<BTreeMap<String, Value>, LayoutError> {
+/// Borrows a node's attached layout constraints.
+///
+/// Borrowed rather than cloned: layout asks for these once per child per pass,
+/// and every clone copied a `BTreeMap` of owned strings and values for a table
+/// that is usually empty and never modified here.
+pub(crate) fn attached_layout(value: &Value) -> Result<&BTreeMap<String, Value>, LayoutError> {
     match value {
-        Value::Map(map) => Ok(map.clone()),
+        Value::Map(map) => Ok(map),
         _ => Err(LayoutError::Scene(
             "attached layout constraints must be a map".to_owned(),
         )),
     }
 }
 
-fn layout_number(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
+pub(crate) fn layout_number(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
     number(map, key).filter(|value| value.is_finite() && *value >= 0.0)
 }
 
-fn clamp_layout(value: f64, map: &BTreeMap<String, Value>, minimum: &str, maximum: &str) -> f64 {
+pub(crate) fn clamp_layout(
+    value: f64,
+    map: &BTreeMap<String, Value>,
+    minimum: &str,
+    maximum: &str,
+) -> f64 {
     let minimum = layout_number(map, minimum).unwrap_or(0.0);
     let maximum = layout_number(map, maximum).unwrap_or(f64::INFINITY);
     value.max(minimum).min(maximum.max(minimum))
 }
 
-fn anchors(value: &Value) -> Result<BTreeMap<String, Value>, LayoutError> {
+/// Borrows a node's anchors, for the same reason as [`attached_layout`].
+pub(crate) fn anchors(value: &Value) -> Result<&BTreeMap<String, Value>, LayoutError> {
     match value {
-        Value::Map(map) => Ok(map.clone()),
+        Value::Map(map) => Ok(map),
         _ => Err(LayoutError::InvalidAnchors),
     }
 }
 
-fn reject_axis_conflict(
+pub(crate) fn reject_axis_conflict(
     parent: Element,
     anchors: &BTreeMap<String, Value>,
 ) -> Result<(), LayoutError> {
@@ -149,7 +173,11 @@ fn reject_axis_conflict(
     Ok(())
 }
 
-fn apply_anchors(parent: Geometry, anchors: &BTreeMap<String, Value>, geometry: &mut Geometry) {
+pub(crate) fn apply_anchors(
+    parent: Geometry,
+    anchors: &BTreeMap<String, Value>,
+    geometry: &mut Geometry,
+) {
     let margin = number(anchors, "margins").unwrap_or(0.0);
     let left_margin = number(anchors, "left_margin").unwrap_or(margin);
     let right_margin = number(anchors, "right_margin").unwrap_or(margin);
@@ -184,7 +212,7 @@ fn apply_anchors(parent: Geometry, anchors: &BTreeMap<String, Value>, geometry: 
     }
 }
 
-fn flag(map: &BTreeMap<String, Value>, key: &str) -> bool {
+pub(crate) fn flag(map: &BTreeMap<String, Value>, key: &str) -> bool {
     matches!(map.get(key), Some(Value::Bool(true)))
 }
 
@@ -194,4 +222,3 @@ fn number(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
         _ => None,
     }
 }
-

@@ -1,8 +1,13 @@
+use mold_lua::{EventPoint, Runtime, UiEvent};
+use mold_wayland::LayerEvent;
+
+use crate::surfaces::*;
+
 // Touch handling, split out of `surface_events.rs` to keep each file inside
 // the repository's 500-line limit. Touch is self-contained: it owns the
 // `touches` map and shares nothing with the pointer path but the hit test.
 
-fn handle_touch_event(
+pub(crate) fn handle_touch_event(
     runtime: &mut Runtime,
     state: &mut SurfaceEventState,
     event: LayerEvent,

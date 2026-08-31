@@ -1,10 +1,18 @@
+use luna::{Callback, CallbackReturn, Context, Table, UserRef, Value as LuaValue};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use mold_scene::{AnimationEnd, Color, NodeHandle, Scene, SceneError, Value as SceneValue};
+
+use crate::{lua_values::*, reactive_bindings::*, scene_bindings::*, serialization::*, state::*};
+
 /// Installs `mold.animation`, the imperative control surface over motion that
 /// a `behavior` table has already declared.
 ///
 /// Every call names a node and one of its properties, because that pair is what
 /// the scene keys an animation by. Calls report whether they found an animation
 /// to act on, so Lua can branch without first asking whether one is running.
-fn install_animation_api<'gc>(
+pub(crate) fn install_animation_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -13,22 +21,19 @@ fn install_animation_api<'gc>(
 
     // Each control reads the same (node, property) pair and returns a boolean,
     // so they are built from one closure factory rather than repeated by hand.
-    let install_control = |name: &'static str,
-                               control: fn(
-        &mut Scene,
-        NodeHandle,
-        &str,
-    ) -> Result<bool, SceneError>| {
-        let state = Rc::clone(&state);
-        let callback = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-            let (node, property): (UserRef<NodeToken>, String) = stack.consume(ctx)?;
-            let found = control(&mut state.borrow_mut().scene, node.handle, &property)
-                .map_err(|error| HostError(error.to_string()))?;
-            stack.replace(ctx, found);
-            Ok(CallbackReturn::Return)
-        });
-        animation.set_field(ctx, name, callback);
-    };
+    let install_control =
+        |name: &'static str,
+         control: fn(&mut Scene, NodeHandle, &str) -> Result<bool, SceneError>| {
+            let state = Rc::clone(&state);
+            let callback = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+                let (node, property): (UserRef<NodeToken>, String) = stack.consume(ctx)?;
+                let found = control(&mut state.borrow_mut().scene, node.handle, &property)
+                    .map_err(|error| HostError(error.to_string()))?;
+                stack.replace(ctx, found);
+                Ok(CallbackReturn::Return)
+            });
+            animation.set_field(ctx, name, callback);
+        };
     install_control("stop", Scene::stop_animation);
     install_control("finish", Scene::finish_animation);
     install_control("restart", Scene::restart_animation);
@@ -93,7 +98,8 @@ fn install_animation_api<'gc>(
     let seek = Callback::from_fn(&ctx, {
         let state = Rc::clone(&state);
         move |ctx, _, mut stack| {
-            let (node, property, progress): (UserRef<NodeToken>, String, f64) = stack.consume(ctx)?;
+            let (node, property, progress): (UserRef<NodeToken>, String, f64) =
+                stack.consume(ctx)?;
             if !progress.is_finite() {
                 return Err(HostError("animation seek position must be finite".into()).into());
             }
@@ -136,7 +142,7 @@ fn install_animation_api<'gc>(
 /// values, or interpolating a compound the scene has no single property for.
 /// Every entry takes the same curve names a behavior's `easing` field accepts,
 /// including a cubic Bezier table.
-fn install_easing_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
+pub(crate) fn install_easing_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     let easing = Table::new(&ctx);
 
     let value = Callback::from_fn(&ctx, |ctx, _, mut stack| {
@@ -205,12 +211,16 @@ fn install_easing_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
         // or the `{ r, g, b, a }` table a colour reads back as.
         let read = |value| match lua_to_scene(ctx, value, 0).map_err(HostError)? {
             SceneValue::Color(color) => Ok(color),
-            SceneValue::String(name) => Color::parse(&name)
-                .ok_or_else(|| HostError(format!("`{name}` is not a colour"))),
+            SceneValue::String(name) => {
+                Color::parse(&name).ok_or_else(|| HostError(format!("`{name}` is not a colour")))
+            }
             _ => Err(HostError("easing colour must be a colour".into())),
         };
         let eased = curve.interpolate_color(progress, read(start)?, read(end)?);
-        stack.replace(ctx, scene_to_lua(ctx, &SceneValue::Color(eased)).map_err(HostError)?);
+        stack.replace(
+            ctx,
+            scene_to_lua(ctx, &SceneValue::Color(eased)).map_err(HostError)?,
+        );
         Ok(CallbackReturn::Return)
     });
     easing.set_field(ctx, "color", color);
@@ -219,7 +229,7 @@ fn install_easing_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
 }
 
 /// Rejects a non-finite argument before it reaches a curve.
-fn finite(value: f64, what: &str) -> Result<f64, HostError> {
+pub(crate) fn finite(value: f64, what: &str) -> Result<f64, HostError> {
     value
         .is_finite()
         .then_some(value)
@@ -227,7 +237,7 @@ fn finite(value: f64, what: &str) -> Result<f64, HostError> {
 }
 
 /// Reads a fixed set of numeric fields from a Lua table, defaulting absent ones.
-fn read_axes<'gc>(
+pub(crate) fn read_axes<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     axes: &[&str],
@@ -238,13 +248,15 @@ fn read_axes<'gc>(
             LuaValue::Nil => Ok(0.0),
             LuaValue::Integer(value) => Ok(value as f64),
             LuaValue::Number(value) if value.is_finite() => Ok(value),
-            _ => Err(HostError(format!("{what} `{axis}` must be a finite number"))),
+            _ => Err(HostError(format!(
+                "{what} `{axis}` must be a finite number"
+            ))),
         })
         .collect()
 }
 
 /// Names the reason an animation ended for the Lua callback that receives it.
-fn animation_end_name(end: AnimationEnd) -> &'static str {
+pub(crate) fn animation_end_name(end: AnimationEnd) -> &'static str {
     match end {
         AnimationEnd::Completed => "completed",
         AnimationEnd::Stopped => "stopped",

@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::time::Duration;
 
 use crate::Value;
 
@@ -29,17 +28,17 @@ pub enum ListChange {
 }
 
 #[derive(Clone, Debug)]
-struct Entry {
-    id: ModelId,
-    value: Value,
+pub(crate) struct Entry {
+    pub(crate) id: ModelId,
+    pub(crate) value: Value,
 }
 
 /// Mutable ordered values with stable item identity and a change journal.
 #[derive(Clone, Debug, Default)]
 pub struct ListModel {
-    next_id: u64,
-    entries: Vec<Entry>,
-    changes: Vec<ListChange>,
+    pub(crate) next_id: u64,
+    pub(crate) entries: Vec<Entry>,
+    pub(crate) changes: Vec<ListChange>,
 }
 
 impl ListModel {
@@ -157,13 +156,17 @@ impl ListModel {
         std::mem::take(&mut self.changes)
     }
 
-    fn allocate_id(&mut self) -> ModelId {
+    pub(crate) fn allocate_id(&mut self) -> ModelId {
         self.next_id = self.next_id.wrapping_add(1).max(1);
         ModelId(self.next_id)
     }
 }
 
-fn model_values_match(left: &Value, right: &Value, object_property: Option<&str>) -> bool {
+pub(crate) fn model_values_match(
+    left: &Value,
+    right: &Value,
+    object_property: Option<&str>,
+) -> bool {
     let Some(property) = object_property else {
         return left == right;
     };
@@ -205,13 +208,13 @@ pub enum ViewTransition {
 /// Fixed-extent vertical virtualization and transition tracker.
 #[derive(Clone, Debug)]
 pub struct VirtualList {
-    item_extent: f64,
-    viewport_extent: f64,
-    offset: f64,
-    overscan: usize,
-    columns: usize,
-    active: HashMap<ModelId, usize>,
-    initialized: bool,
+    pub(crate) item_extent: f64,
+    pub(crate) viewport_extent: f64,
+    pub(crate) offset: f64,
+    pub(crate) overscan: usize,
+    pub(crate) columns: usize,
+    pub(crate) active: HashMap<ModelId, usize>,
+    pub(crate) initialized: bool,
 }
 
 impl VirtualList {
@@ -351,50 +354,6 @@ impl VirtualList {
         self.active = visible.into_iter().collect();
         self.initialized = true;
         transitions
-    }
-}
-
-/// Inertial one-axis scrolling state used by Flickable and virtual views.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FlickState {
-    pub offset: f64,
-    pub velocity: f64,
-    pub minimum: f64,
-    pub maximum: f64,
-    pub deceleration: f64,
-}
-
-impl FlickState {
-    /// Applies a direct drag delta and stops inertial motion.
-    pub fn drag_by(&mut self, delta: f64) {
-        self.offset = (self.offset + delta).clamp(self.minimum, self.maximum);
-        self.velocity = 0.0;
-    }
-
-    /// Starts an inertial flick in property units per second.
-    pub fn release(&mut self, velocity: f64) {
-        self.velocity = if velocity.is_finite() { velocity } else { 0.0 };
-    }
-
-    /// Advances inertial motion and returns whether another frame is needed.
-    pub fn tick(&mut self, delta: Duration) -> bool {
-        if self.velocity == 0.0 {
-            return false;
-        }
-        let seconds = delta.as_secs_f64();
-        self.offset += self.velocity * seconds;
-        if self.offset <= self.minimum || self.offset >= self.maximum {
-            self.offset = self.offset.clamp(self.minimum, self.maximum);
-            self.velocity = 0.0;
-            return false;
-        }
-        let slowdown = self.deceleration.max(0.0) * seconds;
-        if self.velocity.abs() <= slowdown {
-            self.velocity = 0.0;
-        } else {
-            self.velocity -= slowdown.copysign(self.velocity);
-        }
-        self.velocity != 0.0
     }
 }
 

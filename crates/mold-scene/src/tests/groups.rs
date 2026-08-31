@@ -253,3 +253,25 @@ fn removing_a_targeted_node_drops_the_group_scheduling_for_it() {
         }]
     );
 }
+
+#[test]
+fn a_group_refuses_both_ways_of_asking_it_to_alternate() {
+    // A group has no per-pass direction, so it cannot alternate. It said so for
+    // the endless form and not for the counted one, which it accepted and then
+    // quietly ran a single time — the configuration got neither what it asked
+    // for nor an explanation.
+    let mut scene = Scene::new();
+    let rect = scene.create(Element::Rect);
+    for repeat in [Repeat::PingPong, Repeat::PingPongTimes(3)] {
+        let error = scene
+            .start_group(
+                AnimationStep::Sequential(vec![step(rect, "x", 100.0, 100)]),
+                repeat,
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("alternate"),
+            "{repeat:?} is refused with a reason: {error}"
+        );
+    }
+}

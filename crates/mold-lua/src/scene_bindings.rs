@@ -1,10 +1,20 @@
-fn create_node(state: &Rc<RefCell<ReactiveState>>, element: Element) -> NodeHandle {
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use std::cell::RefCell;
+use std::error::Error as StdError;
+use std::fmt;
+use std::rc::Rc;
+
+use mold_scene::{Behavior, Element, NodeHandle, Value as SceneValue};
+
+use crate::{reactive_bindings::*, serialization::*, state::*, surface_types::*};
+
+pub(crate) fn create_node(state: &Rc<RefCell<ReactiveState>>, element: Element) -> NodeHandle {
     let mut state = state.borrow_mut();
     state.scene_revision = state.scene_revision.wrapping_add(1);
     state.scene.create(element)
 }
 
-fn bump_property_signal(
+pub(crate) fn bump_property_signal(
     state: &mut ReactiveState,
     node: NodeHandle,
     property: &str,
@@ -18,7 +28,7 @@ fn bump_property_signal(
         return Ok(());
     };
     state.property_revision = state.property_revision.wrapping_add(1);
-    let value = ScriptValue::Integer(state.property_revision);
+    let value = IpcValue::Integer(state.property_revision);
     if let Some(active) = &mut state.active {
         active.writes.push((signal, value.clone()));
     } else {
@@ -33,7 +43,7 @@ fn bump_property_signal(
     Ok(())
 }
 
-fn assign_scene_property(
+pub(crate) fn assign_scene_property(
     state: &mut ReactiveState,
     node: NodeHandle,
     property: &str,
@@ -75,7 +85,7 @@ fn assign_scene_property(
     Ok(())
 }
 
-fn animate_scene_property(
+pub(crate) fn animate_scene_property(
     state: &mut ReactiveState,
     node: NodeHandle,
     property: &str,
@@ -117,11 +127,35 @@ fn animate_scene_property(
     Ok(())
 }
 
-fn node_userdata<'gc>(
+/// Wraps one scene node as a Lua handle.
+///
+/// The metatable is built once and shared by every node. Neither of its two
+/// callbacks captures anything about a particular node — both take the node off
+/// the stack as a `UserRef<NodeToken>` — so building a table and two closures
+/// per node allocated three objects per node that were all identical.
+pub(crate) fn node_userdata<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     handle: NodeHandle,
 ) -> UserData<'gc> {
+    let existing = state.borrow().node_metatable.clone();
+    let metatable = match existing {
+        Some(stashed) => ctx.fetch(&stashed),
+        None => {
+            let built = node_metatable(ctx, Rc::clone(&state));
+            state.borrow_mut().node_metatable = Some(ctx.stash(built));
+            built
+        }
+    };
+    let userdata = UserData::new_static(&ctx, NodeToken { handle });
+    userdata.set_metatable(ctx, Some(metatable));
+    userdata
+}
+
+pub(crate) fn node_metatable<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Table<'gc> {
     let read_state = Rc::clone(&state);
     let index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (node, key): (UserRef<NodeToken>, String) = stack.consume(ctx)?;
@@ -136,8 +170,8 @@ fn node_userdata<'gc>(
                 .scene
                 .children(node.handle)
                 .map_err(|error| HostError(error.to_string()))?
-                .into_iter()
-                .next();
+                .first()
+                .copied();
             match child {
                 Some(child) => {
                     stack.replace(ctx, node_userdata(ctx, Rc::clone(&read_state), child))
@@ -193,13 +227,11 @@ fn node_userdata<'gc>(
     let metatable = Table::new(&ctx);
     metatable.set_field(ctx, "__index", index);
     metatable.set_field(ctx, "__newindex", new_index);
-    let userdata = UserData::new_static(&ctx, NodeToken { handle });
-    userdata.set_metatable(ctx, Some(metatable));
-    userdata
+    metatable
 }
 
 #[derive(Debug)]
-struct HostError(String);
+pub(crate) struct HostError(pub(crate) String);
 
 impl fmt::Display for HostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -1,3 +1,14 @@
+use luna::Lua;
+use std::cell::RefCell;
+use std::error::Error as StdError;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::state::*;
+
 /// Execution limits applied independently to each loaded chunk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
@@ -52,10 +63,10 @@ impl StdError for Error {}
 
 /// The Luna VM owned behind mold's stable runtime boundary.
 pub struct Runtime {
-    lua: Lua,
-    limits: Limits,
-    reactive: Rc<RefCell<ReactiveState>>,
-    module_roots: Rc<RefCell<Vec<PathBuf>>>,
+    pub(crate) lua: Lua,
+    pub(crate) limits: Limits,
+    pub(crate) reactive: Rc<RefCell<ReactiveState>>,
+    pub(crate) module_roots: Rc<RefCell<Vec<PathBuf>>>,
 }
 
 /// Output metadata exposed to one per-screen Lua configuration instance.
@@ -75,13 +86,13 @@ pub struct Screen {
 }
 
 #[derive(Clone, Copy)]
-enum StorageKind {
+pub(crate) enum StorageKind {
     Data,
     State,
     Cache,
 }
 
-fn shell_storage_dir(shell_root: &Path, kind: StorageKind) -> Result<PathBuf, String> {
+pub(crate) fn shell_storage_dir(shell_root: &Path, kind: StorageKind) -> Result<PathBuf, String> {
     let (variable, fallback) = match kind {
         StorageKind::Data => ("XDG_DATA_HOME", ".local/share"),
         StorageKind::State => ("XDG_STATE_HOME", ".local/state"),
@@ -94,7 +105,7 @@ fn shell_storage_dir(shell_root: &Path, kind: StorageKind) -> Result<PathBuf, St
     Ok(base.join("mold").join(shell_storage_key(shell_root)))
 }
 
-fn shell_storage_key(shell_root: &Path) -> String {
+pub(crate) fn shell_storage_key(shell_root: &Path) -> String {
     let name = shell_root
         .file_name()
         .and_then(|name| name.to_str())
@@ -118,7 +129,7 @@ fn shell_storage_key(shell_root: &Path) -> String {
     format!("{name}-{hash:016x}")
 }
 
-fn launch_time_ms() -> u64 {
+pub(crate) fn launch_time_ms() -> u64 {
     static LAUNCH_TIME: OnceLock<u64> = OnceLock::new();
     *LAUNCH_TIME.get_or_init(|| {
         SystemTime::now()
@@ -130,7 +141,7 @@ fn launch_time_ms() -> u64 {
     })
 }
 
-fn rooted_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn rooted_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     if relative.len() > 4_096 || relative.as_bytes().contains(&0) {
         return Err("relative path is invalid".to_owned());
     }
@@ -141,7 +152,7 @@ fn rooted_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(root.join(relative))
 }
 
-fn icon_lookup_options(
+pub(crate) fn icon_lookup_options(
     name: &str,
     theme: Option<String>,
     size: Option<i64>,
@@ -162,7 +173,7 @@ fn icon_lookup_options(
     Ok((theme, size))
 }
 
-fn screen_density(screen: &Screen) -> Option<f64> {
+pub(crate) fn screen_density(screen: &Screen) -> Option<f64> {
     let (width, height) = (screen.width?, screen.height?);
     let (physical_width, physical_height) = screen.physical_size?;
     if width <= 0 || height <= 0 || physical_width <= 0 || physical_height <= 0 {
@@ -174,7 +185,7 @@ fn screen_density(screen: &Screen) -> Option<f64> {
     Some((horizontal + vertical) / 2.0)
 }
 
-fn screen_primary_orientation(screen: &Screen) -> &'static str {
+pub(crate) fn screen_primary_orientation(screen: &Screen) -> &'static str {
     let dimensions = screen
         .physical_size
         .or_else(|| screen.width.zip(screen.height));
@@ -184,7 +195,7 @@ fn screen_primary_orientation(screen: &Screen) -> &'static str {
     }
 }
 
-fn screen_orientation(screen: &Screen) -> &'static str {
+pub(crate) fn screen_orientation(screen: &Screen) -> &'static str {
     let primary = screen_primary_orientation(screen);
     match screen.transform.as_str() {
         "180" | "flipped_180" if primary == "portrait" => "inverted_portrait",

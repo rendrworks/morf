@@ -1,5 +1,8 @@
-impl LayerClient {
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{self};
 
+use crate::{surface_types::*, types::*};
+
+impl LayerClient {
     /// Sends one evdev keycode through the compositor virtual keyboard protocol.
     pub fn send_virtual_key(&mut self, keycode: u32, pressed: bool) -> bool {
         self.state.refresh_virtual_keyboard(&self.queue.handle());
@@ -163,4 +166,3 @@ impl LayerClient {
         self.state.text_input_manager.is_some() && self.state.seats.seats().next().is_some()
     }
 }
-

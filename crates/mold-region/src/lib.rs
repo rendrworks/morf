@@ -437,4 +437,4 @@ fn rectangles(window: Rect, mask: &[bool], rects: &mut Vec<Rect>) -> Result<(), 
 }
 
 #[cfg(test)]
-include!("tests.rs");
+mod tests;

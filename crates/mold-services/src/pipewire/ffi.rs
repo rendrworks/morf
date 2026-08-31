@@ -1,3 +1,10 @@
+use libloading::Library;
+use std::collections::BTreeMap;
+use std::ffi::{c_char, c_int, c_void};
+use std::fmt;
+use std::mem;
+use std::sync::Mutex;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipeWireNode {
     pub id: u32,
@@ -24,7 +31,7 @@ impl PipeWireVolume {
 }
 
 #[derive(Debug)]
-pub struct PipeWireError(String);
+pub struct PipeWireError(pub(crate) String);
 
 impl fmt::Display for PipeWireError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -35,126 +42,130 @@ impl fmt::Display for PipeWireError {
 impl std::error::Error for PipeWireError {}
 
 #[repr(C)]
-struct SpaList {
-    next: *mut SpaList,
-    prev: *mut SpaList,
+pub(crate) struct SpaList {
+    pub(crate) next: *mut SpaList,
+    pub(crate) prev: *mut SpaList,
 }
 
 #[repr(C)]
-struct SpaCallbacks {
-    funcs: *const c_void,
-    data: *mut c_void,
+pub(crate) struct SpaCallbacks {
+    pub(crate) funcs: *const c_void,
+    pub(crate) data: *mut c_void,
 }
 
 #[repr(C)]
-struct SpaHook {
-    link: SpaList,
-    cb: SpaCallbacks,
-    removed: Option<unsafe extern "C" fn(*mut SpaHook)>,
-    private: *mut c_void,
+pub(crate) struct SpaHook {
+    pub(crate) link: SpaList,
+    pub(crate) cb: SpaCallbacks,
+    pub(crate) removed: Option<unsafe extern "C" fn(*mut SpaHook)>,
+    pub(crate) private: *mut c_void,
 }
 
 impl SpaHook {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         unsafe { mem::zeroed() }
     }
 }
 
 #[repr(C)]
-struct SpaDictItem {
-    key: *const c_char,
-    value: *const c_char,
+pub(crate) struct SpaDictItem {
+    pub(crate) key: *const c_char,
+    pub(crate) value: *const c_char,
 }
 
 #[repr(C)]
-struct SpaDict {
-    flags: u32,
-    n_items: u32,
-    items: *const SpaDictItem,
+pub(crate) struct SpaDict {
+    pub(crate) flags: u32,
+    pub(crate) n_items: u32,
+    pub(crate) items: *const SpaDictItem,
 }
 
 #[repr(C)]
-struct SpaPod {
-    size: u32,
-    kind: u32,
+pub(crate) struct SpaPod {
+    pub(crate) size: u32,
+    pub(crate) kind: u32,
 }
 
 #[repr(C)]
-struct RegistryEvents {
-    version: u32,
-    global: Option<unsafe extern "C" fn(*mut c_void, u32, u32, *const c_char, u32, *const SpaDict)>,
-    global_remove: Option<unsafe extern "C" fn(*mut c_void, u32)>,
+pub(crate) struct RegistryEvents {
+    pub(crate) version: u32,
+    pub(crate) global:
+        Option<unsafe extern "C" fn(*mut c_void, u32, u32, *const c_char, u32, *const SpaDict)>,
+    pub(crate) global_remove: Option<unsafe extern "C" fn(*mut c_void, u32)>,
 }
 
 #[repr(C)]
-struct CoreEvents {
-    version: u32,
-    info: Option<unsafe extern "C" fn(*mut c_void, *const c_void)>,
-    done: Option<unsafe extern "C" fn(*mut c_void, u32, c_int)>,
-    ping: Option<unsafe extern "C" fn(*mut c_void, u32, c_int)>,
-    error: Option<unsafe extern "C" fn(*mut c_void, u32, c_int, c_int, *const c_char)>,
-    remove_id: Option<unsafe extern "C" fn(*mut c_void, u32)>,
-    bound_id: Option<unsafe extern "C" fn(*mut c_void, u32, u32)>,
-    add_mem: Option<unsafe extern "C" fn(*mut c_void, u32, u32, c_int, u32)>,
-    remove_mem: Option<unsafe extern "C" fn(*mut c_void, u32)>,
-    bound_props: Option<unsafe extern "C" fn(*mut c_void, u32, u32, *const SpaDict)>,
+pub(crate) struct CoreEvents {
+    pub(crate) version: u32,
+    pub(crate) info: Option<unsafe extern "C" fn(*mut c_void, *const c_void)>,
+    pub(crate) done: Option<unsafe extern "C" fn(*mut c_void, u32, c_int)>,
+    pub(crate) ping: Option<unsafe extern "C" fn(*mut c_void, u32, c_int)>,
+    pub(crate) error: Option<unsafe extern "C" fn(*mut c_void, u32, c_int, c_int, *const c_char)>,
+    pub(crate) remove_id: Option<unsafe extern "C" fn(*mut c_void, u32)>,
+    pub(crate) bound_id: Option<unsafe extern "C" fn(*mut c_void, u32, u32)>,
+    pub(crate) add_mem: Option<unsafe extern "C" fn(*mut c_void, u32, u32, c_int, u32)>,
+    pub(crate) remove_mem: Option<unsafe extern "C" fn(*mut c_void, u32)>,
+    pub(crate) bound_props: Option<unsafe extern "C" fn(*mut c_void, u32, u32, *const SpaDict)>,
 }
 
 #[repr(C)]
-struct NodeEvents {
-    version: u32,
-    info: Option<unsafe extern "C" fn(*mut c_void, *const c_void)>,
-    param: Option<unsafe extern "C" fn(*mut c_void, c_int, u32, u32, u32, *const SpaPod)>,
+pub(crate) struct NodeEvents {
+    pub(crate) version: u32,
+    pub(crate) info: Option<unsafe extern "C" fn(*mut c_void, *const c_void)>,
+    pub(crate) param:
+        Option<unsafe extern "C" fn(*mut c_void, c_int, u32, u32, u32, *const SpaPod)>,
 }
 
-struct CallbackState {
-    loop_ptr: *mut c_void,
-    nodes: Mutex<BTreeMap<u32, PipeWireNode>>,
-    done_seq: Mutex<c_int>,
-    error: Mutex<Option<String>>,
-    signal: unsafe extern "C" fn(*mut c_void, bool),
+pub(crate) struct CallbackState {
+    pub(crate) loop_ptr: *mut c_void,
+    pub(crate) nodes: Mutex<BTreeMap<u32, PipeWireNode>>,
+    pub(crate) done_seq: Mutex<c_int>,
+    pub(crate) error: Mutex<Option<String>>,
+    pub(crate) signal: unsafe extern "C" fn(*mut c_void, bool),
 }
 
-struct VolumeState {
-    volume: Mutex<PipeWireVolume>,
+pub(crate) struct VolumeState {
+    pub(crate) volume: Mutex<PipeWireVolume>,
 }
 
-struct Symbols {
-    init: unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char),
-    thread_loop_new: unsafe extern "C" fn(*const c_char, *const SpaDict) -> *mut c_void,
-    thread_loop_destroy: unsafe extern "C" fn(*mut c_void),
-    thread_loop_get_loop: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    thread_loop_start: unsafe extern "C" fn(*mut c_void) -> c_int,
-    thread_loop_stop: unsafe extern "C" fn(*mut c_void),
-    thread_loop_lock: unsafe extern "C" fn(*mut c_void),
-    thread_loop_unlock: unsafe extern "C" fn(*mut c_void),
-    thread_loop_wait: unsafe extern "C" fn(*mut c_void),
-    thread_loop_signal: unsafe extern "C" fn(*mut c_void, bool),
-    context_new: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void,
-    context_destroy: unsafe extern "C" fn(*mut c_void),
-    context_connect: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void,
-    core_disconnect: unsafe extern "C" fn(*mut c_void) -> c_int,
-    core_add_listener:
+pub(crate) struct Symbols {
+    pub(crate) init: unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char),
+    pub(crate) thread_loop_new: unsafe extern "C" fn(*const c_char, *const SpaDict) -> *mut c_void,
+    pub(crate) thread_loop_destroy: unsafe extern "C" fn(*mut c_void),
+    pub(crate) thread_loop_get_loop: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    pub(crate) thread_loop_start: unsafe extern "C" fn(*mut c_void) -> c_int,
+    pub(crate) thread_loop_stop: unsafe extern "C" fn(*mut c_void),
+    pub(crate) thread_loop_lock: unsafe extern "C" fn(*mut c_void),
+    pub(crate) thread_loop_unlock: unsafe extern "C" fn(*mut c_void),
+    pub(crate) thread_loop_wait: unsafe extern "C" fn(*mut c_void),
+    pub(crate) thread_loop_signal: unsafe extern "C" fn(*mut c_void, bool),
+    pub(crate) context_new: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void,
+    pub(crate) context_destroy: unsafe extern "C" fn(*mut c_void),
+    pub(crate) context_connect:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void,
+    pub(crate) core_disconnect: unsafe extern "C" fn(*mut c_void) -> c_int,
+    pub(crate) core_add_listener:
         unsafe extern "C" fn(*mut c_void, *mut SpaHook, *const CoreEvents, *mut c_void) -> c_int,
-    core_get_registry: unsafe extern "C" fn(*mut c_void, u32, usize) -> *mut c_void,
-    core_sync: unsafe extern "C" fn(*mut c_void, u32, c_int) -> c_int,
-    registry_add_listener: unsafe extern "C" fn(
+    pub(crate) core_get_registry: unsafe extern "C" fn(*mut c_void, u32, usize) -> *mut c_void,
+    pub(crate) core_sync: unsafe extern "C" fn(*mut c_void, u32, c_int) -> c_int,
+    pub(crate) registry_add_listener: unsafe extern "C" fn(
         *mut c_void,
         *mut SpaHook,
         *const RegistryEvents,
         *mut c_void,
     ) -> c_int,
-    registry_bind: unsafe extern "C" fn(*mut c_void, u32, *const c_char, u32, usize) -> *mut c_void,
-    node_add_listener:
+    pub(crate) registry_bind:
+        unsafe extern "C" fn(*mut c_void, u32, *const c_char, u32, usize) -> *mut c_void,
+    pub(crate) node_add_listener:
         unsafe extern "C" fn(*mut c_void, *mut SpaHook, *const NodeEvents, *mut c_void) -> c_int,
-    node_enum_params:
+    pub(crate) node_enum_params:
         unsafe extern "C" fn(*mut c_void, c_int, u32, u32, u32, *const SpaPod) -> c_int,
-    node_set_param: unsafe extern "C" fn(*mut c_void, u32, u32, *const SpaPod) -> c_int,
-    proxy_destroy: unsafe extern "C" fn(*mut c_void),
+    pub(crate) node_set_param: unsafe extern "C" fn(*mut c_void, u32, u32, *const SpaPod) -> c_int,
+    pub(crate) proxy_destroy: unsafe extern "C" fn(*mut c_void),
 }
 
 impl Symbols {
-    unsafe fn load(library: &Library) -> Result<Self, PipeWireError> {
+    pub(crate) unsafe fn load(library: &Library) -> Result<Self, PipeWireError> {
         macro_rules! symbol {
             ($name:literal) => {
                 *unsafe { library.get(concat!($name, "\0").as_bytes()) }
@@ -188,4 +199,3 @@ impl Symbols {
         })
     }
 }
-

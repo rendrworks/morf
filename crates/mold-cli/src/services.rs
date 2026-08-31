@@ -1,4 +1,15 @@
-fn lua_ipc_value(value: &WireValue) -> IpcValue {
+use mold_io::IpcValue as WireValue;
+use mold_lua::{
+    InputMethodRequest, IpcValue, Runtime, Screencopy as LuaScreencopy, TextInputRequest,
+    VirtualKeyboardRequest,
+};
+use mold_wayland::{InputRect, LayerClient, OutputPowerMode, ScreencopyFormat};
+use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
+
+use crate::lock::*;
+
+pub(crate) fn lua_ipc_value(value: &WireValue) -> IpcValue {
     match value {
         WireValue::Nil => IpcValue::Nil,
         WireValue::Boolean(value) => IpcValue::Boolean(*value),
@@ -8,7 +19,7 @@ fn lua_ipc_value(value: &WireValue) -> IpcValue {
     }
 }
 
-fn wire_ipc_value(value: &IpcValue) -> WireValue {
+pub(crate) fn wire_ipc_value(value: &IpcValue) -> WireValue {
     match value {
         IpcValue::Nil => WireValue::Nil,
         IpcValue::Boolean(value) => WireValue::Boolean(*value),
@@ -18,7 +29,7 @@ fn wire_ipc_value(value: &IpcValue) -> WireValue {
     }
 }
 
-fn apply_output_power_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+pub(crate) fn apply_output_power_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     for on in runtime.take_output_power_requests() {
         client.set_output_power(if on {
             OutputPowerMode::On
@@ -28,7 +39,7 @@ fn apply_output_power_requests(runtime: &mut Runtime, client: &mut LayerClient) 
     }
 }
 
-fn apply_clipboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+pub(crate) fn apply_clipboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     if !client.can_set_clipboard() {
         return;
     }
@@ -37,7 +48,7 @@ fn apply_clipboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     }
 }
 
-fn apply_screencopy_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+pub(crate) fn apply_screencopy_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     for request in runtime.take_screencopy_requests() {
         if !client.capture_output(request.id, request.include_cursor) {
             runtime.dispatch_screencopy(request.id, Err("screencopy is unavailable".to_owned()));
@@ -45,7 +56,7 @@ fn apply_screencopy_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     }
 }
 
-fn dispatch_screencopy(
+pub(crate) fn dispatch_screencopy(
     runtime: &mut Runtime,
     request_id: u64,
     result: Result<mold_wayland::ScreencopyFrame, String>,
@@ -67,7 +78,7 @@ fn dispatch_screencopy(
     )
 }
 
-fn apply_virtual_keyboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+pub(crate) fn apply_virtual_keyboard_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     for request in runtime.take_virtual_keyboard_requests() {
         match request {
             VirtualKeyboardRequest::Key { keycode, pressed } => {
@@ -85,7 +96,7 @@ fn apply_virtual_keyboard_requests(runtime: &mut Runtime, client: &mut LayerClie
     }
 }
 
-fn apply_input_method_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+pub(crate) fn apply_input_method_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     if runtime.take_input_method_enable_request() {
         client.enable_input_method();
     }
@@ -104,7 +115,7 @@ fn apply_input_method_requests(runtime: &mut Runtime, client: &mut LayerClient) 
     }
 }
 
-fn apply_text_input_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+pub(crate) fn apply_text_input_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     if runtime.take_text_input_enable_request() {
         client.enable_text_input();
     }
@@ -140,7 +151,7 @@ fn apply_text_input_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     }
 }
 
-fn stop_workers(workers: BTreeMap<String, Worker>) {
+pub(crate) fn stop_workers(workers: BTreeMap<String, Worker>) {
     for worker in workers.values() {
         worker.stop.store(true, Ordering::Release);
     }
@@ -148,4 +159,3 @@ fn stop_workers(workers: BTreeMap<String, Worker>) {
         let _ = worker.join.join();
     }
 }
-

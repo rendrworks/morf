@@ -99,21 +99,3 @@ fn reconcile_preserves_ids_across_reorder_and_updates() {
             .any(|change| matches!(change, ListChange::Removed { index: 3, .. }))
     );
 }
-
-#[test]
-fn flick_can_reverse_without_resetting_position() {
-    let mut flick = FlickState {
-        offset: 100.0,
-        velocity: 0.0,
-        minimum: 0.0,
-        maximum: 1_000.0,
-        deceleration: 1_000.0,
-    };
-    flick.release(500.0);
-    assert!(flick.tick(Duration::from_millis(100)));
-    let before = flick.offset;
-    flick.release(-500.0);
-    assert_eq!(flick.offset, before);
-    assert!(flick.tick(Duration::from_millis(10)));
-    assert!(flick.offset < before);
-}

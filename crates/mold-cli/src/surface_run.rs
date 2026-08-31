@@ -1,4 +1,18 @@
-fn run_surface(
+use mold_lua::{Limits, Runtime, Screen};
+use mold_render::{RenderEngine, WgpuBackend};
+use mold_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, ScreenInfo};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use crate::{
+    config::*, lock::*, pacing::*, paint::*, services::*, supervisor::*, surface_actions::*,
+    surface_events::*, surface_layers::*, surfaces::*, workers::*,
+};
+
+pub(crate) fn run_surface(
     path: &Path,
     source: &[u8],
     screen: ScreenInfo,
@@ -59,7 +73,6 @@ fn run_surface(
                 | LayerEvent::Closed { .. }
                 | LayerEvent::Scale { .. }
                 | LayerEvent::Idle { .. }
-                | LayerEvent::OutputPower { .. }
                 | LayerEvent::Clipboard { .. }
                 | LayerEvent::InputMethod(_)
                 | LayerEvent::TextInput(_)
@@ -73,7 +86,6 @@ fn run_surface(
                 | LayerEvent::TouchUp { .. }
                 | LayerEvent::TouchCancel
                 | LayerEvent::Key { .. }
-                | LayerEvent::Modifiers { .. }
                 | LayerEvent::Screens(_)
                 | LayerEvent::PopupConfigure { .. }
                 | LayerEvent::PopupFrame { .. }
@@ -102,7 +114,8 @@ fn run_surface(
         .update_clock(&clock)
         .map_err(|error| error.to_string())?;
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
-    let layout = paint(&runtime, &mut renderer, &client)?;
+    let primary_root = primary_surface_root(&runtime)?;
+    let layout = paint(&runtime, &mut renderer, &client, primary_root, None)?;
     let mut popup_surfaces = HashMap::new();
     let mut floating_surfaces = HashMap::new();
     let mut layer_surfaces = HashMap::new();
@@ -116,18 +129,18 @@ fn run_surface(
         &mut layer_surfaces,
         &name,
     )?;
-    apply_output_power_requests(&mut runtime, &mut client);
-    apply_screencopy_requests(&mut runtime, &mut client);
-    apply_virtual_keyboard_requests(&mut runtime, &mut client);
-    apply_input_method_requests(&mut runtime, &mut client);
-    apply_text_input_requests(&mut runtime, &mut client);
+    apply_service_requests(&mut runtime, &mut client);
 
     let mut state = SurfaceEventState {
         layout,
+        primary_root,
         popup_surfaces,
         floating_surfaces,
         layer_surfaces,
         last_frame: None,
+        pacer: FramePacer::new(),
+        // Until a callback says otherwise, assume the commonest refresh.
+        refresh: Duration::from_micros(16_667),
         hovered: None,
         pressed: None,
         focused: HashMap::new(),
@@ -206,6 +219,8 @@ fn run_surface(
             repaint = true;
         }
         if runtime.take_window_surface_change() {
+            // The only thing that can move the primary root.
+            state.primary_root = primary_surface_root(&runtime)?;
             repaint |= sync_window_surfaces(
                 &runtime,
                 &mut client,
@@ -215,12 +230,7 @@ fn run_surface(
                 &name,
             )?;
         }
-        apply_output_power_requests(&mut runtime, &mut client);
-        apply_clipboard_requests(&mut runtime, &mut client);
-        apply_screencopy_requests(&mut runtime, &mut client);
-        apply_virtual_keyboard_requests(&mut runtime, &mut client);
-        apply_input_method_requests(&mut runtime, &mut client);
-        apply_text_input_requests(&mut runtime, &mut client);
+        apply_service_requests(&mut runtime, &mut client);
         if next_clock != clock {
             clock = next_clock;
             repaint |= runtime
@@ -238,15 +248,26 @@ fn run_surface(
                 &name,
             )?;
         }
-        apply_clipboard_requests(&mut runtime, &mut client);
-        apply_screencopy_requests(&mut runtime, &mut client);
-        apply_virtual_keyboard_requests(&mut runtime, &mut client);
-        apply_input_method_requests(&mut runtime, &mut client);
-        apply_text_input_requests(&mut runtime, &mut client);
+        apply_service_requests(&mut runtime, &mut client);
         apply_window_surface_actions(&mut runtime, &client, &state.floating_surfaces);
         if repaint {
+            let painted = Instant::now();
+            // Before anything is drawn, tell the renderer what died. Its caches
+            // are keyed on nodes and it has no other way to find out; without
+            // this a shaped text buffer survives every view switch for the life
+            // of the process.
+            let removed = runtime.take_removed_nodes();
+            if !removed.is_empty() {
+                renderer.backend_mut().forget_nodes(&removed);
+            }
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
-            state.layout = paint(&runtime, &mut renderer, &client)?;
+            state.layout = paint(
+                &runtime,
+                &mut renderer,
+                &client,
+                state.primary_root,
+                Some(&state.layout),
+            )?;
             for surface in state
                 .popup_surfaces
                 .values_mut()
@@ -268,6 +289,9 @@ fn run_surface(
             {
                 paint_layer_surface(&runtime, &client, surface)?;
             }
+            // What this frame actually cost, which is what the next one is
+            // paced against.
+            state.pacer.observed(painted.elapsed());
         }
     }
 }

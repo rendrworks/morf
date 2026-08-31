@@ -1,6 +1,8 @@
 use cosmic_text::fontdb::Source;
 use mold_scene::{Element, Scene};
 
+use mold_layout::TextMeasurer;
+
 use super::*;
 
 #[test]

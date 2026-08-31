@@ -1,23 +1,50 @@
+use crate::helpers::anchors;
+use crate::helpers::apply_anchors;
+use crate::helpers::clamp_layout;
+use crate::helpers::flag;
+use crate::helpers::layout_number;
+use crate::helpers::reject_axis_conflict;
+use std::collections::{BTreeMap, HashMap};
+
+use mold_scene::{Behavior, Element, FastMap, NodeHandle, Scene, Value};
+
+use crate::geometry::TextOptions;
+use crate::geometry::{Geometry, Size, TextMeasurer};
+use crate::helpers::{
+    LayoutError, attached_layout, grid_columns, grid_size, positive, sum_with_spacing,
+    text_alignment, text_elide,
+};
+use crate::transform::{distributed_margin, inset_margin};
+
 /// Complete layout output keyed by stable node handles.
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
-    geometry: HashMap<NodeHandle, Geometry>,
-    implicit: HashMap<NodeHandle, Size>,
+    pub(crate) geometry: FastMap<NodeHandle, Geometry>,
+    pub(crate) implicit: FastMap<NodeHandle, Size>,
+    /// The size each node asked for, worked out once.
+    ///
+    /// Resolving it means reading five properties and parsing the attached
+    /// layout map, and every node is asked at least twice in a pass — once
+    /// while its parent measures, once while its parent places it, and again
+    /// for a node inside a `RowLayout` or `ColumnLayout`. The answer cannot
+    /// change between those, so it is worked out where the implicit size is and
+    /// looked up thereafter.
+    pub(crate) requested: FastMap<NodeHandle, Size>,
 }
 
 /// Cached layout geometry used by native transform watchers.
 #[derive(Debug, Default)]
 pub struct TransformTracker {
-    geometry: HashMap<NodeHandle, Geometry>,
+    pub(crate) geometry: FastMap<NodeHandle, Geometry>,
 }
 
 /// Watches the geometry and transform chain between two scene nodes.
 #[derive(Clone, Debug)]
 pub struct TransformWatcher {
-    a: NodeHandle,
-    b: NodeHandle,
-    common_parent: Option<NodeHandle>,
-    signature: Option<u64>,
+    pub(crate) a: NodeHandle,
+    pub(crate) b: NodeHandle,
+    pub(crate) common_parent: Option<NodeHandle>,
+    pub(crate) signature: Option<u64>,
 }
 
 /// Inputs for an animated parent and anchor change.
@@ -114,9 +141,11 @@ impl Layout {
     ) -> Result<Size, LayoutError> {
         let children = scene.children(node)?;
         let mut child_sizes = Vec::with_capacity(children.len());
-        for child in &children {
-            let implicit = self.measure_implicit(scene, *child, text)?;
-            child_sizes.push(self.requested_size(scene, *child, implicit)?);
+        for &child in children {
+            let implicit = self.measure_implicit(scene, child, text)?;
+            let requested = self.requested_size(scene, child, implicit)?;
+            self.requested.insert(child, requested);
+            child_sizes.push(requested);
         }
 
         let size = match scene.element(node)? {
@@ -190,7 +219,6 @@ impl Layout {
             Element::Item
             | Element::Rect
             | Element::ClipRect
-            | Element::Shape
             | Element::Sdf
             | Element::SdfShape
             | Element::MouseArea
@@ -226,16 +254,16 @@ impl Layout {
         let implicit_width = positive(scene.number(node, "implicit_width")?);
         let implicit_height = positive(scene.number(node, "implicit_height")?);
         let width = positive(scene.number(node, "width")?)
-            .or_else(|| layout_number(&attached, "preferred_width"))
+            .or_else(|| layout_number(attached, "preferred_width"))
             .or(implicit_width)
             .unwrap_or(implicit.width);
         let height = positive(scene.number(node, "height")?)
-            .or_else(|| layout_number(&attached, "preferred_height"))
+            .or_else(|| layout_number(attached, "preferred_height"))
             .or(implicit_height)
             .unwrap_or(implicit.height);
         Ok(Size {
-            width: clamp_layout(width, &attached, "minimum_width", "maximum_width"),
-            height: clamp_layout(height, &attached, "minimum_height", "maximum_height"),
+            width: clamp_layout(width, attached, "minimum_width", "maximum_width"),
+            height: clamp_layout(height, attached, "minimum_height", "maximum_height"),
         })
     }
 
@@ -278,7 +306,7 @@ impl Layout {
             grid_widths.resize(columns, 0.0_f64);
             grid_heights.resize(children.len().div_ceil(columns), 0.0_f64);
             for (index, child) in children.iter().enumerate() {
-                let size = self.requested_size(scene, *child, self.implicit[child])?;
+                let size = self.requested[child];
                 grid_widths[index % columns] = grid_widths[index % columns].max(size.width);
                 grid_heights[index / columns] = grid_heights[index / columns].max(size.height);
             }
@@ -288,19 +316,19 @@ impl Layout {
             let horizontal = parent_element == Element::RowLayout;
             let mut occupied = spacing * children.len().saturating_sub(1) as f64;
             let mut fillers = Vec::new();
-            for child in &children {
-                let size = self.requested_size(scene, *child, self.implicit[child])?;
+            for &child in children {
+                let size = self.requested[&child];
                 occupied += if horizontal { size.width } else { size.height };
-                let attached = attached_layout(scene.current(*child, "layout")?)?;
+                let attached = attached_layout(scene.current(child, "layout")?)?;
                 if flag(
-                    &attached,
+                    attached,
                     if horizontal {
                         "fill_width"
                     } else {
                         "fill_height"
                     },
                 ) {
-                    fillers.push(*child);
+                    fillers.push(child);
                 }
             }
             let available = if horizontal {
@@ -314,11 +342,10 @@ impl Layout {
             }
         }
 
-        for (position, child) in children.into_iter().enumerate() {
-            let implicit = self.implicit[&child];
-            let size = self.requested_size(scene, child, implicit)?;
+        for (position, &child) in children.iter().enumerate() {
+            let size = self.requested[&child];
             let anchors = anchors(scene.current(child, "anchors")?)?;
-            reject_axis_conflict(parent_element, &anchors)?;
+            reject_axis_conflict(parent_element, anchors)?;
             let mut geometry = Geometry {
                 x: scene.number(child, "x")?,
                 y: scene.number(child, "y")?,
@@ -344,16 +371,16 @@ impl Layout {
                 }
             } else if parent_element == Element::RowLayout {
                 geometry.width += growth.get(&child).copied().unwrap_or(0.0);
-                if flag(&attached, "fill_height") {
+                if flag(attached, "fill_height") {
                     geometry.height = parent_geometry.height;
                 }
             } else if parent_element == Element::ColumnLayout {
                 geometry.height += growth.get(&child).copied().unwrap_or(0.0);
-                if flag(&attached, "fill_width") {
+                if flag(attached, "fill_width") {
                     geometry.width = parent_geometry.width;
                 }
             }
-            apply_anchors(parent_geometry, &anchors, &mut geometry);
+            apply_anchors(parent_geometry, anchors, &mut geometry);
             match parent_element {
                 Element::Row | Element::RowLayout => {
                     geometry.x = cursor;
@@ -370,10 +397,10 @@ impl Layout {
                         grid_widths[..column].iter().sum::<f64>() + column_spacing * column as f64;
                     geometry.y = grid_heights[..row].iter().sum::<f64>() + row_spacing * row as f64;
                     if parent_element == Element::GridLayout {
-                        if flag(&attached, "fill_width") {
+                        if flag(attached, "fill_width") {
                             geometry.width = grid_widths[column];
                         }
-                        if flag(&attached, "fill_height") {
+                        if flag(attached, "fill_height") {
                             geometry.height = grid_heights[row];
                         }
                     }

@@ -1,13 +1,25 @@
-struct ApiModules<'gc> {
-    mold: Table<'gc>,
-    core: Table<'gc>,
-    ui: Table<'gc>,
-    io: Table<'gc>,
-    json: Table<'gc>,
-    window: Table<'gc>,
+use luna::{Callback, CallbackReturn, Context, Lua, Table, Value as LuaValue};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use crate::{
+    api_animation::*, api_file::*, api_fling::*, api_group::*, api_host::*, api_image::*,
+    api_menu::*, api_module::*, api_process::*, api_retention::*, api_shell::*, api_signal::*,
+    api_socket::*, api_system::*, api_time::*, api_transform::*, api_ui_json::*, api_view::*,
+    scene_bindings::*, serialization::*, state::*, types::*,
+};
+
+pub(crate) struct ApiModules<'gc> {
+    pub(crate) mold: Table<'gc>,
+    pub(crate) core: Table<'gc>,
+    pub(crate) ui: Table<'gc>,
+    pub(crate) io: Table<'gc>,
+    pub(crate) json: Table<'gc>,
+    pub(crate) window: Table<'gc>,
 }
 
-fn finish_reactive_api<'gc>(
+pub(crate) fn finish_reactive_api<'gc>(
     ctx: Context<'gc>,
     modules: ApiModules<'gc>,
     module_roots: Rc<RefCell<Vec<PathBuf>>>,
@@ -76,7 +88,7 @@ fn finish_reactive_api<'gc>(
         }),
     );
 }
-fn install_reactive_api(
+pub(crate) fn install_reactive_api(
     lua: &mut Lua,
     state: Rc<RefCell<ReactiveState>>,
     module_roots: Rc<RefCell<Vec<PathBuf>>>,
@@ -94,6 +106,7 @@ fn install_reactive_api(
         install_animation_api(ctx, Rc::clone(&state), mold);
         install_easing_api(ctx, mold);
         install_group_api(ctx, Rc::clone(&state), mold);
+        install_fling_api(ctx, Rc::clone(&state), mold);
         install_host_service_api(ctx, Rc::clone(&state), mold, screen);
         install_view_api(ctx, Rc::clone(&state), mold, limits);
         install_process_api(ctx, mold);

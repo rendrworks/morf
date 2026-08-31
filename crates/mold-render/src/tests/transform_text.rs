@@ -293,14 +293,10 @@ fn distance_field_edge_style_reaches_the_draw_list() {
     scene.assign(icon, "height", 32.0).unwrap();
     scene.assign(icon, "source", "star.svg").unwrap();
     scene.assign(icon, "distance_field", true).unwrap();
-    scene.assign(icon, "distance_field_weight", 0.38).unwrap();
-    scene.assign(icon, "distance_field_softness", 1.5).unwrap();
-    scene
-        .assign(icon, "distance_field_outline_width", 2.0)
-        .unwrap();
-    scene
-        .assign(icon, "distance_field_outline_color", "#ff0000")
-        .unwrap();
+    scene.assign(icon, "thickness", 0.38).unwrap();
+    scene.assign(icon, "softness", 1.5).unwrap();
+    scene.assign(icon, "outline_width", 2.0).unwrap();
+    scene.assign(icon, "outline_color", "#ff0000").unwrap();
     scene.reparent(icon, Some(root)).unwrap();
     let layout = Layout::compute(
         &scene,
@@ -321,7 +317,7 @@ fn distance_field_edge_style_reaches_the_draw_list() {
     else {
         panic!("image did not emit a texture command");
     };
-    assert_eq!(distance_field_style.weight, 0.38);
+    assert_eq!(distance_field_style.thickness, 0.38);
     assert_eq!(distance_field_style.softness, 1.5);
     assert_eq!(distance_field_style.outline_width, 2.0);
     assert_eq!(
@@ -349,7 +345,7 @@ fn animating_the_field_edge_repaints_without_touching_the_cached_field() {
     let layout = Layout::compute(&scene, root, size, &mut NoText).unwrap();
     let before = DrawList::from_scene(&scene, &layout).unwrap();
 
-    scene.assign(icon, "distance_field_weight", 0.42).unwrap();
+    scene.assign(icon, "thickness", 0.42).unwrap();
     let layout = Layout::compute(&scene, root, size, &mut NoText).unwrap();
     let after = DrawList::from_scene(&scene, &layout).unwrap();
 

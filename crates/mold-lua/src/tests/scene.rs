@@ -1,3 +1,10 @@
+use crate::*;
+use mold_layout::Layout;
+use mold_scene::Element;
+use std::time::Duration;
+
+use super::*;
+
 #[test]
 fn inset_is_native_and_rejects_ambiguous_children() {
     let mut runtime = Runtime::default();
@@ -156,7 +163,7 @@ fn transform_watcher_dispatches_after_rendered_geometry_changes() {
 }
 
 #[test]
-fn lua_constructs_image_icon_and_shape_elements() {
+fn lua_constructs_image_icon_and_field_elements() {
     let mut runtime = Runtime::default();
     runtime
         .execute(
@@ -166,10 +173,9 @@ fn lua_constructs_image_icon_and_shape_elements() {
                 ui.Item {
                     ui.Image { source = "/tmp/picture.png", width = 64, height = 32 },
                     ui.Icon { name = "battery", theme = "hicolor", width = 24, height = 24 },
-                    ui.Shape {
-                      path = "M0 0 L16 0 L8 16 Z",
-                      fill_color = "white",
-                      stroke_width = 1,
+                    ui.Sdf {
+                      width = 32, height = 32,
+                      ui.SdfShape { width = 32, height = 32, shape = "triangle" },
                     },
                 }
             "#,
@@ -177,16 +183,13 @@ fn lua_constructs_image_icon_and_shape_elements() {
         .unwrap();
 
     let root = runtime.scene().roots()[0];
-    let children = runtime.scene().children(root).unwrap();
+    let children = runtime.scene().children(root).unwrap().to_vec();
     assert_eq!(
         runtime.scene().element(children[0]).unwrap(),
         Element::Image
     );
     assert_eq!(runtime.scene().element(children[1]).unwrap(), Element::Icon);
-    assert_eq!(
-        runtime.scene().element(children[2]).unwrap(),
-        Element::Shape
-    );
+    assert_eq!(runtime.scene().element(children[2]).unwrap(), Element::Sdf);
 }
 
 #[test]
@@ -234,7 +237,7 @@ fn mouse_area_emits_clicked() {
         )
         .unwrap();
     let root = runtime.scene().roots()[0];
-    let children = runtime.scene().children(root).unwrap();
+    let children = runtime.scene().children(root).unwrap().to_vec();
 
     assert!(!runtime.accepts_pointer_button(children[1], 0x110));
     assert!(runtime.accepts_pointer_button(children[1], 0x111));
@@ -271,7 +274,7 @@ fn key_handlers_receive_keysym_and_text() {
         )
         .unwrap();
     let root = runtime.scene().roots()[0];
-    let children = runtime.scene().children(root).unwrap();
+    let children = runtime.scene().children(root).unwrap().to_vec();
 
     assert!(runtime.dispatch_key_event(children[0], 65, Some("A")));
     assert_eq!(
@@ -312,11 +315,10 @@ fn keyboard_focus_routes_ancestors_and_cycles() {
         .unwrap();
     let root = runtime.scene().roots()[0];
     let second_root = runtime.scene().roots()[1];
-    let children = runtime.scene().children(root).unwrap();
+    let children = runtime.scene().children(root).unwrap().to_vec();
     let second_target = runtime.scene().children(second_root).unwrap()[0];
     let nested = runtime.scene().children(children[0]).unwrap()[0];
 
-    assert_eq!(runtime.first_key_target(), Some(children[1]));
     assert_eq!(runtime.key_target_for_node(nested), Some(children[0]));
     assert!(runtime.node_in_subtree(root, nested));
     assert!(!runtime.node_in_subtree(second_root, nested));
@@ -325,13 +327,15 @@ fn keyboard_focus_routes_ancestors_and_cycles() {
         runtime.first_key_target_in(second_root),
         Some(second_target)
     );
-    assert_eq!(
-        runtime.next_key_target(Some(children[1])),
-        Some(second_target)
-    );
+    // Traversal is scoped to one root: Tab cycles within the surface that has
+    // focus and does not wander into another surface's tree.
     assert_eq!(
         runtime.next_key_target_in(root, Some(children[1])),
         Some(children[0])
+    );
+    assert_eq!(
+        runtime.next_key_target_in(second_root, None),
+        Some(second_target)
     );
 }
 
@@ -427,7 +431,7 @@ fn a_distance_field_composes_animatable_layers_from_lua() {
     let (root, layers) = {
         let scene = runtime.scene();
         let root = scene.roots()[0];
-        (root, scene.children(root).unwrap())
+        (root, scene.children(root).unwrap().to_vec())
     };
     assert_eq!(runtime.scene().element(root).unwrap(), Element::Sdf);
     assert_eq!(layers.len(), 2);

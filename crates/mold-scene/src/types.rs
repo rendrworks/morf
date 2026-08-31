@@ -1,10 +1,22 @@
+use mold_reactive::{Graph, SignalId};
+use slotmap::{SlotMap, new_key_type};
+use std::collections::{BTreeMap, HashMap};
+
+use crate::{animation::*, groups::*, hashing::*};
+
 new_key_type! {
-    struct NodeId;
+    pub(crate) struct NodeId;
 }
 
 /// A generational scene node handle safe to retain outside the arena.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct NodeHandle(NodeId);
+pub struct NodeHandle(pub(crate) NodeId);
+
+impl NodeHandle {
+    pub(crate) fn id(self) -> NodeId {
+        self.0
+    }
+}
 
 /// Element kinds implemented by the first scene milestone.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,8 +35,6 @@ pub enum Element {
     Image,
     /// XDG icon-theme image primitive.
     Icon,
-    /// Tessellated SVG path primitive.
-    Shape,
     /// Signed-distance field composed from its `SdfShape` children.
     Sdf,
     /// One analytic distance field inside an [`Element::Sdf`].
@@ -57,7 +67,7 @@ pub enum Element {
 }
 
 impl Element {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Item => "Item",
             Self::Inset => "Inset",
@@ -66,7 +76,6 @@ impl Element {
             Self::Text => "Text",
             Self::Image => "Image",
             Self::Icon => "Icon",
-            Self::Shape => "Shape",
             Self::Sdf => "Sdf",
             Self::SdfShape => "SdfShape",
             Self::MouseArea => "MouseArea",
@@ -197,41 +206,63 @@ impl From<String> for Value {
 
 /// Scene arena and its property signal graph.
 pub struct Scene {
-    nodes: SlotMap<NodeId, Node>,
-    properties: Graph<Value>,
-    behaviors: HashMap<PropertyKey, Behavior>,
-    animations: HashMap<PropertyKey, Animation>,
-    physics: HashMap<PropertyKey, PhysicsAnimation>,
-    physics_specs: HashMap<PropertyKey, Physics>,
-    paused_physics: HashSet<PropertyKey>,
-    events: Vec<AnimationEvent>,
-    groups: HashMap<GroupId, RunningGroup>,
-    group_events: Vec<GroupEvent>,
-    next_group: u64,
+    pub(crate) nodes: SlotMap<NodeId, Node>,
+    pub(crate) properties: Graph<Value>,
+    pub(crate) behaviors: FastMap<PropertyKey, Behavior>,
+    pub(crate) animations: FastMap<PropertyKey, Animation>,
+    pub(crate) physics: FastMap<PropertyKey, PhysicsAnimation>,
+    pub(crate) physics_specs: FastMap<PropertyKey, Physics>,
+    pub(crate) paused_physics: FastSet<PropertyKey>,
+    pub(crate) events: Vec<AnimationEvent>,
+    pub(crate) groups: HashMap<GroupId, RunningGroup>,
+    pub(crate) group_events: Vec<GroupEvent>,
+    pub(crate) next_group: u64,
+    /// Bumped whenever something that layout reads changes.
+    ///
+    /// Layout is the most expensive thing a frame does — it walks the whole
+    /// tree measuring, resolving anchors and placing children — and most frames
+    /// change nothing it reads. A colour easing, a morph advancing, an opacity
+    /// fading: none of them move a box. Recording when the geometry last
+    /// actually moved lets a paint reuse the layout it already has.
+    pub(crate) layout_revision: u64,
+    /// Nodes destroyed since anyone last asked.
+    ///
+    /// Every cache keyed on a node lives outside this crate — shaped text
+    /// buffers in `mold-text`, transforms in `mold-lua`, atlases in the GPU
+    /// backend — and none of them can see a node die. Without a signal that
+    /// crosses the boundary they grow for the life of the process, and each one
+    /// grew its own eviction method that nothing ever called. This is that
+    /// signal: the scene records what it destroyed and whoever drives the frame
+    /// hands the list to everything holding node-keyed state.
+    pub(crate) removed: Vec<NodeHandle>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct PropertyKey {
-    node: NodeId,
-    property: &'static str,
+pub(crate) struct PropertyKey {
+    pub(crate) node: NodeId,
+    pub(crate) property: &'static str,
 }
 
-struct Node {
-    element: Element,
-    parent: Option<NodeId>,
-    children: Vec<NodeId>,
-    properties: HashMap<&'static str, PropertySlot>,
-}
-
-#[derive(Clone, Copy)]
-struct PropertySlot {
-    current: SignalId,
-    target: SignalId,
-    kind: PropertyType,
+pub(crate) struct Node {
+    pub(crate) element: Element,
+    pub(crate) parent: Option<NodeId>,
+    // Handles rather than raw ids so the children can be handed out as a
+    // borrowed slice. Every tree walk in the engine asks for them — layout does
+    // it five times per node, and paint and hit testing once each — so building
+    // a fresh Vec per call put hundreds of allocations in every frame.
+    pub(crate) children: Vec<NodeHandle>,
+    pub(crate) properties: FastMap<&'static str, PropertySlot>,
 }
 
 #[derive(Clone, Copy)]
-enum PropertyType {
+pub(crate) struct PropertySlot {
+    pub(crate) current: SignalId,
+    pub(crate) target: SignalId,
+    pub(crate) kind: PropertyType,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PropertyType {
     Any,
     Bool,
     Number,

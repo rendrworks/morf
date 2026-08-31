@@ -1,4 +1,19 @@
-fn install_view_api<'gc>(
+use luna::{
+    Callback, CallbackReturn, Closure, Context, Executor, Table, UserData, UserRef,
+    Value as LuaValue, Variadic,
+};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use mold_scene::{Behavior, ListModel, Value as SceneValue, VirtualList};
+
+use crate::{
+    lua_values::*, reactive_bindings::*, reactive_execute::*, scene_bindings::*, serialization::*,
+    state::*, surface_types::*, table_menu::*, types::*, views::*,
+};
+
+pub(crate) fn install_view_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -18,34 +33,23 @@ fn install_view_api<'gc>(
         }
         values.sort_by_key(|(index, _)| *index);
         let instances = Table::new(&ctx);
+        // One budget for the whole call, not one per entry. Every factory here
+        // runs from a single `mold.variants`, so giving each of up to 256 items
+        // a full effect budget would let one construction spend 256 times what
+        // any other Lua entry point is allowed.
+        let mut budget = limits.effect_fuel;
         for (offset, (index, item)) in values.into_iter().enumerate() {
             if index != offset as i64 + 1 {
                 return Err(HostError("variants model must be a dense sequence".into()).into());
             }
             let executor = Executor::start(ctx, factory.into(), Variadic(vec![item]));
-            let budget = limits.effect_fuel;
-            let mut remaining = budget;
-            loop {
-                if remaining == 0 {
-                    executor.stop(&ctx);
-                    return Err(HostError(format!(
-                        "Lua variant factory fuel exhausted after {budget} instructions"
-                    ))
-                    .into());
-                }
-                let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-                let mut fuel = Fuel::with(allowance);
-                let finished = executor.step(ctx, &mut fuel)?;
-                let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-                remaining = remaining.saturating_sub(consumed.max(1));
-                if finished {
-                    let value = executor
-                        .take_result::<LuaValue>(ctx)
-                        .map_err(|error| HostError(error.to_string()))??;
-                    instances.set(ctx, index, value)?;
-                    break;
-                }
-            }
+            let spent = drive_executor(ctx, executor, limits, budget, "variant factory")
+                .map_err(HostError)?;
+            budget = budget.saturating_sub(spent);
+            let value = executor
+                .take_result::<LuaValue>(ctx)
+                .map_err(|error| HostError(error.to_string()))??;
+            instances.set(ctx, index, value)?;
         }
         stack.replace(ctx, instances);
         Ok(CallbackReturn::Return)
@@ -274,76 +278,6 @@ fn install_view_api<'gc>(
     });
     mold.set_field(ctx, "sync_view", sync_view);
 
-    let flick_drag = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (flick, delta): (UserRef<FlickToken>, f64) = stack.consume(ctx)?;
-        flick.state.borrow_mut().drag_by(delta);
-        stack.replace(ctx, flick.state.borrow().offset);
-        Ok(CallbackReturn::Return)
-    });
-    let flick_release = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (flick, velocity): (UserRef<FlickToken>, f64) = stack.consume(ctx)?;
-        flick.state.borrow_mut().release(velocity);
-        Ok(CallbackReturn::Return)
-    });
-    let flick_tick = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (flick, milliseconds): (UserRef<FlickToken>, f64) = stack.consume(ctx)?;
-        if !milliseconds.is_finite() || milliseconds < 0.0 {
-            return Err(HostError("flick delta must be finite and non-negative".into()).into());
-        }
-        let active = flick
-            .state
-            .borrow_mut()
-            .tick(Duration::from_secs_f64(milliseconds / 1_000.0));
-        stack.replace(ctx, (flick.state.borrow().offset, active));
-        Ok(CallbackReturn::Return)
-    });
-    let flick_position = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let flick: UserRef<FlickToken> = stack.consume(ctx)?;
-        stack.replace(ctx, flick.state.borrow().offset);
-        Ok(CallbackReturn::Return)
-    });
-    let flick_methods = Table::new(&ctx);
-    flick_methods.set_field(ctx, "drag_by", flick_drag);
-    flick_methods.set_field(ctx, "release", flick_release);
-    flick_methods.set_field(ctx, "tick", flick_tick);
-    flick_methods.set_field(ctx, "position", flick_position);
-    let flick_metatable = Table::new(&ctx);
-    flick_metatable.set_field(ctx, "__index", flick_methods);
-    let flick_metatable = ctx.stash(flick_metatable);
-    let flickable = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let options: Table = stack.consume(ctx)?;
-        let offset = table_number(ctx, options, "offset", 0.0).map_err(HostError)?;
-        let minimum = table_number(ctx, options, "minimum", 0.0).map_err(HostError)?;
-        let maximum = table_number(ctx, options, "maximum", 0.0).map_err(HostError)?;
-        let deceleration =
-            table_number(ctx, options, "deceleration", 2_500.0).map_err(HostError)?;
-        if !offset.is_finite()
-            || !minimum.is_finite()
-            || !maximum.is_finite()
-            || !deceleration.is_finite()
-            || minimum > maximum
-            || deceleration < 0.0
-        {
-            return Err(HostError("invalid flickable state".into()).into());
-        }
-        let userdata = UserData::new_static(
-            &ctx,
-            FlickToken {
-                state: RefCell::new(FlickState {
-                    offset: offset.clamp(minimum, maximum),
-                    velocity: 0.0,
-                    minimum,
-                    maximum,
-                    deceleration,
-                }),
-            },
-        );
-        userdata.set_metatable(ctx, Some(ctx.fetch(&flick_metatable)));
-        stack.replace(ctx, userdata);
-        Ok(CallbackReturn::Return)
-    });
-    mold.set_field(ctx, "flickable", flickable);
-
     let transition_state = Rc::clone(&state);
     let transition_parent = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (node, parent, options): (UserRef<NodeToken>, UserRef<NodeToken>, Table) =
@@ -367,10 +301,7 @@ fn install_view_api<'gc>(
                 node: node.handle,
                 parent: parent.handle,
                 anchors,
-                behavior: Behavior::timed(
-                    Duration::from_secs_f64(duration / 1_000.0),
-                    easing,
-                ),
+                behavior: Behavior::timed(Duration::from_secs_f64(duration / 1_000.0), easing),
             });
         Ok(CallbackReturn::Return)
     });

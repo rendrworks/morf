@@ -1,4 +1,16 @@
-fn dbus_argument_value(value: &DbusValue) -> Result<Value<'_>, String> {
+use crate::dbus_decode::array_value;
+use crate::dbus_decode::structure_value;
+use zbus::zvariant::{Array, Dict, ObjectPath, Signature, Structure, StructureBuilder, Value};
+
+use crate::dbus_types::DbusValue;
+
+/// Encodes one value whose type D-Bus can infer from the value itself.
+///
+/// `role` names what the value is being used as, so the two things that cannot
+/// be inferred — a nil, and a compound with no signature — can say so in the
+/// caller's own terms. It is the only thing that differed between the two
+/// copies this replaces.
+fn dbus_scalar_value<'a>(value: &'a DbusValue, role: &str) -> Result<Value<'a>, String> {
     match value {
         DbusValue::Bool(value) => Ok(Value::Bool(*value)),
         DbusValue::Integer(value) => Ok(Value::I64(*value)),
@@ -6,14 +18,21 @@ fn dbus_argument_value(value: &DbusValue) -> Result<Value<'_>, String> {
         DbusValue::Number(value) => Ok(Value::F64(*value)),
         DbusValue::String(value) => Ok(Value::Str(value.as_str().into())),
         DbusValue::Typed { signature, value } => typed_dbus_value(signature, value),
-        DbusValue::Nil => Err("nil cannot be a positional D-Bus argument".to_owned()),
+        DbusValue::Nil => Err(format!("nil cannot be a {role}")),
         DbusValue::List(_) | DbusValue::Map(_) => {
-            Err("nested D-Bus arguments need an explicit signature".to_owned())
+            Err(format!("a compound {role} needs an explicit signature"))
         }
     }
 }
 
-fn typed_dbus_value<'a>(signature: &str, value: &'a DbusValue) -> Result<Value<'a>, String> {
+pub(crate) fn dbus_argument_value(value: &DbusValue) -> Result<Value<'_>, String> {
+    dbus_scalar_value(value, "positional D-Bus argument")
+}
+
+pub(crate) fn typed_dbus_value<'a>(
+    signature: &str,
+    value: &'a DbusValue,
+) -> Result<Value<'a>, String> {
     let signature = Signature::try_from(signature)
         .map_err(|error| format!("invalid D-Bus signature: {error}"))?;
     dbus_value_for_signature(&signature, value)
@@ -135,21 +154,10 @@ fn dbus_map_key<'a>(signature: &Signature, key: &'a str) -> Result<Value<'a>, St
 }
 
 fn inferred_dbus_value(value: &DbusValue) -> Result<Value<'_>, String> {
-    match value {
-        DbusValue::Typed { signature, value } => typed_dbus_value(signature, value),
-        DbusValue::Bool(value) => Ok(Value::Bool(*value)),
-        DbusValue::Integer(value) => Ok(Value::I64(*value)),
-        DbusValue::Unsigned(value) => Ok(Value::U64(*value)),
-        DbusValue::Number(value) => Ok(Value::F64(*value)),
-        DbusValue::String(value) => Ok(Value::Str(value.as_str().into())),
-        DbusValue::Nil => Err("nil cannot be a D-Bus variant".to_owned()),
-        DbusValue::List(_) | DbusValue::Map(_) => {
-            Err("compound D-Bus variants need an explicit signature".to_owned())
-        }
-    }
+    dbus_scalar_value(value, "D-Bus variant")
 }
 
-fn decode_message_value(message: &zbus::Message) -> Result<DbusValue, String> {
+pub(crate) fn decode_message_value(message: &zbus::Message) -> Result<DbusValue, String> {
     let body = message.body();
     if body.deserialize::<()>().is_ok() {
         return Ok(DbusValue::Nil);
@@ -192,4 +200,3 @@ fn decode_message_value(message: &zbus::Message) -> Result<DbusValue, String> {
     }
     Err("D-Bus reply type is not supported".to_owned())
 }
-

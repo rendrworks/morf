@@ -1,14 +1,31 @@
+use luna::{
+    Callback, CallbackReturn, Context, Function, Table, UserData, UserRef, Value as LuaValue,
+};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use mold_scene::{AnimationStep, Behavior, Easing, GroupId, Keyframe, Scene, keyframe_steps};
+
+use crate::{
+    configure::*, lua_values::*, reactive_bindings::*, scene_bindings::*, state::*, table_menu::*,
+};
+
 /// Deepest nesting a group specification may reach.
 ///
 /// Configuration is parsed recursively, so the depth is capped rather than
 /// left to exhaust the stack on a table that nests itself.
-const MAX_GROUP_DEPTH: usize = 8;
+pub(crate) const MAX_GROUP_DEPTH: usize = 8;
 
 /// Installs `mold.animation.play`, which schedules a group of property steps.
 ///
 /// The returned handle carries the controls, so a caller holds one object for
 /// the whole schedule instead of naming every property it touches.
-fn install_group_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, mold: Table<'gc>) {
+pub(crate) fn install_group_api<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    mold: Table<'gc>,
+) {
     let methods = Table::new(&ctx);
 
     let control = |name: &'static str, control: fn(&mut Scene, GroupId) -> bool| {
@@ -92,7 +109,7 @@ fn install_group_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, 
 }
 
 /// Reads the array part of a table as an ordered list of steps.
-fn parse_group_children<'gc>(
+pub(crate) fn parse_group_children<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     depth: usize,
@@ -116,7 +133,7 @@ fn parse_group_children<'gc>(
 }
 
 /// Reads one step, dispatching on which shape of step the table describes.
-fn parse_group_step<'gc>(
+pub(crate) fn parse_group_step<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     depth: usize,
@@ -187,7 +204,10 @@ fn parse_group_step<'gc>(
 }
 
 /// Reads the timing fields a step shares with a declared `behavior`.
-fn parse_step_behavior<'gc>(ctx: Context<'gc>, table: Table<'gc>) -> Result<Behavior, String> {
+pub(crate) fn parse_step_behavior<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+) -> Result<Behavior, String> {
     let duration = match table.get_value(ctx, "duration") {
         LuaValue::Integer(value) => value as f64,
         LuaValue::Number(value) => value,
@@ -210,7 +230,7 @@ fn parse_step_behavior<'gc>(ctx: Context<'gc>, table: Table<'gc>) -> Result<Beha
 }
 
 /// Converts a Lua millisecond count into a duration, rejecting nonsense.
-fn milliseconds(value: f64, what: &str) -> Result<Duration, String> {
+pub(crate) fn milliseconds(value: f64, what: &str) -> Result<Duration, String> {
     if !value.is_finite() || value < 0.0 {
         return Err(format!(
             "animation group {what} must be a non-negative number of milliseconds"
@@ -220,7 +240,10 @@ fn milliseconds(value: f64, what: &str) -> Result<Duration, String> {
 }
 
 /// Reads the stops of a keyframe track, in the order they are written.
-fn parse_keyframes<'gc>(ctx: Context<'gc>, table: Table<'gc>) -> Result<Vec<Keyframe>, String> {
+pub(crate) fn parse_keyframes<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+) -> Result<Vec<Keyframe>, String> {
     let mut frames = Vec::new();
     for index in 1.. {
         let LuaValue::Table(frame) = table.get(ctx, index).map_err(|error| error.to_string())?

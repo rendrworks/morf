@@ -1,3 +1,11 @@
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::distance_field::distance_field_from_alpha;
+use crate::quantize::quantize_image;
+
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -131,4 +139,49 @@ fn signed_distance_field_marks_inside_edge_and_outside() {
     assert!(distance(3, 3) < 128);
     assert!((120..=136).contains(&distance(2, 3)));
     assert!(distance(0, 0) > 128);
+}
+
+#[test]
+fn a_huge_request_is_refused_rather_than_silently_resized() {
+    // Multiplying in u32 and saturating first does not clamp the answer, it
+    // changes it: u32::MAX / 120 is a perfectly plausible-looking size that
+    // bears no relation to what was asked for. Overflow has to be an error.
+    let mut cache = ImageCache::default();
+    let source = std::env::temp_dir().join("mold-image-huge.svg");
+    std::fs::write(
+        &source,
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>"#,
+    )
+    .unwrap();
+
+    assert!(
+        cache.load(&source, u32::MAX, u32::MAX, 240).is_err(),
+        "a size that cannot be represented is refused"
+    );
+    let _ = std::fs::remove_file(&source);
+}
+
+#[test]
+fn decoding_many_sizes_does_not_grow_the_cache_without_end() {
+    // The cache key includes the pixel size, and that size comes off live
+    // geometry — so an animated icon width mints one decode per step. Nothing
+    // ever evicted them, which made an ordinary animation a memory leak.
+    let mut cache = ImageCache::default();
+    let source = std::env::temp_dir().join("mold-image-many.svg");
+    std::fs::write(
+        &source,
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#fff"/></svg>"##,
+    )
+    .unwrap();
+
+    for size in 8..400u32 {
+        cache.load(&source, size, size, 120).unwrap();
+        cache.shrink();
+    }
+    assert!(
+        cache.decoded_len() <= 128,
+        "the cache stays bounded: {}",
+        cache.decoded_len()
+    );
+    let _ = std::fs::remove_file(&source);
 }

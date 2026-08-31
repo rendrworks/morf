@@ -1,29 +1,20 @@
-fn geometry_i32(value: f64) -> i32 {
+use luna::{Context, Table, Value as LuaValue};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+use mold_reactive::SignalId;
+use mold_scene::{NodeHandle, Scene};
+
+use crate::{events::*, reactive_execute::*, state::*, surface_types::*, types::*};
+
+pub(crate) fn geometry_i32(value: f64) -> i32 {
     value
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
-fn key_targets(state: &ReactiveState) -> Vec<NodeHandle> {
-    let mut targets = Vec::new();
-    let mut pending = state.scene.roots();
-    pending.reverse();
-    while let Some(node) = pending.pop() {
-        if state.handlers.contains_key(&(node, UiEvent::KeyPressed))
-            && state.scene.bool_value(node, "enabled").unwrap_or(false)
-            && state.scene.bool_value(node, "visible").unwrap_or(false)
-        {
-            targets.push(node);
-        }
-        if let Ok(mut children) = state.scene.children(node) {
-            children.reverse();
-            pending.extend(children);
-        }
-    }
-    targets
-}
-
-fn scene_node_in_subtree(scene: &Scene, root: NodeHandle, node: NodeHandle) -> bool {
+pub(crate) fn scene_node_in_subtree(scene: &Scene, root: NodeHandle, node: NodeHandle) -> bool {
     let mut current = Some(node);
     while let Some(candidate) = current {
         if candidate == root {
@@ -34,7 +25,7 @@ fn scene_node_in_subtree(scene: &Scene, root: NodeHandle, node: NodeHandle) -> b
     false
 }
 
-fn key_targets_in(state: &ReactiveState, root: NodeHandle) -> Vec<NodeHandle> {
+pub(crate) fn key_targets_in(state: &ReactiveState, root: NodeHandle) -> Vec<NodeHandle> {
     let mut targets = Vec::new();
     let mut pending = vec![root];
     while let Some(node) = pending.pop() {
@@ -44,19 +35,19 @@ fn key_targets_in(state: &ReactiveState, root: NodeHandle) -> Vec<NodeHandle> {
         {
             targets.push(node);
         }
-        if let Ok(mut children) = state.scene.children(node) {
-            children.reverse();
-            pending.extend(children);
+        if let Ok(children) = state.scene.children(node) {
+            pending.extend(children.iter().copied().rev());
         }
     }
     targets
 }
 
-fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
+pub(crate) fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
     let mut nodes = vec![node];
     let mut index = 0;
     while index < nodes.len() {
-        nodes.extend(state.scene.children(nodes[index]).unwrap_or_default());
+        let children = state.scene.children(nodes[index]).unwrap_or_default();
+        nodes.extend_from_slice(children);
         index += 1;
     }
     state.scene_revision = state.scene_revision.wrapping_add(1);
@@ -118,7 +109,7 @@ fn remove_scene_subtree(state: &mut ReactiveState, node: NodeHandle) {
     state.window_surfaces_changed |= state.window_surfaces.len() != surface_count;
 }
 
-fn finish_retained_destroy(
+pub(crate) fn finish_retained_destroy(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'_>,
     limits: Limits,
@@ -140,7 +131,7 @@ fn finish_retained_destroy(
     remove_scene_subtree(&mut state.borrow_mut(), node);
 }
 
-fn drop_retainable(
+pub(crate) fn drop_retainable(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'_>,
     limits: Limits,
@@ -177,56 +168,16 @@ fn drop_retainable(
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum ScriptValue {
-    Nil,
-    Boolean(bool),
-    Integer(i64),
-    Number(f64),
-    String(String),
-}
-
-impl ScriptValue {
-    fn from_lua(value: LuaValue<'_>) -> Result<Self, String> {
-        match value {
-            LuaValue::Nil => Ok(Self::Nil),
-            LuaValue::Boolean(value) => Ok(Self::Boolean(value)),
-            LuaValue::Integer(value) => Ok(Self::Integer(value)),
-            LuaValue::Number(value) if value.is_finite() => Ok(Self::Number(value)),
-            LuaValue::String(value) => Ok(Self::String(value.display_lossy().to_string())),
-            value => Err(format!(
-                "reactive signals do not support {} values yet",
-                value.type_name()
-            )),
-        }
-    }
-
-    fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
-        match self {
-            Self::Nil => LuaValue::Nil,
-            Self::Boolean(value) => LuaValue::Boolean(*value),
-            Self::Integer(value) => LuaValue::Integer(*value),
-            Self::Number(value) => LuaValue::Number(*value),
-            Self::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
-        }
-    }
-
-    fn to_scene(&self) -> SceneValue {
-        match self {
-            Self::Nil => SceneValue::Nil,
-            Self::Boolean(value) => SceneValue::Bool(*value),
-            Self::Integer(value) => SceneValue::Number(*value as f64),
-            Self::Number(value) => SceneValue::Number(*value),
-            Self::String(value) => SceneValue::String(value.clone()),
-        }
-    }
-}
-
-fn register_reloadable_value(
+pub(crate) fn register_reloadable_value(
     state: &mut ReactiveState,
     name: String,
-    initial: ScriptValue,
+    initial: IpcValue,
 ) -> Result<(SignalId, bool), String> {
+    // Here, not at each door. Four different entry points reach this one map,
+    // and they applied three different rules between them — so what counted as
+    // a legal name depended on which way you came in, and a name accepted by
+    // one door could collide with, or be unreachable from, another.
+    validate_scope_part(&name)?;
     if state.reloadable.contains_key(&name) {
         return Err(format!("reloadable id `{name}` is already registered"));
     }
@@ -255,7 +206,7 @@ fn register_reloadable_value(
     Ok((id, restored))
 }
 
-fn create_persistent_token<'gc>(
+pub(crate) fn create_persistent_token<'gc>(
     ctx: Context<'gc>,
     state: &Rc<RefCell<ReactiveState>>,
     name: &str,
@@ -273,7 +224,7 @@ fn create_persistent_token<'gc>(
         if key.is_empty() || key.len() > 256 || matches!(key.as_str(), "loaded" | "reloaded") {
             return Err(format!("invalid persistent property `{key}`"));
         }
-        definitions.push((key, ScriptValue::from_lua(value)?));
+        definitions.push((key, IpcValue::from_lua(value)?));
         if definitions.len() > 256 {
             return Err("persistent object exceeds 256 properties".into());
         }
@@ -294,7 +245,7 @@ fn create_persistent_token<'gc>(
     })
 }
 
-fn validate_scope_part(value: &str) -> Result<(), String> {
+pub(crate) fn validate_scope_part(value: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > 256 {
         return Err("scope IDs must be 1..256 bytes".into());
     }
@@ -304,7 +255,7 @@ fn validate_scope_part(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn scoped_id(prefix: &str, name: &str) -> Result<String, String> {
+pub(crate) fn scoped_id(prefix: &str, name: &str) -> Result<String, String> {
     validate_scope_part(prefix)?;
     validate_scope_part(name)?;
     let value = format!("{prefix}.{name}");

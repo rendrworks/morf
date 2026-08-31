@@ -1,4 +1,9 @@
-fn table_number<'gc>(
+use luna::{Context, Function, StashedClosure, Table, Value as LuaValue};
+use std::collections::{BTreeMap, HashMap};
+
+use mold_menu::{ButtonType, CheckState, MenuEntry};
+
+pub(crate) fn table_number<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -12,7 +17,7 @@ fn table_number<'gc>(
     }
 }
 
-fn table_required_number<'gc>(
+pub(crate) fn table_required_number<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -24,7 +29,7 @@ fn table_required_number<'gc>(
     }
 }
 
-fn parse_menu_entries<'gc>(
+pub(crate) fn parse_menu_entries<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     depth: usize,
@@ -102,7 +107,7 @@ fn parse_menu_entries<'gc>(
     Ok(entries)
 }
 
-fn parse_check_state(value: LuaValue<'_>) -> Result<CheckState, String> {
+pub(crate) fn parse_check_state(value: LuaValue<'_>) -> Result<CheckState, String> {
     match value {
         LuaValue::Nil | LuaValue::Boolean(false) => Ok(CheckState::Unchecked),
         LuaValue::Boolean(true) => Ok(CheckState::Checked),
@@ -116,7 +121,7 @@ fn parse_check_state(value: LuaValue<'_>) -> Result<CheckState, String> {
     }
 }
 
-fn menu_entries_to_lua<'gc>(ctx: Context<'gc>, entries: &[MenuEntry]) -> Table<'gc> {
+pub(crate) fn menu_entries_to_lua<'gc>(ctx: Context<'gc>, entries: &[MenuEntry]) -> Table<'gc> {
     let values = Table::new(&ctx);
     for (index, entry) in entries.iter().enumerate() {
         values
@@ -126,7 +131,7 @@ fn menu_entries_to_lua<'gc>(ctx: Context<'gc>, entries: &[MenuEntry]) -> Table<'
     values
 }
 
-fn menu_entry_to_lua<'gc>(ctx: Context<'gc>, entry: &MenuEntry) -> Table<'gc> {
+pub(crate) fn menu_entry_to_lua<'gc>(ctx: Context<'gc>, entry: &MenuEntry) -> Table<'gc> {
     let value = Table::new(&ctx);
     value.set_field(ctx, "id", entry.id.as_str());
     value.set_field(ctx, "separator", entry.separator);
@@ -157,7 +162,7 @@ fn menu_entry_to_lua<'gc>(ctx: Context<'gc>, entry: &MenuEntry) -> Table<'gc> {
     value
 }
 
-fn check_state_name(state: CheckState) -> &'static str {
+pub(crate) fn check_state_name(state: CheckState) -> &'static str {
     match state {
         CheckState::Unchecked => "unchecked",
         CheckState::PartiallyChecked => "partial",
@@ -165,7 +170,7 @@ fn check_state_name(state: CheckState) -> &'static str {
     }
 }
 
-fn table_bool<'gc>(
+pub(crate) fn table_bool<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -178,7 +183,7 @@ fn table_bool<'gc>(
     }
 }
 
-fn optional_closure<'gc>(
+pub(crate) fn optional_closure<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -190,7 +195,7 @@ fn optional_closure<'gc>(
     }
 }
 
-fn table_string<'gc>(
+pub(crate) fn table_string<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -203,7 +208,7 @@ fn table_string<'gc>(
     }
 }
 
-fn table_string_array<'gc>(
+pub(crate) fn table_string_array<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     maximum: usize,
@@ -230,7 +235,7 @@ fn table_string_array<'gc>(
     Ok(values.into_iter().map(|(_, value)| value).collect())
 }
 
-fn table_string_map<'gc>(
+pub(crate) fn table_string_map<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     maximum: usize,
@@ -258,4 +263,3 @@ fn table_string_map<'gc>(
     }
     Ok(values)
 }
-

@@ -13,8 +13,6 @@ new_key_type! {
     pub struct EffectId;
 }
 
-type EffectFn<T> = dyn for<'a> FnMut(&mut EffectContext<'a, T>) -> Result<(), String>;
-
 struct Signal<T> {
     name: String,
     value: T,
@@ -22,16 +20,22 @@ struct Signal<T> {
     producer: Option<EffectId>,
 }
 
-struct Effect<T> {
+struct Effect {
     name: String,
-    callback: EffectCallback<T>,
+    callback: EffectCallback,
     dependencies: HashSet<SignalId>,
     depth: usize,
     dirty: bool,
 }
 
-enum EffectCallback<T> {
-    Internal(Option<Box<EffectFn<T>>>),
+/// How one effect is evaluated.
+///
+/// Only one way, now. There was a second — a boxed closure owned by the graph —
+/// registered by a `Graph::effect` that nothing in the workspace ever called,
+/// so the variant was never constructed and the whole branch through the
+/// evaluator was unreachable. It also forced a `'static` bound on `Graph<T>`
+/// that only the box needed.
+enum EffectCallback {
     External(u64),
 }
 
@@ -126,7 +130,7 @@ impl<T: Clone + PartialEq + 'static> EffectContext<'_, T> {
 /// A generational signal arena with dynamic dependency capture.
 pub struct Graph<T> {
     signals: SlotMap<SignalId, Signal<T>>,
-    effects: SlotMap<EffectId, Effect<T>>,
+    effects: SlotMap<EffectId, Effect>,
     recompute_budget: usize,
 }
 
@@ -156,20 +160,6 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
         })
     }
 
-    /// Registers a named effect and queues its initial dependency-capturing run.
-    pub fn effect<F>(&mut self, name: impl Into<String>, callback: F) -> EffectId
-    where
-        F: for<'a> FnMut(&mut EffectContext<'a, T>) -> Result<(), String> + 'static,
-    {
-        self.effects.insert(Effect {
-            name: name.into(),
-            callback: EffectCallback::Internal(Some(Box::new(callback))),
-            dependencies: HashSet::new(),
-            depth: 0,
-            dirty: true,
-        })
-    }
-
     /// Registers an externally evaluated effect identified by an opaque token.
     pub fn external_effect(&mut self, name: impl Into<String>, token: u64) -> EffectId {
         self.effects.insert(Effect {
@@ -186,14 +176,6 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
         self.signals
             .get(signal)
             .map(|slot| &slot.value)
-            .ok_or(GraphError::InvalidSignal)
-    }
-
-    /// Returns the diagnostic name assigned to a signal.
-    pub fn signal_name(&self, signal: SignalId) -> Result<&str, GraphError> {
-        self.signals
-            .get(signal)
-            .map(|slot| slot.name.as_str())
             .ok_or(GraphError::InvalidSignal)
     }
 
@@ -233,22 +215,29 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
         &mut self,
         update: impl FnOnce(&mut Self) -> Result<(), GraphError>,
     ) -> Result<FlushReport, GraphError> {
-        update(self)?;
-        self.flush()
+        self.batch_external(
+            |token, _| Err(format!("no evaluator for external effect {token}")),
+            update,
+        )
     }
 
-    /// Removes an effect and every captured dependency edge.
-    pub fn remove_effect(&mut self, effect: EffectId) -> Result<(), GraphError> {
-        let removed = self
-            .effects
-            .remove(effect)
-            .ok_or(GraphError::InvalidEffect)?;
-        for signal in removed.dependencies {
-            if let Some(slot) = self.signals.get_mut(signal) {
-                slot.subscribers.remove(&effect);
-            }
-        }
-        Ok(())
+    /// Applies several writes as one and then drains, delegating evaluation.
+    ///
+    /// `batch` cannot evaluate an effect — it flushes with an evaluator that
+    /// refuses every token — and since every effect in this workspace is
+    /// registered externally, that made batching and effects mutually
+    /// exclusive without saying so: the writes landed, the effects were marked
+    /// run, and their evaluations were quietly recorded as errors.
+    pub fn batch_external<F>(
+        &mut self,
+        evaluate: F,
+        update: impl FnOnce(&mut Self) -> Result<(), GraphError>,
+    ) -> Result<FlushReport, GraphError>
+    where
+        F: for<'a> FnMut(u64, &mut EffectContext<'a, T>) -> Result<(), String>,
+    {
+        update(self)?;
+        self.flush_external(evaluate)
     }
 
     /// Drains all dirty effects in dependency depth order.
@@ -335,36 +324,16 @@ impl<T: Clone + PartialEq + 'static> Graph<T> {
             }
         }
 
-        enum Invocation<T> {
-            Internal(Box<EffectFn<T>>),
-            External(u64),
-        }
-        let invocation = match &mut self.effects[effect].callback {
-            EffectCallback::Internal(callback) => Invocation::Internal(
-                callback
-                    .take()
-                    .ok_or_else(|| "effect is already running".to_owned())?,
-            ),
-            EffectCallback::External(token) => Invocation::External(*token),
-        };
+        let EffectCallback::External(token) = self.effects[effect].callback;
         let mut context = EffectContext {
             graph: self,
             effect,
             dependencies: HashSet::new(),
             writes: Vec::new(),
         };
-        let (result, callback) = match invocation {
-            Invocation::Internal(mut callback) => {
-                let result = callback(&mut context);
-                (result, Some(callback))
-            }
-            Invocation::External(token) => (evaluate(token, &mut context), None),
-        };
+        let result = evaluate(token, &mut context);
         let dependencies = context.dependencies;
         let writes = context.writes;
-        if let Some(callback) = callback {
-            context.graph.effects[effect].callback = EffectCallback::Internal(Some(callback));
-        }
 
         let dependencies = if result.is_ok() || !dependencies.is_empty() {
             dependencies

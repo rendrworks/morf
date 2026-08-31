@@ -1,29 +1,28 @@
 //! Scene graph, typed properties, and animation targets for mold.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::error::Error as StdError;
-use std::fmt;
-use std::time::Duration;
-
-use animato::{Spring, SpringConfig, Tween, TweenState, Update};
-use mold_reactive::{Graph, GraphError, SignalId};
-use slotmap::{SlotMap, new_key_type};
-
 mod model;
 
-pub use model::{
-    FlickState, ListChange, ListModel, ModelId, ViewItem, ViewTransition, VirtualList,
-};
+pub use model::{ListChange, ListModel, ModelId, ViewItem, ViewTransition, VirtualList};
 
-include!("types.rs");
-include!("animation.rs");
-include!("scene_default.rs");
-include!("scene.rs");
-include!("scene_access.rs");
-include!("playback.rs");
-include!("groups.rs");
-include!("keyframes.rs");
-include!("motion.rs");
-include!("schema.rs");
+mod animation;
+mod fling;
+mod groups;
+mod hashing;
+mod keyframes;
+mod motion;
+mod playback;
+mod scene;
+mod scene_access;
+mod scene_behavior;
+mod scene_default;
+mod scene_revision;
+mod schema;
+mod types;
+
+pub use animation::*;
+pub use groups::*;
+pub use hashing::*;
+pub use keyframes::*;
+pub use types::*;
 #[cfg(test)]
 mod tests;

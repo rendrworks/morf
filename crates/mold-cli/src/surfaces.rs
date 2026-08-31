@@ -1,21 +1,36 @@
-struct AuxiliarySurface {
-    id: u64,
-    root: NodeHandle,
-    updates_enabled: bool,
-    width: u32,
-    height: u32,
-    renderer: Option<RenderEngine<WgpuBackend>>,
-    layout: Option<Layout>,
-    popup_config: Option<PopupSurfaceConfig>,
-    floating_config: Option<FloatingSurfaceConfig>,
-    layer_config: Option<LayerSurfaceConfig>,
+use mold_layout::{Hit, Layout};
+use mold_lua::{
+    FloatingSurfaceConfig, LayerSurfaceConfig, PopupSurfaceConfig, Runtime, WindowSurfaceKind,
+};
+use mold_render::{RenderEngine, WgpuBackend};
+use mold_scene::NodeHandle;
+use mold_wayland::{
+    BarConfig, FloatingConfig, KeyboardFocus, LayerAnchors, LayerClient, LayerEvent, PRIMARY_LAYER,
+    ShellLayer, SurfaceRole,
+};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+use crate::{pacing::*, paint::*, surface_layers::*, surface_popups::*};
+
+pub(crate) struct AuxiliarySurface {
+    pub(crate) id: u64,
+    pub(crate) root: NodeHandle,
+    pub(crate) updates_enabled: bool,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) renderer: Option<RenderEngine<WgpuBackend>>,
+    pub(crate) layout: Option<CachedLayout>,
+    pub(crate) popup_config: Option<PopupSurfaceConfig>,
+    pub(crate) floating_config: Option<FloatingSurfaceConfig>,
+    pub(crate) layer_config: Option<LayerSurfaceConfig>,
     /// Whether this surface has work pending for the next frame callback.
     ///
     /// A configured layer surface is permanent decoration, so repainting it on
     /// every frame callback would keep the compositor compositing forever. It
     /// paints only when something marked it dirty, and asks for another frame
     /// only when it painted.
-    needs_paint: bool,
+    pub(crate) needs_paint: bool,
 }
 
 /// Largest frame delta charged to animations in a single tick.
@@ -23,7 +38,7 @@ struct AuxiliarySurface {
 /// A compositor that fell behind should let motion catch up, but only so far.
 /// Beyond a few dropped frames, advancing by the whole gap reads as a jump, so
 /// the tick is capped and the remaining time is simply lost.
-const MAX_FRAME_DELTA_MS: u32 = 100;
+pub(crate) const MAX_FRAME_DELTA_MS: u32 = 100;
 
 /// How far to advance animations for a frame callback at `time_ms`.
 ///
@@ -34,175 +49,37 @@ const MAX_FRAME_DELTA_MS: u32 = 100;
 /// far motion should advance. Charging it to an animation that started in the
 /// meantime makes it jump, and a long enough gap lands it on its target in a
 /// single tick.
-fn animation_delta(previous: Option<u32>, time_ms: u32) -> Duration {
+pub(crate) fn animation_delta(previous: Option<u32>, time_ms: u32) -> Duration {
     let elapsed = previous.map_or(0, |previous| {
         time_ms.wrapping_sub(previous).min(MAX_FRAME_DELTA_MS)
     });
     Duration::from_millis(elapsed.into())
 }
 
-struct SurfaceEventState {
-    layout: Layout,
-    popup_surfaces: HashMap<u64, AuxiliarySurface>,
-    floating_surfaces: HashMap<u64, AuxiliarySurface>,
-    layer_surfaces: HashMap<u64, AuxiliarySurface>,
-    last_frame: Option<u32>,
-    hovered: Option<(SurfaceRole, Hit)>,
-    pressed: Option<(SurfaceRole, Hit, f64, f64, bool)>,
-    focused: HashMap<SurfaceRole, NodeHandle>,
-    touches: HashMap<i32, (SurfaceRole, Hit, f64, f64)>,
+pub(crate) struct SurfaceEventState {
+    pub(crate) layout: CachedLayout,
+    /// The scene root this output's main surface draws.
+    ///
+    /// Resolved once and again whenever the window-surface set changes, which
+    /// is the only thing that can move it. Working it out afresh walked every
+    /// node in the scene, deep-cloned every window-surface config and allocated
+    /// three collections — on every repaint and every key press.
+    pub(crate) primary_root: NodeHandle,
+    pub(crate) popup_surfaces: HashMap<u64, AuxiliarySurface>,
+    pub(crate) floating_surfaces: HashMap<u64, AuxiliarySurface>,
+    pub(crate) layer_surfaces: HashMap<u64, AuxiliarySurface>,
+    pub(crate) last_frame: Option<u32>,
+    /// What this surface can afford, and when it last painted.
+    pub(crate) pacer: FramePacer,
+    /// The interval between the compositor's frame callbacks, as measured.
+    pub(crate) refresh: Duration,
+    pub(crate) hovered: Option<(SurfaceRole, Hit)>,
+    pub(crate) pressed: Option<(SurfaceRole, Hit, f64, f64, bool)>,
+    pub(crate) focused: HashMap<SurfaceRole, NodeHandle>,
+    pub(crate) touches: HashMap<i32, (SurfaceRole, Hit, f64, f64)>,
 }
 
-fn popup_anchor(value: &str) -> Result<PopupAnchor, String> {
-    Ok(match value {
-        "none" => PopupAnchor::None,
-        "top" => PopupAnchor::Top,
-        "bottom" => PopupAnchor::Bottom,
-        "left" => PopupAnchor::Left,
-        "right" => PopupAnchor::Right,
-        "top_left" => PopupAnchor::TopLeft,
-        "top_right" => PopupAnchor::TopRight,
-        "bottom_left" => PopupAnchor::BottomLeft,
-        "bottom_right" => PopupAnchor::BottomRight,
-        value => return Err(format!("invalid popup anchor `{value}`")),
-    })
-}
-
-fn popup_gravity(value: &str) -> Result<PopupGravity, String> {
-    Ok(match value {
-        "none" => PopupGravity::None,
-        "top" => PopupGravity::Top,
-        "bottom" => PopupGravity::Bottom,
-        "left" => PopupGravity::Left,
-        "right" => PopupGravity::Right,
-        "top_left" => PopupGravity::TopLeft,
-        "top_right" => PopupGravity::TopRight,
-        "bottom_left" => PopupGravity::BottomLeft,
-        "bottom_right" => PopupGravity::BottomRight,
-        value => return Err(format!("invalid popup gravity `{value}`")),
-    })
-}
-
-fn window_surface_parent(surface: &WindowSurfaceConfig) -> Option<u64> {
-    match &surface.kind {
-        WindowSurfaceKind::Popup(config) => config.parent,
-        WindowSurfaceKind::Floating(config) => config.parent,
-        WindowSurfaceKind::Layer(_) => None,
-    }
-}
-
-fn window_surface_effectively_visible(
-    id: u64,
-    surfaces: &HashMap<u64, &WindowSurfaceConfig>,
-    visiting: &mut HashSet<u64>,
-) -> bool {
-    let Some(surface) = surfaces.get(&id) else {
-        return false;
-    };
-    if !surface.visible || !visiting.insert(id) {
-        return false;
-    }
-    let visible = window_surface_parent(surface)
-        .is_none_or(|parent| window_surface_effectively_visible(parent, surfaces, visiting));
-    visiting.remove(&id);
-    visible
-}
-
-/// Builds the client-side geometry request for one configured popup.
-///
-/// Every field here is a positioner field, which is what lets the same builder
-/// serve both creating a popup and moving one.
-fn popup_client_config(config: &PopupSurfaceConfig) -> Result<PopupConfig, String> {
-    Ok(PopupConfig {
-        anchor: InputRect {
-            x: config.anchor_x,
-            y: config.anchor_y,
-            width: config.anchor_width,
-            height: config.anchor_height,
-        },
-        width: config.width,
-        height: config.height,
-        anchor_edge: popup_anchor(&config.anchor_edge)?,
-        gravity: popup_gravity(&config.gravity)?,
-        offset_x: config.offset_x,
-        offset_y: config.offset_y,
-        constraints: PopupConstraints {
-            slide_x: config.constraints.slide_x,
-            slide_y: config.constraints.slide_y,
-            flip_x: config.constraints.flip_x,
-            flip_y: config.constraints.flip_y,
-            resize_x: config.constraints.resize_x,
-            resize_y: config.constraints.resize_y,
-        },
-        grab_focus: config.grab_focus,
-    })
-}
-
-/// Whether a popup's new configuration needs a brand-new `xdg_popup`.
-///
-/// Everything a positioner carries — anchor rectangle, anchor edge, gravity,
-/// offset, constraint policy, size — is replaceable on a mapped popup, so a
-/// change to any of them is *positional* and goes through `xdg_popup.reposition`.
-/// Two fields are not: the parent is bound when the popup object is created, and
-/// the grab is taken once against an input serial. Only those force a teardown.
-fn popup_change_is_structural(current: &PopupSurfaceConfig, next: &PopupSurfaceConfig) -> bool {
-    current.parent != next.parent || current.grab_focus != next.grab_focus
-}
-
-/// Resolves the surface a popup anchors to, defaulting to the shell's own layer.
-fn popup_parent_role(
-    config: &PopupSurfaceConfig,
-    surfaces_by_id: &HashMap<u64, &WindowSurfaceConfig>,
-) -> Result<SurfaceRole, String> {
-    let Some(parent) = config.parent else {
-        return Ok(SurfaceRole::Layer(PRIMARY_LAYER));
-    };
-    let parent = surfaces_by_id
-        .get(&parent)
-        .ok_or_else(|| "popup parent is stale".to_owned())?;
-    Ok(match parent.kind {
-        WindowSurfaceKind::Popup(_) => SurfaceRole::Popup(parent.id),
-        WindowSurfaceKind::Floating(_) => SurfaceRole::Floating(parent.id),
-        WindowSurfaceKind::Layer(_) => SurfaceRole::Layer(window_layer_id(parent.id)),
-    })
-}
-
-/// Creates a popup's Wayland surface and records the host state that tracks it.
-///
-/// The renderer starts empty and is rebuilt from the first configure. It cannot
-/// be carried over: a new `xdg_popup` carries a new `wl_surface`, and a wgpu
-/// swapchain cannot outlive the surface it was created from. That cost is why
-/// this path is taken only when the popup truly cannot be moved in place.
-fn open_popup_surface(
-    client: &mut LayerClient,
-    surface: &WindowSurfaceConfig,
-    config: &PopupSurfaceConfig,
-    parent: SurfaceRole,
-    popups: &mut HashMap<u64, AuxiliarySurface>,
-) -> Result<(), String> {
-    client
-        .open_popup(surface.id, parent, popup_client_config(config)?)
-        .map_err(|error| error.to_string())?;
-    popups.insert(
-        surface.id,
-        AuxiliarySurface {
-            id: surface.id,
-            root: surface.root,
-            updates_enabled: surface.updates_enabled,
-            width: config.width,
-            height: config.height,
-            renderer: None,
-            layout: None,
-            popup_config: Some(config.clone()),
-            floating_config: None,
-            layer_config: None,
-            needs_paint: true,
-        },
-    );
-    Ok(())
-}
-
-fn sync_window_surfaces(
+pub(crate) fn sync_window_surfaces(
     runtime: &Runtime,
     client: &mut LayerClient,
     popups: &mut HashMap<u64, AuxiliarySurface>,
@@ -319,11 +196,21 @@ fn sync_window_surfaces(
             );
         } else if let Some(current) = floatings.get_mut(&id) {
             resumed |= !current.updates_enabled && surface.updates_enabled;
+            let moved = current.root != surface.root
+                || current.width != config.width
+                || current.height != config.height;
             current.root = surface.root;
             current.updates_enabled = surface.updates_enabled;
             current.width = config.width;
             current.height = config.height;
-            current.layout = None;
+            // Only when the tree it lays out actually changed. `CachedLayout`
+            // already re-checks the revision, the size and the scale, so
+            // clearing it here on every sync threw away a valid layout — and
+            // with an anchored popup, which re-syncs whenever its anchor moves,
+            // that was every frame.
+            if moved {
+                current.layout = None;
+            }
         }
     }
     for surface in desired_popups {
@@ -364,23 +251,19 @@ fn sync_window_surfaces(
             // is also what resizes the swapchain — writing the requested size
             // here would let the two disagree for a frame.
             resumed |= !current.updates_enabled && surface.updates_enabled;
+            let moved = current.root != surface.root;
             current.root = surface.root;
             current.updates_enabled = surface.updates_enabled;
             current.popup_config = Some(config.clone());
-            current.layout = None;
+            if moved {
+                current.layout = None;
+            }
         }
     }
     Ok(resumed)
 }
 
-fn auxiliary_physical_size(width: u32, height: u32, scale_120: u32) -> (u32, u32) {
-    let physical = |value: u32| {
-        u32::try_from((u64::from(value) * u64::from(scale_120)).div_ceil(120)).unwrap_or(u32::MAX)
-    };
-    (physical(width), physical(height))
-}
-
-fn surface_layout<'a>(
+pub(crate) fn surface_layout<'a>(
     surface: SurfaceRole,
     layer: &'a Layout,
     popups: &'a HashMap<u64, AuxiliarySurface>,
@@ -389,13 +272,15 @@ fn surface_layout<'a>(
 ) -> Option<&'a Layout> {
     match surface {
         SurfaceRole::Layer(PRIMARY_LAYER) => Some(layer),
-        SurfaceRole::Layer(id) => layers.get(&window_surface_id(id)?)?.layout.as_ref(),
-        SurfaceRole::Popup(id) => popups.get(&id)?.layout.as_ref(),
-        SurfaceRole::Floating(id) => floatings.get(&id)?.layout.as_ref(),
+        SurfaceRole::Layer(id) => {
+            Some(&layers.get(&window_surface_id(id)?)?.layout.as_ref()?.layout)
+        }
+        SurfaceRole::Popup(id) => Some(&popups.get(&id)?.layout.as_ref()?.layout),
+        SurfaceRole::Floating(id) => Some(&floatings.get(&id)?.layout.as_ref()?.layout),
     }
 }
 
-fn surface_root(
+pub(crate) fn surface_root(
     surface: SurfaceRole,
     layer: NodeHandle,
     popups: &HashMap<u64, AuxiliarySurface>,
@@ -412,7 +297,7 @@ fn surface_root(
     }
 }
 
-fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, String> {
+pub(crate) fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, String> {
     let roots = runtime.scene().roots();
     let mut window_roots = HashSet::new();
     for surface in runtime.window_surface_configs() {
@@ -438,7 +323,10 @@ fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, String> {
     Ok(primary[0])
 }
 
-fn runtime_bar_config(surface: &LayerSurfaceConfig, output: &str) -> Result<BarConfig, String> {
+pub(crate) fn runtime_bar_config(
+    surface: &LayerSurfaceConfig,
+    output: &str,
+) -> Result<BarConfig, String> {
     let layer = match surface.layer.as_str() {
         "background" => ShellLayer::Background,
         "bottom" => ShellLayer::Bottom,
@@ -473,7 +361,10 @@ fn runtime_bar_config(surface: &LayerSurfaceConfig, output: &str) -> Result<BarC
     })
 }
 
-fn connect_runtime_surface(runtime: &Runtime, output: &str) -> Result<LayerClient, String> {
+pub(crate) fn connect_runtime_surface(
+    runtime: &Runtime,
+    output: &str,
+) -> Result<LayerClient, String> {
     let config = runtime.layer_surface_config();
     let mut client =
         LayerClient::connect(runtime_bar_config(&config, output)?).map_err(|e| e.to_string())?;

@@ -1,9 +1,19 @@
+use mold_layout::{Geometry, Transform2D};
+use mold_scene::{Color, NodeHandle};
+
 use super::*;
+use crate::*;
+
 use crate::{SdfLayer, SdfOperation, SdfShapeKind};
 
 /// Renders one command into a `size`-square target and reads the pixels back.
 pub(super) fn render_readback(list: &DrawList, size: u32) -> Vec<u8> {
     let mut backend = pollster::block_on(WgpuBackend::new(size, size)).unwrap();
+    read_frame(&mut backend, list, size)
+}
+
+/// Renders one frame into an existing backend and reads the pixels back.
+pub(super) fn read_frame(backend: &mut WgpuBackend, list: &DrawList, size: u32) -> Vec<u8> {
     backend
         .render(
             list,
@@ -112,13 +122,13 @@ pub(super) fn field_command(node: NodeHandle, layers: Vec<SdfLayer>) -> DrawComm
     }
 }
 
-fn alpha_at(pixels: &[u8], size: u32, x: u32, y: u32) -> u8 {
+pub(super) fn alpha_at(pixels: &[u8], size: u32, x: u32, y: u32) -> u8 {
     pixels[((y * size + x) * 4 + 3) as usize]
 }
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn a_field_paints_its_shape_and_leaves_the_outside_clear() {
+pub(crate) fn a_field_paints_its_shape_and_leaves_the_outside_clear() {
     // The shader compiles, the storage buffer binds, and the zero crossing
     // lands where the layer says it does.
     let mut scene = mold_scene::Scene::new();
@@ -141,7 +151,7 @@ fn a_field_paints_its_shape_and_leaves_the_outside_clear() {
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn a_smooth_union_fills_the_gap_that_a_hard_union_leaves_open() {
+pub(crate) fn a_smooth_union_fills_the_gap_that_a_hard_union_leaves_open() {
     // The one thing a tessellated outline cannot do. Two circles with a gap
     // between them: a hard union leaves the midpoint empty, a smooth union with
     // a blend radius wide enough to bridge it fills it in.
@@ -179,7 +189,7 @@ fn a_smooth_union_fills_the_gap_that_a_hard_union_leaves_open() {
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn subtracting_a_layer_opens_a_hole_through_the_one_before_it() {
+pub(crate) fn subtracting_a_layer_opens_a_hole_through_the_one_before_it() {
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
     let mut hole = field_layer(24.0, 24.0, 16.0, SdfShapeKind::Circle);
@@ -200,7 +210,7 @@ fn subtracting_a_layer_opens_a_hole_through_the_one_before_it() {
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn a_morph_at_its_ends_matches_the_shape_at_each_end() {
+pub(crate) fn a_morph_at_its_ends_matches_the_shape_at_each_end() {
     // A field morph is only trustworthy if it is an identity at zero and one.
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
@@ -234,7 +244,7 @@ fn a_morph_at_its_ends_matches_the_shape_at_each_end() {
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn a_morph_between_one_shape_and_two_passes_through_a_split() {
+pub(crate) fn a_morph_between_one_shape_and_two_passes_through_a_split() {
     // The reason for interpolating fields rather than outlines: halfway between
     // one blob and two, the field describes a shape that is neither, and the
     // count of separate pieces changes without any correspondence between the
@@ -266,7 +276,7 @@ fn a_morph_between_one_shape_and_two_passes_through_a_split() {
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn every_shape_family_paints_something_and_stays_inside_its_layer() {
+pub(crate) fn every_shape_family_paints_something_and_stays_inside_its_layer() {
     // A shape whose distance function has the sign inverted, or whose scale is
     // wrong, shows up here as an empty layer or as one that floods the target.
     let mut scene = mold_scene::Scene::new();
@@ -309,7 +319,7 @@ fn every_shape_family_paints_something_and_stays_inside_its_layer() {
 
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn a_fractional_point_count_grows_a_star_point_instead_of_popping_it_in() {
+pub(crate) fn a_fractional_point_count_grows_a_star_point_instead_of_popping_it_in() {
     // A star is only defined for a whole number of points. Rounding the count
     // makes a new spike appear at full size between two frames; blending the
     // neighbouring stars as fields grows it out of the edge instead.
@@ -333,7 +343,7 @@ fn a_fractional_point_count_grows_a_star_point_instead_of_popping_it_in() {
         )
     };
     /// How many pixels changed coverage between two renders.
-    fn moved(a: &[u8], b: &[u8]) -> usize {
+    pub(crate) fn moved(a: &[u8], b: &[u8]) -> usize {
         (0..64 * 64)
             .filter(|index| (a[index * 4 + 3] > 128) != (b[index * 4 + 3] > 128))
             .count()
@@ -354,4 +364,51 @@ fn a_fractional_point_count_grows_a_star_point_instead_of_popping_it_in() {
         largest * 2 < total,
         "one step moved {largest} of {total} pixels: {steps:?}"
     );
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_layer_reaching_outside_its_node_is_drawn_whole() {
+    // A layer is free to sit outside the node that composes it — a selection
+    // that overhangs its bar, a badge growing past an edge. The quad the field
+    // draws into has to cover that, and covering the node alone slices the
+    // overhang flat against the node's edge.
+    let mut scene = mold_scene::Scene::new();
+    let node = scene.create(mold_scene::Element::Sdf);
+    // The node occupies the middle; the layer hangs well off its left side.
+    let mut layer = field_layer(-12.0, 20.0, 24.0, SdfShapeKind::Box);
+    layer.radii = [6.0; 4];
+    let command = DrawCommand::Field {
+        node,
+        bounds: Geometry {
+            x: 16.0,
+            y: 16.0,
+            width: 32.0,
+            height: 32.0,
+        },
+        transform: Transform2D::IDENTITY,
+        clip: None,
+        fill_color: Color::rgba8(255, 255, 255, 255),
+        stroke_color: Color::rgba8(0, 0, 0, 0),
+        stroke_width: 0.0,
+        // No blend and no outline, so nothing else widens the quad: if the
+        // layers are not accounted for, the overhang is simply gone.
+        softness: 0.0,
+        layers: vec![layer],
+    };
+    let pixels = render_readback(
+        &DrawList {
+            commands: vec![command],
+            layers: Vec::new(),
+        },
+        64,
+    );
+    let alpha = |x: u32, y: u32| pixels[((y * 64 + x) * 4 + 3) as usize];
+
+    // The layer spans x -12..12 while the node starts at 16; every column of it
+    // is left of the node's own rectangle.
+    assert_eq!(alpha(0, 32), 255, "the far end of the overhang is drawn");
+    assert_eq!(alpha(8, 32), 255, "and the middle of it");
+    // It really does stop where the layer stops, rather than filling the row.
+    assert_eq!(alpha(20, 32), 0, "past the layer there is nothing");
 }

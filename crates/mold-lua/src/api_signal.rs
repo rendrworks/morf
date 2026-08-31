@@ -1,4 +1,13 @@
-fn install_signal_api<'gc>(
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::{
+    reactive_bindings::*, runtime_helpers::*, scene_bindings::*, state::*, surface_types::*,
+    types::*,
+};
+
+pub(crate) fn install_signal_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -31,7 +40,7 @@ fn install_signal_api<'gc>(
         let state = Rc::clone(&state);
         move |ctx, _, mut stack| {
             let (signal, value): (UserRef<SignalToken>, LuaValue) = stack.consume(ctx)?;
-            let value = ScriptValue::from_lua(value).map_err(HostError)?;
+            let value = IpcValue::from_lua(value).map_err(HostError)?;
             {
                 let mut state = state.borrow_mut();
                 if let Some(active) = &mut state.active {
@@ -65,7 +74,7 @@ fn install_signal_api<'gc>(
         let signal_metatable = signal_metatable.clone();
         move |ctx, _, mut stack| {
             let (name, value): (String, LuaValue) = stack.consume(ctx)?;
-            let value = ScriptValue::from_lua(value).map_err(HostError)?;
+            let value = IpcValue::from_lua(value).map_err(HostError)?;
             let id = {
                 let mut state = state.borrow_mut();
                 let id = state
@@ -89,10 +98,7 @@ fn install_signal_api<'gc>(
         let signal_metatable = signal_metatable.clone();
         move |ctx, _, mut stack| {
             let (name, initial): (String, LuaValue) = stack.consume(ctx)?;
-            if name.is_empty() {
-                return Err(HostError("reloadable id cannot be empty".into()).into());
-            }
-            let initial = ScriptValue::from_lua(initial).map_err(HostError)?;
+            let initial = IpcValue::from_lua(initial).map_err(HostError)?;
             let (id, _) = register_reloadable_value(&mut state.borrow_mut(), name, initial)
                 .map_err(HostError)?;
             let userdata = UserData::new_static(&ctx, SignalToken { id });
@@ -152,7 +158,7 @@ fn install_signal_api<'gc>(
                 .get(&key)
                 .copied()
                 .ok_or_else(|| HostError(format!("unknown persistent property `{key}`")))?;
-            let value = ScriptValue::from_lua(value).map_err(HostError)?;
+            let value = IpcValue::from_lua(value).map_err(HostError)?;
             {
                 let mut state = state.borrow_mut();
                 let current = state
@@ -205,7 +211,7 @@ fn install_signal_api<'gc>(
             let (scope, name, initial): (UserRef<ScopeToken>, String, LuaValue) =
                 stack.consume(ctx)?;
             let name = scoped_id(&scope.prefix, &name).map_err(HostError)?;
-            let initial = ScriptValue::from_lua(initial).map_err(HostError)?;
+            let initial = IpcValue::from_lua(initial).map_err(HostError)?;
             let (id, _) = register_reloadable_value(&mut state.borrow_mut(), name, initial)
                 .map_err(HostError)?;
             let userdata = UserData::new_static(&ctx, SignalToken { id });
@@ -261,4 +267,3 @@ fn install_signal_api<'gc>(
     clock.set_metatable(ctx, Some(ctx.fetch(&signal_metatable)));
     mold.set_field(ctx, "clock", clock);
 }
-

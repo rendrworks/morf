@@ -1,77 +1,108 @@
+use crate::effects::color_array;
+use crate::{DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode};
+use mold_image::ImageCache;
+use mold_layout::{Geometry, Transform2D};
+use mold_scene::Color;
+use mold_text::{GLYPH_FIELD_REFERENCE_PX, GLYPH_FIELD_SPREAD_PX};
+use std::collections::{HashMap, HashSet};
+
+use super::glyphs::*;
+
 #[derive(Clone)]
-struct TextureImage {
-    _texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
+pub(crate) struct TextureImage {
+    pub(crate) _texture: wgpu::Texture,
+    pub(crate) bind_group: wgpu::BindGroup,
 }
 
-struct LayerTarget {
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
-    instance: u32,
-    blur: Option<BlurChain>,
-    shadow_bind_group: Option<wgpu::BindGroup>,
-    shadow_instance: Option<u32>,
-    shadow: Option<BlurChain>,
+/// How many decoded images the GPU keeps around.
+///
+/// The cache is keyed on the pixel size an image was rasterised at, and that
+/// size comes off live geometry — so animating an icon's width from 16 to 256
+/// mints a texture per step. Unbounded, that is a leak with a config-reachable
+/// trigger; bounded, it is a cache that holds the sizes actually in use and
+/// lets a one-off animation frame fall out again.
+pub(crate) const MAX_IMAGE_TEXTURES: usize = 192;
+
+/// Drops the least recently used textures until the cache is within bounds.
+pub(crate) fn evict_image_textures(
+    textures: &mut HashMap<TextureKey, TextureImage>,
+    used: &HashSet<TextureKey>,
+) {
+    if textures.len() <= MAX_IMAGE_TEXTURES {
+        return;
+    }
+    // Anything drawn this frame stays, whatever the bound says: evicting it
+    // would only force it to be decoded again before the next paint.
+    textures.retain(|key, _| used.contains(key));
 }
 
-struct BlurChain {
-    _textures: Vec<wgpu::Texture>,
-    views: Vec<wgpu::TextureView>,
-    passes: Vec<BlurPass>,
+pub(crate) struct LayerTarget {
+    pub(crate) _texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
+    pub(crate) bind_group: wgpu::BindGroup,
+    pub(crate) instance: u32,
+    pub(crate) blur: Option<BlurChain>,
+    pub(crate) shadow_bind_group: Option<wgpu::BindGroup>,
+    pub(crate) shadow_instance: Option<u32>,
+    pub(crate) shadow: Option<BlurChain>,
 }
 
-struct BlurPass {
-    _params: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+pub(crate) struct BlurChain {
+    pub(crate) _textures: Vec<wgpu::Texture>,
+    pub(crate) views: Vec<wgpu::TextureView>,
+    pub(crate) passes: Vec<BlurPass>,
+}
+
+pub(crate) struct BlurPass {
+    pub(crate) _params: wgpu::Buffer,
+    pub(crate) bind_group: wgpu::BindGroup,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct TextureKey {
-    source: String,
-    theme: Option<String>,
-    width: u32,
-    height: u32,
-    scale_120: u32,
-    distance_field: bool,
-    distance_field_spread: u32,
+pub(crate) struct TextureKey {
+    pub(crate) source: String,
+    pub(crate) theme: Option<String>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) scale_120: u32,
+    pub(crate) distance_field: bool,
+    pub(crate) distance_field_spread: u32,
 }
 
 #[derive(Default)]
-struct TextureBatch {
-    instances: Vec<GlyphInstance>,
-    images: Vec<TextureImage>,
-    command_instances: Vec<Option<u32>>,
+pub(crate) struct TextureBatch {
+    pub(crate) instances: Vec<GlyphInstance>,
+    pub(crate) images: Vec<TextureImage>,
+    pub(crate) command_instances: Vec<Option<u32>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct TexturePlacement {
-    bounds: Geometry,
-    transform: Transform2D,
-    logical_width: u32,
-    logical_height: u32,
-    uv: [f32; 4],
+pub(crate) struct TexturePlacement {
+    pub(crate) bounds: Geometry,
+    pub(crate) transform: Transform2D,
+    pub(crate) logical_width: u32,
+    pub(crate) logical_height: u32,
+    pub(crate) uv: [f32; 4],
 }
 
 #[derive(Clone, Copy)]
-struct TextureStyle {
-    opacity: f32,
-    overlay: Color,
-    distance_field: bool,
-    field: DistanceFieldStyle,
+pub(crate) struct TextureStyle {
+    pub(crate) overlay: Color,
+    pub(crate) distance_field: bool,
+    pub(crate) field: DistanceFieldStyle,
     /// Source-pixel range the cached field encodes on either side of the edge.
-    spread: f32,
+    pub(crate) spread: f32,
 }
 
-struct TextureBatchContext<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
-    layout: &'a wgpu::BindGroupLayout,
-    sampler: &'a wgpu::Sampler,
-    target_size: (u32, u32),
+pub(crate) struct TextureBatchContext<'a> {
+    pub(crate) device: &'a wgpu::Device,
+    pub(crate) queue: &'a wgpu::Queue,
+    pub(crate) layout: &'a wgpu::BindGroupLayout,
+    pub(crate) sampler: &'a wgpu::Sampler,
+    pub(crate) target_size: (u32, u32),
 }
 
-fn create_texture_batch(
+pub(crate) fn create_texture_batch(
     context: TextureBatchContext<'_>,
     cache: &mut ImageCache,
     textures: &mut HashMap<TextureKey, TextureImage>,
@@ -83,13 +114,13 @@ fn create_texture_batch(
         ..TextureBatch::default()
     };
     let scale = scale_120.max(1) as f64 / 120.0;
+    let mut used: HashSet<TextureKey> = HashSet::new();
     for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Texture {
             bounds,
             transform,
             source,
             icon_theme,
-            opacity,
             color_overlay,
             fill_mode,
             distance_field,
@@ -121,6 +152,7 @@ fn create_texture_batch(
             distance_field: *distance_field,
             distance_field_spread: distance_field_spread.to_bits(),
         };
+        used.insert(key.clone());
         if let Some(image) = textures.get(&key) {
             push_texture_instance(
                 &mut batch,
@@ -128,7 +160,6 @@ fn create_texture_batch(
                 image.clone(),
                 placement,
                 TextureStyle {
-                    opacity: *opacity,
                     overlay: *color_overlay,
                     distance_field: *distance_field,
                     field: *distance_field_style,
@@ -225,7 +256,6 @@ fn create_texture_batch(
             texture_image,
             placement,
             TextureStyle {
-                opacity: *opacity,
                 overlay: *color_overlay,
                 distance_field: *distance_field,
                 field: *distance_field_style,
@@ -235,10 +265,13 @@ fn create_texture_batch(
             scale,
         );
     }
+    evict_image_textures(textures, &used);
+    cache.shrink();
+
     batch
 }
 
-fn texture_placement(
+pub(crate) fn texture_placement(
     bounds: Geometry,
     intrinsic: (u32, u32),
     fill_mode: ImageFillMode,
@@ -298,17 +331,40 @@ fn texture_placement(
 /// The cached texture maps `[-spread, spread]` source pixels onto `[0, 1]`, so
 /// a width expressed in pixels has to be divided by the full span to land in
 /// the same space as the sampled value.
-fn distance_field_uniform(style: DistanceFieldStyle, spread: f32) -> [f32; 4] {
+/// The same uniform for a glyph, whose field was measured at a fixed size.
+///
+/// A glyph's spread is in reference pixels, not in the pixels it is drawn at,
+/// so an outline asked for in logical pixels has to be converted through the
+/// ratio between the two. Doing it here rather than in the configuration is
+/// what lets an outline width mean the same thing at every font size.
+pub(crate) fn glyph_field_uniform(style: DistanceFieldStyle, size: f64) -> [f32; 4] {
+    let per_logical_pixel = GLYPH_FIELD_REFERENCE_PX / (size.max(1.0) as f32);
+    let span = GLYPH_FIELD_SPREAD_PX as f32 * 2.0;
+    [
+        // Positive thickness moves the edge outwards, which is the direction
+        // that adds ink — the field counts upwards away from the glyph.
+        0.5 + style.thickness * per_logical_pixel / span,
+        style.softness * per_logical_pixel / span,
+        style.outline_width * per_logical_pixel / span,
+        0.0,
+    ]
+}
+
+pub(crate) fn distance_field_uniform(style: DistanceFieldStyle, spread: f32) -> [f32; 4] {
     let span = (spread.max(0.5) * 2.0).max(f32::EPSILON);
     [
-        style.weight,
+        // The same neutral edge and the same signed offset the glyph path
+        // uses. This used to pass `weight` through as an absolute threshold,
+        // so one struct field meant two different things depending on which
+        // producer had filled it in.
+        0.5 + style.thickness / span,
         style.softness / span,
         style.outline_width / span,
         0.0,
     ]
 }
 
-fn push_texture_instance(
+pub(crate) fn push_texture_instance(
     batch: &mut TextureBatch,
     command_index: usize,
     image: TextureImage,
@@ -324,7 +380,7 @@ fn push_texture_instance(
         origin,
         axes,
         uv: placement.uv,
-        color: [1.0, 1.0, 1.0, style.opacity],
+        color: [1.0, 1.0, 1.0, 1.0],
         color_overlay: color_array(style.overlay),
         mode: [
             0.0,
@@ -337,154 +393,4 @@ fn push_texture_instance(
         ..GlyphInstance::default()
     });
     batch.images.push(image);
-}
-
-struct GlyphBatchContext<'a> {
-    queue: &'a wgpu::Queue,
-    mask_atlas: &'a mut GlyphAtlas,
-    color_atlas: &'a mut GlyphAtlas,
-    target_size: (u32, u32),
-}
-
-fn create_glyph_batch(
-    context: GlyphBatchContext<'_>,
-    text_system: &mut TextSystem,
-    list: &DrawList,
-    scale_120: u32,
-) -> Result<Option<GlyphBatch>, GpuError> {
-    let GlyphBatchContext {
-        queue,
-        mask_atlas,
-        color_atlas,
-        target_size: (target_width, target_height),
-    } = context;
-    let scale = scale_120.max(1) as f32 / 120.0;
-    let mut glyphs = Vec::new();
-    for (command_index, command) in list.commands.iter().enumerate() {
-        let DrawCommand::Text {
-            node,
-            bounds,
-            transform,
-            text,
-            family,
-            font_source,
-            size,
-            font_weight,
-            color,
-            color_overlay,
-            wrap,
-            elide,
-            horizontal_alignment,
-            vertical_alignment,
-            ..
-        } = command
-        else {
-            continue;
-        };
-        let measured = text_system.measure(
-            *node,
-            text,
-            family,
-            *size,
-            TextOptions {
-                width: Some(bounds.width),
-                wrap: *wrap,
-                alignment: *horizontal_alignment,
-                elide: *elide,
-                font_weight: *font_weight,
-                font_source: (!font_source.is_empty()).then(|| font_source.clone()),
-            },
-        );
-        let spare_height = (bounds.height - measured.height).max(0.0);
-        let vertical_offset = match vertical_alignment {
-            VerticalAlignment::Top => 0.0,
-            VerticalAlignment::Center => spare_height / 2.0,
-            VerticalAlignment::Bottom => spare_height,
-        };
-        for glyph in text_system.rasterize(
-            *node,
-            (
-                bounds.x as f32 * scale,
-                (bounds.y + vertical_offset) as f32 * scale,
-            ),
-            scale,
-        ) {
-            if glyph.width > 0 && glyph.height > 0 {
-                glyphs.push(PreparedGlyph {
-                    glyph,
-                    color: *color,
-                    color_overlay: *color_overlay,
-                    transform: *transform,
-                    command_index,
-                });
-            }
-        }
-    }
-    if glyphs.is_empty() {
-        return Ok(None);
-    }
-    mask_atlas.prepare(queue, &glyphs)?;
-    color_atlas.prepare(queue, &glyphs)?;
-    let mut instances = Vec::with_capacity(glyphs.len());
-    let mut command_spans: Vec<Vec<GlyphSpan>> =
-        (0..list.commands.len()).map(|_| Vec::new()).collect();
-    for prepared in glyphs {
-        let glyph = prepared.glyph;
-        let key = GlyphKey::from_glyph(&glyph);
-        let color_glyph = glyph.content == RasterContent::Color;
-        let atlas = if color_glyph {
-            &*color_atlas
-        } else {
-            &*mask_atlas
-        };
-        let entry = atlas.entries.get(&key).ok_or_else(|| {
-            GpuError("prepared glyph is missing from the persistent atlas".to_owned())
-        })?;
-        let tint = match glyph.content {
-            RasterContent::Mask => color_array(prepared.color),
-            RasterContent::Color => [1.0, 1.0, 1.0, prepared.color.alpha],
-        };
-        let (origin, axes) = transformed_quad(
-            prepared.transform,
-            Geometry {
-                x: f64::from(glyph.x) / f64::from(scale),
-                y: f64::from(glyph.y) / f64::from(scale),
-                width: f64::from(glyph.width) / f64::from(scale),
-                height: f64::from(glyph.height) / f64::from(scale),
-            },
-            f64::from(scale),
-            (target_width, target_height),
-        );
-        let instance = instances.len() as u32;
-        let spans = &mut command_spans[prepared.command_index];
-        if let Some(span) = spans.last_mut()
-            && span.color == color_glyph
-            && span.range.end == instance
-        {
-            span.range.end = instance + 1;
-        } else {
-            spans.push(GlyphSpan {
-                range: instance..instance + 1,
-                color: color_glyph,
-            });
-        }
-        instances.push(GlyphInstance {
-            origin,
-            axes,
-            uv: [
-                entry.x as f32 / GLYPH_ATLAS_SIZE as f32,
-                entry.y as f32 / GLYPH_ATLAS_SIZE as f32,
-                glyph.width as f32 / GLYPH_ATLAS_SIZE as f32,
-                glyph.height as f32 / GLYPH_ATLAS_SIZE as f32,
-            ],
-            color: tint,
-            color_overlay: color_array(prepared.color_overlay),
-            mode: [0.0, 0.0, if color_glyph { 0.0 } else { 1.0 }, 0.0],
-            ..GlyphInstance::default()
-        });
-    }
-    Ok(Some(GlyphBatch {
-        instances,
-        command_spans,
-    }))
 }

@@ -1,4 +1,16 @@
-fn execute_delegate(
+use luna::{Context, Executor, Function, StashedClosure, UserRef, Value as LuaValue, Variadic};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use mold_scene::{Element, ListChange, NodeHandle, Scene, Value as SceneValue, ViewTransition};
+
+use crate::{
+    reactive_bindings::*, reactive_execute::*, scene_bindings::*, serialization::*, state::*,
+    types::*,
+};
+
+pub(crate) fn execute_delegate(
     ctx: Context<'_>,
     delegate: &StashedClosure,
     item: &SceneValue,
@@ -10,26 +22,7 @@ fn execute_delegate(
         LuaValue::Integer(index as i64 + 1),
     ]);
     let executor = Executor::start(ctx, ctx.fetch(delegate).into(), args);
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua delegate fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            break;
-        }
-    }
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "delegate")?;
     let values = match executor.take_result::<Variadic<Vec<LuaValue>>>(ctx) {
         Ok(Ok(values)) => values,
         Ok(Err(error)) => return Err(error.to_string()),
@@ -52,7 +45,7 @@ fn execute_delegate(
     })
 }
 
-fn execute_delegate_updater(
+pub(crate) fn execute_delegate_updater(
     ctx: Context<'_>,
     updater: &StashedClosure,
     item: &SceneValue,
@@ -64,26 +57,13 @@ fn execute_delegate_updater(
         LuaValue::Integer(index as i64 + 1),
     ]);
     let executor = Executor::start(ctx, ctx.fetch(updater).into(), args);
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua delegate updater fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            break;
-        }
-    }
+    drive_executor(
+        ctx,
+        executor,
+        limits,
+        limits.effect_fuel,
+        "delegate updater",
+    )?;
     match executor.take_result::<()>(ctx) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error.to_string()),
@@ -91,32 +71,13 @@ fn execute_delegate_updater(
     }
 }
 
-fn execute_node_factory(
+pub(crate) fn execute_node_factory(
     ctx: Context<'_>,
     factory: &StashedClosure,
     limits: Limits,
 ) -> Result<NodeHandle, String> {
     let executor = Executor::start(ctx, ctx.fetch(factory).into(), ());
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua Loader source fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            break;
-        }
-    }
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "Loader source")?;
     match executor.take_result::<UserRef<NodeToken>>(ctx) {
         Ok(Ok(node)) => Ok(node.handle),
         Ok(Err(error)) => Err(error.to_string()),
@@ -124,7 +85,7 @@ fn execute_node_factory(
     }
 }
 
-fn position_view_child(
+pub(crate) fn position_view_child(
     scene: &mut Scene,
     node: NodeHandle,
     index: usize,
@@ -141,7 +102,7 @@ fn position_view_child(
         .map_err(|error| error.to_string())
 }
 
-fn reconcile_lua_view(
+pub(crate) fn reconcile_lua_view(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'_>,
     limits: Limits,
@@ -326,4 +287,3 @@ fn reconcile_lua_view(
     }
     Ok(transitions)
 }
-

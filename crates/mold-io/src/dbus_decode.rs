@@ -1,4 +1,15 @@
-fn dynamic_value(value: &Value<'_>) -> Result<DbusValue, String> {
+use crate::dbus_encode::decode_message_value;
+use std::collections::BTreeMap;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use zbus::blocking::Connection as DbusConnection;
+use zbus::zvariant::{Array, Dict, OwnedValue, Structure, Value};
+
+use crate::dbus_types::DbusValue;
+
+pub(crate) fn dynamic_value(value: &Value<'_>) -> Result<DbusValue, String> {
     Ok(match value {
         Value::U8(value) => DbusValue::Unsigned(u64::from(*value)),
         Value::Bool(value) => DbusValue::Bool(*value),
@@ -23,7 +34,7 @@ fn dynamic_value(value: &Value<'_>) -> Result<DbusValue, String> {
     })
 }
 
-fn structure_value(value: &Structure<'_>) -> Result<DbusValue, String> {
+pub(crate) fn structure_value(value: &Structure<'_>) -> Result<DbusValue, String> {
     value
         .fields()
         .iter()
@@ -32,7 +43,7 @@ fn structure_value(value: &Structure<'_>) -> Result<DbusValue, String> {
         .map(DbusValue::List)
 }
 
-fn array_value(value: &Array<'_>) -> Result<DbusValue, String> {
+pub(crate) fn array_value(value: &Array<'_>) -> Result<DbusValue, String> {
     value
         .inner()
         .iter()
@@ -55,9 +66,9 @@ fn dict_value(value: &Dict<'_, '_>) -> Result<DbusValue, String> {
 
 /// Blocking receiver for a filtered D-Bus signal stream.
 pub struct DbusSignal {
-    events: mpsc::Receiver<zbus::Message>,
-    connection: Option<DbusConnection>,
-    join: Option<JoinHandle<()>>,
+    pub(crate) events: mpsc::Receiver<zbus::Message>,
+    pub(crate) connection: Option<DbusConnection>,
+    pub(crate) join: Option<JoinHandle<()>>,
 }
 
 impl DbusSignal {
@@ -84,43 +95,14 @@ impl Drop for DbusSignal {
     }
 }
 
-fn basic_value(value: &OwnedValue) -> Result<DbusValue, String> {
-    if matches!(
-        &**value,
-        Value::Array(_) | Value::Dict(_) | Value::Structure(_) | Value::Value(_)
-    ) {
-        return dynamic_value(value);
-    }
-    if let Ok(value) = bool::try_from(value) {
-        return Ok(DbusValue::Bool(value));
-    }
-    if let Ok(value) = i16::try_from(value) {
-        return Ok(DbusValue::Integer(value as i64));
-    }
-    if let Ok(value) = i32::try_from(value) {
-        return Ok(DbusValue::Integer(value as i64));
-    }
-    if let Ok(value) = i64::try_from(value) {
-        return Ok(DbusValue::Integer(value));
-    }
-    if let Ok(value) = u8::try_from(value) {
-        return Ok(DbusValue::Unsigned(value as u64));
-    }
-    if let Ok(value) = u16::try_from(value) {
-        return Ok(DbusValue::Unsigned(value as u64));
-    }
-    if let Ok(value) = u32::try_from(value) {
-        return Ok(DbusValue::Unsigned(value as u64));
-    }
-    if let Ok(value) = u64::try_from(value) {
-        return Ok(DbusValue::Unsigned(value));
-    }
-    if let Ok(value) = f64::try_from(value) {
-        return Ok(DbusValue::Number(value));
-    }
-    if let Ok(value) = <&str>::try_from(value) {
-        return Ok(DbusValue::String(value.to_owned()));
-    }
-    Err("D-Bus value is not a supported scalar".to_owned())
+/// Decodes one property value.
+///
+/// This used to probe `TryFrom` for each scalar type in turn and give up at the
+/// end of the list, which quietly excluded the two scalars the list forgot:
+/// zvariant's conversions match one exact variant each, so an object path or a
+/// signature matched nothing and came back "not a supported scalar" — even
+/// though `dynamic_value` beside it has always handled both. Every property
+/// carrying a `o` or `g` was unreadable for no reason anyone chose.
+pub(crate) fn basic_value(value: &OwnedValue) -> Result<DbusValue, String> {
+    dynamic_value(value)
 }
-

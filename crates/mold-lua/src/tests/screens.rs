@@ -1,3 +1,7 @@
+use crate::*;
+
+use super::*;
+
 // `mold.screens`: the compositor's whole output list, own output first.
 
 fn output(name: &str, x: i32, width: i32, height: i32) -> Screen {

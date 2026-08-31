@@ -1,8 +1,15 @@
-fn usage() -> &'static str {
+use mold_io::{IpcRequest, IpcValue as WireValue, ipc_call};
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+
+use crate::{lock::*, supervisor::*};
+
+pub(crate) fn usage() -> &'static str {
     "mold - reactive Wayland shell runtime\n\nusage: mold [--no-plugin | --clean] [shell.lua]\n       mold [--no-plugin | --clean] -c <name>\n       mold lock [lock.lua]\n       mold ipc call <target> [args...]\n       mold ipc verbs\n       mold log [--bindings]\n       mold kill\n       mold --help\n       mold --version"
 }
 
-fn run() -> Result<(), String> {
+pub(crate) fn run() -> Result<(), String> {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     match parse_command(&args)? {
         Command::Help => println!("{}", usage()),
@@ -28,7 +35,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-enum Command {
+pub(crate) enum Command {
     Help,
     Version,
     Run(PathBuf, LoadPolicy),
@@ -37,9 +44,9 @@ enum Command {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LoadPolicy {
-    plugins: bool,
-    external_roots: bool,
+pub(crate) struct LoadPolicy {
+    pub(crate) plugins: bool,
+    pub(crate) external_roots: bool,
 }
 
 impl Default for LoadPolicy {
@@ -51,7 +58,7 @@ impl Default for LoadPolicy {
     }
 }
 
-fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
+pub(crate) fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
     let strings = args
         .iter()
         .map(|value| {
@@ -100,7 +107,7 @@ fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
     }
 }
 
-fn config_root() -> Result<PathBuf, String> {
+pub(crate) fn config_root() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
         return Ok(PathBuf::from(path).join("mold"));
     }
@@ -109,14 +116,14 @@ fn config_root() -> Result<PathBuf, String> {
         .ok_or_else(|| "HOME and XDG_CONFIG_HOME are unset".to_owned())
 }
 
-fn named_config_path(name: &str) -> Result<PathBuf, String> {
+pub(crate) fn named_config_path(name: &str) -> Result<PathBuf, String> {
     if name.is_empty() || name.contains('/') || name == "." || name == ".." {
         return Err("config name must be one path component".to_owned());
     }
     Ok(config_root()?.join(name).join("shell.lua"))
 }
 
-fn socket_path() -> Result<PathBuf, String> {
+pub(crate) fn socket_path() -> Result<PathBuf, String> {
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| "XDG_RUNTIME_DIR is unset".to_owned())?;
@@ -126,4 +133,3 @@ fn socket_path() -> Result<PathBuf, String> {
     }
     Ok(runtime.join("mold").join(format!("{display}.sock")))
 }
-

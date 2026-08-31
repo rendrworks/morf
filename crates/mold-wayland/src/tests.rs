@@ -1,3 +1,12 @@
+use crate::client_layer::layer_interactivity;
+use crate::client_surface::next_reposition_token;
+use smithay_client_toolkit::shell::wlr_layer::Anchor;
+use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity as WlrKeyboardInteractivity;
+use std::collections::HashMap;
+
+use crate::client_layer::{PRIMARY_LAYER, layer_anchor_mask};
+use wayland_client::protocol::wl_output;
+
 use super::*;
 
 #[test]
@@ -120,11 +129,6 @@ fn reposition_tokens_count_per_popup_and_record_the_echo() {
     assert_eq!(next_reposition_token(&mut repositions, 4), 2);
     // A second popup counts on its own, so an echo identifies one request.
     assert_eq!(next_reposition_token(&mut repositions, 9), 1);
-    assert_eq!(repositions[&4].acknowledged, None);
-
-    record_reposition_ack(&mut repositions, 4, 2);
-    assert_eq!(repositions[&4].acknowledged, Some(2));
-    assert_eq!(repositions[&9].acknowledged, None);
 
     // Zero stays unused: a wrapped counter must not look like a fresh one.
     repositions.get_mut(&4).unwrap().sent = u32::MAX;

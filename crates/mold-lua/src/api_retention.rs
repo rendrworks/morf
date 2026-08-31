@@ -1,4 +1,14 @@
-fn install_retention_api<'gc>(
+use luna::{
+    Callback, CallbackReturn, Closure, Context, Table, UserData, UserRef, Value as LuaValue,
+};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use crate::{
+    reactive_bindings::*, runtime_helpers::*, scene_bindings::*, state::*, table_menu::*, types::*,
+};
+
+pub(crate) fn install_retention_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -252,4 +262,3 @@ fn install_retention_api<'gc>(
     mold.set_field(ctx, "retain_lock", retain_lock);
     mold.set_field(ctx, "effect", effect);
 }
-

@@ -101,14 +101,14 @@ local glyph = ui.Image {
   distance_field = true,
   distance_field_spread = 12,
   color_overlay = "#fbbf24",
-  distance_field_weight = function() return bold:get() and 0.34 or 0.52 end,
-  distance_field_softness = function() return bold:get() and 0.4 or 1.6 end,
-  distance_field_outline_width = function() return bold:get() and 3.2 or 0 end,
-  distance_field_outline_color = "#f8fafc",
+  thickness = function() return bold:get() and 1.6 or 0.0 end,
+  softness = function() return bold:get() and 0.4 or 1.6 end,
+  outline_width = function() return bold:get() and 3.2 or 0 end,
+  outline_color = "#f8fafc",
   behavior = {
-    distance_field_weight = { duration = 420, easing = "in_out_quad" },
-    distance_field_softness = { duration = 420, easing = "in_out_quad" },
-    distance_field_outline_width = {
+    thickness = { duration = 420, easing = "in_out_quad" },
+    softness = { duration = 420, easing = "in_out_quad" },
+    outline_width = {
       kind = "spring",
       mass = 1,
       damping = 14,

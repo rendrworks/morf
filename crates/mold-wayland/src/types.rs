@@ -1,3 +1,5 @@
+use wayland_protocols::xdg::shell::client::xdg_positioner;
+
 /// Edges used to anchor a layer-shell surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayerAnchors {
@@ -67,17 +69,12 @@ pub struct BarConfig {
 }
 
 /// Integer surface-local rectangle used to construct an input region.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InputRect {
-    /// Left edge in logical pixels.
-    pub x: i32,
-    /// Top edge in logical pixels.
-    pub y: i32,
-    /// Positive width in logical pixels.
-    pub width: i32,
-    /// Positive height in logical pixels.
-    pub height: i32,
-}
+///
+/// The same four fields `mold_region` already defines, so it is that type
+/// rather than a copy of it. Two names for one shape meant a field-by-field
+/// rebuild of every rectangle on the way from the region rasteriser to the
+/// compositor, allocated fresh on each update.
+pub type InputRect = mold_region::Rect;
 
 /// Capability-derived compositor output description.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -213,7 +210,7 @@ impl Default for PopupConfig {
     }
 }
 
-fn popup_anchor(anchor: PopupAnchor) -> xdg_positioner::Anchor {
+pub(crate) fn popup_anchor(anchor: PopupAnchor) -> xdg_positioner::Anchor {
     match anchor {
         PopupAnchor::None => xdg_positioner::Anchor::None,
         PopupAnchor::Top => xdg_positioner::Anchor::Top,
@@ -227,7 +224,7 @@ fn popup_anchor(anchor: PopupAnchor) -> xdg_positioner::Anchor {
     }
 }
 
-fn popup_gravity(gravity: PopupGravity) -> xdg_positioner::Gravity {
+pub(crate) fn popup_gravity(gravity: PopupGravity) -> xdg_positioner::Gravity {
     match gravity {
         PopupGravity::None => xdg_positioner::Gravity::None,
         PopupGravity::Top => xdg_positioner::Gravity::Top,
@@ -241,7 +238,9 @@ fn popup_gravity(gravity: PopupGravity) -> xdg_positioner::Gravity {
     }
 }
 
-fn popup_constraints(constraints: PopupConstraints) -> xdg_positioner::ConstraintAdjustment {
+pub(crate) fn popup_constraints(
+    constraints: PopupConstraints,
+) -> xdg_positioner::ConstraintAdjustment {
     let mut value = xdg_positioner::ConstraintAdjustment::empty();
     if constraints.slide_x {
         value |= xdg_positioner::ConstraintAdjustment::SlideX;
@@ -263,4 +262,3 @@ fn popup_constraints(constraints: PopupConstraints) -> xdg_positioner::Constrain
     }
     value
 }
-

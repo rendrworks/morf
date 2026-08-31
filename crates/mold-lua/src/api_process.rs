@@ -1,4 +1,13 @@
-fn install_process_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use mold_io::{Process, ProcessConfig, ProcessEvent};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use crate::{lua_values::*, process_helpers::*, scene_bindings::*, state::*, table_menu::*};
+
+pub(crate) fn install_process_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     let process_write = Callback::from_fn(&ctx, |ctx, _, mut stack| {
         let (process, bytes): (UserRef<ProcessToken>, String) = stack.consume(ctx)?;
         process
@@ -366,4 +375,3 @@ fn install_process_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     });
     mold.set_field(ctx, "process_view", process_view);
 }
-

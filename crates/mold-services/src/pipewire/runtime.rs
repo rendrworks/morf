@@ -1,13 +1,23 @@
+use libloading::Library;
+use std::collections::BTreeMap;
+use std::ffi::{c_char, c_int, c_void};
+use std::ptr;
+use std::sync::Mutex;
+
+use super::ffi::*;
+use super::volume::*;
+use super::*;
+
 pub struct PipeWire {
-    _library: Library,
-    symbols: Symbols,
-    thread_loop: *mut c_void,
-    context: *mut c_void,
-    core: *mut c_void,
-    registry: *mut c_void,
-    state: Box<CallbackState>,
-    _core_hook: Box<SpaHook>,
-    _registry_hook: Box<SpaHook>,
+    pub(crate) _library: Library,
+    pub(crate) symbols: Symbols,
+    pub(crate) thread_loop: *mut c_void,
+    pub(crate) context: *mut c_void,
+    pub(crate) core: *mut c_void,
+    pub(crate) registry: *mut c_void,
+    pub(crate) state: Box<CallbackState>,
+    pub(crate) _core_hook: Box<SpaHook>,
+    pub(crate) _registry_hook: Box<SpaHook>,
 }
 
 unsafe impl Send for PipeWire {}
@@ -182,7 +192,7 @@ impl PipeWire {
         synced
     }
 
-    fn ensure_node(&self, id: u32) -> Result<(), PipeWireError> {
+    pub(crate) fn ensure_node(&self, id: u32) -> Result<(), PipeWireError> {
         if self.state.nodes.lock().unwrap().contains_key(&id) {
             Ok(())
         } else {
@@ -190,14 +200,14 @@ impl PipeWire {
         }
     }
 
-    fn sync(&self) -> Result<(), PipeWireError> {
+    pub(crate) fn sync(&self) -> Result<(), PipeWireError> {
         unsafe { (self.symbols.thread_loop_lock)(self.thread_loop) };
         let result = self.sync_locked();
         unsafe { (self.symbols.thread_loop_unlock)(self.thread_loop) };
         result
     }
 
-    fn sync_locked(&self) -> Result<(), PipeWireError> {
+    pub(crate) fn sync_locked(&self) -> Result<(), PipeWireError> {
         let seq = unsafe { (self.symbols.core_sync)(self.core, 0, 0) };
         if seq < 0 {
             return Err(PipeWireError(format!("PipeWire sync failed: {seq}")));
@@ -227,7 +237,7 @@ impl Drop for PipeWire {
     }
 }
 
-static CORE_EVENTS: CoreEvents = CoreEvents {
+pub(crate) static CORE_EVENTS: CoreEvents = CoreEvents {
     version: 1,
     info: None,
     done: Some(core_done),
@@ -240,13 +250,13 @@ static CORE_EVENTS: CoreEvents = CoreEvents {
     bound_props: None,
 };
 
-static REGISTRY_EVENTS: RegistryEvents = RegistryEvents {
+pub(crate) static REGISTRY_EVENTS: RegistryEvents = RegistryEvents {
     version: 0,
     global: Some(registry_global),
     global_remove: Some(registry_global_remove),
 };
 
-static NODE_EVENTS: NodeEvents = NodeEvents {
+pub(crate) static NODE_EVENTS: NodeEvents = NodeEvents {
     version: 0,
     info: None,
     param: Some(node_param),
@@ -331,4 +341,3 @@ unsafe extern "C" fn node_param(
         *state.volume.lock().unwrap() = volume;
     }
 }
-

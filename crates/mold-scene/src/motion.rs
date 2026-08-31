@@ -1,5 +1,10 @@
+use animato::{Spring, SpringConfig, Tween, TweenState, Update};
+use std::time::Duration;
+
+use crate::{animation::*, types::*};
+
 impl Animation {
-    fn new(
+    pub(crate) fn new(
         from: Value,
         to: Value,
         initial_velocity: Velocity,
@@ -23,7 +28,7 @@ impl Animation {
         }
     }
 
-    fn progress(&self) -> f64 {
+    pub(crate) fn progress(&self) -> f64 {
         let progress = f64::from(self.clock.progress());
         if self.clock.is_ping_pong_reversed() {
             1.0 - progress
@@ -33,17 +38,17 @@ impl Animation {
     }
 
     /// Reports whether the interval is waiting out its behavior delay.
-    fn is_delayed(&self) -> bool {
+    pub(crate) fn is_delayed(&self) -> bool {
         matches!(self.clock.state(), TweenState::Idle)
     }
 
     /// Reports whether playback is halted without having reached the target.
-    fn is_paused(&self) -> bool {
+    pub(crate) fn is_paused(&self) -> bool {
         matches!(self.clock.state(), TweenState::Paused)
     }
 
     /// Reports whether the animation settles on its own.
-    fn settles(&self) -> bool {
+    pub(crate) fn settles(&self) -> bool {
         !self.behavior.repeat.is_endless()
     }
 
@@ -51,7 +56,7 @@ impl Animation {
     ///
     /// An alternating repetition that ends on a backward pass finishes where it
     /// started, so the resting value is not always the target.
-    fn settled(&self) -> &Value {
+    pub(crate) fn settled(&self) -> &Value {
         if self.clock.is_ping_pong_reversed() {
             &self.from
         } else {
@@ -59,7 +64,7 @@ impl Animation {
         }
     }
 
-    fn value(&self) -> Value {
+    pub(crate) fn value(&self) -> Value {
         let progress = if self.preserve_velocity {
             self.progress()
         } else {
@@ -74,15 +79,11 @@ impl Animation {
                 progress,
             )
         } else {
-            interpolate(
-                &self.from,
-                &self.to,
-                progress,
-            )
+            interpolate(&self.from, &self.to, progress)
         }
     }
 
-    fn velocity(&self) -> Velocity {
+    pub(crate) fn velocity(&self) -> Velocity {
         let duration = self.behavior.duration.as_secs_f64();
         if duration == 0.0 {
             return zero_velocity(&self.to);
@@ -112,14 +113,14 @@ impl Animation {
     }
 }
 
-fn interpolatable(from: &Value, to: &Value) -> bool {
+pub(crate) fn interpolatable(from: &Value, to: &Value) -> bool {
     matches!(
         (from, to),
         (Value::Number(_), Value::Number(_)) | (Value::Color(_), Value::Color(_))
     )
 }
 
-fn animation_start(
+pub(crate) fn animation_start(
     property: &str,
     from: Value,
     to: &Value,
@@ -133,18 +134,14 @@ fn animation_start(
     }
     let delta = match direction {
         RotationDirection::Numerical => return from,
-        RotationDirection::Shortest => {
-            (to_number - from_number + 180.0).rem_euclid(360.0) - 180.0
-        }
+        RotationDirection::Shortest => (to_number - from_number + 180.0).rem_euclid(360.0) - 180.0,
         RotationDirection::Clockwise => (to_number - from_number).rem_euclid(360.0),
-        RotationDirection::CounterClockwise => {
-            -((from_number - to_number).rem_euclid(360.0))
-        }
+        RotationDirection::CounterClockwise => -((from_number - to_number).rem_euclid(360.0)),
     };
     Value::Number(to_number - delta)
 }
 
-fn validate_physics(physics: Physics) -> Result<(), String> {
+pub(crate) fn validate_physics(physics: Physics) -> Result<(), String> {
     match physics {
         Physics::Spring {
             mass,
@@ -163,20 +160,47 @@ fn validate_physics(physics: Physics) -> Result<(), String> {
             Ok(())
         }
         Physics::Smoothed { velocity } if velocity.is_finite() && velocity > 0.0 => Ok(()),
+        Physics::Decay {
+            friction,
+            min_velocity,
+            bounds,
+            gravity,
+            restitution,
+        } if friction.is_finite()
+            && friction >= 0.0
+            && min_velocity.is_finite()
+            && min_velocity >= 0.0
+            && gravity.is_finite()
+            && restitution.is_finite()
+            && (0.0..=1.0).contains(&restitution)
+            && bounds
+                .is_none_or(|(low, high)| low.is_finite() && high.is_finite() && low <= high) =>
+        {
+            Ok(())
+        }
         Physics::Spring { .. } => Err("spring values must be finite and physically valid".into()),
         Physics::Smoothed { .. } => {
             Err("smoothed velocity must be finite and greater than zero".into())
         }
+        Physics::Decay { .. } => Err(
+            "decay needs finite friction, gravity and minimum velocity, a restitution between \
+             zero and one, and ordered bounds"
+                .into(),
+        ),
     }
 }
 
-fn physics_animation(
+pub(crate) fn physics_animation(
     current: f64,
     target: f64,
     velocity: f64,
     spec: Physics,
 ) -> PhysicsAnimation {
     match spec {
+        // Decay pursues nothing, so there is no target for an assignment to
+        // set. It is installed by `Scene::fling`, which is why `set_physics`
+        // refuses it and this arm cannot be reached.
+        Physics::Decay { .. } => unreachable!("decay is started by a fling, not by an assignment"),
         Physics::Spring {
             mass,
             damping,
@@ -204,7 +228,23 @@ fn physics_animation(
     }
 }
 
-fn advance_physics(motion: &mut PhysicsAnimation, current: &mut f64, delta: Duration) -> bool {
+/// Whether a coast has run out of speed, given the slowest it may travel.
+///
+/// Strictly slower, so that a `min_velocity` of zero means what it says: no
+/// speed is too slow, and the coast ends only when something else ends it.
+/// That is the one way a configuration can say "this property is under physics
+/// and currently still" — which is what anything driving a property by force
+/// rather than by throw needs, because a coast that has ended takes no
+/// impulses, and a property stopped dead this way could never be pushed again.
+pub(crate) fn slow_enough_to_stop(velocity: f64, min_velocity: f64) -> bool {
+    min_velocity > 0.0 && velocity.abs() <= min_velocity
+}
+
+pub(crate) fn advance_physics(
+    motion: &mut PhysicsAnimation,
+    current: &mut f64,
+    delta: Duration,
+) -> bool {
     let seconds = delta.as_secs_f64();
     match motion {
         PhysicsAnimation::Spring {
@@ -224,6 +264,56 @@ fn advance_physics(motion: &mut PhysicsAnimation, current: &mut f64, delta: Dura
             } else {
                 false
             }
+        }
+        PhysicsAnimation::Decay {
+            position,
+            velocity,
+            friction,
+            gravity,
+            restitution,
+            min_velocity,
+            bounds,
+        } => {
+            // Semi-implicit Euler: accelerate, then move. Friction opposes the
+            // motion and may bring it to a stop within the step, so it is
+            // clamped rather than allowed to push the other way.
+            *velocity += *gravity * seconds;
+            let drag = *friction * seconds;
+            if drag >= velocity.abs() {
+                *velocity = 0.0;
+            } else {
+                *velocity -= drag * velocity.signum();
+            }
+            *position += *velocity * seconds;
+
+            let mut resting = false;
+            if let Some((low, high)) = *bounds {
+                // A bound returns the speed it did not absorb, which is what
+                // makes it a bounce rather than a wall.
+                if *position < low {
+                    *position = low;
+                    *velocity = -*velocity * *restitution;
+                } else if *position > high {
+                    *position = high;
+                    *velocity = -*velocity * *restitution;
+                }
+                // At rest means: too slow to leave, against the bound that
+                // gravity holds it to. Without gravity either end will do.
+                let held = (*position - low).abs() < f64::EPSILON && *gravity < 0.0
+                    || (*position - high).abs() < f64::EPSILON && *gravity > 0.0
+                    || *gravity == 0.0
+                        && ((*position - low).abs() < f64::EPSILON
+                            || (*position - high).abs() < f64::EPSILON);
+                resting = held && slow_enough_to_stop(*velocity, *min_velocity);
+            }
+            *current = *position;
+            if resting {
+                *velocity = 0.0;
+                return true;
+            }
+            // Running out of speed ends a coast, but not a fall: with gravity
+            // the next step will start it moving again.
+            *gravity == 0.0 && slow_enough_to_stop(*velocity, *min_velocity)
         }
         PhysicsAnimation::Smoothed {
             target,
@@ -245,14 +335,14 @@ fn advance_physics(motion: &mut PhysicsAnimation, current: &mut f64, delta: Dura
     }
 }
 
-fn zero_velocity(value: &Value) -> Velocity {
+pub(crate) fn zero_velocity(value: &Value) -> Velocity {
     match value {
         Value::Color(_) => Velocity::Color([0.0; 4]),
         _ => Velocity::Number(0.0),
     }
 }
 
-fn value_velocity(from: &Value, to: &Value, seconds: f64) -> Velocity {
+pub(crate) fn value_velocity(from: &Value, to: &Value, seconds: f64) -> Velocity {
     let seconds = seconds.max(f64::EPSILON);
     match (from, to) {
         (Value::Number(from), Value::Number(to)) => Velocity::Number((to - from) / seconds),
@@ -266,7 +356,7 @@ fn value_velocity(from: &Value, to: &Value, seconds: f64) -> Velocity {
     }
 }
 
-fn interpolate(from: &Value, to: &Value, progress: f64) -> Value {
+pub(crate) fn interpolate(from: &Value, to: &Value, progress: f64) -> Value {
     match (from, to) {
         (Value::Number(from), Value::Number(to)) => Value::Number(from + (to - from) * progress),
         (Value::Color(from), Value::Color(to)) => Value::Color(Color {
@@ -279,7 +369,7 @@ fn interpolate(from: &Value, to: &Value, progress: f64) -> Value {
     }
 }
 
-fn interpolate_hermite(
+pub(crate) fn interpolate_hermite(
     from: &Value,
     to: &Value,
     velocity: Velocity,
@@ -315,62 +405,67 @@ fn interpolate_hermite(
     }
 }
 
-fn property_class(property: &str) -> PropertyClass {
-    match property {
-        "x"
-        | "y"
-        | "scale"
-        | "scale_x"
-        | "scale_y"
-        | "skew_x"
-        | "skew_y"
-        | "translate_x"
-        | "translate_y"
-        | "transform_origin_x"
-        | "transform_origin_y"
-        | "rotation"
-        | "opacity"
-        | "transition_x"
-        | "transition_y" => PropertyClass::Transform,
-        "color"
-        | "color_overlay"
-        | "layer"
-        | "radius"
-        | "top_left_radius"
-        | "top_right_radius"
-        | "bottom_right_radius"
-        | "bottom_left_radius"
-        | "border_width"
-        | "border_color"
-        | "antialiasing"
-        | "border_pixel_aligned"
-        | "content_under_border"
-        | "gradient_start_color"
-        | "gradient_end_color"
-        | "gradient_start_x"
-        | "gradient_start_y"
-        | "gradient_end_x"
-        | "gradient_end_y"
-        | "gradient_center_x"
-        | "gradient_center_y"
-        | "gradient_radius"
-        | "gradient_angle"
-        | "blur"
-        | "shadow_color"
-        | "shadow_blur"
-        | "shadow_spread"
-        | "shadow_offset_x"
-        | "shadow_offset_y"
-        | "shadow_inner"
-        | "path"
-        | "morph_progress"
-        | "distance_field_weight"
-        | "distance_field_softness"
-        | "distance_field_outline_width"
-        | "distance_field_outline_color"
-        | "fill_color"
-        | "stroke_color"
-        | "stroke_width" => PropertyClass::Paint,
-        _ => PropertyClass::Layout,
-    }
+/// Whether layout reads this property.
+///
+/// Deliberately not [`property_class`]. That answers "what work does a change
+/// need", and it calls `x` a transform because the renderer offsets by it —
+/// but layout bakes `x` into the geometry it produces, and reads `border_width`
+/// for a `ClipRect`'s content inset even though painting owns the border. Using
+/// it here would let a moved node keep a stale layout.
+///
+/// The list is negative on purpose: everything counts unless it is known never
+/// to be read, so a property added to the schema without a thought here costs
+/// one extra layout pass rather than a frame drawn at the wrong geometry.
+pub(crate) fn affects_layout(property: &str) -> bool {
+    !matches!(
+        property,
+        "scale"
+            | "scale_x"
+            | "scale_y"
+            | "skew_x"
+            | "skew_y"
+            | "translate_x"
+            | "translate_y"
+            | "transform_origin_x"
+            | "transform_origin_y"
+            | "rotation"
+            | "opacity"
+            | "color"
+            | "color_overlay"
+            | "layer"
+            | "radius"
+            | "top_left_radius"
+            | "top_right_radius"
+            | "bottom_right_radius"
+            | "bottom_left_radius"
+            | "border_color"
+            | "antialiasing"
+            | "border_pixel_aligned"
+            | "content_under_border"
+            | "gradient_start_color"
+            | "gradient_end_color"
+            | "gradient_start_x"
+            | "gradient_start_y"
+            | "gradient_end_x"
+            | "gradient_end_y"
+            | "gradient_center_x"
+            | "gradient_center_y"
+            | "gradient_radius"
+            | "gradient_angle"
+            | "blur"
+            | "shadow_color"
+            | "shadow_blur"
+            | "shadow_spread"
+            | "shadow_offset_x"
+            | "shadow_offset_y"
+            | "shadow_inner"
+            | "morph_progress"
+            | "blend"
+            | "thickness"
+            | "softness"
+            | "outline_width"
+            | "outline_color"
+            | "fill_color"
+            | "stroke_color"
+    )
 }

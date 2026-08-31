@@ -1,3 +1,11 @@
+use crate::effects::{color_array, physical_damage};
+use crate::{DamageRect, DrawList, RenderBackend};
+use mold_layout::{Geometry, Size, TextMeasurer, TextOptions, Transform2D};
+use mold_scene::{Element, NodeHandle};
+use std::collections::HashMap;
+
+use super::{backend_types::*, batches::*, glyph_batch::*, glyphs::*, targets::*, textures::*};
+
 impl TextMeasurer for WgpuBackend {
     fn measure(
         &mut self,
@@ -73,8 +81,8 @@ impl RenderBackend for WgpuBackend {
         );
         let scale = scale_120.max(1) as f64 / 120.0;
         let mut layer_targets = Vec::with_capacity(list.layers.len());
-        for layer in &list.layers {
-            let (texture, view) = create_target(&self.device, self.width, self.height);
+        for (layer_index, layer) in list.layers.iter().enumerate() {
+            let (texture, view) = self.layer_target(layer_index);
             let blur = (layer.blur > 0.0).then(|| {
                 create_blur_chain(
                     &self.device,
@@ -201,18 +209,12 @@ impl RenderBackend for WgpuBackend {
                 shadow,
             });
         }
-        let path_batch = create_path_batch(&mut self.paths, list, scale_120)
-            .map_err(|error| GpuError(format!("could not prepare path draw: {error}")))?;
         self.ensure_instances(instances.len().max(1));
         self.ensure_textures(texture_batch.instances.len().max(1));
         self.ensure_glyphs(
             glyph_batch
                 .as_ref()
                 .map_or(1, |batch| batch.instances.len().max(1)),
-        );
-        self.ensure_paths(
-            path_batch.vertices.len().max(1),
-            path_batch.indices.len().max(1),
         );
         self.ensure_fields(field_instances.len().max(1), field_layers.len().max(1));
         if !field_instances.is_empty() {
@@ -243,18 +245,6 @@ impl RenderBackend for WgpuBackend {
                 &self.texture_buffer,
                 0,
                 bytemuck::cast_slice(&texture_batch.instances),
-            );
-        }
-        if !path_batch.vertices.is_empty() {
-            self.queue.write_buffer(
-                &self.path_vertex_buffer,
-                0,
-                bytemuck::cast_slice(&path_batch.vertices),
-            );
-            self.queue.write_buffer(
-                &self.path_index_buffer,
-                0,
-                bytemuck::cast_slice(&path_batch.indices),
             );
         }
         let mut command_layers = vec![None; list.commands.len()];
@@ -312,16 +302,6 @@ impl RenderBackend for WgpuBackend {
                             $pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
                             $pass.draw(0..6, span.range.clone());
                         }
-                    }
-                    for range in &path_batch.command_ranges[command_index] {
-                        $pass.set_pipeline(&self.path_pipeline);
-                        $pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                        $pass.set_vertex_buffer(0, self.path_vertex_buffer.slice(..));
-                        $pass.set_index_buffer(
-                            self.path_index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        $pass.draw_indexed(range.clone(), 0, 0..1);
                     }
                 }
             }};

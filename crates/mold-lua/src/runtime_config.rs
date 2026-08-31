@@ -1,3 +1,13 @@
+use luna::{Closure, Executor, ExecutorMode, Fuel, Lua};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
+use crate::{
+    api_finish::*, reactive_execute::*, serialization::*, state::*, surface_types::*, types::*,
+};
+
 impl Runtime {
     /// Creates a sandboxed runtime with the supplied limits.
     pub fn new(limits: Limits) -> Self {
@@ -9,7 +19,7 @@ impl Runtime {
         Self::with_screen(limits, Some(screen))
     }
 
-    fn with_screen(limits: Limits, screen: Option<Screen>) -> Self {
+    pub(crate) fn with_screen(limits: Limits, screen: Option<Screen>) -> Self {
         let mut lua = Lua::core();
         lua.set_memory_limit(Some(limits.memory));
         let reactive = Rc::new(RefCell::new(ReactiveState::new()));
@@ -191,17 +201,16 @@ impl Runtime {
                 state
                     .values
                     .get(signal)
-                    .map(|value| (name.clone(), script_ipc_value(value)))
+                    .map(|value| (name.clone(), value.clone()))
             })
             .collect()
     }
 
     /// Seeds reloadable values before executing replacement configuration code.
     pub fn restore_reloadable_state(&mut self, values: BTreeMap<String, IpcValue>) {
-        self.reactive.borrow_mut().reload_seed = values
-            .into_iter()
-            .map(|(name, value)| (name, ipc_script_value(value)))
-            .collect();
+        // One value type across the boundary now, so this only changes the map
+        // kind — the values pass straight through.
+        self.reactive.borrow_mut().reload_seed = values.into_iter().collect();
     }
 
     /// Takes a reload request raised by Lua configuration.
@@ -225,7 +234,11 @@ impl Runtime {
         self.dispatch_reload_callbacks(false, Some(error))
     }
 
-    fn dispatch_reload_callbacks(&mut self, completed: bool, error: Option<String>) -> bool {
+    pub(crate) fn dispatch_reload_callbacks(
+        &mut self,
+        completed: bool,
+        error: Option<String>,
+    ) -> bool {
         let callbacks = {
             let state = self.reactive.borrow();
             if completed {

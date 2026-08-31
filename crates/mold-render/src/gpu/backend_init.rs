@@ -1,3 +1,15 @@
+use crate::SdfFieldInstance;
+use mold_image::ImageCache;
+use mold_text::{RasterContent, TextSystem};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use std::collections::HashMap;
+use wgpu::util::DeviceExt;
+
+use super::{
+    backend_types::*, field_pass::*, glyphs::*, pipelines::*, quad_pipeline::*, shaders::*,
+    targets::*,
+};
+
 impl WgpuBackend {
     /// Selects a Vulkan or GLES adapter and creates an offscreen render target.
     pub async fn new(width: u32, height: u32) -> Result<Self, GpuError> {
@@ -76,11 +88,13 @@ impl WgpuBackend {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mold SDF shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../sdf.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source(include_str!("../sdf.wgsl")).into()),
         });
         let clear_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mold damage clear shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../clear.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                fullscreen_source(include_str!("../clear.wgsl")).into(),
+            ),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mold SDF pipeline layout"),
@@ -89,7 +103,6 @@ impl WgpuBackend {
         });
         let pipeline = create_pipeline(&device, &pipeline_layout, &shader, true);
         let clear_pipeline = create_pipeline(&device, &pipeline_layout, &clear_shader, false);
-        let path_pipeline = create_path_pipeline(&device, &viewport_layout);
         let (glyph_pipeline, glyph_layout, glyph_sampler) = create_glyph_pipeline(&device);
         let glyph_mask_atlas =
             GlyphAtlas::new(&device, &glyph_layout, &glyph_sampler, RasterContent::Mask);
@@ -106,14 +119,6 @@ impl WgpuBackend {
             texture_capacity,
             "mold texture instances",
         );
-        let path_vertex_capacity = 1;
-        let path_vertex_buffer = create_vertex_buffer_for::<PathVertex>(
-            &device,
-            path_vertex_capacity,
-            "mold path vertices",
-        );
-        let path_index_capacity = 1;
-        let path_index_buffer = create_index_buffer(&device, path_index_capacity);
         let (field_pipeline, field_layout) = create_field_pipeline(&device);
         let field_capacity = 1;
         let field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
@@ -155,11 +160,6 @@ impl WgpuBackend {
             glyph_capacity,
             texture_buffer,
             texture_capacity,
-            path_pipeline,
-            path_vertex_buffer,
-            path_vertex_capacity,
-            path_index_buffer,
-            path_index_capacity,
             field_pipeline,
             field_layout,
             field_buffer,
@@ -167,9 +167,9 @@ impl WgpuBackend {
             field_layer_buffer,
             field_layer_capacity,
             field_bind_group,
-            paths: PathCache::default(),
             images: ImageCache::default(),
             image_textures: HashMap::new(),
+            layer_target_pool: Vec::new(),
             text: TextSystem::new(),
             texture,
             view,
@@ -195,6 +195,8 @@ impl WgpuBackend {
         self.width = width.max(1);
         self.height = height.max(1);
         (self.texture, self.view) = create_target(&self.device, self.width, self.height);
+        // The pooled layer targets are surface-sized, so a resize retires them.
+        self.layer_target_pool.clear();
         let viewport = [self.width as f32, self.height as f32, 0.0, 0.0];
         self.queue
             .write_buffer(&self.viewport_buffer, 0, bytemuck::cast_slice(&viewport));
@@ -216,12 +218,7 @@ impl WgpuBackend {
         &self.texture
     }
 
-    /// Returns the shaping cache used by layout and glyph rendering.
-    pub fn text_mut(&mut self) -> &mut TextSystem {
-        &mut self.text
-    }
-
-    fn ensure_instances(&mut self, required: usize) {
+    pub(crate) fn ensure_instances(&mut self, required: usize) {
         if required <= self.instance_capacity {
             return;
         }
@@ -230,7 +227,7 @@ impl WgpuBackend {
     }
 
     /// Grows the field instance and layer buffers, rebinding when either moves.
-    fn ensure_fields(&mut self, instances: usize, layers: usize) {
+    pub(crate) fn ensure_fields(&mut self, instances: usize, layers: usize) {
         if instances > self.field_capacity {
             self.field_capacity = instances.next_power_of_two();
             self.field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
@@ -254,7 +251,7 @@ impl WgpuBackend {
         }
     }
 
-    fn ensure_glyphs(&mut self, required: usize) {
+    pub(crate) fn ensure_glyphs(&mut self, required: usize) {
         if required <= self.glyph_capacity {
             return;
         }
@@ -262,7 +259,7 @@ impl WgpuBackend {
         self.glyph_buffer = create_glyph_buffer(&self.device, self.glyph_capacity);
     }
 
-    fn ensure_textures(&mut self, required: usize) {
+    pub(crate) fn ensure_textures(&mut self, required: usize) {
         if required <= self.texture_capacity {
             return;
         }
@@ -273,19 +270,19 @@ impl WgpuBackend {
             "mold texture instances",
         );
     }
+}
 
-    fn ensure_paths(&mut self, vertices: usize, indices: usize) {
-        if vertices > self.path_vertex_capacity {
-            self.path_vertex_capacity = vertices.next_power_of_two();
-            self.path_vertex_buffer = create_vertex_buffer_for::<PathVertex>(
-                &self.device,
-                self.path_vertex_capacity,
-                "mold path vertices",
-            );
+impl WgpuBackend {
+    /// A full-surface render target for one offscreen layer, reused each frame.
+    ///
+    /// The handles are reference counted, so the clone is a pointer bump rather
+    /// than an allocation; the pool grows to the deepest layer stack a frame has
+    /// needed and is emptied only by a resize.
+    pub(crate) fn layer_target(&mut self, index: usize) -> (wgpu::Texture, wgpu::TextureView) {
+        while self.layer_target_pool.len() <= index {
+            self.layer_target_pool
+                .push(create_target(&self.device, self.width, self.height));
         }
-        if indices > self.path_index_capacity {
-            self.path_index_capacity = indices.next_power_of_two();
-            self.path_index_buffer = create_index_buffer(&self.device, self.path_index_capacity);
-        }
+        self.layer_target_pool[index].clone()
     }
 }

@@ -1,3 +1,7 @@
+use crate::*;
+use mold_scene::{Easing, Value as SceneValue};
+use std::time::Duration;
+
 #[test]
 fn repeater_builds_one_delegate_per_model_entry() {
     let mut runtime = Runtime::default();
@@ -23,26 +27,42 @@ fn repeater_builds_one_delegate_per_model_entry() {
 }
 
 #[test]
-fn flickable_state_drags_and_ticks_in_rust() {
+fn a_flicked_view_coasts_on_the_engine_clock_within_its_bounds() {
+    // There used to be a second momentum mechanism for this — `mold.flickable`,
+    // a Lua-clocked integrator with its own decay law — living beside the
+    // fling. A `Flickable`'s content offset is an ordinary scene property, so
+    // the fling already does the job, with the engine keeping time and the
+    // bounds it already understands. Two answers to "where does a flick end
+    // up", and only one of them integrates on the frame clock.
     let mut runtime = Runtime::default();
     runtime
         .execute(
-            "flickable.lua",
+            "flick.lua",
             br#"
                 local mold = require("mold")
-                local flick = mold.flickable {
-                    offset = 100,
-                    minimum = 0,
-                    maximum = 500,
-                    deceleration = 100,
+                local ui = require("mold.ui")
+                local list = ui.Flickable { width = 200, height = 400, content_y = 100 }
+                mold.animation.fling {
+                    node = list,
+                    property = "content_y",
+                    velocity = 200,
+                    friction = 100,
+                    min = 0,
+                    max = 500,
                 }
-                assert(flick:drag_by(25) == 125)
-                flick:release(200)
-                local offset, active = flick:tick(100)
-                assert(offset == 145 and active)
             "#,
         )
         .unwrap();
+    let list = runtime.scene().roots()[0];
+
+    for _ in 0..400 {
+        runtime
+            .tick_animations(std::time::Duration::from_millis(16))
+            .unwrap();
+    }
+    let settled = runtime.scene().number(list, "content_y").unwrap();
+    assert!(settled > 100.0, "it coasted onwards: {settled}");
+    assert!(settled <= 500.0, "and the bound held: {settled}");
 }
 
 #[test]
@@ -121,7 +141,7 @@ fn lua_named_state_animates_properties_and_queues_reparent() {
         )
         .unwrap();
     let root = runtime.scene().roots()[0];
-    let children = runtime.scene().children(root).unwrap();
+    let children = runtime.scene().children(root).unwrap().to_vec();
     let tile = runtime.scene().children(children[0]).unwrap()[0];
 
     assert_eq!(runtime.scene().number(tile, "width").unwrap(), 40.0);
@@ -164,4 +184,3 @@ fn state_property_bindings_recapture_dependencies() {
     let node = runtime.scene().roots()[0];
     assert_eq!(runtime.scene().number(node, "width").unwrap(), 80.0);
 }
-

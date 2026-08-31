@@ -18,7 +18,7 @@ same mechanism.
 
 | Library | Mold responsibility | Integration boundary |
 |---|---|---|
-| [Animato 1.7.2](https://github.com/AarambhDevHub/animato) | Tween clocks with delay, time scaling, and looping, plus spring state updates | `mold-scene`; Mold supplies frame deltas and retains the compositor clock |
+| [Animato 1.7.2](https://github.com/AarambhDevHub/animato) | Tween clocks with delay, time scaling and looping; spring state; friction inertia | `mold-scene`; Mold supplies frame deltas and retains the compositor clock |
 | [`signed-distance-field` 0.6.3](https://crates.io/crates/signed-distance-field) | Binary alpha-mask distance transforms | `mold-image`; results are cached by decoded source and spread, then sampled with a live edge on the GPU |
 
 Analytic fields — the `Sdf` element below — are Mold's own, not a dependency.
@@ -91,6 +91,78 @@ Animating any of them changes the draw command but not the texture cache key, so
 the CPU distance transform never re-runs for motion. Widths are given in source
 pixels and converted against the encoded spread before reaching the shader.
 
+## Motion that has no destination
+
+A behavior answers one question: *this property was assigned a value — how does
+it travel there*. A tween walks a curve to it, a spring is pulled toward it, a
+smoothing approaches it at a fixed speed. All three know where they are going
+before they start.
+
+A **fling** does not. It is thrown at a speed and stops where friction leaves
+it, or where a bound catches it. Nothing chooses the landing point; it is a
+consequence of how hard the throw was. That is the motion a flick wants — the
+surface keeps going after the finger lifts — and it is what Animato's
+`physics` feature provides, through `Inertia`.
+
+```lua
+mold.animation.fling {
+  node = panel,
+  property = "content_y",
+  velocity = -1800,
+  preset = "smooth",     -- or `snappy`, or `heavy`
+  min = -4000, max = 0,  -- optional; the bound catches it and stops it dead
+}
+```
+
+It is deliberately a **verb rather than another `kind` in a behavior table**.
+`set_physics` refuses `Physics::Decay` for the same reason: a behavior is
+started by an assignment, and there is no value to assign that would start a
+fling. Writing the property while it coasts takes it back — and because the
+scene hands the fling's position *and its velocity* to whatever animates it
+next, a flick can be caught by a spring and carried past the target before it
+comes back. That interaction is the point of expressing it as physics rather
+than as a curve, and it is what the tests pin down.
+
+### Forces: `mold.animation.impulse`
+
+A fling *sets* a speed. An impulse *adds* to one:
+
+```lua
+-- Every so often, work out what pulls on what, and hand it over.
+mold.animation.impulse(blob, "x", acceleration_x * step)
+```
+
+That is the whole difference between a flick and a force, and it is what lets a
+configuration express motion the scene cannot know about on its own — one node
+attracted to another, a drift towards the middle of the screen, a wind — without
+becoming the clock. It computes the pushes at whatever rate suits it, thirty
+times a second is plenty, and the engine goes on integrating every frame in
+between. Writing positions instead would put the configuration back in the frame
+loop, which is the one thing this stack exists to avoid.
+
+It returns whether anything was pushed. A property that is not coasting has no
+speed to add to, so it is left alone rather than started: starting one would be
+a fling wearing the wrong name, and pushing a spring or a smoothing would only
+be a fight with a target that is going to win.
+
+`examples/sdf-blobs.lua` is the whole idea in one file. Six blobs attract each
+other, nothing else pulls on them, and their opening throws are balanced so the
+swarm's momentum sums to zero — mutual attraction cannot move a centre of mass,
+so the lamp stays where it was put and turns there, indefinitely, for about a
+tenth of one percent of a core.
+
+The three presets are Animato's own: `smooth` for scrolling a list or a canvas,
+`snappy` for something under direct manipulation, `heavy` for large panels.
+`friction` and `min_velocity` override either number.
+
+`examples/physics-lab.lua` runs a tween, a spring, a smoothing and a fling in
+four lanes off one signal, so the difference between being handed a destination
+and being handed a speed is visible in one frame.
+
+Animato's physics also carries pointer drag with velocity smoothing, axis locks
+and constraints, and swipe recognition. Neither is wired up yet; `Flickable`
+would be the place for the first.
+
 ## Composed distance fields
 
 Everything above computes a field on the CPU or bakes one into a texture. `Sdf`
@@ -133,6 +205,21 @@ row of fields to fuse — nothing in the configuration is written for the field,
 and the container decides whether its contents join. An absorbed rect keeps its
 own colour and all four of its corner radii. Anything without a shape of its own
 — text, an image — paints over the composition untouched.
+
+**A compound is one animatable number.** A field's `blend`, `fill_color` and
+`morph_progress` are handed down to every layer that does not name its own, so a
+shape built from several layers — a disc with a ring subtracted and a bar fused
+below it — morphs as one thing. A layer opts out by naming a value and rejoins
+by removing it; `morph_progress` uses a negative default as the sentinel, since
+zero is a real position. Keeping N layers in step from the configuration instead
+is how a config acquires a frame runtime, which is the thing the engine exists
+to avoid.
+
+Text is deliberately not part of this. It has no distance field, so it is never
+absorbed; it paints over the composition and follows the same signal with its
+own opacity and size. `examples/sdf-compound.lua` ends on the case that needs:
+a disc with a numeral in it collapsing to a bare pill, where the shape family,
+the layer rectangle and the label all read one number.
 
 **A composition is one surface but not one colour.** Every layer carries its own
 `fill_color`, and the fills cross-fade with exactly the weight the distance
@@ -181,6 +268,76 @@ each recording where its own run begins. A composition is capped at
 `MAX_FIELD_LAYERS` (16): the whole composition is resolved per fragment, so
 every layer costs every pixel of the node, and the cap is what keeps one node
 from becoming an unbounded per-fragment loop.
+
+## Frame cost
+
+`cargo run --release -p mold-cli --example frame_bench -- <config.lua>` times the
+three things every paint does on the CPU — layout, the draw list, the input
+region — without needing a compositor. All three are pure functions of the
+scene, so they measure exactly and repeatably. It reports the fastest of several
+batches, because background load only ever adds time and an average would mostly
+measure whatever else the machine was doing.
+
+| | 134-node shell | | 1601-node scene | |
+|---|---|---|---|---|
+| | before | after | before | after |
+| `Layout::compute` | 104µs | 53µs | 1.66ms | 0.94ms |
+| `DrawList` | 45µs | 27µs | 4.59ms | 1.72ms |
+| `input_geometry` | 23µs | 15µs | 913µs | 627µs |
+| **frame CPU** | **171µs** | **95µs** | **7.17ms** | **3.28ms** |
+
+The gain is larger on the bigger scene, which is the part that matters: the cost
+was growing faster than the node count, and most of what follows is why.
+
+**Nothing on this path hashes with SipHash any more.** Property names are one to
+twenty characters and every read of every node in every frame hashes one; the
+scene's own tables, layout's geometry and implicit-size maps, and the text
+measurement cache are all keyed by something the engine controls. SipHash is
+built to resist deliberate collisions, which a table built from a compile-time
+schema has no exposure to, and it was costing about twenty nanoseconds a lookup
+for the protection.
+
+**`Scene::children` borrows instead of allocating.** It returned a fresh
+`Vec<NodeHandle>` per call and layout asks five times per node, paint and hit
+testing once each. `Node` stores handles rather than raw ids so children hand
+out as a slice.
+
+**Work that was repeated is done once.** The size a node asks for took five
+property reads and a map parse, and every node was asked at least twice a pass —
+three times inside a `RowLayout`; it is now resolved beside the implicit size.
+`clip` was read twice per node and `rect_radii` — five reads itself — ran twice
+for every rect.
+
+**Work that was never needed is skipped.** A gradient read both its colours
+before asking whether there was a gradient at all; a shadow read five numbers
+and a flag before asking whether the colour was visible; a layer parsed a
+property map that is empty on all but a handful of nodes. Each of those is the
+common case in a real configuration, and each now costs one read.
+
+**Anchors and attached layout are borrowed, not cloned** — both returned a
+cloned `BTreeMap` of owned strings and values, per child, per pass.
+
+The largest win is not in the table at all: **layout is skipped entirely on
+frames that do not move geometry**, at 288ns to reuse against 53µs to recompute.
+A colour easing, an opacity fading, a morph advancing — none of them move a box,
+and most frames are one of those. `Scene::layout_revision` moves only when
+something layout reads changes, and a paint that finds it unmoved, at the same
+surface size and scale, reuses the layout it already has.
+
+That revision deliberately does **not** use `PropertyClass`. That answers "what
+work does this change need", and it calls `x` a transform because the renderer
+offsets by it — but layout bakes `x` into the geometry it produces, and reads
+`border_width` for a `ClipRect`'s content inset even though painting owns the
+border. `affects_layout` is a separate, negative list: everything counts unless
+it is known never to be read, so a property added to the schema without a
+thought here costs one extra layout pass rather than a frame drawn at stale
+geometry.
+
+The input region is derived every paint but only **sent** when it differs from
+the last one. It is double-buffered surface state, so an identical one costs a
+region object, a round of protocol traffic and a commit, and changes nothing.
+
+Idle, the whole shell — three outputs, one process — sits at 1–3% of a core.
 
 ## License and maintenance notes
 

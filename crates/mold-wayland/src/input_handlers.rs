@@ -1,3 +1,14 @@
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers,
+};
+use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::touch::TouchHandler;
+use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
+use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_surface, wl_touch};
+use wayland_client::{Connection, QueueHandle};
+
+use crate::{helpers::*, state_types::*, surface_types::*};
+
 impl SeatHandler for LayerState {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
@@ -295,16 +306,12 @@ impl KeyboardHandler for LayerState {
         _raw: RawModifiers,
         _layout: u32,
     ) {
+        // The serial is what this is for. A `Modifiers` event was also pushed
+        // here and discarded by every consumer — six match arms across three
+        // files existed to throw it away — so the modifier state travelled
+        // nowhere and cost an allocation on every shift key.
         self.latest_input_serial = Some(serial);
-        self.events.push_back(LayerEvent::Modifiers {
-            surface: self
-                .keyboard_surface
-                .unwrap_or(SurfaceRole::Layer(PRIMARY_LAYER)),
-            control: modifiers.ctrl,
-            alt: modifiers.alt,
-            shift: modifiers.shift,
-            logo: modifiers.logo,
-        });
+        let _ = modifiers;
     }
 
     fn update_keymap(
@@ -324,4 +331,3 @@ impl KeyboardHandler for LayerState {
         }
     }
 }
-

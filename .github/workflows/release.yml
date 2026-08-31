@@ -19,17 +19,17 @@ jobs:
             artifact: "mold-linux-amd64"
           - os: ubuntu-24.04-arm
             artifact: "mold-linux-arm64"
-          - os: macos-15-intel
-            artifact: "mold-macos-amd64"
-          - os: macos-14
-            artifact: "mold-macos-arm64"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
       - name: Build
-        run: cargo build --release --example main
+        run: cargo build --release --bin mold
       - name: Package
-        run: tar -czf "${{ matrix.artifact }}.tar.gz" "target/release/examples/main"
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" -C target/release mold
       - name: Upload artifact
         uses: softprops/action-gh-release@v2
         with:

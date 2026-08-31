@@ -1,3 +1,7 @@
+use mold_scene::{NodeHandle, Value as SceneValue};
+
+use crate::{events::*, surface_types::*, types::*};
+
 /// One pointer or touch position, in both spaces a Lua handler may want.
 ///
 /// `surface_x`/`surface_y` are the coordinates the compositor delivered, shared
@@ -29,7 +33,7 @@ impl EventPoint {
         }
     }
 
-    fn args(self) -> [IpcValue; 4] {
+    pub(crate) fn args(self) -> [IpcValue; 4] {
         [
             IpcValue::Number(self.surface_x),
             IpcValue::Number(self.surface_y),
@@ -119,7 +123,7 @@ impl Runtime {
 
     /// Dispatches a pointer button event as `(surface_x, surface_y, local_x,
     /// local_y)`, the position the button was pressed or released at.
-    fn dispatch_button_event(
+    pub(crate) fn dispatch_button_event(
         &mut self,
         node: NodeHandle,
         event: UiEvent,
@@ -141,7 +145,7 @@ impl Runtime {
     /// pointer has travelled since the press, and a drag is free to leave the
     /// node it started on — in which case the local pair runs past the node's
     /// own bounds rather than clamping.
-    fn dispatch_pointer_event(
+    pub(crate) fn dispatch_pointer_event(
         &mut self,
         node: NodeHandle,
         event: UiEvent,

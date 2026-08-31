@@ -1,16 +1,25 @@
-use super::*;
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
-#[test]
-fn line_parser_keeps_partial_chunks() {
-    let mut parser = LineParser::default();
-    assert_eq!(parser.push(b"one\ntw"), ["one"]);
-    assert_eq!(parser.push(b"o\r\n"), ["two"]);
-    assert_eq!(parser.finish(), None);
-}
+use serde_json::Value as JsonValue;
+use zbus::zvariant::{ObjectPath, OwnedValue, Signature, StructureBuilder, Value};
+
+use crate::dbus_decode::dynamic_value;
+use crate::dbus_encode::typed_dbus_value;
+use crate::ipc::{decode_ipc_reply, decode_ipc_request, encode_ipc_request};
+use crate::*;
+
+use crate::dbus_decode::basic_value;
+use crate::dbus_encode::dbus_argument_value;
 
 #[test]
 fn split_parser_handles_multibyte_delimiters() {
-    let mut parser = SplitParser::new(b"--".to_vec()).unwrap();
+    let mut parser = SplitParser::new(b"--".to_vec());
     assert_eq!(parser.push(b"a-b--c--"), [b"a-b".to_vec(), b"c".to_vec()]);
     assert!(parser.push(b"left|ri").is_empty());
     assert_eq!(parser.set_delimiter(b"|".to_vec()), [b"left".to_vec()]);
@@ -285,4 +294,79 @@ fn stream_collector_controls_publication_and_bounds() {
     assert!(live.push(b"cde").is_err());
     live.reset();
     assert!(!live.finished());
+}
+
+#[test]
+fn a_finished_process_reports_its_exit_rather_than_an_empty_poll() {
+    // Closing the pipes and being reaped are two different moments. Between
+    // them the event channel is disconnected, which makes `recv_timeout` return
+    // at once — so a `next_event` that gave up there would neither honour the
+    // timeout it was given nor ever report the exit, and a caller polling in a
+    // loop would spin a core and then conclude the process was still running.
+    let mut process = Process::spawn_config(&ProcessConfig {
+        command: vec!["sh".to_owned(), "-c".to_owned(), "printf done".to_owned()],
+        ..ProcessConfig::default()
+    })
+    .unwrap();
+
+    let mut output = Vec::new();
+    let mut exited = None;
+    for _ in 0..8 {
+        match process.next_event(Duration::from_millis(500)).unwrap() {
+            Some(ProcessEvent::Stdout(bytes)) => output.extend_from_slice(&bytes),
+            Some(ProcessEvent::Exit(status)) => {
+                exited = Some(status);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(String::from_utf8_lossy(&output), "done");
+    assert!(
+        exited.is_some_and(|status| status.success()),
+        "the exit is reported, not swallowed"
+    );
+}
+
+#[test]
+fn a_property_holding_an_object_path_is_readable() {
+    // Object paths and signatures are scalars like any other, and the decoder
+    // beside this one has always handled them. The property decoder probed a
+    // hand-written list of types instead and quietly left both off it, so a
+    // service exposing `o` — which is most of them — had an unreadable
+    // property for no reason anyone chose.
+    let path = OwnedValue::try_from(Value::ObjectPath(
+        ObjectPath::try_from("/org/example/Player").unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(
+        basic_value(&path).unwrap(),
+        DbusValue::String("/org/example/Player".to_owned())
+    );
+
+    let signature =
+        OwnedValue::try_from(Value::Signature(Signature::try_from("a{sv}").unwrap())).unwrap();
+    assert_eq!(
+        basic_value(&signature).unwrap(),
+        DbusValue::String("a{sv}".to_owned())
+    );
+}
+
+#[test]
+fn splitting_on_newlines_drops_the_carriage_return_that_comes_with_them() {
+    // A line ending is two characters on one of the two systems that write text
+    // files, so the newline delimiter has to account for it — that convention
+    // is the entire reason a second, near-identical line parser existed. A
+    // parser splitting on anything else has no such convention and must not
+    // invent one.
+    let mut lines = SplitParser::new(b"\n".to_vec());
+    let parts = lines.push(b"alpha\r\nbeta\ngamma");
+    assert_eq!(parts, vec![b"alpha".to_vec(), b"beta".to_vec()]);
+    assert_eq!(lines.finish(), Some(b"gamma".to_vec()));
+
+    let mut dashes = SplitParser::new(b"--".to_vec());
+    assert_eq!(
+        dashes.push(b"one\r--two--"),
+        vec![b"one\r".to_vec(), b"two".to_vec()]
+    );
 }

@@ -1,4 +1,18 @@
-fn install_system_service_api<'gc>(
+use luna::{
+    Callback, CallbackReturn, Closure, Context, Table, UserData, UserRef, Value as LuaValue,
+};
+use mold_io::{Bus, DbusProxy};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use mold_services::{
+    GreetdClient, PamAuthenticator, PipeWire, StatusNotifierHost, UdevMonitor, XkbKeymap,
+};
+
+use crate::{lua_values::*, scene_bindings::*, serialization::*, state::*, table_menu::*};
+
+pub(crate) fn install_system_service_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -322,4 +336,3 @@ fn install_system_service_api<'gc>(
     xkb.set_field(ctx, "compile", xkb_compile);
     mold.set_field(ctx, "xkb", xkb);
 }
-

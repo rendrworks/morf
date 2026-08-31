@@ -1,3 +1,10 @@
+use std::error::Error as StdError;
+use std::fmt;
+use wayland_client::{Connection, EventQueue};
+use wayland_protocols::xdg::shell::client::xdg_toplevel;
+
+use crate::{state_types::*, types::*};
+
 /// Geometry and identity for an xdg toplevel surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FloatingConfig {
@@ -38,7 +45,7 @@ pub enum FloatingResizeEdge {
 }
 
 impl FloatingResizeEdge {
-    fn protocol(self) -> xdg_toplevel::ResizeEdge {
+    pub(crate) fn protocol(self) -> xdg_toplevel::ResizeEdge {
         match self {
             Self::Top => xdg_toplevel::ResizeEdge::Top,
             Self::Bottom => xdg_toplevel::ResizeEdge::Bottom,
@@ -191,21 +198,8 @@ pub enum LayerEvent {
         pressed: bool,
         repeat: bool,
     },
-    /// Keyboard modifier state changed.
-    Modifiers {
-        surface: SurfaceRole,
-        control: bool,
-        alt: bool,
-        shift: bool,
-        logo: bool,
-    },
     /// A configured seat idle threshold changed state.
     Idle { timeout_ms: u32, idle: bool },
-    /// A compositor output changed power state.
-    OutputPower {
-        output_id: u32,
-        mode: OutputPowerMode,
-    },
     /// The compositor clipboard selection changed.
     Clipboard { text: Option<String> },
     /// An output capture completed or failed.
@@ -253,7 +247,7 @@ pub enum LayerEvent {
 
 /// Wayland connection or protocol setup failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WaylandError(String);
+pub struct WaylandError(pub(crate) String);
 
 impl fmt::Display for WaylandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -265,8 +259,7 @@ impl StdError for WaylandError {}
 
 /// Live layer surface and its event queue.
 pub struct LayerClient {
-    connection: Connection,
-    queue: EventQueue<LayerState>,
-    state: LayerState,
+    pub(crate) connection: Connection,
+    pub(crate) queue: EventQueue<LayerState>,
+    pub(crate) state: LayerState,
 }
-

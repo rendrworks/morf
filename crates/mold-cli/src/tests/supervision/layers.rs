@@ -1,3 +1,19 @@
+use crate::surface_layers::LayerUpdate;
+use crate::surface_layers::RESERVE_LAYER_BASE;
+use crate::surface_layers::layer_update;
+use crate::surface_layers::reserve_bar_config;
+use crate::surface_layers::window_layer_id;
+use crate::surface_layers::window_surface_id;
+use crate::surfaces::primary_surface_root;
+use crate::surfaces::runtime_bar_config;
+use mold_lua::Runtime;
+use mold_lua::WindowSurfaceKind;
+use mold_wayland::KeyboardFocus;
+use mold_wayland::PRIMARY_LAYER;
+use mold_wayland::ShellLayer;
+
+use mold_lua::LayerSurfaceConfig;
+
 #[test]
 fn layer_identifiers_separate_engine_surfaces_from_configured_ones() {
     assert_eq!(window_layer_id(0), 1);

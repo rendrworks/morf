@@ -1,3 +1,12 @@
+use std::cell::{Ref, RefMut};
+
+use mold_scene::{NodeHandle, Scene};
+
+use crate::{
+    events::*, reactive_bindings::*, reactive_execute::*, runtime_helpers::*, surface_types::*,
+    types::*,
+};
+
 impl Runtime {
     /// Borrows the scene produced by executed configuration code.
     pub fn scene(&self) -> Ref<'_, Scene> {
@@ -23,7 +32,7 @@ impl Runtime {
     /// not "did a signal move" but "did the scene".
     pub fn update_clock(&mut self, value: impl Into<String>) -> Result<bool, Error> {
         let revision_before = self.reactive.borrow().scene_revision;
-        let value = ScriptValue::String(value.into());
+        let value = IpcValue::String(value.into());
         {
             let mut state = self.reactive.borrow_mut();
             let clock = state.clock;
@@ -238,17 +247,6 @@ impl Runtime {
         !callbacks.is_empty()
     }
 
-    /// Returns the first scene node with a key handler in tree order.
-    pub fn first_key_target(&self) -> Option<NodeHandle> {
-        let state = self.reactive.borrow();
-        let targets = key_targets(&state);
-        targets
-            .iter()
-            .copied()
-            .find(|node| state.scene.bool_value(*node, "focus").unwrap_or(false))
-            .or_else(|| targets.first().copied())
-    }
-
     /// Returns the first key handler within one scene root.
     pub fn first_key_target_in(&self, root: NodeHandle) -> Option<NodeHandle> {
         let state = self.reactive.borrow();
@@ -282,19 +280,6 @@ impl Runtime {
         scene_node_in_subtree(&state.scene, root, node)
     }
 
-    /// Advances keyboard focus through enabled visible key handlers.
-    pub fn next_key_target(&self, current: Option<NodeHandle>) -> Option<NodeHandle> {
-        let state = self.reactive.borrow();
-        let targets = key_targets(&state);
-        if targets.is_empty() {
-            return None;
-        }
-        let next = current
-            .and_then(|current| targets.iter().position(|node| *node == current))
-            .map_or(0, |index| (index + 1) % targets.len());
-        Some(targets[next])
-    }
-
     /// Advances keyboard focus within one scene root.
     pub fn next_key_target_in(
         &self,
@@ -312,7 +297,7 @@ impl Runtime {
         Some(targets[next])
     }
 
-    fn dispatch_ui_event_with_args(
+    pub(crate) fn dispatch_ui_event_with_args(
         &mut self,
         node: NodeHandle,
         event: UiEvent,
@@ -335,4 +320,3 @@ impl Runtime {
         true
     }
 }
-

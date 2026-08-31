@@ -1,4 +1,9 @@
-fn create_blur_pipeline(
+use super::FORMAT;
+use std::mem;
+
+use super::{glyphs::*, shaders::*};
+
+pub(crate) fn create_blur_pipeline(
     device: &wgpu::Device,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -45,7 +50,7 @@ fn create_blur_pipeline(
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("mold dual-kawase shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../blur.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(fullscreen_source(include_str!("../blur.wgsl")).into()),
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("mold dual-kawase pipeline"),
@@ -75,7 +80,7 @@ fn create_blur_pipeline(
     (pipeline, layout, sampler)
 }
 
-fn create_glyph_pipeline(
+pub(crate) fn create_glyph_pipeline(
     device: &wgpu::Device,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
     let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -112,7 +117,7 @@ fn create_glyph_pipeline(
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("mold glyph shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../glyph.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(shader_source(include_str!("../glyph.wgsl")).into()),
     });
     let attributes = wgpu::vertex_attr_array![
         0 => Float32x2,
@@ -162,11 +167,11 @@ fn create_glyph_pipeline(
     (pipeline, texture_layout, sampler)
 }
 
-fn create_glyph_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+pub(crate) fn create_glyph_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     create_instance_buffer_for::<GlyphInstance>(device, capacity, "mold glyph instances")
 }
 
-fn create_instance_buffer_for<T>(
+pub(crate) fn create_instance_buffer_for<T>(
     device: &wgpu::Device,
     capacity: usize,
     label: &'static str,
@@ -175,28 +180,6 @@ fn create_instance_buffer_for<T>(
         label: Some(label),
         size: (capacity * mem::size_of::<T>()) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
-
-fn create_vertex_buffer_for<T>(
-    device: &wgpu::Device,
-    capacity: usize,
-    label: &'static str,
-) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: (capacity * mem::size_of::<T>()) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
-
-fn create_index_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("mold path indices"),
-        size: (capacity * mem::size_of::<u32>()) as u64,
-        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }

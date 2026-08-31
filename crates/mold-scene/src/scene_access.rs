@@ -1,3 +1,5 @@
+use crate::{animation::*, types::*};
+
 impl Scene {
     /// Reads the value currently used by layout or paint.
     pub fn current(&self, node: NodeHandle, property: &str) -> Result<&Value, SceneError> {
@@ -51,23 +53,33 @@ impl Scene {
         }
     }
 
-    fn live(&self, node: NodeHandle) -> Result<NodeId, SceneError> {
+    pub(crate) fn live(&self, node: NodeHandle) -> Result<NodeId, SceneError> {
         self.nodes
             .contains_key(node.0)
             .then_some(node.0)
             .ok_or(SceneError::StaleNode)
     }
 
-    fn property(&self, node: NodeHandle, property: &str) -> Result<PropertySlot, SceneError> {
-        let id = self.live(node)?;
-        let element = self.nodes[id].element;
-        self.nodes[id]
-            .properties
+    pub(crate) fn property(
+        &self,
+        node: NodeHandle,
+        property: &str,
+    ) -> Result<PropertySlot, SceneError> {
+        // One arena lookup, not three: `live` used to probe for the node and
+        // then index it twice more. Every property read of every node in every
+        // frame goes through here, so the difference is worth the directness.
+        let node = self.node_ref(node)?;
+        node.properties
             .get(property)
             .copied()
             .ok_or_else(|| SceneError::UnknownProperty {
-                element: element.name(),
+                element: node.element.name(),
                 property: property.to_owned(),
             })
+    }
+
+    /// Borrows a live node, or reports that its handle has gone stale.
+    pub(crate) fn node_ref(&self, node: NodeHandle) -> Result<&Node, SceneError> {
+        self.nodes.get(node.id()).ok_or(SceneError::StaleNode)
     }
 }

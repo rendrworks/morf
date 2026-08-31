@@ -1,3 +1,15 @@
+use crate::surface_popups::popup_change_is_structural;
+use crate::surface_popups::popup_client_config;
+use crate::surface_popups::popup_parent_role;
+use mold_lua::PopupSurfaceConfig;
+use mold_lua::Runtime;
+use mold_lua::WindowSurfaceKind;
+use mold_wayland::PRIMARY_LAYER;
+use mold_wayland::PopupAnchor;
+use mold_wayland::PopupGravity;
+use mold_wayland::SurfaceRole;
+use std::collections::HashMap;
+
 /// Builds the popup configurations one Lua source registers, in identifier order.
 fn popup_configs(name: &'static str, source: &[u8]) -> Vec<PopupSurfaceConfig> {
     let mut runtime = Runtime::default();

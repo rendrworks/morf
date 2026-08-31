@@ -48,16 +48,17 @@ fn vs_main(
     @location(3) style: vec4<f32>,
     @location(4) transform: vec4<f32>,
     @location(5) transform_offset: vec4<f32>,
+    @location(6) area: vec4<f32>,
 ) -> VertexOutput {
-    // The quad is expanded by however far the surface may reach outside the
-    // node: the outline, the softened edge, and the bulge a smooth seam adds.
-    // The host computes it, because only the host can see every layer's blend.
-    let spread = transform_offset.z;
+    // `area` is everything the surface can reach, in the node's own space:
+    // the layers — which are free to sit outside the node that composes them —
+    // widened by the outline, the softened edge and the bulge a smooth seam
+    // adds. The host computes it, because only the host can see every layer.
     let corners = array<vec2<f32>, 4>(
-        vec2<f32>(-spread, -spread),
-        vec2<f32>(bounds.z + spread, -spread),
-        vec2<f32>(-spread, bounds.w + spread),
-        vec2<f32>(bounds.z + spread, bounds.w + spread),
+        vec2<f32>(area.x, area.y),
+        vec2<f32>(area.z, area.y),
+        vec2<f32>(area.x, area.w),
+        vec2<f32>(area.z, area.w),
     );
     let local = corners[vertex_index];
     let point = bounds.xy + local;
@@ -95,21 +96,6 @@ fn sd_circle(point: vec2<f32>, radius: f32) -> f32 {
 
 /// A box with a radius per corner, so an ordinary rect keeps its own shape when
 /// a field absorbs it. `y` grows downwards here, as it does on the surface.
-fn sd_box(point: vec2<f32>, half: vec2<f32>, radii: vec4<f32>) -> f32 {
-    var r = select(
-        select(radii.x, radii.w, point.y >= 0.0),
-        select(radii.y, radii.z, point.y >= 0.0),
-        point.x >= 0.0,
-    );
-    r = min(r, min(half.x, half.y));
-    let q = abs(point) - half + vec2<f32>(r, r);
-    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
-}
-
-fn sd_box_uniform(point: vec2<f32>, half: vec2<f32>, radius: f32) -> f32 {
-    return sd_box(point, half, vec4<f32>(radius, radius, radius, radius));
-}
-
 fn sd_capsule(point: vec2<f32>, half: vec2<f32>) -> f32 {
     // The stadium is a box whose corner radius is its own short half-extent.
     return sd_box_uniform(point, half, min(half.x, half.y));
@@ -273,12 +259,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let layer = layers[first + index];
         let centred = rotate(input.local - layer.rect.xy, layer.extra.y);
         let start = shape_distance(u32(layer.kinds.x), centred, layer);
-        let finish = shape_distance(u32(layer.kinds.y), centred, layer);
         // The morph is a straight interpolation of the two distance fields.
         // Where the fields disagree about which side of the edge a point is on,
         // the crossing moves continuously between them, so the outline can
         // split or merge without any correspondence between the two shapes.
-        let value = mix(start, finish, layer.kinds.z);
+        //
+        // A layer that is not morphing — the common case, and every layer of a
+        // composition that only moves — evaluates one shape rather than two.
+        // Both branches cost the same when the morph is real; skipping is worth
+        // half the fragment work for everything else.
+        var value = start;
+        if layer.kinds.z > 0.0 && u32(layer.kinds.y) != u32(layer.kinds.x) {
+            value = mix(
+                start,
+                shape_distance(u32(layer.kinds.y), centred, layer),
+                layer.kinds.z,
+            );
+        }
         if index == 0u {
             distance = value;
             fill = layer.color;

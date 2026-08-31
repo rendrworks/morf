@@ -1,4 +1,14 @@
-fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+use crate::{LayerMask, SdfQuadInstance};
+use mold_layout::{Geometry, Transform2D};
+use mold_scene::Color;
+use mold_text::{RasterContent, RasterGlyph};
+use std::collections::{HashMap, HashSet};
+use std::mem;
+use std::ops::Range;
+
+use super::backend_types::*;
+
+pub(crate) fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("mold SDF instances"),
         size: (capacity * mem::size_of::<SdfQuadInstance>()) as u64,
@@ -9,25 +19,27 @@ fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffe
 
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]
-struct GlyphInstance {
-    origin: [f32; 2],
-    axes: [f32; 4],
-    uv: [f32; 4],
-    color: [f32; 4],
-    color_overlay: [f32; 4],
-    mode: [f32; 4],
-    surface: [f32; 4],
-    mask_bounds: [f32; 4],
-    mask_inverse_0: [f32; 4],
-    mask_inverse_1: [f32; 4],
-    mask_radii: [f32; 4],
+pub(crate) struct GlyphInstance {
+    pub(crate) origin: [f32; 2],
+    pub(crate) axes: [f32; 4],
+    pub(crate) uv: [f32; 4],
+    pub(crate) color: [f32; 4],
+    pub(crate) color_overlay: [f32; 4],
+    pub(crate) mode: [f32; 4],
+    pub(crate) surface: [f32; 4],
+    pub(crate) mask_bounds: [f32; 4],
+    pub(crate) mask_inverse_0: [f32; 4],
+    pub(crate) mask_inverse_1: [f32; 4],
+    pub(crate) mask_radii: [f32; 4],
     /// Field edge, feathering, and outline width in sampled-field units.
-    field: [f32; 4],
+    pub(crate) field: [f32; 4],
     /// Outline colour composited beneath a distance-field fill.
-    outline_color: [f32; 4],
+    pub(crate) outline_color: [f32; 4],
 }
 
-fn layer_mask_data(mask: Option<LayerMask>) -> (f32, [f32; 4], [f32; 4], [f32; 4], [f32; 4]) {
+pub(crate) fn layer_mask_data(
+    mask: Option<LayerMask>,
+) -> (f32, [f32; 4], [f32; 4], [f32; 4], [f32; 4]) {
     let Some(mask) = mask else {
         return (0.0, [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]);
     };
@@ -56,7 +68,7 @@ fn layer_mask_data(mask: Option<LayerMask>) -> (f32, [f32; 4], [f32; 4], [f32; 4
     )
 }
 
-fn transformed_quad(
+pub(crate) fn transformed_quad(
     transform: Transform2D,
     bounds: Geometry,
     scale: f64,
@@ -86,27 +98,27 @@ fn transformed_quad(
     )
 }
 
-struct GlyphBatch {
-    instances: Vec<GlyphInstance>,
-    command_spans: Vec<Vec<GlyphSpan>>,
+pub(crate) struct GlyphBatch {
+    pub(crate) instances: Vec<GlyphInstance>,
+    pub(crate) command_spans: Vec<Vec<GlyphSpan>>,
 }
 
-struct GlyphSpan {
-    range: Range<u32>,
-    color: bool,
+pub(crate) struct GlyphSpan {
+    pub(crate) range: Range<u32>,
+    pub(crate) color: bool,
 }
 
-const GLYPH_ATLAS_SIZE: u32 = 2048;
+pub(crate) const GLYPH_ATLAS_SIZE: u32 = 2048;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct GlyphKey {
-    id: u64,
-    width: u32,
-    height: u32,
+pub(crate) struct GlyphKey {
+    pub(crate) id: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 impl GlyphKey {
-    fn from_glyph(glyph: &RasterGlyph) -> Self {
+    pub(crate) fn from_glyph(glyph: &RasterGlyph) -> Self {
         Self {
             id: glyph.cache_key,
             width: glyph.width,
@@ -115,32 +127,36 @@ impl GlyphKey {
     }
 }
 
-struct GlyphAtlasEntry {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    last_used: u64,
-    pixels: Vec<u8>,
+pub(crate) struct GlyphAtlasEntry {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) last_used: u64,
+    pub(crate) pixels: Vec<u8>,
 }
 
-struct PreparedGlyph {
-    glyph: RasterGlyph,
-    color: Color,
-    color_overlay: Color,
-    transform: Transform2D,
-    command_index: usize,
+pub(crate) struct PreparedGlyph {
+    pub(crate) glyph: RasterGlyph,
+    pub(crate) color: Color,
+    pub(crate) color_overlay: Color,
+    pub(crate) transform: Transform2D,
+    pub(crate) command_index: usize,
+    /// Edge, softness and outline width, already in sampled-field units.
+    pub(crate) field: [f32; 4],
+    /// Outline colour, composited beneath the fill.
+    pub(crate) outline_color: [f32; 4],
 }
 
 #[derive(Clone, Copy, Default)]
-struct ShelfAllocator {
-    x: u32,
-    y: u32,
-    row_height: u32,
+pub(crate) struct ShelfAllocator {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) row_height: u32,
 }
 
 impl ShelfAllocator {
-    fn allocate(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+    pub(crate) fn allocate(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
         let width = width.checked_add(2)?;
         let height = height.checked_add(2)?;
         if width > GLYPH_ATLAS_SIZE || height > GLYPH_ATLAS_SIZE {
@@ -161,25 +177,41 @@ impl ShelfAllocator {
     }
 }
 
-struct GlyphAtlas {
-    texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
-    content: RasterContent,
-    bytes_per_pixel: u32,
-    entries: HashMap<GlyphKey, GlyphAtlasEntry>,
-    allocator: ShelfAllocator,
-    clock: u64,
+pub(crate) struct GlyphAtlas {
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) bind_group: wgpu::BindGroup,
+    pub(crate) content: RasterContent,
+    pub(crate) bytes_per_pixel: u32,
+    pub(crate) entries: HashMap<GlyphKey, GlyphAtlasEntry>,
+    pub(crate) allocator: ShelfAllocator,
+    pub(crate) clock: u64,
 }
 
 impl GlyphAtlas {
-    fn new(
+    /// Whether this atlas is the one a glyph of that kind belongs in.
+    ///
+    /// Coverage and distance are both one byte a pixel, so they share the
+    /// single-channel atlas and differ only in how the shader reads them;
+    /// colour glyphs need four and have their own.
+    pub(crate) fn accepts(&self, content: RasterContent) -> bool {
+        match self.content {
+            RasterContent::Mask | RasterContent::Field => {
+                matches!(content, RasterContent::Mask | RasterContent::Field)
+            }
+            RasterContent::Color => content == RasterContent::Color,
+        }
+    }
+
+    pub(crate) fn new(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         content: RasterContent,
     ) -> Self {
         let (format, bytes_per_pixel, label) = match content {
-            RasterContent::Mask => (wgpu::TextureFormat::R8Unorm, 1, "mold glyph mask atlas"),
+            RasterContent::Mask | RasterContent::Field => {
+                (wgpu::TextureFormat::R8Unorm, 1, "mold glyph mask atlas")
+            }
             RasterContent::Color => (
                 wgpu::TextureFormat::Rgba8UnormSrgb,
                 4,
@@ -226,13 +258,17 @@ impl GlyphAtlas {
         }
     }
 
-    fn prepare(&mut self, queue: &wgpu::Queue, glyphs: &[PreparedGlyph]) -> Result<(), GpuError> {
+    pub(crate) fn prepare(
+        &mut self,
+        queue: &wgpu::Queue,
+        glyphs: &[PreparedGlyph],
+    ) -> Result<(), GpuError> {
         self.clock = self.clock.wrapping_add(1);
         let mut requested = HashSet::new();
         let mut missing = Vec::new();
         for prepared in glyphs {
             let glyph = &prepared.glyph;
-            if glyph.content != self.content {
+            if !self.accepts(glyph.content) {
                 continue;
             }
             let key = GlyphKey::from_glyph(glyph);
@@ -269,7 +305,7 @@ impl GlyphAtlas {
         Ok(())
     }
 
-    fn rebuild(
+    pub(crate) fn rebuild(
         &mut self,
         queue: &wgpu::Queue,
         glyphs: &[PreparedGlyph],
@@ -280,7 +316,7 @@ impl GlyphAtlas {
         let mut seen = HashSet::new();
         for prepared in glyphs {
             let glyph = &prepared.glyph;
-            if glyph.content != self.content {
+            if !self.accepts(glyph.content) {
                 continue;
             }
             let key = GlyphKey::from_glyph(glyph);
@@ -328,7 +364,7 @@ impl GlyphAtlas {
     }
 }
 
-fn glyph_pixels(glyph: &RasterGlyph) -> Vec<u8> {
+pub(crate) fn glyph_pixels(glyph: &RasterGlyph) -> Vec<u8> {
     let pixel_count = glyph.width as usize * glyph.height as usize;
     match glyph.content {
         RasterContent::Mask if glyph.data.len() >= pixel_count * 3 => {
@@ -339,12 +375,14 @@ fn glyph_pixels(glyph: &RasterGlyph) -> Vec<u8> {
             }
             pixels
         }
-        RasterContent::Mask => glyph.data[..pixel_count].to_vec(),
+        // One byte a pixel either way: coverage for a mask, distance from the
+        // glyph edge for a field.
+        RasterContent::Mask | RasterContent::Field => glyph.data[..pixel_count].to_vec(),
         RasterContent::Color => glyph.data[..pixel_count * 4].to_vec(),
     }
 }
 
-fn upload_glyph(
+pub(crate) fn upload_glyph(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     entry: &GlyphAtlasEntry,
@@ -385,4 +423,3 @@ fn upload_glyph(
         },
     );
 }
-

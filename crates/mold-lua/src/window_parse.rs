@@ -1,4 +1,14 @@
-fn window_root<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<NodeHandle, String> {
+use luna::{Context, Table, Value as LuaValue};
+
+use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
+use mold_scene::NodeHandle;
+
+use crate::{state::*, surface_types::*, table_menu::*};
+
+pub(crate) fn window_root<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<NodeHandle, String> {
     let LuaValue::UserData(root) = options.get_value(ctx, "root") else {
         return Err("window root must be a mold node".into());
     };
@@ -7,7 +17,7 @@ fn window_root<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<NodeHandle
         .map_err(|_| "window root must be a mold node".into())
 }
 
-fn window_u32<'gc>(
+pub(crate) fn window_u32<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -23,7 +33,7 @@ fn window_u32<'gc>(
     }
 }
 
-fn window_i32<'gc>(
+pub(crate) fn window_i32<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -38,7 +48,7 @@ fn window_i32<'gc>(
     }
 }
 
-fn window_optional_u32<'gc>(
+pub(crate) fn window_optional_u32<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -54,7 +64,7 @@ fn window_optional_u32<'gc>(
     }
 }
 
-fn window_optional_i32<'gc>(
+pub(crate) fn window_optional_i32<'gc>(
     ctx: Context<'gc>,
     table: Table<'gc>,
     field: &str,
@@ -68,7 +78,7 @@ fn window_optional_i32<'gc>(
     }
 }
 
-fn popup_position(value: &str) -> bool {
+pub(crate) fn popup_position(value: &str) -> bool {
     matches!(
         value,
         "none"
@@ -83,7 +93,7 @@ fn popup_position(value: &str) -> bool {
     )
 }
 
-fn window_parent(value: LuaValue<'_>, field: &str) -> Result<Option<u64>, String> {
+pub(crate) fn window_parent(value: LuaValue<'_>, field: &str) -> Result<Option<u64>, String> {
     match value {
         LuaValue::Nil => Ok(None),
         LuaValue::UserData(parent) => parent
@@ -94,7 +104,7 @@ fn window_parent(value: LuaValue<'_>, field: &str) -> Result<Option<u64>, String
     }
 }
 
-fn parse_popup_surface<'gc>(
+pub(crate) fn parse_popup_surface<'gc>(
     ctx: Context<'gc>,
     options: Table<'gc>,
 ) -> Result<
@@ -191,7 +201,7 @@ fn parse_popup_surface<'gc>(
     ))
 }
 
-fn parse_floating_surface<'gc>(
+pub(crate) fn parse_floating_surface<'gc>(
     ctx: Context<'gc>,
     options: Table<'gc>,
 ) -> Result<(NodeHandle, bool, FloatingSurfaceConfig), String> {
@@ -232,7 +242,11 @@ fn parse_floating_surface<'gc>(
     ))
 }
 
-fn parse_region<'gc>(ctx: Context<'gc>, table: Table<'gc>, depth: usize) -> Result<Region, String> {
+pub(crate) fn parse_region<'gc>(
+    ctx: Context<'gc>,
+    table: Table<'gc>,
+    depth: usize,
+) -> Result<Region, String> {
     if depth >= 64 {
         return Err("region nesting exceeds 64 levels".into());
     }
@@ -331,7 +345,7 @@ fn parse_region<'gc>(ctx: Context<'gc>, table: Table<'gc>, depth: usize) -> Resu
     })
 }
 
-fn region_to_lua<'gc>(ctx: Context<'gc>, region: &Region) -> Table<'gc> {
+pub(crate) fn region_to_lua<'gc>(ctx: Context<'gc>, region: &Region) -> Table<'gc> {
     let table = Table::new(&ctx);
     table.set_field(ctx, "x", i64::from(region.rect.x));
     table.set_field(ctx, "y", i64::from(region.rect.y));
@@ -373,4 +387,3 @@ fn region_to_lua<'gc>(ctx: Context<'gc>, region: &Region) -> Table<'gc> {
     table.set_field(ctx, "regions", children);
     table
 }
-

@@ -1,3 +1,26 @@
+use mold_layout::Layout;
+use mold_scene::{Color, Element, NodeHandle, Scene};
+
+use crate::{commands::*, effects::*, sdf::*};
+
+/// What a field hands down to every layer that does not speak for itself.
+///
+/// The container owns the compound: one blend, one fill, one position along the
+/// morph. A layer opts out by naming its own.
+#[derive(Clone, Copy)]
+pub(crate) struct FieldDefaults {
+    pub(crate) blend: f32,
+    pub(crate) color: Color,
+    pub(crate) morph: f32,
+    /// The tint inherited from an ancestor.
+    ///
+    /// The field's own fill has always had this composited in; its layers did
+    /// not, so tinting a subtree changed a field that fell back to the field
+    /// colour and left alone every layer that named its own — half a field
+    /// taking the tint and half of it ignoring it.
+    pub(crate) overlay: Color,
+}
+
 /// Reads everything beneath a field that has a shape, in composition order.
 ///
 /// This is what makes fields the foundation rather than a separate kind of
@@ -9,37 +32,33 @@
 ///
 /// A nested `Sdf` is not descended into. It is its own composition with its own
 /// fill, and folding its layers into the parent would silently discard that.
-fn field_layers(
+pub(crate) fn field_layers(
     scene: &Scene,
     layout: &Layout,
     node: NodeHandle,
-    default_blend: f32,
-    default_color: Color,
+    defaults: FieldDefaults,
     layers: &mut Vec<SdfLayer>,
 ) -> Result<(), RenderError> {
-    for child in scene.children(node)? {
+    for &child in scene.children(node)? {
         if !scene.bool_value(child, "visible")? {
             continue;
         }
         match scene.element(child)? {
             Element::SdfShape => {
-                if let Some(layer) =
-                    shape_layer(scene, layout, child, default_blend, default_color)?
-                {
+                if let Some(layer) = shape_layer(scene, layout, child, defaults)? {
                     layers.push(layer);
                 }
             }
             Element::Rect | Element::ClipRect => {
-                if let Some(layer) = rect_layer(scene, layout, child, default_blend, default_color)?
-                {
+                if let Some(layer) = rect_layer(scene, layout, child, defaults)? {
                     layers.push(layer);
                 }
                 // A rect may still position children, and those children are
                 // part of the same composition.
-                field_layers(scene, layout, child, default_blend, default_color, layers)?;
+                field_layers(scene, layout, child, defaults, layers)?;
             }
             Element::Sdf => {}
-            _ => field_layers(scene, layout, child, default_blend, default_color, layers)?,
+            _ => field_layers(scene, layout, child, defaults, layers)?,
         }
     }
     Ok(())
@@ -49,7 +68,7 @@ fn field_layers(
 ///
 /// A rect that became a layer must not also be drawn as a rect, or the
 /// composition is painted twice — once fused and once with every seam back.
-fn absorbed_by_field(element: Element) -> bool {
+pub(crate) fn absorbed_by_field(element: Element) -> bool {
     matches!(
         element,
         Element::Rect | Element::ClipRect | Element::SdfShape
@@ -61,8 +80,7 @@ fn shape_layer(
     scene: &Scene,
     layout: &Layout,
     node: NodeHandle,
-    default_blend: f32,
-    default_color: Color,
+    defaults: FieldDefaults,
 ) -> Result<Option<SdfLayer>, RenderError> {
     let Some(bounds) = layout.geometry(node) else {
         return Ok(None);
@@ -82,12 +100,20 @@ fn shape_layer(
         .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape operation `{operation}`")))?;
     Ok(Some(SdfLayer {
         bounds,
-        color: layer_color(scene, node, default_color)?,
+        color: layer_color(scene, node, defaults)?,
         shape,
         morph_to,
-        morph: scene.number(node, "morph_progress")?.clamp(0.0, 1.0) as f32,
+        morph: {
+            let own = scene.number(node, "morph_progress")?;
+            if own < 0.0 {
+                defaults.morph
+            } else {
+                own as f32
+            }
+        }
+        .clamp(0.0, 1.0),
         operation,
-        blend: layer_blend(scene, node, default_blend)?,
+        blend: layer_blend(scene, node, defaults.blend)?,
         rotation: scene.number(node, "rotation")? as f32,
         radii: rect_radii(scene, node)?.map(|radius| radius as f32),
         points: scene.number(node, "points")?.clamp(3.0, 64.0) as f32,
@@ -106,8 +132,7 @@ fn rect_layer(
     scene: &Scene,
     layout: &Layout,
     node: NodeHandle,
-    default_blend: f32,
-    default_color: Color,
+    defaults: FieldDefaults,
 ) -> Result<Option<SdfLayer>, RenderError> {
     let Some(bounds) = layout.geometry(node) else {
         return Ok(None);
@@ -115,13 +140,17 @@ fn rect_layer(
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return Ok(None);
     }
-    let blend = layer_blend(scene, node, default_blend)?;
+    let blend = layer_blend(scene, node, defaults.blend)?;
     Ok(Some(SdfLayer {
         bounds,
         // A rect brings its own colour into the composition, so a fused row of
         // differently coloured rects keeps every one of them and blends across
         // the seams rather than flattening to a single fill.
-        color: scene.color_value(node, "color").unwrap_or(default_color),
+        color: scene
+            .color_value(node, "color")
+            .map_or(defaults.color, |color| {
+                apply_overlay(color, defaults.overlay)
+            }),
         shape: SdfShapeKind::Box,
         morph_to: SdfShapeKind::Box,
         morph: 0.0,
@@ -152,10 +181,16 @@ fn rect_layer(
 fn layer_color(
     scene: &Scene,
     node: NodeHandle,
-    default_color: Color,
+    defaults: FieldDefaults,
 ) -> Result<Color, RenderError> {
     let own = scene.color_value(node, "fill_color")?;
-    Ok(if own.alpha > 0.0 { own } else { default_color })
+    // The default already carries the overlay; a layer's own colour has to have
+    // it applied here, so both answers are tinted the same way.
+    Ok(if own.alpha > 0.0 {
+        apply_overlay(own, defaults.overlay)
+    } else {
+        defaults.color
+    })
 }
 
 /// A layer's own seam radius, falling back to the field's.

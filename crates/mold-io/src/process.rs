@@ -1,3 +1,15 @@
+use std::collections::BTreeMap;
+use std::io::{self, Read, Write};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// How often to look for a child that has closed its pipes but has not yet
+/// been reaped. Short enough to be invisible, long enough not to be a spin.
+const REAP_POLL: Duration = Duration::from_millis(2);
+
 /// One event emitted by a child process.
 #[derive(Debug)]
 pub enum ProcessEvent {
@@ -108,18 +120,37 @@ impl Process {
 
     /// Waits up to the supplied duration for output or process exit.
     pub fn next_event(&mut self, timeout: Duration) -> io::Result<Option<ProcessEvent>> {
+        let deadline = Instant::now() + timeout;
         match self.events.recv_timeout(timeout) {
             Ok(event) => return Ok(Some(event)),
             Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
         }
-        if !self.exit_reported
-            && let Some(status) = self.child.try_wait()?
-        {
-            self.exit_reported = true;
-            return Ok(Some(ProcessEvent::Exit(status)));
+        if self.exit_reported {
+            return Ok(None);
         }
-        Ok(None)
+        // The pipes have closed, so the child is on its way out — but closing
+        // them and being reaped are not the same moment, and until the second
+        // one `try_wait` has nothing to report.
+        //
+        // Returning `None` here would be a lie in two ways. A disconnected
+        // channel makes `recv_timeout` return *immediately*, so a caller
+        // polling in a loop would stop honouring its own timeout and spin a
+        // core; and a caller that gives up after a fixed number of polls would
+        // never see the exit at all, because every one of those polls would
+        // come back empty in the same microsecond. So wait for the child here,
+        // inside the time the caller already agreed to wait.
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                self.exit_reported = true;
+                return Ok(Some(ProcessEvent::Exit(status)));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(REAP_POLL.min(deadline - now));
+        }
     }
 
     /// Requests child termination.
@@ -154,4 +185,3 @@ where
         }
     });
 }
-

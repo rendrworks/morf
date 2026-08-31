@@ -82,19 +82,6 @@ fn vs_main(
     return output;
 }
 
-fn rounded_distance(point: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 {
-    var radius = radii.x;
-    if point.y >= size.y * 0.5 {
-        radius = select(radii.w, radii.z, point.x >= size.x * 0.5);
-    } else {
-        radius = select(radii.x, radii.y, point.x >= size.x * 0.5);
-    }
-    radius = max(radius, 0.0);
-    let centered = point - size * 0.5;
-    let half_size = max(size * 0.5 - vec2<f32>(radius), vec2<f32>(0.0));
-    let offset = abs(centered) - half_size;
-    return length(max(offset, vec2<f32>(0.0))) + min(max(offset.x, offset.y), 0.0) - radius;
-}
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {

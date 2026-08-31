@@ -1,3 +1,9 @@
+use crate::*;
+use mold_scene::NodeHandle;
+use std::time::Duration;
+
+use super::*;
+
 #[test]
 fn lua_plays_a_sequence_of_property_steps() {
     let mut runtime = Runtime::default();
@@ -241,4 +247,163 @@ fn a_keyframe_track_rejects_the_shapes_it_cannot_run() {
             "expected `{expected}` in: {error}"
         );
     }
+}
+
+#[test]
+fn a_fling_from_lua_coasts_and_respects_its_bounds() {
+    // A flick is thrown, not sent somewhere: the configuration hands over a
+    // speed and the engine decides where that lands.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "fling.lua",
+            br#"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local panel = ui.Rect { width = 100, height = 100, x = 0 }
+                mold.ipc["throw"] = function(velocity)
+                  mold.animation.fling {
+                    node = panel,
+                    property = "x",
+                    velocity = velocity,
+                    preset = "snappy",
+                    min = 0,
+                    max = 240,
+                  }
+                end
+            "#,
+        )
+        .unwrap();
+    let node = runtime.scene().roots()[0];
+
+    runtime
+        .call_ipc("throw", &[IpcValue::Number(900.0)])
+        .unwrap();
+    // It is moving, and it is not there yet.
+    runtime
+        .tick_animations(std::time::Duration::from_millis(16))
+        .unwrap();
+    let early = runtime.scene().number(node, "x").unwrap();
+    assert!(early > 0.0 && early < 240.0, "coasting: {early}");
+
+    // It comes to rest on its own.
+    let mut settled = None;
+    for _ in 0..300 {
+        let frame = runtime
+            .tick_animations(std::time::Duration::from_millis(16))
+            .unwrap();
+        if !frame.active {
+            settled = Some(runtime.scene().number(node, "x").unwrap());
+            break;
+        }
+    }
+    let settled = settled.expect("the fling settled");
+    assert!(settled > early, "it carried on after the first frame");
+    assert!(settled <= 240.0, "the bound held: {settled}");
+}
+
+#[test]
+fn a_fling_rejects_what_it_cannot_act_on() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "bad.lua",
+            br#"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local panel = ui.Rect { width = 10, height = 10 }
+                mold.ipc["preset"] = function()
+                  mold.animation.fling {
+                    node = panel, property = "x", velocity = 10, preset = "springy",
+                  }
+                end
+                mold.ipc["half_bound"] = function()
+                  mold.animation.fling {
+                    node = panel, property = "x", velocity = 10, min = 0,
+                  }
+                end
+                mold.ipc["not_numeric"] = function()
+                  mold.animation.fling {
+                    node = panel, property = "color", velocity = 10,
+                  }
+                end
+            "#,
+        )
+        .unwrap();
+
+    for (name, expected) in [
+        ("preset", "unknown fling preset"),
+        ("half_bound", "needs both"),
+        ("not_numeric", "not numeric"),
+    ] {
+        let error = runtime.call_ipc(name, &[]).unwrap_err();
+        assert!(
+            format!("{error}").contains(expected),
+            "expected `{expected}` in: {error}"
+        );
+    }
+}
+
+#[test]
+fn an_impulse_from_lua_pushes_a_coasting_node_without_taking_it_over() {
+    // What a configuration needs to express a force — one shape pulling on
+    // another, a drift towards the middle — without becoming the clock. It
+    // computes the push at whatever rate suits it and the engine keeps moving
+    // the node every frame in between.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "impulse.lua",
+            br#"
+                local mold = require("mold")
+                local ui = require("mold.ui")
+                local panel = ui.Rect { width = 100, height = 100, x = 0 }
+                mold.ipc["throw"] = function()
+                  mold.animation.fling {
+                    node = panel, property = "x", velocity = 300,
+                    friction = 0, min_velocity = 0,
+                  }
+                end
+                mold.ipc["push"] = function(delta)
+                  return mold.animation.impulse(panel, "x", delta)
+                end
+            "#,
+        )
+        .unwrap();
+    let node = runtime.scene().roots()[0];
+    fn run(runtime: &mut Runtime, node: NodeHandle, frames: usize) -> f64 {
+        for _ in 0..frames {
+            runtime
+                .tick_animations(std::time::Duration::from_millis(16))
+                .unwrap();
+        }
+        runtime.scene().number(node, "x").unwrap()
+    }
+
+    // Nothing is coasting yet, so there is no speed to add to.
+    assert_eq!(
+        runtime
+            .call_ipc("push", &[IpcValue::Number(300.0)])
+            .unwrap(),
+        vec![IpcValue::Boolean(false)]
+    );
+    runtime.call_ipc("throw", &[]).unwrap();
+    let alone = run(&mut runtime, node, 10);
+
+    // The same ten frames again, but pushed to twice the speed at the start of
+    // them, cover twice the ground: the push added to the speed rather than
+    // replacing it, and the node kept moving on its own afterwards.
+    runtime.call_ipc("throw", &[]).unwrap();
+    let restarted = runtime.scene().number(node, "x").unwrap();
+    assert_eq!(
+        runtime
+            .call_ipc("push", &[IpcValue::Number(300.0)])
+            .unwrap(),
+        vec![IpcValue::Boolean(true)]
+    );
+    let pushed = run(&mut runtime, node, 10) - restarted;
+    assert!(
+        (pushed - 2.0 * alone).abs() < 1.0,
+        "the push doubled the speed: {pushed} against {alone}"
+    );
 }

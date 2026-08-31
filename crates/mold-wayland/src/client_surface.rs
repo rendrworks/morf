@@ -1,13 +1,27 @@
+use crate::client_layer::PRIMARY_LAYER;
+use smithay_client_toolkit::compositor::FrameCallbackData;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::xdg::XdgPositioner;
+use smithay_client_toolkit::shell::xdg::XdgSurface;
+use smithay_client_toolkit::shell::xdg::popup::Popup;
+use std::collections::HashMap;
+use wayland_client::Proxy;
+use wayland_client::protocol::wl_surface;
+
+use crate::{helpers::*, state_types::*, surface_types::*, types::*};
+
 /// First `xdg_popup` version carrying the `reposition` request.
-const XDG_POPUP_REPOSITION_VERSION: u32 = 3;
+pub(crate) const XDG_POPUP_REPOSITION_VERSION: u32 = 3;
 
 /// Reposition bookkeeping for one popup.
+///
+/// Only the counter. The token the compositor echoed back was recorded here too
+/// and read by nothing — the configure it arrives with already carries it, so
+/// the copy in this map answered a question nobody asked.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct PopupReposition {
+pub(crate) struct PopupReposition {
     /// Last token sent with `xdg_popup.reposition`.
-    sent: u32,
-    /// Last token the compositor echoed back with `xdg_popup.repositioned`.
-    acknowledged: Option<u32>,
+    pub(crate) sent: u32,
 }
 
 /// Issues the next reposition token for one popup.
@@ -15,15 +29,13 @@ struct PopupReposition {
 /// The token is opaque to the compositor and only has to identify the request
 /// it came from, so it is a per-popup counter starting at one; zero is left
 /// unused so a fresh counter never looks like an acknowledged request.
-fn next_reposition_token(repositions: &mut HashMap<u64, PopupReposition>, id: u64) -> u32 {
+pub(crate) fn next_reposition_token(
+    repositions: &mut HashMap<u64, PopupReposition>,
+    id: u64,
+) -> u32 {
     let reposition = repositions.entry(id).or_default();
     reposition.sent = reposition.sent.wrapping_add(1).max(1);
     reposition.sent
-}
-
-/// Records the token the compositor echoed for a popup it has repositioned.
-fn record_reposition_ack(repositions: &mut HashMap<u64, PopupReposition>, id: u64, token: u32) {
-    repositions.entry(id).or_default().acknowledged = Some(token);
 }
 
 impl LayerClient {
@@ -40,19 +52,9 @@ impl LayerClient {
         self.request_layer_frame(PRIMARY_LAYER);
     }
 
-    /// Commits pending surface state without attaching a buffer.
-    pub fn commit(&self) {
-        self.commit_layer(PRIMARY_LAYER);
-    }
-
     /// Returns the underlying surface used to construct a GPU presentation target.
     pub fn surface(&self) -> &wl_surface::WlSurface {
         self.state.layer().wl_surface()
-    }
-
-    /// Returns a clone of the connection backend for a raw display handle.
-    pub fn backend(&self) -> wayland_backend::client::Backend {
-        self.connection.backend()
     }
 
     /// Returns an owned raw-window target suitable for wgpu surface creation.
@@ -83,23 +85,16 @@ impl LayerClient {
         &self.state.screens
     }
 
-    /// Applies the default, empty, or explicitly rectangular input region.
-    pub fn set_input_region(&self, rectangles: Option<&[InputRect]>) {
-        self.set_layer_input_region(PRIMARY_LAYER, rectangles);
-    }
-
-    /// Builds and applies a composable logical input region.
-    pub fn set_composed_input_region(&self, regions: &[Region]) -> Result<(), WaylandError> {
-        self.set_layer_composed_input_region(PRIMARY_LAYER, regions)
-    }
-
     /// Builds the positioner describing one popup's requested geometry.
     ///
     /// Every field a positioner carries is replaceable on a live popup:
     /// `xdg_popup.reposition` discards the previous positioner wholesale
     /// (`xdg-shell.xml:1368-1374`), so the same builder serves both creating a
     /// popup and moving one.
-    fn build_positioner(&self, config: &PopupConfig) -> Result<XdgPositioner, WaylandError> {
+    pub(crate) fn build_positioner(
+        &self,
+        config: &PopupConfig,
+    ) -> Result<XdgPositioner, WaylandError> {
         let positioner = XdgPositioner::new(&self.state.xdg_shell)
             .map_err(|error| WaylandError(format!("could not create popup positioner: {error}")))?;
         positioner.set_size(config.width.max(1) as i32, config.height.max(1) as i32);
@@ -214,26 +209,11 @@ impl LayerClient {
         Ok(true)
     }
 
-    /// Returns the reposition token the compositor last echoed for this popup.
-    ///
-    /// A caller that issued several repositions correlates an arriving
-    /// [`LayerEvent::PopupConfigure`] with the request it answers by comparing
-    /// this against the request order; it is `None` until the first
-    /// `xdg_popup.repositioned` for the popup arrives.
-    pub fn popup_reposition_token(&self, id: u64) -> Option<u32> {
-        self.state
-            .popup_repositions
-            .get(&id)
-            .and_then(|reposition| reposition.acknowledged)
-    }
-
     /// Destroys the current popup when present.
     pub fn close_popup(&mut self, id: u64) {
         self.state.popups.remove(&id);
         self.state.popup_repositions.remove(&id);
-        if self.state.keyboard_surface == Some(SurfaceRole::Popup(id)) {
-            self.state.keyboard_surface = None;
-        }
+        self.forget_surface(SurfaceRole::Popup(id));
     }
 
     /// Returns the popup surface used to attach buffers.

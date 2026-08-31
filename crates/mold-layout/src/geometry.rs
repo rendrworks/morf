@@ -1,3 +1,5 @@
+use mold_scene::{Element, NodeHandle};
+
 /// Logical dimensions in surface coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Size {

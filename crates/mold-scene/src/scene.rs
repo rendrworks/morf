@@ -1,23 +1,34 @@
+use animato::Update;
+use mold_reactive::Graph;
+use slotmap::SlotMap;
+use std::collections::HashMap;
+use std::time::Duration;
+
+use crate::{animation::*, hashing::*, motion::*, schema::*, types::*};
+
 impl Scene {
     /// Creates an empty scene arena.
     pub fn new() -> Self {
         Self {
             nodes: SlotMap::with_key(),
             properties: Graph::default(),
-            behaviors: HashMap::new(),
-            animations: HashMap::new(),
-            physics: HashMap::new(),
-            physics_specs: HashMap::new(),
-            paused_physics: HashSet::new(),
+            behaviors: FastMap::default(),
+            animations: FastMap::default(),
+            physics: FastMap::default(),
+            physics_specs: FastMap::default(),
+            paused_physics: FastSet::default(),
             events: Vec::new(),
             groups: HashMap::new(),
             group_events: Vec::new(),
             next_group: 0,
+            layout_revision: 0,
+            removed: Vec::new(),
         }
     }
 
     /// Allocates an element with every schema property initialized.
     pub fn create(&mut self, element: Element) -> NodeHandle {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         let node = self.nodes.insert_with_key(|id| {
             let properties = schema(element)
                 .into_iter()
@@ -100,6 +111,7 @@ impl Scene {
     ) -> Result<(), SceneError> {
         let child_id = self.live(child)?;
         let parent_id = parent.map(|handle| self.live(handle)).transpose()?;
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         if parent_id == Some(child_id) {
             return Err(SceneError::ParentCycle);
         }
@@ -114,11 +126,11 @@ impl Scene {
         if let Some(old_parent) = self.nodes[child_id].parent {
             self.nodes[old_parent]
                 .children
-                .retain(|node| *node != child_id);
+                .retain(|node| node.id() != child_id);
         }
         self.nodes[child_id].parent = parent_id;
         if let Some(parent) = parent_id {
-            self.nodes[parent].children.push(child_id);
+            self.nodes[parent].children.push(child);
         }
         Ok(())
     }
@@ -129,29 +141,28 @@ impl Scene {
     }
 
     /// Returns child handles in paint order.
-    pub fn children(&self, node: NodeHandle) -> Result<Vec<NodeHandle>, SceneError> {
-        Ok(self.nodes[self.live(node)?]
-            .children
-            .iter()
-            .copied()
-            .map(NodeHandle)
-            .collect())
+    pub fn children(&self, node: NodeHandle) -> Result<&[NodeHandle], SceneError> {
+        Ok(&self.nodes[self.live(node)?].children)
     }
 
     /// Removes a node and all descendants, invalidating their handles.
     pub fn remove(&mut self, node: NodeHandle) -> Result<(), SceneError> {
         let id = self.live(node)?;
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         if let Some(parent) = self.nodes[id].parent {
-            self.nodes[parent].children.retain(|child| *child != id);
+            self.nodes[parent]
+                .children
+                .retain(|handle| handle.id() != id);
         }
         let mut pending = vec![id];
         while let Some(current) = pending.pop() {
-            pending.extend(self.nodes[current].children.iter().copied());
+            pending.extend(self.nodes[current].children.iter().map(|child| child.id()));
             self.behaviors.retain(|key, _| key.node != current);
             self.animations.retain(|key, _| key.node != current);
             self.physics.retain(|key, _| key.node != current);
             self.physics_specs.retain(|key, _| key.node != current);
             self.paused_physics.retain(|key| key.node != current);
+            self.removed.push(NodeHandle(current));
             self.nodes.remove(current);
         }
         self.retain_live_groups();
@@ -238,133 +249,11 @@ impl Scene {
                 Ok(())
             })?;
         }
-        Ok(())
-    }
-
-    /// Installs or removes a write-intercepting behavior on a property.
-    pub fn set_behavior(
-        &mut self,
-        node: NodeHandle,
-        property: &str,
-        behavior: Option<Behavior>,
-    ) -> Result<(), SceneError> {
-        let id = self.live(node)?;
-        let (name, _) = self.nodes[id]
-            .properties
-            .get_key_value(property)
-            .ok_or_else(|| SceneError::UnknownProperty {
-                element: self.nodes[id].element.name(),
-                property: property.to_owned(),
-            })?;
-        let key = PropertyKey {
-            node: id,
-            property: name,
-        };
-        if let Some(behavior) = behavior {
-            self.behaviors.insert(key, behavior);
-            self.physics_specs.remove(&key);
-            self.physics.remove(&key);
-        } else {
-            self.behaviors.remove(&key);
-            if self.animations.remove(&key).is_some() {
-                self.push_event(key, AnimationEnd::Canceled);
-            }
-        }
-        Ok(())
-    }
-
-    /// Starts a finite animation from an explicit current value.
-    pub fn animate_from(
-        &mut self,
-        node: NodeHandle,
-        property: &str,
-        from: impl Into<Value>,
-        to: impl Into<Value>,
-        behavior: Behavior,
-    ) -> Result<(), SceneError> {
-        let id = self.live(node)?;
-        let element = self.nodes[id].element;
-        let (name, slot) = self.nodes[id]
-            .properties
-            .get_key_value(property)
-            .map(|(name, slot)| (*name, *slot))
-            .ok_or_else(|| SceneError::UnknownProperty {
-                element: element.name(),
-                property: property.to_owned(),
-            })?;
-        let from = coerce(element, property, slot.kind, from.into())?;
-        let to = coerce(element, property, slot.kind, to.into())?;
-        if !interpolatable(&from, &to) {
-            return Err(SceneError::InvalidPropertyType {
-                element: element.name(),
-                property: property.to_owned(),
-                expected: "interpolatable values",
-            });
-        }
-        let key = PropertyKey {
-            node: id,
-            property: name,
-        };
-        let from = animation_start(name, from, &to, behavior.rotation_direction);
-        self.paused_physics.remove(&key);
-        if self.physics.remove(&key).is_some() {
-            self.push_event(key, AnimationEnd::Canceled);
-        }
-        self.properties.batch(|graph| {
-            graph.write(slot.current, from.clone())?;
-            graph.write(slot.target, to.clone())?;
-            Ok(())
-        })?;
-        if !behavior.intercepts() {
-            self.properties.write(slot.current, to)?;
-            self.animations.remove(&key);
-        } else {
-            self.animations.insert(
-                key,
-                Animation::new(from, to, Velocity::Number(0.0), false, behavior),
-            );
-        }
-        Ok(())
-    }
-
-    /// Installs or removes physics-driven motion on a numeric property.
-    pub fn set_physics(
-        &mut self,
-        node: NodeHandle,
-        property: &str,
-        physics: Option<Physics>,
-    ) -> Result<(), SceneError> {
-        let id = self.live(node)?;
-        let (name, slot) = self.nodes[id]
-            .properties
-            .get_key_value(property)
-            .ok_or_else(|| SceneError::UnknownProperty {
-                element: self.nodes[id].element.name(),
-                property: property.to_owned(),
-            })?;
-        if !matches!(slot.kind, PropertyType::Number) {
-            return Err(SceneError::InvalidPropertyType {
-                element: self.nodes[id].element.name(),
-                property: property.to_owned(),
-                expected: "numeric property",
-            });
-        }
-        let key = PropertyKey {
-            node: id,
-            property: name,
-        };
-        if let Some(physics) = physics {
-            validate_physics(physics).map_err(SceneError::Reactive)?;
-            self.physics_specs.insert(key, physics);
-            self.behaviors.remove(&key);
-            self.animations.remove(&key);
-        } else {
-            self.physics_specs.remove(&key);
-            self.paused_physics.remove(&key);
-            if self.physics.remove(&key).is_some() {
-                self.push_event(key, AnimationEnd::Canceled);
-            }
-        }
+        // Conservative: an assignment that only sets an animation's target has
+        // not moved anything yet, but the ticks that follow will, and one extra
+        // layout pass is a great deal cheaper than a frame drawn at stale
+        // geometry.
+        self.touch_layout(property_name);
         Ok(())
     }
 
@@ -401,29 +290,19 @@ impl Scene {
             let idle = paused || (delayed && animation.is_delayed());
             if !idle {
                 let slot = node.properties[key.property];
+                if affects_layout(key.property) {
+                    self.layout_revision = self.layout_revision.wrapping_add(1);
+                }
                 self.properties.write(slot.current, value)?;
-                frame.changes.push(AnimatedChange {
-                    node: NodeHandle(key.node),
-                    property: key.property,
-                    class: property_class(key.property),
-                });
+                frame.changed += 1;
             }
             if complete {
                 finished.push(key);
             }
         }
         for key in finished {
-            // An alternating repetition can rest on its start value, so the
-            // settled target is corrected to whatever the property actually
-            // holds rather than the value the last write asked for.
-            if self.animations.remove(&key).is_some()
-                && let Some(node) = self.nodes.get(key.node)
-            {
-                let slot = node.properties[key.property];
-                let settled = self.properties.read(slot.current)?.clone();
-                if self.properties.read(slot.target)? != &settled {
-                    self.properties.write(slot.target, settled)?;
-                }
+            if self.animations.remove(&key).is_some() {
+                self.settle_target(key)?;
             }
             frame.events.push(AnimationEvent {
                 node: NodeHandle(key.node),
@@ -448,13 +327,16 @@ impl Scene {
             };
             let motion = self.physics.get_mut(&key).expect("physics key vanished");
             let settled = advance_physics(motion, &mut current, delta);
+            // Physics moves a property without any assignment, so this is the
+            // one write that has to say so itself. Without it a paint reuses
+            // the layout it already had and the scene animates behind a still
+            // picture — every other path reaches here through `assign`.
+            if affects_layout(key.property) {
+                self.layout_revision = self.layout_revision.wrapping_add(1);
+            }
             self.properties
                 .write(slot.current, Value::Number(current))?;
-            frame.changes.push(AnimatedChange {
-                node: NodeHandle(key.node),
-                property: key.property,
-                class: property_class(key.property),
-            });
+            frame.changed += 1;
             if settled {
                 physics_finished.push(key);
             }
@@ -462,6 +344,7 @@ impl Scene {
         for key in physics_finished {
             self.physics.remove(&key);
             self.paused_physics.remove(&key);
+            self.settle_target(key)?;
             frame.events.push(AnimationEvent {
                 node: NodeHandle(key.node),
                 property: key.property,
@@ -479,5 +362,4 @@ impl Scene {
             !self.animations.is_empty() || !self.physics.is_empty() || !self.groups.is_empty();
         Ok(frame)
     }
-
 }

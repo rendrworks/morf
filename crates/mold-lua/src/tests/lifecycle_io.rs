@@ -1,3 +1,12 @@
+use crate::*;
+use mold_scene::Element;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixListener;
+use std::thread;
+use std::time::Duration;
+
+use super::*;
+
 #[test]
 fn native_timer_callbacks_recompute_lua_bindings() {
     let mut runtime = Runtime::default();
@@ -47,8 +56,8 @@ fn loader_and_timer_build_native_scene_objects() {
         )
         .unwrap();
     let root = runtime.scene().roots()[0];
-    let children = runtime.scene().children(root).unwrap();
-    let loader_children = runtime.scene().children(children[0]).unwrap();
+    let children = runtime.scene().children(root).unwrap().to_vec();
+    let loader_children = runtime.scene().children(children[0]).unwrap().to_vec();
 
     assert_eq!(
         runtime.scene().element(children[0]).unwrap(),
@@ -108,7 +117,7 @@ fn loader_and_timer_follow_dynamic_properties() {
         )
         .unwrap();
     let root = runtime.scene().roots()[0];
-    let children = runtime.scene().children(root).unwrap();
+    let children = runtime.scene().children(root).unwrap().to_vec();
     let loader = children[0];
     let timer = children[1];
     assert!(runtime.scene().children(loader).unwrap().is_empty());
@@ -289,12 +298,8 @@ fn lua_io_primitives_stream_processes_and_bound_files() {
 
 #[test]
 fn lua_socket_uses_bounded_timeout_reads() {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixListener;
-
     let path = std::env::temp_dir().join(format!("mold-lua-socket-{}", std::process::id()));
-    let next =
-        std::env::temp_dir().join(format!("mold-lua-socket-next-{}", std::process::id()));
+    let next = std::env::temp_dir().join(format!("mold-lua-socket-next-{}", std::process::id()));
     let listener = UnixListener::bind(&path).unwrap();
     let next_listener = UnixListener::bind(&next).unwrap();
     let server = std::thread::spawn(move || {
@@ -345,12 +350,11 @@ fn lua_socket_uses_bounded_timeout_reads() {
 #[test]
 fn lua_exposes_stream_parsers_and_socket_servers() {
     let path = std::env::temp_dir().join(format!("mold-lua-server-{}", std::process::id()));
-    let next =
-        std::env::temp_dir().join(format!("mold-lua-server-next-{}", std::process::id()));
+    let next = std::env::temp_dir().join(format!("mold-lua-server-next-{}", std::process::id()));
     let source = format!(
         r#"
             local mold = require("mold")
-            local lines = mold.line_parser()
+            local lines = mold.split_parser("\n")
             local first = lines:push("one\ntw")
             assert(#first == 1 and first[1] == "one")
             local second = lines:push("o\r\nlast")
@@ -409,4 +413,3 @@ fn lua_exposes_stream_parsers_and_socket_servers() {
     assert!(!path.exists());
     assert!(!next.exists());
 }
-

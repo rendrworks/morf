@@ -1,3 +1,8 @@
+use luna::{Context, Value as LuaValue};
+
+use mold_region::Region;
+use mold_scene::{Behavior, NodeHandle, Value as SceneValue};
+
 /// Edges used to anchor a configured layer surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceAnchors {
@@ -258,7 +263,7 @@ pub struct ScreencopyRequest {
 }
 
 impl IpcValue {
-    fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
+    pub(crate) fn to_lua<'gc>(&self, ctx: Context<'gc>) -> LuaValue<'gc> {
         match self {
             Self::Nil => LuaValue::Nil,
             Self::Boolean(value) => LuaValue::Boolean(*value),
@@ -268,7 +273,7 @@ impl IpcValue {
         }
     }
 
-    fn from_lua(value: LuaValue<'_>) -> Result<Self, String> {
+    pub(crate) fn from_lua(value: LuaValue<'_>) -> Result<Self, String> {
         match value {
             LuaValue::Nil => Ok(Self::Nil),
             LuaValue::Boolean(value) => Ok(Self::Boolean(value)),
@@ -276,30 +281,25 @@ impl IpcValue {
             LuaValue::Number(value) if value.is_finite() => Ok(Self::Number(value)),
             LuaValue::String(value) => Ok(Self::String(value.display_lossy().to_string())),
             value => Err(format!(
-                "IPC values must be nil, boolean, number, or string, found {}",
+                "values crossing the Lua boundary must be nil, boolean, number, or string, found {}",
                 value.type_name()
             )),
         }
     }
-}
 
-fn script_ipc_value(value: &ScriptValue) -> IpcValue {
-    match value {
-        ScriptValue::Nil => IpcValue::Nil,
-        ScriptValue::Boolean(value) => IpcValue::Boolean(*value),
-        ScriptValue::Integer(value) => IpcValue::Integer(*value),
-        ScriptValue::Number(value) => IpcValue::Number(*value),
-        ScriptValue::String(value) => IpcValue::String(value.clone()),
+    /// The same value as the scene stores it.
+    ///
+    /// This lived on a second enum with the same five variants and the same
+    /// three conversions, which existed only because the reactive graph and the
+    /// IPC surface had each grown one — along with a pair of shims to carry a
+    /// value from one to the other.
+    pub(crate) fn to_scene(&self) -> SceneValue {
+        match self {
+            Self::Nil => SceneValue::Nil,
+            Self::Boolean(value) => SceneValue::Bool(*value),
+            Self::Integer(value) => SceneValue::Number(*value as f64),
+            Self::Number(value) => SceneValue::Number(*value),
+            Self::String(value) => SceneValue::String(value.clone()),
+        }
     }
 }
-
-fn ipc_script_value(value: IpcValue) -> ScriptValue {
-    match value {
-        IpcValue::Nil => ScriptValue::Nil,
-        IpcValue::Boolean(value) => ScriptValue::Boolean(value),
-        IpcValue::Integer(value) => ScriptValue::Integer(value),
-        IpcValue::Number(value) => ScriptValue::Number(value),
-        IpcValue::String(value) => ScriptValue::String(value),
-    }
-}
-

@@ -1,4 +1,18 @@
-fn string_table<'gc>(ctx: Context<'gc>, values: impl IntoIterator<Item = String>) -> Table<'gc> {
+use luna::{Context, Table, Value as LuaValue};
+use mold_desktop::DesktopEntry;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use mold_scene::Easing;
+use mold_services::{AuthMessageType, GreetdResponse};
+
+use crate::state::*;
+
+pub(crate) fn string_table<'gc>(
+    ctx: Context<'gc>,
+    values: impl IntoIterator<Item = String>,
+) -> Table<'gc> {
     let table = Table::new(&ctx);
     for (index, value) in values.into_iter().enumerate() {
         table
@@ -8,7 +22,7 @@ fn string_table<'gc>(ctx: Context<'gc>, values: impl IntoIterator<Item = String>
     table
 }
 
-fn desktop_entry_table<'gc>(ctx: Context<'gc>, entry: &DesktopEntry) -> Table<'gc> {
+pub(crate) fn desktop_entry_table<'gc>(ctx: Context<'gc>, entry: &DesktopEntry) -> Table<'gc> {
     let value = Table::new(&ctx);
     value.set_field(ctx, "id", entry.id.as_str());
     value.set_field(ctx, "name", entry.name.as_str());
@@ -43,7 +57,7 @@ fn desktop_entry_table<'gc>(ctx: Context<'gc>, entry: &DesktopEntry) -> Table<'g
     value
 }
 
-fn greetd_response<'gc>(ctx: Context<'gc>, response: GreetdResponse) -> Table<'gc> {
+pub(crate) fn greetd_response<'gc>(ctx: Context<'gc>, response: GreetdResponse) -> Table<'gc> {
     let value = Table::new(&ctx);
     match response {
         GreetdResponse::Success => {
@@ -75,7 +89,7 @@ fn greetd_response<'gc>(ctx: Context<'gc>, response: GreetdResponse) -> Table<'g
     value
 }
 
-fn track_clock_dependency(state: &Rc<RefCell<ReactiveState>>, enabled: bool) {
+pub(crate) fn track_clock_dependency(state: &Rc<RefCell<ReactiveState>>, enabled: bool) {
     if !enabled {
         return;
     }
@@ -86,7 +100,7 @@ fn track_clock_dependency(state: &Rc<RefCell<ReactiveState>>, enabled: bool) {
     }
 }
 
-fn local_time_table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
+pub(crate) fn local_time_table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
     let now = jiff::Zoned::now();
     let numeric = now.strftime("%Y\t%m\t%d\t%H\t%M\t%S\t%u").to_string();
     let parts = numeric
@@ -113,7 +127,7 @@ fn local_time_table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
     value
 }
 
-fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
+pub(crate) fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
     u64::try_from(milliseconds)
         .ok()
         .filter(|milliseconds| *milliseconds <= 5_000)
@@ -121,7 +135,7 @@ fn bounded_timeout(milliseconds: i64) -> Result<Duration, String> {
         .ok_or_else(|| "timeout must be between 0 and 5000 milliseconds".to_owned())
 }
 
-fn parse_easing<'gc>(ctx: Context<'gc>, value: LuaValue<'gc>) -> Result<Easing, String> {
+pub(crate) fn parse_easing<'gc>(ctx: Context<'gc>, value: LuaValue<'gc>) -> Result<Easing, String> {
     match value {
         LuaValue::Nil => Ok(Easing::Linear),
         LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
@@ -176,4 +190,3 @@ fn parse_easing<'gc>(ctx: Context<'gc>, value: LuaValue<'gc>) -> Result<Easing, 
         _ => Err("easing must be a string or cubic Bezier table".to_owned()),
     }
 }
-

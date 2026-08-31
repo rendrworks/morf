@@ -1,4 +1,6 @@
-use super::*;
+use std::time::Duration;
+
+use crate::*;
 
 #[test]
 fn reparenting_preserves_identity_and_order() {
@@ -95,7 +97,7 @@ fn behavior_intercepts_writes_and_keeps_target_live() {
     let frame = scene.tick_animations(Duration::from_millis(100)).unwrap();
 
     assert_eq!(scene.current(rect, "width").unwrap(), &Value::Number(50.0));
-    assert_eq!(frame.changes[0].class, PropertyClass::Layout);
+    assert_eq!(frame.changed, 1, "one property moved");
     assert!(frame.active);
 }
 
@@ -171,7 +173,7 @@ fn paint_animation_finishes_at_the_exact_target() {
     let frame = scene.tick_animations(Duration::from_millis(120)).unwrap();
 
     assert_eq!(scene.current(rect, "color"), scene.target(rect, "color"));
-    assert_eq!(frame.changes[0].class, PropertyClass::Paint);
+    assert_eq!(frame.changed, 1, "one property moved");
     assert!(!frame.active);
 }
 
@@ -258,4 +260,73 @@ fn smoothed_motion_obeys_velocity_limit() {
 }
 
 mod groups;
+mod physics;
 mod playback;
+
+#[test]
+fn the_layout_revision_moves_only_when_geometry_does() {
+    // What the revision is for: a frame that changes a colour, an opacity or a
+    // rotation must be able to reuse the layout it already has, because none of
+    // those move a box. Layout is the most expensive thing a frame does.
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let rect = scene.create(Element::Rect);
+    scene.reparent(rect, Some(root)).unwrap();
+
+    let settled = scene.layout_revision();
+    for property in ["color", "opacity", "rotation", "scale", "border_color"] {
+        let before = scene.layout_revision();
+        let value: Value = match property {
+            "color" | "border_color" => Value::Color(Color::rgba8(1, 2, 3, 4)),
+            _ => Value::Number(0.5),
+        };
+        scene.assign(rect, property, value).unwrap();
+        assert_eq!(
+            scene.layout_revision(),
+            before,
+            "`{property}` does not move a box"
+        );
+    }
+    assert_eq!(scene.layout_revision(), settled);
+
+    // Geometry does move one, and so does the shape of the tree.
+    for property in ["x", "width", "implicit_height"] {
+        let before = scene.layout_revision();
+        scene.assign(rect, property, 12.0).unwrap();
+        assert_ne!(scene.layout_revision(), before, "`{property}` moves a box");
+    }
+    let before = scene.layout_revision();
+    let extra = scene.create(Element::Rect);
+    scene.reparent(extra, Some(root)).unwrap();
+    assert_ne!(scene.layout_revision(), before, "a new child moves boxes");
+    let before = scene.layout_revision();
+    scene.remove(extra).unwrap();
+    assert_ne!(scene.layout_revision(), before, "so does losing one");
+}
+
+#[test]
+fn an_animation_moves_the_layout_revision_only_on_geometry_frames() {
+    // The same rule while a behavior is running: an easing colour must not
+    // invalidate layout on every one of its frames.
+    let mut scene = Scene::new();
+    let rect = scene.create(Element::Rect);
+    scene
+        .set_behavior(
+            rect,
+            "color",
+            Some(Behavior::timed(Duration::from_millis(100), Easing::Linear)),
+        )
+        .unwrap();
+    scene
+        .assign(rect, "color", Value::Color(Color::rgba8(9, 9, 9, 255)))
+        .unwrap();
+
+    let before = scene.layout_revision();
+    let frame = scene.tick_animations(Duration::from_millis(50)).unwrap();
+    assert!(frame.changed > 0, "the colour advanced");
+    assert_eq!(
+        scene.layout_revision(),
+        before,
+        "an easing colour never moves a box"
+    );
+}

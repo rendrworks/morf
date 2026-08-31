@@ -1,3 +1,10 @@
+use crate::*;
+use mold_layout::Layout;
+use std::fs;
+use std::path::PathBuf;
+
+use super::*;
+
 #[test]
 fn window_handles_map_item_geometry_after_layout() {
     let mut runtime = Runtime::default();
@@ -174,11 +181,13 @@ fn color_quantizer_returns_native_palette_values() {
     let source = format!(
         r##"
             local core = require("mold.core")
-            local colors = core.color_quantize {{
+            -- One name for this, not two: the quantizer object answers the
+            -- one-shot question as well as the live one.
+            local colors = core.color_quantizer {{
                 source = {:?},
                 depth = 1,
                 rescale_size = 2,
-            }}
+            }}:colors()
             assert(#colors == 2)
             assert(
                 (colors[1] == "#ff0000" and colors[2] == "#0000ff") or
@@ -304,8 +313,8 @@ fn process_view_applies_launch_context_and_restarts() {
                     break
                 end
             end
-            assert(output == {:?})
-            assert(process:running() == false)
+            assert(output == {:?}, "first run stdout: " .. output)
+            assert(process:running() == false, "first run should have exited")
             assert(process:command()[1] == "sh")
             assert(process:environment().MOLD_LUA_PROCESS == "ok")
             assert(process:working_directory() == {:?})
@@ -322,7 +331,7 @@ fn process_view_applies_launch_context_and_restarts() {
                 if event and event.kind == "stdout" then restarted = restarted .. event.data end
                 if event and event.kind == "exit" then break end
             end
-            assert(restarted == "changed")
+            assert(restarted == "changed", "second run stdout: " .. restarted)
             process:set_command({{ "sh", "-c", "sleep 5" }})
             assert(process:start())
             process:set_command({{ "sh", "-c", "printf restarted" }})
@@ -332,7 +341,7 @@ fn process_view_applies_launch_context_and_restarts() {
                 if event and event.kind == "stdout" then replaced = replaced .. event.data end
                 if event and event.kind == "exit" then break end
             end
-            assert(replaced == "restarted")
+            assert(replaced == "restarted", "third run stdout: " .. replaced)
         "#,
         directory.to_string_lossy(),
         format!("{}:ok", directory.display()),

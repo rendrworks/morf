@@ -1,19 +1,36 @@
+use mold_layout::{Geometry, TextAlignment, TextElide};
+use mold_scene::{Color, NodeHandle, Scene, Value};
+
+use crate::{commands::*, damage::*, sdf::*};
+
 #[derive(Clone, Copy)]
-struct LayerConfig {
-    enabled: bool,
-    blur: f64,
-    shadow_color: Color,
-    shadow_blur: f64,
-    shadow_offset_x: f64,
-    shadow_offset_y: f64,
+pub(crate) struct LayerConfig {
+    pub(crate) enabled: bool,
+    pub(crate) blur: f64,
+    pub(crate) shadow_color: Color,
+    pub(crate) shadow_blur: f64,
+    pub(crate) shadow_offset_x: f64,
+    pub(crate) shadow_offset_y: f64,
 }
 
-fn layer_config(scene: &Scene, node: NodeHandle) -> Result<LayerConfig, RenderError> {
+pub(crate) fn layer_config(scene: &Scene, node: NodeHandle) -> Result<LayerConfig, RenderError> {
     let Value::Map(layer) = scene.current(node, "layer")? else {
         return Err(RenderError::Scene(
             "layer must be a property map".to_owned(),
         ));
     };
+    // An empty table is the default on every node that never asked for a
+    // layer, which is nearly all of them; the parsing below has nothing to find.
+    if layer.is_empty() {
+        return Ok(LayerConfig {
+            enabled: false,
+            blur: 0.0,
+            shadow_color: Color::rgba8(0, 0, 0, 0),
+            shadow_blur: 0.0,
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 0.0,
+        });
+    }
     let enabled = match layer.get("enabled") {
         None => false,
         Some(Value::Bool(enabled)) => *enabled,
@@ -52,14 +69,14 @@ fn layer_config(scene: &Scene, node: NodeHandle) -> Result<LayerConfig, RenderEr
     })
 }
 
-fn command_union(commands: &[DrawCommand]) -> Option<Geometry> {
+pub(crate) fn command_union(commands: &[DrawCommand]) -> Option<Geometry> {
     commands
         .iter()
         .map(DrawCommand::bounds)
         .reduce(union_geometry)
 }
 
-fn union_geometry(left: Geometry, right: Geometry) -> Geometry {
+pub(crate) fn union_geometry(left: Geometry, right: Geometry) -> Geometry {
     let x = left.x.min(right.x);
     let y = left.y.min(right.y);
     let right_edge = (left.x + left.width).max(right.x + right.width);
@@ -72,7 +89,7 @@ fn union_geometry(left: Geometry, right: Geometry) -> Geometry {
     }
 }
 
-fn expand_geometry(bounds: Geometry, amount: f64) -> Geometry {
+pub(crate) fn expand_geometry(bounds: Geometry, amount: f64) -> Geometry {
     Geometry {
         x: bounds.x - amount,
         y: bounds.y - amount,
@@ -81,7 +98,7 @@ fn expand_geometry(bounds: Geometry, amount: f64) -> Geometry {
     }
 }
 
-fn offset_geometry(bounds: Geometry, x: f64, y: f64) -> Geometry {
+pub(crate) fn offset_geometry(bounds: Geometry, x: f64, y: f64) -> Geometry {
     Geometry {
         x: bounds.x + x,
         y: bounds.y + y,
@@ -89,7 +106,7 @@ fn offset_geometry(bounds: Geometry, x: f64, y: f64) -> Geometry {
     }
 }
 
-fn compose_overlay(under: Color, over: Color) -> Color {
+pub(crate) fn compose_overlay(under: Color, over: Color) -> Color {
     let alpha = over.alpha + under.alpha * (1.0 - over.alpha);
     if alpha <= f32::EPSILON {
         return Color::rgba8(0, 0, 0, 0);
@@ -102,7 +119,7 @@ fn compose_overlay(under: Color, over: Color) -> Color {
     }
 }
 
-fn apply_overlay(color: Color, overlay: Color) -> Color {
+pub(crate) fn apply_overlay(color: Color, overlay: Color) -> Color {
     Color {
         red: color.red * (1.0 - overlay.alpha) + overlay.red * overlay.alpha,
         green: color.green * (1.0 - overlay.alpha) + overlay.green * overlay.alpha,
@@ -111,7 +128,7 @@ fn apply_overlay(color: Color, overlay: Color) -> Color {
     }
 }
 
-fn intersect_geometry(left: Geometry, right: Geometry) -> Geometry {
+pub(crate) fn intersect_geometry(left: Geometry, right: Geometry) -> Geometry {
     let x = left.x.max(right.x);
     let y = left.y.max(right.y);
     let right_edge = (left.x + left.width).min(right.x + right.width);
@@ -124,10 +141,17 @@ fn intersect_geometry(left: Geometry, right: Geometry) -> Geometry {
     }
 }
 
-fn scene_gradient(scene: &Scene, node: NodeHandle, opacity: f64) -> Result<Gradient, RenderError> {
-    let start_color = with_opacity(scene.color_value(node, "gradient_start_color")?, opacity);
-    let end_color = with_opacity(scene.color_value(node, "gradient_end_color")?, opacity);
-    Ok(match scene.string_value(node, "gradient_type")? {
+pub(crate) fn scene_gradient(scene: &Scene, node: NodeHandle) -> Result<Gradient, RenderError> {
+    // The kind decides first. Almost every rect in a real configuration has no
+    // gradient at all, and reading the two colours before asking made every one
+    // of them pay for three property lookups instead of one.
+    let kind = scene.string_value(node, "gradient_type")?;
+    if kind == "none" {
+        return Ok(Gradient::None);
+    }
+    let start_color = scene.color_value(node, "gradient_start_color")?;
+    let end_color = scene.color_value(node, "gradient_end_color")?;
+    Ok(match kind {
         "none" => Gradient::None,
         "linear" => Gradient::Linear {
             start_color,
@@ -175,7 +199,7 @@ fn scene_gradient(scene: &Scene, node: NodeHandle, opacity: f64) -> Result<Gradi
     })
 }
 
-fn rect_radii(scene: &Scene, node: NodeHandle) -> Result<[f64; 4], RenderError> {
+pub(crate) fn rect_radii(scene: &Scene, node: NodeHandle) -> Result<[f64; 4], RenderError> {
     let uniform = scene.number(node, "radius")?.max(0.0);
     let corner = |property| -> Result<f64, RenderError> {
         let value = scene.number(node, property)?;
@@ -189,7 +213,7 @@ fn rect_radii(scene: &Scene, node: NodeHandle) -> Result<[f64; 4], RenderError> 
     ])
 }
 
-fn render_text_alignment(value: &str) -> Result<TextAlignment, RenderError> {
+pub(crate) fn render_text_alignment(value: &str) -> Result<TextAlignment, RenderError> {
     match value {
         "left" => Ok(TextAlignment::Left),
         "right" => Ok(TextAlignment::Right),
@@ -201,7 +225,7 @@ fn render_text_alignment(value: &str) -> Result<TextAlignment, RenderError> {
     }
 }
 
-fn render_text_elide(value: &str) -> Result<TextElide, RenderError> {
+pub(crate) fn render_text_elide(value: &str) -> Result<TextElide, RenderError> {
     match value {
         "none" => Ok(TextElide::None),
         "left" => Ok(TextElide::Left),
@@ -213,7 +237,7 @@ fn render_text_elide(value: &str) -> Result<TextElide, RenderError> {
     }
 }
 
-fn vertical_alignment(value: &str) -> Result<VerticalAlignment, RenderError> {
+pub(crate) fn vertical_alignment(value: &str) -> Result<VerticalAlignment, RenderError> {
     match value {
         "top" => Ok(VerticalAlignment::Top),
         "center" => Ok(VerticalAlignment::Center),
@@ -224,7 +248,7 @@ fn vertical_alignment(value: &str) -> Result<VerticalAlignment, RenderError> {
     }
 }
 
-fn image_fill_mode(value: &str) -> Result<ImageFillMode, RenderError> {
+pub(crate) fn image_fill_mode(value: &str) -> Result<ImageFillMode, RenderError> {
     match value {
         "stretch" => Ok(ImageFillMode::Stretch),
         "preserve_aspect_fit" => Ok(ImageFillMode::PreserveAspectFit),
@@ -235,7 +259,9 @@ fn image_fill_mode(value: &str) -> Result<ImageFillMode, RenderError> {
     }
 }
 
-fn gradient_instance(gradient: &Gradient) -> ([f32; 4], [f32; 4], [f32; 4], [f32; 4], f32) {
+pub(crate) fn gradient_instance(
+    gradient: &Gradient,
+) -> ([f32; 4], [f32; 4], [f32; 4], [f32; 4], f32) {
     match gradient {
         Gradient::None => ([0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4], 0.0),
         Gradient::Linear {
@@ -282,12 +308,7 @@ fn gradient_instance(gradient: &Gradient) -> ([f32; 4], [f32; 4], [f32; 4], [f32
     }
 }
 
-fn with_opacity(mut color: Color, opacity: f64) -> Color {
-    color.alpha *= opacity as f32;
-    color
-}
-
-fn effect_bounds(
+pub(crate) fn effect_bounds(
     bounds: Geometry,
     blur: f64,
     shadow_blur: f64,
@@ -309,7 +330,7 @@ fn effect_bounds(
     }
 }
 
-fn color_array(color: Color) -> [f32; 4] {
+pub(crate) fn color_array(color: Color) -> [f32; 4] {
     [
         srgb_channel_to_linear(color.red),
         srgb_channel_to_linear(color.green),
@@ -318,7 +339,7 @@ fn color_array(color: Color) -> [f32; 4] {
     ]
 }
 
-fn srgb_channel_to_linear(channel: f32) -> f32 {
+pub(crate) fn srgb_channel_to_linear(channel: f32) -> f32 {
     if channel <= 0.04045 {
         channel / 12.92
     } else {
@@ -326,7 +347,7 @@ fn srgb_channel_to_linear(channel: f32) -> f32 {
     }
 }
 
-fn physical_damage(geometry: Geometry, scale_120: u32) -> Option<DamageRect> {
+pub(crate) fn physical_damage(geometry: Geometry, scale_120: u32) -> Option<DamageRect> {
     if geometry.width <= 0.0 || geometry.height <= 0.0 {
         return None;
     }
@@ -343,13 +364,22 @@ fn physical_damage(geometry: Geometry, scale_120: u32) -> Option<DamageRect> {
     })
 }
 
-fn merge_damage(mut damage: Vec<DamageRect>) -> Vec<DamageRect> {
+/// Collapses overlapping and touching damage into as few rectangles as it can.
+///
+/// Absorbing one rectangle grows another, and a grown rectangle can reach ones
+/// it did not touch a moment ago, so the scan restarts after every merge. What
+/// it must not also do is shift the whole tail down to close the gap:
+/// `Vec::remove` is linear, and it was being paid once per merge on the
+/// per-frame damage path. Damage rectangles are an unordered set — the
+/// compositor is told about each one independently — so the last element can
+/// simply be moved into the hole instead.
+pub(crate) fn merge_damage(mut damage: Vec<DamageRect>) -> Vec<DamageRect> {
     let mut index = 0;
     while index < damage.len() {
         let mut other = index + 1;
         while other < damage.len() {
             if touches(damage[index], damage[other]) {
-                damage[index] = union(damage[index], damage.remove(other));
+                damage[index] = union(damage[index], damage.swap_remove(other));
                 other = index + 1;
             } else {
                 other += 1;

@@ -1,3 +1,6 @@
+use mold_layout::Geometry;
+use mold_scene::Color;
+
 /// One analytic shape family a distance-field layer can take.
 ///
 /// Each is a closed-form distance function evaluated per fragment, so the edge

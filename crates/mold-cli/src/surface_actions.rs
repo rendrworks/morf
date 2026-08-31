@@ -1,4 +1,12 @@
-fn apply_window_surface_actions(
+use mold_layout::{Layout, ReparentTransition, Size};
+use mold_lua::{Runtime, WindowSurfaceAction};
+use mold_render::{RenderEngine, WgpuBackend};
+use mold_wayland::{FloatingResizeEdge, LayerClient};
+use std::collections::HashMap;
+
+use crate::surfaces::*;
+
+pub(crate) fn apply_window_surface_actions(
     runtime: &mut Runtime,
     client: &LayerClient,
     floatings: &HashMap<u64, AuxiliarySurface>,
@@ -27,7 +35,7 @@ fn apply_window_surface_actions(
     }
 }
 
-fn apply_parent_transitions(
+pub(crate) fn apply_parent_transitions(
     runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &LayerClient,
@@ -59,4 +67,3 @@ fn apply_parent_transitions(
     }
     Ok(())
 }
-

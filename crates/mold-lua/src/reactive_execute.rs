@@ -1,10 +1,66 @@
-fn evaluate_effect(
+use crate::states::Capture;
+use luna::{Context, Executor, Fuel, StashedClosure, Table, Value as LuaValue, Variadic};
+use mold_io::DbusValue;
+use mold_reactive::EffectContext;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use mold_services::{StatusNotifierAddress, UdevEvent};
+
+use crate::{
+    reactive_bindings::*, scene_bindings::*, serialization::*, state::*, surface_types::*, types::*,
+};
+
+/// Runs one Lua executor to completion, or stops it when its fuel runs out.
+///
+/// This is the sandbox's only real defence: untrusted configuration code gets a
+/// fixed number of VM instructions and is cut off at the end of them. It used
+/// to be written out at every place that ran Lua — ten copies — and two of them
+/// had already drifted: one skipped the error mapping every other copy applied,
+/// and only one debited the per-frame budget, so a construction that ran a
+/// factory once per item could spend a full effect budget on each of them.
+///
+/// Returns the fuel actually spent, so a caller that shares a budget across
+/// several runs can debit it.
+pub(crate) fn drive_executor<'gc>(
+    ctx: Context<'gc>,
+    executor: Executor<'gc>,
+    limits: Limits,
+    budget: u64,
+    what: &str,
+) -> Result<u64, String> {
+    if budget == 0 {
+        return Err(format!("Lua {what} fuel exhausted"));
+    }
+    let mut remaining = budget;
+    loop {
+        if remaining == 0 {
+            executor.stop(&ctx);
+            return Err(format!(
+                "Lua {what} fuel exhausted after {budget} instructions"
+            ));
+        }
+        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
+        let mut fuel = Fuel::with(allowance);
+        let finished = executor
+            .step(ctx, &mut fuel)
+            .map_err(|error| error.to_string())?;
+        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
+        remaining = remaining.saturating_sub(consumed.max(1));
+        if finished {
+            return Ok(budget - remaining);
+        }
+    }
+}
+
+pub(crate) fn evaluate_effect(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'_>,
     limits: Limits,
     frame_remaining: &mut u64,
     token: u64,
-    effect: &mut EffectContext<'_, ScriptValue>,
+    effect: &mut EffectContext<'_, IpcValue>,
 ) -> Result<(), String> {
     let lua_effect = {
         let mut state = state.borrow_mut();
@@ -30,9 +86,7 @@ fn evaluate_effect(
         (&result, lua_effect.sink.clone())
     {
         match value {
-            ScriptValue::String(name) => {
-                apply_state(state, ctx, limits, frame_remaining, node, name)
-            }
+            IpcValue::String(name) => apply_state(state, ctx, limits, frame_remaining, node, name),
             _ => Err("state binding must return a string".into()),
         }
     } else {
@@ -60,7 +114,7 @@ fn evaluate_effect(
             signal
         } else {
             let name = format!("{node:?}.{property}{}", if target { "_target" } else { "" });
-            let value = ScriptValue::Integer(state.borrow().property_revision);
+            let value = IpcValue::Integer(state.borrow().property_revision);
             let signal = effect.signal(name.clone(), value.clone());
             let mut state = state.borrow_mut();
             state.property_signals.insert(key, signal);
@@ -88,40 +142,28 @@ fn evaluate_effect(
     result.map(|_| ())
 }
 
-fn execute_effect(
+pub(crate) fn execute_effect(
     ctx: Context<'_>,
     closure: &StashedClosure,
     limits: Limits,
     frame_remaining: &mut u64,
     capture_value: bool,
-) -> Result<Option<ScriptValue>, String> {
+) -> Result<Option<IpcValue>, String> {
     let budget = limits.effect_fuel.min(*frame_remaining);
     if budget == 0 {
         return Err("Lua frame fuel exhausted".to_owned());
     }
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), ());
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
+    match drive_executor(ctx, executor, limits, budget, "effect") {
+        Err(error) => {
             *frame_remaining = frame_remaining.saturating_sub(budget);
-            return Err(format!(
-                "Lua effect fuel exhausted after {budget} instructions"
-            ));
+            Err(error)
         }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            let spent = budget - remaining;
+        Ok(spent) => {
             *frame_remaining = frame_remaining.saturating_sub(spent);
-            return if capture_value {
+            if capture_value {
                 match executor.take_result::<LuaValue>(ctx) {
-                    Ok(Ok(value)) => ScriptValue::from_lua(value).map(Some),
+                    Ok(Ok(value)) => IpcValue::from_lua(value).map(Some),
                     Ok(Err(error)) => Err(error.to_string()),
                     Err(error) => Err(error.to_string()),
                 }
@@ -131,12 +173,12 @@ fn execute_effect(
                     Ok(Err(error)) => Err(error.to_string()),
                     Err(error) => Err(error.to_string()),
                 }
-            };
+            }
         }
     }
 }
 
-fn execute_handler_args(
+pub(crate) fn execute_handler_args(
     ctx: Context<'_>,
     closure: &StashedClosure,
     args: &[IpcValue],
@@ -148,26 +190,7 @@ fn execute_handler_args(
             .collect::<Vec<_>>(),
     );
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), args);
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua handler fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            break;
-        }
-    }
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
     match executor.take_result::<()>(ctx) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error.to_string()),
@@ -175,7 +198,7 @@ fn execute_handler_args(
     }
 }
 
-fn execute_screencopy_handler(
+pub(crate) fn execute_screencopy_handler(
     ctx: Context<'_>,
     closure: &StashedClosure,
     result: Result<Screencopy, String>,
@@ -198,26 +221,7 @@ fn execute_screencopy_handler(
         ]),
     };
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), args);
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua handler fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            break;
-        }
-    }
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
     match executor.take_result::<()>(ctx) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error.to_string()),
@@ -225,7 +229,7 @@ fn execute_screencopy_handler(
     }
 }
 
-fn execute_dbus_handler(
+pub(crate) fn execute_dbus_handler(
     ctx: Context<'_>,
     closure: &StashedClosure,
     value: DbusValue,
@@ -233,26 +237,7 @@ fn execute_dbus_handler(
 ) -> Result<(), String> {
     let argument = dbus_value_to_lua(ctx, value)?;
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), Variadic(vec![argument]));
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua handler fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            break;
-        }
-    }
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
     match executor.take_result::<()>(ctx) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error.to_string()),
@@ -260,7 +245,7 @@ fn execute_dbus_handler(
     }
 }
 
-fn udev_event_value(event: UdevEvent) -> DbusValue {
+pub(crate) fn udev_event_value(event: UdevEvent) -> DbusValue {
     let properties = event
         .properties
         .into_iter()
@@ -281,7 +266,7 @@ fn udev_event_value(event: UdevEvent) -> DbusValue {
     ]))
 }
 
-fn status_notifier_value(items: Vec<StatusNotifierAddress>) -> DbusValue {
+pub(crate) fn status_notifier_value(items: Vec<StatusNotifierAddress>) -> DbusValue {
     DbusValue::List(
         items
             .into_iter()
@@ -295,7 +280,7 @@ fn status_notifier_value(items: Vec<StatusNotifierAddress>) -> DbusValue {
     )
 }
 
-fn execute_ipc_handler(
+pub(crate) fn execute_ipc_handler(
     ctx: Context<'_>,
     closure: &StashedClosure,
     args: &[IpcValue],
@@ -307,26 +292,7 @@ fn execute_ipc_handler(
             .collect::<Vec<_>>(),
     );
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), args);
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua IPC handler fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            break;
-        }
-    }
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "IPC handler")?;
     let values = match executor.take_result::<Variadic<Vec<LuaValue>>>(ctx) {
         Ok(Ok(values)) => values,
         Ok(Err(error)) => return Err(error.to_string()),
@@ -334,4 +300,3 @@ fn execute_ipc_handler(
     };
     values.into_iter().map(IpcValue::from_lua).collect()
 }
-

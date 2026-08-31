@@ -7,6 +7,17 @@ use std::time::Duration;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 const MAX_PROPERTIES: usize = 256;
 
+/// What one read off the multicast socket produced.
+///
+/// The distinction that matters is between a packet this monitor does not want
+/// and no packet at all: the first should be skipped over, the second ends the
+/// drain.
+enum ReadOutcome {
+    Event(UdevEvent),
+    Filtered,
+    Empty,
+}
+
 /// One bounded kernel uevent received from udev's netlink channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UdevEvent {
@@ -33,6 +44,14 @@ impl std::error::Error for UdevError {}
 pub struct UdevMonitor {
     socket: OwnedFd,
     subsystem: Option<String>,
+    /// Scratch space for one datagram, kept between reads.
+    ///
+    /// It is 64 KiB, and it used to be a stack array declared inside the read.
+    /// Because it is then handed to an FFI call the compiler cannot see into,
+    /// the zeroing could not be elided — so a monitor drained up to thirty-two
+    /// times a frame paid two megabytes of memset per frame per output to
+    /// receive packets that are a few hundred bytes long.
+    scratch: Vec<u8>,
 }
 
 impl UdevMonitor {
@@ -65,11 +84,32 @@ impl UdevMonitor {
         Ok(Self {
             socket,
             subsystem: subsystem.filter(|value| !value.is_empty()),
+            scratch: vec![0; MAX_EVENT_BYTES],
         })
     }
 
     /// Waits up to the supplied timeout for one matching event.
-    pub fn next_event(&self, timeout: Duration) -> Result<Option<UdevEvent>, UdevError> {
+    ///
+    /// `None` means the socket is empty, and only that. The multicast group
+    /// this monitor binds carries every uevent on the machine, so a subscriber
+    /// interested in one subsystem sees a great many packets it does not want —
+    /// and reporting those as "nothing here" told the caller its queue had run
+    /// dry. A single unrelated packet then stopped a drain that had a burst of
+    /// wanted events sitting behind it, and they arrived a frame late, or after
+    /// the next unrelated packet, or not at all.
+    pub fn next_event(&mut self, timeout: Duration) -> Result<Option<UdevEvent>, UdevError> {
+        loop {
+            match self.read_event(timeout)? {
+                ReadOutcome::Event(event) => return Ok(Some(event)),
+                ReadOutcome::Empty => return Ok(None),
+                // Not the subsystem asked for. Go back for the next packet
+                // rather than claiming the socket is empty.
+                ReadOutcome::Filtered => {}
+            }
+        }
+    }
+
+    fn read_event(&mut self, timeout: Duration) -> Result<ReadOutcome, UdevError> {
         let mut descriptor = libc::pollfd {
             fd: self.socket.as_raw_fd(),
             events: libc::POLLIN,
@@ -84,9 +124,9 @@ impl UdevMonitor {
             return Err(UdevError("udev monitor reported a socket error".into()));
         }
         if ready == 0 || descriptor.revents & libc::POLLIN == 0 {
-            return Ok(None);
+            return Ok(ReadOutcome::Empty);
         }
-        let mut bytes = [0_u8; MAX_EVENT_BYTES];
+        let bytes = &mut self.scratch;
         let length = unsafe {
             libc::recv(
                 self.socket.as_raw_fd(),
@@ -98,7 +138,7 @@ impl UdevMonitor {
         if length < 0 {
             let error = io::Error::last_os_error();
             if error.kind() == io::ErrorKind::WouldBlock {
-                return Ok(None);
+                return Ok(ReadOutcome::Empty);
             }
             return Err(UdevError(format!("could not read udev event: {error}")));
         }
@@ -115,9 +155,9 @@ impl UdevMonitor {
             .as_deref()
             .is_some_and(|wanted| event.subsystem.as_deref() != Some(wanted))
         {
-            return Ok(None);
+            return Ok(ReadOutcome::Filtered);
         }
-        Ok(Some(event))
+        Ok(ReadOutcome::Event(event))
     }
 }
 

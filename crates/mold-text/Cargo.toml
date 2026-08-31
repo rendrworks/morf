@@ -10,4 +10,5 @@ repository.workspace = true
 cosmic-text.workspace = true
 mold-layout.workspace = true
 mold-scene.workspace = true
+signed-distance-field.workspace = true
 unicode-segmentation.workspace = true

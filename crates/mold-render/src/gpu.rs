@@ -1,39 +1,27 @@
-use std::collections::{HashMap, HashSet};
-use std::error::Error as StdError;
-use std::fmt;
-use std::mem;
-use std::ops::Range;
+/// The one surface format every target and pipeline agrees on.
+pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use wgpu::util::DeviceExt;
+mod backend_init;
+mod backend_render;
+mod backend_types;
+mod batches;
+mod field_pass;
+mod glyph_batch;
+mod glyphs;
+mod pipelines;
+mod quad_pipeline;
+mod shaders;
+mod targets;
+mod textures;
 
-use mold_image::ImageCache;
-use mold_layout::{Geometry, Size, TextMeasurer, TextOptions, Transform2D};
-use mold_scene::{Color, Element, NodeHandle};
-use mold_text::{RasterContent, RasterGlyph, TextSystem};
-
-use crate::path::PathCache;
-use crate::{
-    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode, LayerMask, RenderBackend,
-    SdfFieldInstance, SdfFieldLayer, SdfQuadInstance, VerticalAlignment, color_array,
-    physical_damage,
-};
-
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-include!("gpu/backend_types.rs");
-include!("gpu/backend_init.rs");
-include!("gpu/backend_render.rs");
-include!("gpu/batches.rs");
-include!("gpu/path_batch.rs");
-include!("gpu/glyphs.rs");
-include!("gpu/pipelines.rs");
-include!("gpu/field_pass.rs");
-include!("gpu/textures.rs");
-include!("gpu/targets.rs");
+pub use backend_types::*;
 #[cfg(test)]
 mod field_color_tests;
+#[cfg(test)]
+mod field_shape_tests;
 #[cfg(test)]
 mod field_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_field_tests;

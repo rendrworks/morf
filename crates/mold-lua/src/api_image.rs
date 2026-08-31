@@ -1,4 +1,12 @@
-fn install_image_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use mold_image::{IconResolver, quantize_colors};
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::process::{Command as StdCommand, Stdio};
+
+use crate::{process_helpers::*, scene_bindings::*, state::*, table_menu::*, types::*};
+
+pub(crate) fn install_image_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     let quantizer_colors = Callback::from_fn(&ctx, |ctx, _, mut stack| {
         let quantizer: UserRef<ColorQuantizerToken> = stack.consume(ctx)?;
         stack.replace(
@@ -157,4 +165,3 @@ fn install_image_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     });
     mold.set_field(ctx, "exec_detached", exec_detached);
 }
-

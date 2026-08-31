@@ -43,6 +43,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3442e820517e920a1ac56d9e331be066374ecf1e9deda46c4107e3fde0ce12e3"
 dependencies = [
  "animato-core",
+ "animato-physics",
  "animato-spring",
  "animato-tween",
 ]
@@ -53,6 +54,16 @@ version = "1.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bec574aad55366acee5e4bcce6f75045f11459db2b1ab4e0ac456fc1d9357ff"
 dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "animato-physics"
+version = "1.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcbf115da430fd4f504eeb4b184d9343490988839778e941f0c769f9ec0f5866"
+dependencies = [
+ "animato-core",
  "libm",
 ]
 
@@ -635,12 +646,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
-name = "float_next_after"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
-
-[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1143,38 +1148,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lyon_geom"
-version = "1.0.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4336502e29e32af93cf2dad2214ed6003c17ceb5bd499df77b1de663b9042b92"
-dependencies = [
- "arrayvec",
- "euclid",
- "num-traits",
-]
-
-[[package]]
-name = "lyon_path"
-version = "1.0.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c463f9c428b7fc5ec885dcd39ce4aa61e29111d0e33483f6f98c74e89d8621e"
-dependencies = [
- "lyon_geom",
- "num-traits",
-]
-
-[[package]]
-name = "lyon_tessellation"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e43b7e44161571868f5c931d12583592c223c5583eef86b08aa02b7048a3552"
-dependencies = [
- "float_next_after",
- "lyon_path",
- "num-traits",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1306,14 +1279,12 @@ name = "mold-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "lyon_tessellation",
  "mold-image",
  "mold-layout",
  "mold-scene",
  "mold-text",
  "pollster",
  "raw-window-handle",
- "svgtypes",
  "wgpu",
 ]
 
@@ -1344,6 +1315,7 @@ dependencies = [
  "cosmic-text",
  "mold-layout",
  "mold-scene",
+ "signed-distance-field",
  "unicode-segmentation",
 ]
 

@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::thread;
@@ -24,8 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.write_all(b"ping")?;
     let mut response = [0; 4];
     client.read_exact(&mut response)?;
+    // The server owns the socket file: joining it has already unlinked the path.
     join.join().map_err(|_| "socket server panicked")??;
-    fs::remove_file(path)?;
     if &response != b"pong" {
         return Err("unexpected response".into());
     }

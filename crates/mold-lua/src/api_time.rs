@@ -1,4 +1,15 @@
-fn install_time_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, mold: Table<'gc>) {
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::Instant;
+
+use crate::{lua_values::*, scene_bindings::*, state::*, table_menu::*};
+
+pub(crate) fn install_time_api<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    mold: Table<'gc>,
+) {
     let elapsed = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let timer: UserRef<ElapsedTimerToken> = stack.consume(ctx)?;
         stack.replace(ctx, timer.started.borrow().elapsed().as_secs_f64());
@@ -165,24 +176,30 @@ fn install_time_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, m
         stack.replace(ctx, curve.easing.value_at(progress));
         Ok(CallbackReturn::Return)
     });
+    /// Reads a Lua number of either kind, if it is one and it is finite.
+    pub(crate) fn lua_finite_number(value: LuaValue<'_>) -> Option<f64> {
+        match value {
+            LuaValue::Integer(value) => Some(value as f64),
+            LuaValue::Number(value) if value.is_finite() => Some(value),
+            _ => None,
+        }
+    }
+
     let easing_interpolate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (curve, progress, start, end): (UserRef<EasingCurveToken>, f64, LuaValue, LuaValue) =
             stack.consume(ctx)?;
         if !progress.is_finite() {
             return Err(HostError("easing interpolation progress must be finite".into()).into());
         }
+        // Lua does not distinguish an integer from a float the way this match
+        // did: `interpolate(0.5, 0, 1.0)` writes one of each, and matching the
+        // two kinds pairwise rejected exactly that — the most ordinary way to
+        // write "from nothing to one".
+        if let (Some(start), Some(end)) = (lua_finite_number(start), lua_finite_number(end)) {
+            stack.replace(ctx, curve.easing.interpolate(progress, start, end));
+            return Ok(CallbackReturn::Return);
+        }
         match (start, end) {
-            (LuaValue::Number(start), LuaValue::Number(end))
-                if start.is_finite() && end.is_finite() =>
-            {
-                stack.replace(ctx, curve.easing.interpolate(progress, start, end));
-            }
-            (LuaValue::Integer(start), LuaValue::Integer(end)) => {
-                stack.replace(
-                    ctx,
-                    curve.easing.interpolate(progress, start as f64, end as f64),
-                );
-            }
             (LuaValue::Table(start), LuaValue::Table(end)) => {
                 let fields = if !matches!(start.get_value(ctx, "width"), LuaValue::Nil)
                     || !matches!(end.get_value(ctx, "width"), LuaValue::Nil)
@@ -223,15 +240,4 @@ fn install_time_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, m
         Ok(CallbackReturn::Return)
     });
     mold.set_field(ctx, "easing_curve", easing_curve);
-    let color_quantize = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let options: Table = stack.consume(ctx)?;
-        let (source, depth, crop, rescale_size) =
-            parse_quantizer_options(ctx, options).map_err(HostError)?;
-        let colors = quantize_colors(source, depth, crop, rescale_size)
-            .map_err(|error| HostError(error.to_string()))?;
-        stack.replace(ctx, quantizer_colors_to_lua(ctx, &colors));
-        Ok(CallbackReturn::Return)
-    });
-    mold.set_field(ctx, "color_quantize", color_quantize);
 }
-

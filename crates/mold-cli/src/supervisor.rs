@@ -1,4 +1,19 @@
-fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), String> {
+use mold_io::{IpcReply, IpcRequest, IpcServer};
+use mold_lua::{Runtime, Screen};
+use mold_wayland::{BarConfig, LayerClient, ScreenInfo};
+use std::collections::BTreeMap;
+use std::env;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self};
+use std::time::{Duration, SystemTime};
+
+use crate::{config::*, lock::*, services::*, workers::*};
+
+pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), String> {
     let probe = LayerClient::connect(BarConfig::default()).map_err(|error| error.to_string())?;
     let mut desired = named_screens(probe.screens())?;
     // Seeded before the first worker exists, so the very first configuration
@@ -151,7 +166,9 @@ fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), S
     }
 }
 
-fn named_screens(screens: &[ScreenInfo]) -> Result<BTreeMap<String, ScreenInfo>, String> {
+pub(crate) fn named_screens(
+    screens: &[ScreenInfo],
+) -> Result<BTreeMap<String, ScreenInfo>, String> {
     screens
         .iter()
         .map(|screen| {
@@ -173,10 +190,10 @@ fn named_screens(screens: &[ScreenInfo]) -> Result<BTreeMap<String, ScreenInfo>,
 /// before the first worker starts and refreshes it whenever a worker reports a
 /// change. Workers read it when they load a configuration, which is what lets
 /// `mold.screens` describe more than the one output a worker draws to.
-static OUTPUTS: std::sync::Mutex<Vec<ScreenInfo>> = std::sync::Mutex::new(Vec::new());
+pub(crate) static OUTPUTS: std::sync::Mutex<Vec<ScreenInfo>> = std::sync::Mutex::new(Vec::new());
 
 /// Records the compositor's output list, reporting whether it changed.
-fn store_outputs(screens: &[ScreenInfo]) -> bool {
+pub(crate) fn store_outputs(screens: &[ScreenInfo]) -> bool {
     let mut outputs = OUTPUTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -189,7 +206,7 @@ fn store_outputs(screens: &[ScreenInfo]) -> bool {
 }
 
 /// The recorded output list in the shape `mold.screens` is built from.
-fn known_outputs() -> Vec<Screen> {
+pub(crate) fn known_outputs() -> Vec<Screen> {
     let outputs = OUTPUTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -198,14 +215,14 @@ fn known_outputs() -> Vec<Screen> {
 
 /// Converts compositor output descriptions into the Lua-facing shape, keeping
 /// the order the compositor advertised them in.
-fn lua_screens(screens: &[ScreenInfo]) -> Vec<Screen> {
+pub(crate) fn lua_screens(screens: &[ScreenInfo]) -> Vec<Screen> {
     screens.iter().map(lua_screen).collect()
 }
 
 /// An output with no compositor name cannot be addressed by a configuration,
 /// but it still occupies the desktop, so it is described with an empty name
 /// rather than dropped from the list.
-fn lua_screen(screen: &ScreenInfo) -> Screen {
+pub(crate) fn lua_screen(screen: &ScreenInfo) -> Screen {
     Screen {
         id: screen.id,
         name: screen.name.clone().unwrap_or_default(),
@@ -221,7 +238,7 @@ fn lua_screen(screen: &ScreenInfo) -> Screen {
     }
 }
 
-fn runtimepath_roots(config: &Path, external: bool) -> Vec<PathBuf> {
+pub(crate) fn runtimepath_roots(config: &Path, external: bool) -> Vec<PathBuf> {
     let mut roots = config
         .parent()
         .map(Path::to_path_buf)
@@ -248,7 +265,7 @@ fn runtimepath_roots(config: &Path, external: bool) -> Vec<PathBuf> {
     unique
 }
 
-fn execute_config(
+pub(crate) fn execute_config(
     runtime: &mut Runtime,
     path: &Path,
     source: &[u8],
@@ -302,7 +319,7 @@ fn execute_config(
     Ok(())
 }
 
-fn runtime_scripts(roots: &[PathBuf], directory: &str) -> Vec<PathBuf> {
+pub(crate) fn runtime_scripts(roots: &[PathBuf], directory: &str) -> Vec<PathBuf> {
     let mut scripts = Vec::new();
     for root in roots {
         let mut found = Vec::new();
@@ -317,7 +334,7 @@ fn runtime_scripts(roots: &[PathBuf], directory: &str) -> Vec<PathBuf> {
     scripts
 }
 
-fn collect_lua_scripts(path: &Path, scripts: &mut Vec<PathBuf>) {
+pub(crate) fn collect_lua_scripts(path: &Path, scripts: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(path) else {
         return;
     };
@@ -331,7 +348,7 @@ fn collect_lua_scripts(path: &Path, scripts: &mut Vec<PathBuf>) {
     }
 }
 
-fn lua_snapshot(roots: &[PathBuf]) -> BTreeMap<PathBuf, (u64, SystemTime)> {
+pub(crate) fn lua_snapshot(roots: &[PathBuf]) -> BTreeMap<PathBuf, (u64, SystemTime)> {
     let mut snapshot = BTreeMap::new();
     let mut pending = roots.to_vec();
     while let Some(path) = pending.pop() {

@@ -1,8 +1,20 @@
 use signed_distance_field::binary_image;
-use signed_distance_field::distance_field::DistanceStorage;
 use signed_distance_field::compute_f32_distance_field;
+use signed_distance_field::distance_field::DistanceStorage;
 
-fn distance_field_from_alpha(
+use crate::image_cache::ImageError;
+use crate::quantize::ImageData;
+
+/// Measures a distance field from an image's alpha, in place.
+///
+/// Unlike the glyph fields in `mold-text`, this does **not** pad the source
+/// first, so the field saturates at the image border and an outline asked for
+/// near an edge is cut off by it. Padding here would change the image's
+/// dimensions, and the texture quad is the node's own rectangle — the glyph
+/// path can pad because it sizes its quad from the field, and this one cannot
+/// without that same change. Sources with their own transparent margin, which
+/// is most SVG icons, are unaffected.
+pub(crate) fn distance_field_from_alpha(
     image: &ImageData,
     spread: f32,
 ) -> Result<ImageData, ImageError> {

@@ -1,4 +1,12 @@
-fn install_host_service_api<'gc>(
+use luna::{Callback, CallbackReturn, Closure, Context, Function, Table, Value as LuaValue};
+use mold_io::Timer as IoTimer;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use crate::{scene_bindings::*, state::*, surface_types::*, types::*};
+
+pub(crate) fn install_host_service_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -344,7 +352,7 @@ fn install_host_service_api<'gc>(
 }
 
 /// Builds the Lua table describing one output.
-fn screen_entry<'gc>(ctx: Context<'gc>, screen: &Screen) -> Table<'gc> {
+pub(crate) fn screen_entry<'gc>(ctx: Context<'gc>, screen: &Screen) -> Table<'gc> {
     let value = Table::new(&ctx);
     value.set_field(ctx, "id", screen.id as i64);
     value.set_field(ctx, "name", screen.name.as_str());

@@ -1,3 +1,9 @@
+use mold_scene::SceneError;
+use std::error::Error as StdError;
+use std::fmt;
+
+use crate::{commands::*, effects::*};
+
 /// Instance payload consumed by the SDF quad shader.
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]

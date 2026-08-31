@@ -1,4 +1,16 @@
-fn install_menu_desktop_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>, limits: Limits) {
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use mold_desktop::{DesktopEntries, desktop_paths};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use mold_menu::Menu;
+
+use crate::{
+    lua_values::*, reactive_execute::*, scene_bindings::*, state::*, table_menu::*, types::*,
+};
+
+pub(crate) fn install_menu_desktop_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>, limits: Limits) {
     let menu_entries = Callback::from_fn(&ctx, |ctx, _, mut stack| {
         let menu: UserRef<MenuToken> = stack.consume(ctx)?;
         stack.replace(ctx, menu_entries_to_lua(ctx, menu.menu.borrow().entries()));
@@ -206,4 +218,3 @@ fn install_menu_desktop_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>, limits: Li
     });
     mold.set_field(ctx, "desktop_entries", desktop_entries);
 }
-

@@ -1,9 +1,19 @@
+use smithay_client_toolkit::session_lock::SessionLock;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shm::slot::SlotPool;
+use wayland_client::QueueHandle;
+use wayland_client::protocol::{wl_output, wl_shm};
+use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self};
+use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1;
+
+use crate::{helpers::*, state_types::*, surface_types::*, types::*};
+
 impl LayerState {
     /// Maps a layer surface with one transparent pixel, once it is configured.
     ///
     /// Only a surface that asked for it and has not been mapped yet is touched,
     /// so this is safe to call from both the request and the configure handler.
-    fn attach_blank_buffer(&mut self, id: u64) {
+    pub(crate) fn attach_blank_buffer(&mut self, id: u64) {
         let Some(record) = self.layers.get(&id) else {
             return;
         };
@@ -32,7 +42,7 @@ impl LayerState {
         record.blank = Some((pool, buffer));
     }
 
-    fn refresh_virtual_keyboard(&mut self, qh: &QueueHandle<Self>) {
+    pub(crate) fn refresh_virtual_keyboard(&mut self, qh: &QueueHandle<Self>) {
         if self.virtual_keyboard.is_some() {
             return;
         }
@@ -55,7 +65,7 @@ impl LayerState {
         }
     }
 
-    fn refresh_data_devices(&mut self, qh: &QueueHandle<Self>) {
+    pub(crate) fn refresh_data_devices(&mut self, qh: &QueueHandle<Self>) {
         let Some(manager) = &self.data_device_manager else {
             return;
         };
@@ -70,7 +80,7 @@ impl LayerState {
         }
     }
 
-    fn apply_output_power(
+    pub(crate) fn apply_output_power(
         &mut self,
         output: &wl_output::WlOutput,
         mode: OutputPowerMode,
@@ -98,7 +108,7 @@ impl LayerState {
         });
     }
 
-    fn start_screencopy(&mut self, frame: &ZwlrScreencopyFrameV1) -> Result<(), String> {
+    pub(crate) fn start_screencopy(&mut self, frame: &ZwlrScreencopyFrameV1) -> Result<(), String> {
         let pending = self
             .screencopies
             .iter_mut()
@@ -148,7 +158,7 @@ impl LayerState {
         Ok(())
     }
 
-    fn finish_screencopy(
+    pub(crate) fn finish_screencopy(
         &mut self,
         frame: &ZwlrScreencopyFrameV1,
     ) -> Result<ScreencopyFrame, String> {
@@ -185,7 +195,7 @@ impl LayerState {
         })
     }
 
-    fn fail_screencopy(&mut self, frame: &ZwlrScreencopyFrameV1, error: String) {
+    pub(crate) fn fail_screencopy(&mut self, frame: &ZwlrScreencopyFrameV1, error: String) {
         let request_id = self
             .screencopies
             .iter()
@@ -200,7 +210,7 @@ impl LayerState {
         }
     }
 
-    fn refresh_idle(&mut self, qh: &QueueHandle<Self>) {
+    pub(crate) fn refresh_idle(&mut self, qh: &QueueHandle<Self>) {
         for notification in self.idle_notifications.drain(..) {
             notification.destroy();
         }
@@ -217,7 +227,11 @@ impl LayerState {
             .collect();
     }
 
-    fn create_lock_surface(&mut self, output: wl_output::WlOutput, qh: &QueueHandle<Self>) {
+    pub(crate) fn create_lock_surface(
+        &mut self,
+        output: wl_output::WlOutput,
+        qh: &QueueHandle<Self>,
+    ) {
         let Some(lock) = self.session_lock.clone().filter(SessionLock::is_locked) else {
             return;
         };

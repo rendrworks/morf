@@ -1,4 +1,8 @@
-fn schema(element: Element) -> Vec<PropertySpec> {
+use std::collections::BTreeMap;
+
+use crate::{animation::*, types::*};
+
+pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
     let mut properties = vec![
         number("x", 0.0),
         number("y", 0.0),
@@ -60,10 +64,12 @@ fn schema(element: Element) -> Vec<PropertySpec> {
         }
         Element::Flickable => {
             properties.extend([
+                // Only the offsets. `content_width`/`content_height` were
+                // declared beside them and read by nothing — not by layout, not
+                // by paint, not by any configuration — so they were two
+                // properties a config could set and watch do nothing.
                 number("content_x", 0.0),
                 number("content_y", 0.0),
-                number("content_width", 0.0),
-                number("content_height", 0.0),
             ]);
         }
         Element::Rect | Element::ClipRect => {
@@ -116,6 +122,15 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 string("elide", "none"),
                 string("horizontal_alignment", "left"),
                 string("vertical_alignment", "top"),
+                // Glyphs are distance fields, so the edge is a threshold rather
+                // than a set of pixels: these move it, soften it, and read a
+                // second one further out as an outline. All ordinary numbers,
+                // so all animatable, which is the reason for storing letters
+                // this way at all.
+                number("thickness", 0.0),
+                number("softness", 0.0),
+                number("outline_width", 0.0),
+                color("outline_color", Color::rgba8(0, 0, 0, 0)),
             ]);
         }
         Element::Image => {
@@ -126,10 +141,15 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("source_height", 0.0),
                 boolean("distance_field", false),
                 number("distance_field_spread", 8.0),
-                number("distance_field_weight", 0.5),
-                number("distance_field_softness", 0.0),
-                number("distance_field_outline_width", 0.0),
-                color("distance_field_outline_color", Color::rgba8(0, 0, 0, 0)),
+                // The same four names Text uses, because they are the same
+                // four numbers. They were spelled `distance_field_*` here and
+                // plainly there, and `weight` even meant a different thing in
+                // each — an absolute threshold on one side and a signed offset
+                // on the other.
+                number("thickness", 0.0),
+                number("softness", 0.0),
+                number("outline_width", 0.0),
+                color("outline_color", Color::rgba8(0, 0, 0, 0)),
             ]);
         }
         Element::Icon => {
@@ -141,19 +161,10 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 number("source_height", 0.0),
                 boolean("distance_field", false),
                 number("distance_field_spread", 8.0),
-                number("distance_field_weight", 0.5),
-                number("distance_field_softness", 0.0),
-                number("distance_field_outline_width", 0.0),
-                color("distance_field_outline_color", Color::rgba8(0, 0, 0, 0)),
-            ]);
-        }
-        Element::Shape => {
-            properties.extend([
-                string("path", ""),
-                color("fill_color", Color::rgba8(255, 255, 255, 255)),
-                color("stroke_color", Color::rgba8(0, 0, 0, 0)),
-                number("stroke_width", 0.0),
-                string("fill_rule", "nonzero"),
+                number("thickness", 0.0),
+                number("softness", 0.0),
+                number("outline_width", 0.0),
+                color("outline_color", Color::rgba8(0, 0, 0, 0)),
             ]);
         }
         Element::Sdf => {
@@ -170,6 +181,13 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 // own. A field with a blend fuses what it contains; a field
                 // without one composes the same shapes with hard edges.
                 number("blend", 0.0),
+                // One position along the morph for the whole composition. A
+                // compound shape — a disc with a ring and a notch, say — is
+                // several layers that have to move together, and keeping that
+                // many numbers in step by hand is how a configuration acquires
+                // a frame runtime. Driving them from here makes the compound
+                // one animatable property.
+                number("morph_progress", 0.0),
             ]);
         }
         Element::SdfShape => {
@@ -185,7 +203,10 @@ fn schema(element: Element) -> Vec<PropertySpec> {
                 // one blob splitting into two — which interpolating outlines
                 // cannot do at all.
                 string("morph_to", ""),
-                number("morph_progress", 0.0),
+                // Negative means "follow the field's", so a layer joins the
+                // compound morph by saying nothing and leaves it by naming its
+                // own position.
+                number("morph_progress", -1.0),
                 string("operation", "union"),
                 // How far either side of the seam a smooth operation blends.
                 // Zero is the hard boolean; animating it is what makes two
@@ -219,7 +240,7 @@ fn schema(element: Element) -> Vec<PropertySpec> {
     properties
 }
 
-fn any(name: &'static str, default: Value) -> PropertySpec {
+pub(crate) fn any(name: &'static str, default: Value) -> PropertySpec {
     PropertySpec {
         name,
         kind: PropertyType::Any,
@@ -227,7 +248,7 @@ fn any(name: &'static str, default: Value) -> PropertySpec {
     }
 }
 
-fn boolean(name: &'static str, default: bool) -> PropertySpec {
+pub(crate) fn boolean(name: &'static str, default: bool) -> PropertySpec {
     PropertySpec {
         name,
         kind: PropertyType::Bool,
@@ -235,7 +256,7 @@ fn boolean(name: &'static str, default: bool) -> PropertySpec {
     }
 }
 
-fn number(name: &'static str, default: f64) -> PropertySpec {
+pub(crate) fn number(name: &'static str, default: f64) -> PropertySpec {
     PropertySpec {
         name,
         kind: PropertyType::Number,
@@ -243,7 +264,7 @@ fn number(name: &'static str, default: f64) -> PropertySpec {
     }
 }
 
-fn string(name: &'static str, default: &str) -> PropertySpec {
+pub(crate) fn string(name: &'static str, default: &str) -> PropertySpec {
     PropertySpec {
         name,
         kind: PropertyType::String,
@@ -251,7 +272,7 @@ fn string(name: &'static str, default: &str) -> PropertySpec {
     }
 }
 
-fn color(name: &'static str, default: Color) -> PropertySpec {
+pub(crate) fn color(name: &'static str, default: Color) -> PropertySpec {
     PropertySpec {
         name,
         kind: PropertyType::Color,
@@ -259,7 +280,7 @@ fn color(name: &'static str, default: Color) -> PropertySpec {
     }
 }
 
-fn coerce(
+pub(crate) fn coerce(
     element: Element,
     property: &str,
     kind: PropertyType,

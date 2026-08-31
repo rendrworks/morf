@@ -1,31 +1,4 @@
-/// Incremental newline-delimited byte parser.
-#[derive(Default)]
-pub struct LineParser {
-    pending: Vec<u8>,
-}
-
-impl LineParser {
-    /// Appends a chunk and returns every complete line without its delimiter.
-    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.pending.extend_from_slice(chunk);
-        let mut lines = Vec::new();
-        while let Some(at) = self.pending.iter().position(|byte| *byte == b'\n') {
-            let mut line = self.pending.drain(..=at).collect::<Vec<_>>();
-            line.pop();
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            lines.push(String::from_utf8_lossy(&line).into_owned());
-        }
-        lines
-    }
-
-    /// Returns the final unterminated line.
-    pub fn finish(&mut self) -> Option<String> {
-        (!self.pending.is_empty())
-            .then(|| String::from_utf8_lossy(&std::mem::take(&mut self.pending)).into_owned())
-    }
-}
+use std::io;
 
 /// Incremental byte parser using an arbitrary delimiter.
 pub struct SplitParser {
@@ -35,12 +8,26 @@ pub struct SplitParser {
 
 impl SplitParser {
     /// Creates a parser for the supplied delimiter.
-    pub fn new(delimiter: impl Into<Vec<u8>>) -> io::Result<Self> {
-        let delimiter = delimiter.into();
-        Ok(Self {
-            delimiter,
+    ///
+    /// An empty delimiter is not an error: it means "do not frame at all", and
+    /// `push` passes chunks through as they arrive. There is nothing else here
+    /// that can fail, so this returns a parser rather than a `Result` that
+    /// could only ever be `Ok` — which read, at the call site, as though a
+    /// check existed somewhere.
+    pub fn new(delimiter: impl Into<Vec<u8>>) -> Self {
+        Self {
+            delimiter: delimiter.into(),
             pending: Vec::new(),
-        })
+        }
+    }
+
+    /// Whether a segment ended by this delimiter should lose a trailing `\r`.
+    ///
+    /// Only for the newline delimiter, and only because a line ending is two
+    /// characters on one of the two systems that write text files. A parser
+    /// splitting on `--` has no such convention and must not invent one.
+    fn trims_carriage_return(&self) -> bool {
+        self.delimiter == b"\n"
     }
 
     /// Appends a chunk and returns every complete segment.
@@ -56,9 +43,14 @@ impl SplitParser {
             return parts;
         }
         self.pending.extend_from_slice(chunk);
+        let trim = self.trims_carriage_return();
         let mut parts = Vec::new();
         while let Some(at) = find_bytes(&self.pending, &self.delimiter) {
-            parts.push(self.pending.drain(..at).collect());
+            let mut part: Vec<u8> = self.pending.drain(..at).collect();
+            if trim && part.last() == Some(&b'\r') {
+                part.pop();
+            }
+            parts.push(part);
             self.pending.drain(..self.delimiter.len());
         }
         parts
@@ -92,7 +84,6 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Bounded stream collector with optional end-of-stream publication.
 pub struct StreamCollector {
     pending: Vec<u8>,
-    data: Vec<u8>,
     maximum: usize,
     wait_for_end: bool,
     finished: bool,
@@ -109,7 +100,6 @@ impl StreamCollector {
         }
         Ok(Self {
             pending: Vec::new(),
-            data: Vec::new(),
             maximum,
             wait_for_end,
             finished: false,
@@ -131,12 +121,7 @@ impl StreamCollector {
             ));
         }
         self.pending.extend_from_slice(chunk);
-        if self.wait_for_end {
-            Ok(false)
-        } else {
-            self.data.clone_from(&self.pending);
-            Ok(true)
-        }
+        Ok(!self.wait_for_end)
     }
 
     /// Publishes the final buffer and marks the stream finished.
@@ -145,18 +130,25 @@ impl StreamCollector {
             return false;
         }
         self.finished = true;
-        if self.wait_for_end {
-            self.data.clone_from(&self.pending);
-        }
         true
     }
 
+    /// What has been collected so far, or nothing until the stream ends.
+    ///
+    /// This used to be a second copy of the buffer, refreshed on every push —
+    /// so collecting a stream of `n` bytes in 8 KiB chunks copied `n²/16384`
+    /// bytes and held twice the memory. What a caller waiting for the end must
+    /// not see is a partial buffer, and that is a question about `finished`,
+    /// not a reason to keep the bytes twice.
     pub fn data(&self) -> &[u8] {
-        &self.data
+        if self.wait_for_end && !self.finished {
+            return &[];
+        }
+        &self.pending
     }
 
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.data).into_owned()
+        String::from_utf8_lossy(self.data()).into_owned()
     }
 
     pub fn wait_for_end(&self) -> bool {
@@ -168,9 +160,6 @@ impl StreamCollector {
             return;
         }
         self.wait_for_end = wait_for_end;
-        if !wait_for_end {
-            self.data.clone_from(&self.pending);
-        }
     }
 
     pub fn finished(&self) -> bool {
@@ -179,8 +168,6 @@ impl StreamCollector {
 
     pub fn reset(&mut self) {
         self.pending.clear();
-        self.data.clear();
         self.finished = false;
     }
 }
-

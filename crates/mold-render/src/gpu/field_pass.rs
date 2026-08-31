@@ -1,9 +1,17 @@
+use super::FORMAT;
+use crate::{SdfFieldInstance, SdfFieldLayer};
+use std::mem;
+
+use super::shaders::*;
+
 /// Builds the pipeline that resolves composed distance fields.
 ///
 /// The layers live in a storage buffer rather than in instance attributes: a
 /// composition of sixteen layers is far past the vertex-attribute limit, and
 /// keeping them in one buffer lets every field in a frame share it.
-fn create_field_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+pub(crate) fn create_field_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("mold field layout"),
         entries: &[
@@ -36,7 +44,7 @@ fn create_field_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("mold field shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../field.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(shader_source(include_str!("../field.wgsl")).into()),
     });
     let attributes = wgpu::vertex_attr_array![
         0 => Float32x4,
@@ -44,7 +52,8 @@ fn create_field_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::
         2 => Float32x4,
         3 => Float32x4,
         4 => Float32x4,
-        5 => Float32x4
+        5 => Float32x4,
+        6 => Float32x4
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<SdfFieldInstance>() as u64,
@@ -82,7 +91,7 @@ fn create_field_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::
     (pipeline, layout)
 }
 
-fn create_field_layer_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+pub(crate) fn create_field_layer_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("mold field layers"),
         size: (capacity.max(1) * mem::size_of::<SdfFieldLayer>()) as u64,
@@ -91,7 +100,7 @@ fn create_field_layer_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Bu
     })
 }
 
-fn create_field_bind_group(
+pub(crate) fn create_field_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     viewport: &wgpu::Buffer,

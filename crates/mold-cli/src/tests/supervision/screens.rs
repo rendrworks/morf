@@ -1,3 +1,12 @@
+use crate::lock::WorkerCommand;
+use crate::supervisor::known_outputs;
+use crate::supervisor::lua_screen;
+use crate::supervisor::store_outputs;
+use crate::workers::handle_worker_command;
+use crate::*;
+use mold_lua::{Limits, Runtime};
+use mold_wayland::ScreenInfo;
+
 // The compositor's output list reaching every worker's `mold.screens`.
 
 #[test]

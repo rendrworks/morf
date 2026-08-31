@@ -1,3 +1,14 @@
+use std::time::Duration;
+
+use mold_io::Timer as IoTimer;
+use mold_layout::Layout;
+use mold_scene::{NodeHandle, Value as SceneValue};
+
+use crate::{
+    reactive_execute::*, runtime_helpers::*, scene_bindings::*, state::*, surface_types::*,
+    types::*, views::*,
+};
+
 impl Runtime {
     /// Updates native transform watchers from one rendered surface layout.
     pub fn observe_layout(&self, layout: &Layout) -> bool {
@@ -168,10 +179,7 @@ impl Runtime {
                 if requested && state.loaded_loaders.insert(node) {
                     loaders.push((node, factory));
                 } else if !requested && state.loaded_loaders.remove(&node) {
-                    let children = state.scene.children(node).unwrap_or_default();
-                    for child in children {
-                        loader_drops.push(child);
-                    }
+                    loader_drops.extend_from_slice(state.scene.children(node).unwrap_or_default());
                     service_changed = true;
                 }
             }
@@ -204,7 +212,7 @@ impl Runtime {
                 }
             }
             let mut udev_errors = Vec::new();
-            for subscription in &state.udev_monitors {
+            for subscription in &mut state.udev_monitors {
                 for _ in 0..32 {
                     match subscription.monitor.next_event(Duration::ZERO) {
                         Ok(Some(event)) => {
@@ -251,7 +259,7 @@ impl Runtime {
                 .enter(|ctx| finish_retained_destroy(&self.reactive, ctx, self.limits, node));
             service_changed = true;
         }
-        for node in loader_drops {
+        for &node in &loader_drops {
             self.lua
                 .enter(|ctx| drop_retainable(&self.reactive, ctx, self.limits, node));
         }
@@ -398,5 +406,27 @@ impl Runtime {
             }
         }
         service_changed || self.reactive.borrow().scene_revision != revision_before
+    }
+}
+
+impl Runtime {
+    /// Takes the nodes destroyed since the last frame, and drops what this
+    /// crate holds for them on the way past.
+    ///
+    /// The transform tracker is reachable from here; the caches in the render
+    /// backend are not, so the list is handed back for the caller to finish
+    /// the job. Nobody else has both the scene and those caches in scope.
+    pub fn take_removed_nodes(&self) -> Vec<NodeHandle> {
+        let mut state = self.reactive.borrow_mut();
+        let removed = state.scene.take_removed_nodes();
+        if !removed.is_empty() {
+            let ReactiveState {
+                scene,
+                transform_tracker,
+                ..
+            } = &mut *state;
+            transform_tracker.retain_scene(&*scene);
+        }
+        removed
     }
 }

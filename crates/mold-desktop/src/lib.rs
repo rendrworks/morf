@@ -123,10 +123,6 @@ pub struct DesktopEntries {
 }
 
 impl DesktopEntries {
-    pub fn scan_environment() -> io::Result<Self> {
-        Self::scan_paths(desktop_paths())
-    }
-
     pub fn scan_paths(paths: impl IntoIterator<Item = PathBuf>) -> io::Result<Self> {
         let mut entries = Vec::new();
         let mut claimed = HashSet::new();

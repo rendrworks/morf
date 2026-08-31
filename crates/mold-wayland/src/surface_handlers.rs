@@ -1,3 +1,20 @@
+use smithay_client_toolkit::compositor::CompositorHandler;
+use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::session_lock::{
+    SessionLock, SessionLockHandler, SessionLockSurface, SessionLockSurfaceConfigure,
+};
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::{
+    LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+};
+use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
+use smithay_client_toolkit::shell::xdg::window::{Window, WindowConfigure, WindowHandler};
+use std::num::NonZeroU32;
+use wayland_client::protocol::{wl_output, wl_surface};
+use wayland_client::{Connection, QueueHandle};
+
+use crate::{state_types::*, surface_types::*};
+
 impl CompositorHandler for LayerState {
     fn scale_factor_changed(
         &mut self,
@@ -257,8 +274,6 @@ impl PopupHandler for LayerState {
         popup: &Popup,
         config: PopupConfigure,
     ) {
-        use smithay_client_toolkit::shell::xdg::popup::ConfigureKind;
-
         let Some(id) = self.popups.iter().find_map(|(id, candidate)| {
             (candidate.wl_surface() == popup.wl_surface()).then_some(*id)
         }) else {
@@ -268,9 +283,6 @@ impl PopupHandler for LayerState {
         // request it answers. Recording it here is what lets a caller tell the
         // configure for the move it just asked for apart from a reactive one
         // the compositor sent on its own.
-        if let ConfigureKind::Reposition { token } = config.kind {
-            record_reposition_ack(&mut self.popup_repositions, id, token);
-        }
         self.events.push_back(LayerEvent::PopupConfigure {
             id,
             width: config.width.max(1) as u32,

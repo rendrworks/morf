@@ -1,4 +1,13 @@
-fn install_module_api<'gc>(
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::{
+    layer_parse::*, process_helpers::*, runtime_helpers::*, scene_bindings::*, state::*,
+    surface_types::*, table_menu::*, window_geometry::*, window_methods::*, window_parse::*,
+};
+
+pub(crate) fn install_module_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -30,7 +39,6 @@ fn install_module_api<'gc>(
         "elapsed_timer",
         "system_clock",
         "easing_curve",
-        "color_quantize",
         "color_quantizer",
         "icon_path",
         "has_icon",
@@ -94,22 +102,6 @@ fn install_module_api<'gc>(
             Ok(CallbackReturn::Return)
         }
     });
-    let window_set_visible = Callback::from_fn(&ctx, {
-        let state = Rc::clone(&state);
-        move |ctx, _, mut stack| {
-            let (surface, visible): (UserRef<WindowSurfaceToken>, bool) = stack.consume(ctx)?;
-            let mut state = state.borrow_mut();
-            let surface = state
-                .window_surfaces
-                .get_mut(&surface.id)
-                .ok_or_else(|| HostError("window surface is stale".into()))?;
-            if surface.visible != visible {
-                surface.visible = visible;
-                state.window_surfaces_changed = true;
-            }
-            Ok(CallbackReturn::Return)
-        }
-    });
     let window_open = Callback::from_fn(&ctx, {
         let state = Rc::clone(&state);
         move |ctx, _, mut stack| {
@@ -162,7 +154,9 @@ fn install_module_api<'gc>(
     });
     let window_methods = Table::new(&ctx);
     window_methods.set_field(ctx, "visible", window_visible);
-    window_methods.set_field(ctx, "set_visible", window_set_visible);
+    // One spelling. `set_visible(node, bool)` said exactly what these two say
+    // and wrote the same field; a configuration should not have to know which
+    // of two names the engine prefers.
     window_methods.set_field(ctx, "open", window_open);
     window_methods.set_field(ctx, "close", window_close);
     window_methods.set_field(ctx, "kind", window_kind);
@@ -340,17 +334,12 @@ fn install_module_api<'gc>(
             }
             let id = {
                 let mut state = state.borrow_mut();
-                let id = state.next_window_surface;
-                state.next_window_surface = state.next_window_surface.wrapping_add(1);
-                state.window_surfaces.insert(
-                    id,
-                    WindowSurfaceConfig {
-                        id,
-                        root,
-                        visible,
-                        updates_enabled,
-                        kind: WindowSurfaceKind::Popup(config),
-                    },
+                let id = register_window_surface(
+                    &mut state,
+                    root,
+                    visible,
+                    updates_enabled,
+                    WindowSurfaceKind::Popup(config),
                 );
                 if let Some(anchor) = node_anchor {
                     state
@@ -359,7 +348,6 @@ fn install_module_api<'gc>(
                         .map_err(|error| HostError(error.to_string()))?;
                     state.popup_node_anchors.insert(id, anchor);
                 }
-                state.window_surfaces_changed = true;
                 id
             };
             let userdata = UserData::new_static(&ctx, WindowSurfaceToken { id });
@@ -395,23 +383,13 @@ fn install_module_api<'gc>(
                     }
                 }
             }
-            let id = {
-                let mut state = state.borrow_mut();
-                let id = state.next_window_surface;
-                state.next_window_surface = state.next_window_surface.wrapping_add(1);
-                state.window_surfaces.insert(
-                    id,
-                    WindowSurfaceConfig {
-                        id,
-                        root,
-                        visible,
-                        updates_enabled,
-                        kind: WindowSurfaceKind::Floating(config),
-                    },
-                );
-                state.window_surfaces_changed = true;
-                id
-            };
+            let id = register_window_surface(
+                &mut state.borrow_mut(),
+                root,
+                visible,
+                updates_enabled,
+                WindowSurfaceKind::Floating(config),
+            );
             let userdata = UserData::new_static(&ctx, WindowSurfaceToken { id });
             userdata.set_metatable(ctx, Some(ctx.fetch(&window_metatable)));
             stack.replace(ctx, userdata);
@@ -433,23 +411,13 @@ fn install_module_api<'gc>(
                     .element(root)
                     .map_err(|error| HostError(error.to_string()))?;
             }
-            let id = {
-                let mut state = state.borrow_mut();
-                let id = state.next_window_surface;
-                state.next_window_surface = state.next_window_surface.wrapping_add(1);
-                state.window_surfaces.insert(
-                    id,
-                    WindowSurfaceConfig {
-                        id,
-                        root,
-                        visible,
-                        updates_enabled,
-                        kind: WindowSurfaceKind::Layer(config),
-                    },
-                );
-                state.window_surfaces_changed = true;
-                id
-            };
+            let id = register_window_surface(
+                &mut state.borrow_mut(),
+                root,
+                visible,
+                updates_enabled,
+                WindowSurfaceKind::Layer(config),
+            );
             let userdata = UserData::new_static(&ctx, WindowSurfaceToken { id });
             userdata.set_metatable(ctx, Some(ctx.fetch(&window_metatable)));
             stack.replace(ctx, userdata);
@@ -467,4 +435,3 @@ fn install_module_api<'gc>(
     mold.set_field(ctx, "window", window);
     (core, io, window)
 }
-

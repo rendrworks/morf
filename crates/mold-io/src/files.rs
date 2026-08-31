@@ -1,3 +1,17 @@
+use std::fmt;
+use std::fs;
+use std::io;
+use std::mem::MaybeUninit;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
+use rustix::io::Errno;
+
 /// Readable and atomically writable filesystem path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileView {
@@ -22,25 +36,21 @@ impl FileView {
     }
 
     /// Reads a file only when its current size fits the supplied bound.
-    pub fn read_bounded(&self, maximum: usize) -> io::Result<Vec<u8>> {
-        let metadata = fs::metadata(&self.path)?;
-        if metadata.is_dir() {
-            return Err(io::Error::from(io::ErrorKind::IsADirectory));
+    ///
+    /// The two refusals this makes itself are returned as themselves. They used
+    /// to be `io::Error`s carrying a message that the classifier a few lines
+    /// below compared as a *string* — so the reason a read failed travelled
+    /// from one function to another through prose, and a reworded message would
+    /// have silently become `Unknown`.
+    pub fn read_bounded(&self, maximum: usize) -> Result<Vec<u8>, FileViewError> {
+        let metadata = fs::metadata(&self.path).map_err(|error| classify_file_error(&error))?;
+        if metadata.is_dir() || !metadata.is_file() {
+            return Err(FileViewError::NotAFile);
         }
-        if !metadata.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "path is not a file",
-            ));
+        if metadata.len() > maximum as u64 {
+            return Err(FileViewError::TooLarge);
         }
-        let length = metadata.len();
-        if length > maximum as u64 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "file exceeds read limit",
-            ));
-        }
-        self.read()
+        self.read().map_err(|error| classify_file_error(&error))
     }
 
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
@@ -80,6 +90,12 @@ pub enum FileViewError {
     Unknown,
 }
 
+impl fmt::Display for FileViewError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl FileViewError {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -92,17 +108,16 @@ impl FileViewError {
     }
 }
 
+/// Classifies an error the operating system produced.
+///
+/// Only those: what this module refuses itself is returned as a
+/// `FileViewError` directly, rather than wrapped in an `io::Error` whose
+/// message this function would then have to read back.
 fn classify_file_error(error: &io::Error) -> FileViewError {
     match error.kind() {
         io::ErrorKind::NotFound => FileViewError::FileNotFound,
         io::ErrorKind::PermissionDenied => FileViewError::PermissionDenied,
-        io::ErrorKind::InvalidData if error.to_string() == "file exceeds read limit" => {
-            FileViewError::TooLarge
-        }
         io::ErrorKind::IsADirectory => FileViewError::NotAFile,
-        io::ErrorKind::InvalidInput if error.to_string() == "path is not a file" => {
-            FileViewError::NotAFile
-        }
         _ => FileViewError::Unknown,
     }
 }
@@ -190,7 +205,7 @@ impl FileDocument {
             }
             Err(error) => {
                 self.data = None;
-                self.error = Some(classify_file_error(&error));
+                self.error = Some(error);
                 false
             }
         }
@@ -326,4 +341,3 @@ impl Drop for FileWatcher {
         }
     }
 }
-

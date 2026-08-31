@@ -1,11 +1,25 @@
-struct Worker {
-    stop: Arc<AtomicBool>,
-    commands: mpsc::Sender<WorkerCommand>,
-    join: JoinHandle<()>,
-    screen: ScreenInfo,
+use mold_io::IpcIncoming;
+use mold_layout::{Layout, Size};
+use mold_lua::{IpcValue, Runtime};
+use mold_render::{RenderEngine, WgpuBackend};
+use mold_scene::{Element, NodeHandle};
+use mold_wayland::{LayerClient, LayerEvent, ScreenInfo};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, mpsc};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use crate::{config::*, paint::*, services::*, supervisor::*, surface_layers::*, surfaces::*};
+
+pub(crate) struct Worker {
+    pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) commands: mpsc::Sender<WorkerCommand>,
+    pub(crate) join: JoinHandle<()>,
+    pub(crate) screen: ScreenInfo,
 }
 
-enum WorkerCommand {
+pub(crate) enum WorkerCommand {
     Call {
         target: String,
         args: Vec<IpcValue>,
@@ -24,14 +38,14 @@ enum WorkerCommand {
     },
 }
 
-enum SupervisorMessage {
+pub(crate) enum SupervisorMessage {
     Worker(WorkerMessage),
     Ipc(IpcIncoming),
     Reload { hard: bool },
     WatchFiles(bool),
 }
 
-enum WorkerMessage {
+pub(crate) enum WorkerMessage {
     Screens {
         output: String,
         screens: Vec<ScreenInfo>,
@@ -42,7 +56,7 @@ enum WorkerMessage {
     },
 }
 
-fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
+pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
     let mut runtime = Runtime::default();
     execute_config(&mut runtime, path, source, LoadPolicy::default())?;
     if runtime.scene().roots().len() != 1 {
@@ -62,13 +76,12 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
     client
         .begin_session_lock()
         .map_err(|error| error.to_string())?;
-    apply_output_power_requests(&mut runtime, &mut client);
-    apply_screencopy_requests(&mut runtime, &mut client);
-    apply_virtual_keyboard_requests(&mut runtime, &mut client);
-    apply_input_method_requests(&mut runtime, &mut client);
-    apply_text_input_requests(&mut runtime, &mut client);
+    apply_service_requests(&mut runtime, &mut client);
     let mut renderers: Vec<Option<RenderEngine<WgpuBackend>>> = Vec::new();
     let mut last_frame = None;
+    // Which node holds keyboard focus. One surface, so one slot rather than the
+    // per-surface map the general path keeps.
+    let mut focused: Option<NodeHandle> = None;
     let mut locked = false;
     let mut unlock_pending = false;
     let mut clock = clock_text();
@@ -80,12 +93,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
             .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
             .map_err(|error| error.to_string())?;
         let mut repaint = runtime.poll_services();
-        apply_output_power_requests(&mut runtime, &mut client);
-        apply_clipboard_requests(&mut runtime, &mut client);
-        apply_screencopy_requests(&mut runtime, &mut client);
-        apply_virtual_keyboard_requests(&mut runtime, &mut client);
-        apply_input_method_requests(&mut runtime, &mut client);
-        apply_text_input_requests(&mut runtime, &mut client);
+        apply_service_requests(&mut runtime, &mut client);
         unlock_pending |= runtime.take_session_unlock_request();
         if locked && unlock_pending {
             client.unlock_session().map_err(|error| error.to_string())?;
@@ -130,7 +138,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                         .tick_animations(animation_delta(last_frame, time_ms))
                         .map_err(|error| error.to_string())?;
                     last_frame = frame.active.then_some(time_ms);
-                    repaint |= frame.active || !frame.changes.is_empty();
+                    repaint |= frame.active || frame.changed > 0;
                 }
                 LayerEvent::Key {
                     pressed: true,
@@ -138,9 +146,21 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                     text,
                     ..
                 } => {
-                    if let Some(node) = runtime.first_key_target() {
-                        repaint |= runtime.dispatch_key_event(node, keysym, text.as_deref());
-                    }
+                    // The same routing every other surface gets. This used to
+                    // send every key to the first focusable node in the tree,
+                    // with no Tab traversal and no memory of what had focus —
+                    // so a lock screen with more than one field had one that
+                    // could not be reached.
+                    let Some(root) = runtime.scene().roots().first().copied() else {
+                        continue;
+                    };
+                    repaint |= dispatch_key_in_subtree(
+                        &mut runtime,
+                        root,
+                        &mut focused,
+                        keysym,
+                        text.as_deref(),
+                    );
                 }
                 LayerEvent::SessionLockFinished => {
                     return Err("compositor ended the session lock".to_owned());
@@ -148,7 +168,6 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 LayerEvent::Idle { timeout_ms, idle } => {
                     repaint |= runtime.dispatch_idle(timeout_ms, idle);
                 }
-                LayerEvent::OutputPower { .. } => {}
                 LayerEvent::Clipboard { text } => {
                     repaint |= runtime.dispatch_clipboard(text);
                 }
@@ -177,7 +196,6 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                     );
                 }
                 LayerEvent::Key { pressed: false, .. }
-                | LayerEvent::Modifiers { .. }
                 | LayerEvent::Configure { .. }
                 | LayerEvent::Scale { .. }
                 | LayerEvent::Frame { .. }
@@ -198,11 +216,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 | LayerEvent::Closed { .. } => {}
             }
         }
-        apply_clipboard_requests(&mut runtime, &mut client);
-        apply_screencopy_requests(&mut runtime, &mut client);
-        apply_virtual_keyboard_requests(&mut runtime, &mut client);
-        apply_input_method_requests(&mut runtime, &mut client);
-        apply_text_input_requests(&mut runtime, &mut client);
+        apply_service_requests(&mut runtime, &mut client);
         if repaint {
             for (index, renderer) in renderers.iter_mut().enumerate() {
                 if let Some(renderer) = renderer {
@@ -213,7 +227,7 @@ fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
     }
 }
 
-fn paint_lock(
+pub(crate) fn paint_lock(
     runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &LayerClient,
@@ -274,7 +288,7 @@ fn paint_lock(
     client.request_lock_frame(index);
     let scale = client.lock_scale_120(index).unwrap_or(120);
     let damage = renderer
-        .render(&scene, &layout, scale)
+        .render(&scene, &layout, scale, |_| {})
         .map_err(|error| error.to_string())?;
     if damage.is_empty() {
         client.commit_lock(index);

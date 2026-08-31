@@ -163,10 +163,15 @@ fn field_bounds_cover_the_layers_the_outline_and_the_softened_edge() {
         .find(|command| matches!(command, DrawCommand::Field { .. }))
         .unwrap();
 
-    // The layer starts 30 left of the node; the spread is 4/2 + 3.
+    // The area is the layer, not the node it sits in — a field paints only
+    // where a layer reaches, so the empty part of a large node is neither drawn
+    // nor damaged. The layer runs from -30 to 20 across and 10 to 60 down, and
+    // the outline and softened edge add 4/2 + 3 on every side.
     let bounds = command.bounds();
     assert_eq!(bounds.x, -35.0);
-    assert_eq!(bounds.y, -5.0);
+    assert_eq!(bounds.y, 5.0);
+    assert_eq!(bounds.width, 60.0);
+    assert_eq!(bounds.height, 60.0);
 }
 
 #[test]

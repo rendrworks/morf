@@ -1,17 +1,18 @@
 //! Three-stage layout for mold scene nodes.
 
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap};
-use std::error::Error as StdError;
-use std::fmt;
-use std::hash::{Hash, Hasher};
+mod geometry;
+mod helpers;
+mod hit;
+mod layout;
+mod transform;
 
-use mold_scene::{Behavior, Element, NodeHandle, Scene, SceneError, Value};
-
-include!("geometry.rs");
-include!("layout.rs");
-include!("hit.rs");
-include!("transform.rs");
-include!("helpers.rs");
+pub use geometry::{
+    Geometry, Size, TextAlignment, TextElide, TextMeasurer, TextOptions, Transform2D,
+    TransformParameters,
+};
+pub use helpers::LayoutError;
+pub use hit::Hit;
+pub use layout::{Layout, ReparentTransition, TransformTracker, TransformWatcher};
+pub use transform::node_transform;
 #[cfg(test)]
 mod tests;

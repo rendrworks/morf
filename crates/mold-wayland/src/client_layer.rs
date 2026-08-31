@@ -1,3 +1,14 @@
+use mold_region::Region;
+
+use smithay_client_toolkit::compositor::FrameCallbackData;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::{
+    Anchor, KeyboardInteractivity as WlrKeyboardInteractivity, Layer,
+};
+use wayland_client::protocol::{wl_output, wl_surface};
+
+use crate::{state_types::*, surface_types::*, types::*};
+
 /// Identifier of the layer surface every client creates first.
 ///
 /// The role is plural, but one surface is still the shell's own: it is the one
@@ -11,7 +22,7 @@ pub const PRIMARY_LAYER: u64 = 0;
 /// with the same meaning, so they share one conversion: two copies would let a
 /// runtime update silently re-anchor a surface the creation path had pinned
 /// somewhere else.
-fn layer_anchor_mask(anchors: LayerAnchors) -> Anchor {
+pub(crate) fn layer_anchor_mask(anchors: LayerAnchors) -> Anchor {
     let mut mask = Anchor::empty();
     if anchors.top {
         mask |= Anchor::TOP;
@@ -29,7 +40,7 @@ fn layer_anchor_mask(anchors: LayerAnchors) -> Anchor {
 }
 
 /// Converts a keyboard focus policy into its layer-shell interactivity.
-fn layer_interactivity(focus: KeyboardFocus) -> WlrKeyboardInteractivity {
+pub(crate) fn layer_interactivity(focus: KeyboardFocus) -> WlrKeyboardInteractivity {
     match focus {
         KeyboardFocus::None => WlrKeyboardInteractivity::None,
         KeyboardFocus::Exclusive => WlrKeyboardInteractivity::Exclusive,
@@ -39,7 +50,7 @@ fn layer_interactivity(focus: KeyboardFocus) -> WlrKeyboardInteractivity {
 
 impl LayerClient {
     /// Resolves a configured output name against the compositor's current set.
-    fn layer_output(
+    pub(crate) fn layer_output(
         &self,
         name: Option<&str>,
     ) -> Result<Option<wl_output::WlOutput>, WaylandError> {
@@ -117,7 +128,7 @@ impl LayerClient {
                 surface: layer,
                 fractional_scale,
                 viewport,
-                width: 1,
+                width: config.width.max(1),
                 height: config.height.max(1),
                 scale_120: 120,
                 wants_blank: false,
@@ -189,17 +200,22 @@ impl LayerClient {
         if self.state.layers.remove(&id).is_none() {
             return;
         }
-        if self.state.keyboard_surface == Some(SurfaceRole::Layer(id)) {
+        self.forget_surface(SurfaceRole::Layer(id));
+    }
+
+    /// Drops the input state pointing at a surface that has gone away.
+    ///
+    /// Every close path needs this and only one of the three did it, so a
+    /// finger still down on a popup as it closed left a touch point addressed
+    /// to a surface that no longer existed — and the next motion for that
+    /// finger was delivered against it.
+    pub(crate) fn forget_surface(&mut self, role: SurfaceRole) {
+        if self.state.keyboard_surface == Some(role) {
             self.state.keyboard_surface = None;
         }
         self.state
             .touch_points
-            .retain(|_, (_, role)| *role != SurfaceRole::Layer(id));
-    }
-
-    /// Reports whether one layer surface is currently open.
-    pub fn layer_is_open(&self, id: u64) -> bool {
-        self.state.layers.contains_key(&id)
+            .retain(|_, (_, holder)| *holder != role);
     }
 
     /// Returns the wl_surface backing one layer surface.
@@ -221,12 +237,6 @@ impl LayerClient {
     /// Returns the preferred scale of one layer surface in 120ths.
     pub fn layer_scale_120(&self, id: u64) -> Option<u32> {
         self.state.layers.get(&id).map(|layer| layer.scale_120)
-    }
-
-    /// Returns the physical buffer dimensions of one layer surface.
-    pub fn layer_physical_size(&self, id: u64) -> Option<(u32, u32)> {
-        let layer = self.state.layers.get(&id)?;
-        Some(physical_size((layer.width, layer.height), layer.scale_120))
     }
 
     /// Requests a compositor callback for one layer surface's next frame.
@@ -283,15 +293,7 @@ impl LayerClient {
             .layer_logical_size(id)
             .ok_or_else(|| WaylandError("layer surface is not open".into()))?;
         let rectangles = mold_region::build(width, height, regions)
-            .map_err(|error| WaylandError(error.to_string()))?
-            .into_iter()
-            .map(|rect| InputRect {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            })
-            .collect::<Vec<_>>();
+            .map_err(|error| WaylandError(error.to_string()))?;
         self.set_layer_input_region(id, Some(&rectangles));
         Ok(())
     }

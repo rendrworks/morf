@@ -1,3 +1,9 @@
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
 /// Periodic timer event receiver.
 pub struct Timer {
     ticks: mpsc::Receiver<()>,
@@ -43,4 +49,3 @@ impl Drop for Timer {
         }
     }
 }
-

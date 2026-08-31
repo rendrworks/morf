@@ -1,4 +1,10 @@
-fn create_target(
+use super::FORMAT;
+use crate::DamageRect;
+use wgpu::util::DeviceExt;
+
+use super::{backend_types::*, shaders::*, textures::*};
+
+pub(crate) fn create_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
@@ -23,7 +29,7 @@ fn create_target(
     (texture, view)
 }
 
-fn create_blur_chain(
+pub(crate) fn create_blur_chain(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
@@ -63,7 +69,7 @@ fn create_blur_chain(
     }
 }
 
-fn create_blur_pass(
+pub(crate) fn create_blur_pass(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
@@ -107,16 +113,16 @@ fn create_blur_pass(
     }
 }
 
-struct SurfaceState {
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    texture_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    bind_group: wgpu::BindGroup,
+pub(crate) struct SurfaceState {
+    pub(crate) surface: wgpu::Surface<'static>,
+    pub(crate) config: wgpu::SurfaceConfiguration,
+    pub(crate) pipeline: wgpu::RenderPipeline,
+    pub(crate) texture_layout: wgpu::BindGroupLayout,
+    pub(crate) sampler: wgpu::Sampler,
+    pub(crate) bind_group: wgpu::BindGroup,
 }
 
-fn create_surface_state(
+pub(crate) fn create_surface_state(
     device: &wgpu::Device,
     adapter: &wgpu::Adapter,
     surface: wgpu::Surface<'static>,
@@ -193,7 +199,9 @@ fn create_surface_state(
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("mold composite shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../composite.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(
+            fullscreen_source(include_str!("../composite.wgsl")).into(),
+        ),
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("mold composite pipeline"),
@@ -230,7 +238,7 @@ fn create_surface_state(
     })
 }
 
-fn create_composite_bind_group(
+pub(crate) fn create_composite_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     view: &wgpu::TextureView,
@@ -252,7 +260,7 @@ fn create_composite_bind_group(
     })
 }
 
-fn acquire_frame(
+pub(crate) fn acquire_frame(
     device: &wgpu::Device,
     surface: &mut SurfaceState,
 ) -> Result<wgpu::SurfaceTexture, GpuError> {
@@ -278,7 +286,7 @@ fn acquire_frame(
     }
 }
 
-fn clamp_scissor(
+pub(crate) fn clamp_scissor(
     damage: DamageRect,
     target_width: u32,
     target_height: u32,
@@ -292,7 +300,7 @@ fn clamp_scissor(
     (width > 0 && height > 0).then_some((x, y, width, height))
 }
 
-fn intersect_damage(left: DamageRect, right: DamageRect) -> Option<DamageRect> {
+pub(crate) fn intersect_damage(left: DamageRect, right: DamageRect) -> Option<DamageRect> {
     let x = left.x.max(right.x);
     let y = left.y.max(right.y);
     let right_edge = left

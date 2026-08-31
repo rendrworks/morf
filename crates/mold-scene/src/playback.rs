@@ -1,6 +1,12 @@
+use crate::{animation::*, motion::*, types::*};
+
 impl Scene {
     /// Returns the write interceptor installed on a property, if any.
-    pub fn behavior(&self, node: NodeHandle, property: &str) -> Result<Option<Behavior>, SceneError> {
+    pub fn behavior(
+        &self,
+        node: NodeHandle,
+        property: &str,
+    ) -> Result<Option<Behavior>, SceneError> {
         let (key, _) = self.property_key(node, property)?;
         Ok(self.behaviors.get(&key).copied())
     }
@@ -42,10 +48,7 @@ impl Scene {
         property: &str,
     ) -> Result<bool, SceneError> {
         let (key, _) = self.property_key(node, property)?;
-        Ok(self
-            .animations
-            .get(&key)
-            .is_some_and(Animation::is_paused)
+        Ok(self.animations.get(&key).is_some_and(Animation::is_paused)
             || self.paused_physics.contains(&key))
     }
 
@@ -112,6 +115,7 @@ impl Scene {
             (None, None) => return Ok(false),
         };
         self.paused_physics.remove(&key);
+        self.touch_layout(key.property);
         self.properties.batch(|graph| {
             graph.write(slot.current, target.clone())?;
             graph.write(slot.target, target)?;
@@ -135,6 +139,7 @@ impl Scene {
             animation.clock.reset();
             let value = animation.value();
             self.properties.write(slot.current, value)?;
+            self.touch_layout(key.property);
             return Ok(true);
         }
         let Some(motion) = self.physics.get(&key) else {
@@ -166,7 +171,11 @@ impl Scene {
         property: &str,
     ) -> Result<bool, SceneError> {
         let (key, _) = self.property_key(node, property)?;
-        let Some(origin) = self.animations.get(&key).map(|animation| animation.from.clone()) else {
+        let Some(origin) = self
+            .animations
+            .get(&key)
+            .map(|animation| animation.from.clone())
+        else {
             return Ok(false);
         };
         self.assign(node, property, origin)?;
@@ -190,11 +199,12 @@ impl Scene {
         animation.clock.seek(progress.clamp(0.0, 1.0) as f32);
         let value = animation.value();
         self.properties.write(slot.current, value)?;
+        self.touch_layout(key.property);
         Ok(true)
     }
 
     /// Resolves a property to its arena key and signal slot in one step.
-    fn property_key(
+    pub(crate) fn property_key(
         &self,
         node: NodeHandle,
         property: &str,
@@ -218,7 +228,7 @@ impl Scene {
     }
 
     /// Queues an end-of-animation event for the next tick to report.
-    fn push_event(&mut self, key: PropertyKey, end: AnimationEnd) {
+    pub(crate) fn push_event(&mut self, key: PropertyKey, end: AnimationEnd) {
         self.events.push(AnimationEvent {
             node: NodeHandle(key.node),
             property: key.property,

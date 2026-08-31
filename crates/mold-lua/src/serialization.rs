@@ -1,11 +1,21 @@
-fn default_module_roots() -> Vec<PathBuf> {
+use luna::{Closure, Context, Executor, Table, UserData, Value as LuaValue};
+use mold_io::DbusValue;
+use mold_scene::{Value as SceneValue, ViewTransition};
+use mold_services::XkbKeymap;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+use crate::{reactive_execute::*, scene_bindings::*, state::*, types::*};
+
+pub(crate) fn default_module_roots() -> Vec<PathBuf> {
     std::env::var_os("MOLD_RUNTIME_PATH")
         .into_iter()
         .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
         .collect()
 }
 
-fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String> {
     if name.is_empty()
         || name.split('.').any(|part| {
             part.is_empty()
@@ -34,7 +44,7 @@ fn load_runtime_module(roots: &[PathBuf], name: &str) -> Result<Vec<u8>, String>
     Err(format!("module `{name}` is not available"))
 }
 
-fn json_to_lua<'gc>(
+pub(crate) fn json_to_lua<'gc>(
     ctx: Context<'gc>,
     value: &serde_json::Value,
     array_metatable: Table<'gc>,
@@ -114,7 +124,7 @@ fn json_to_lua<'gc>(
     })
 }
 
-fn lua_to_json<'gc>(
+pub(crate) fn lua_to_json<'gc>(
     ctx: Context<'gc>,
     value: LuaValue<'gc>,
     depth: usize,
@@ -197,7 +207,10 @@ fn lua_to_json<'gc>(
     }
 }
 
-fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> Result<LuaValue<'_>, String> {
+pub(crate) fn dbus_value_to_lua(
+    ctx: Context<'_>,
+    value: DbusValue,
+) -> Result<LuaValue<'_>, String> {
     Ok(match value {
         DbusValue::Nil => LuaValue::Nil,
         DbusValue::Bool(value) => LuaValue::Boolean(value),
@@ -237,7 +250,7 @@ fn dbus_value_to_lua(ctx: Context<'_>, value: DbusValue) -> Result<LuaValue<'_>,
     })
 }
 
-fn lua_to_dbus<'gc>(
+pub(crate) fn lua_to_dbus<'gc>(
     ctx: Context<'gc>,
     value: LuaValue<'gc>,
     depth: usize,
@@ -309,14 +322,14 @@ fn lua_to_dbus<'gc>(
     }
 }
 
-fn lua_index(index: i64) -> Result<usize, HostError> {
+pub(crate) fn lua_index(index: i64) -> Result<usize, HostError> {
     let index = index
         .checked_sub(1)
         .ok_or_else(|| HostError("list-model indexes start at one".into()))?;
     usize::try_from(index).map_err(|_| HostError("list-model index is out of range".into()))
 }
 
-fn lua_insert_index(index: i64, length: usize) -> Result<usize, HostError> {
+pub(crate) fn lua_insert_index(index: i64, length: usize) -> Result<usize, HostError> {
     if index == length as i64 + 1 {
         Ok(length)
     } else {
@@ -324,7 +337,10 @@ fn lua_insert_index(index: i64, length: usize) -> Result<usize, HostError> {
     }
 }
 
-fn scene_to_lua<'gc>(ctx: Context<'gc>, value: &SceneValue) -> Result<LuaValue<'gc>, String> {
+pub(crate) fn scene_to_lua<'gc>(
+    ctx: Context<'gc>,
+    value: &SceneValue,
+) -> Result<LuaValue<'gc>, String> {
     Ok(match value {
         SceneValue::Nil => LuaValue::Nil,
         SceneValue::Bool(value) => LuaValue::Boolean(*value),
@@ -359,7 +375,7 @@ fn scene_to_lua<'gc>(ctx: Context<'gc>, value: &SceneValue) -> Result<LuaValue<'
     })
 }
 
-fn xkb_keymap_to_lua<'gc>(ctx: Context<'gc>, keymap: &XkbKeymap) -> Table<'gc> {
+pub(crate) fn xkb_keymap_to_lua<'gc>(ctx: Context<'gc>, keymap: &XkbKeymap) -> Table<'gc> {
     let result = Table::new(&ctx);
     result.set_field(ctx, "source", keymap.source.as_str());
     let keys = Table::new(&ctx);
@@ -399,7 +415,7 @@ fn xkb_keymap_to_lua<'gc>(ctx: Context<'gc>, keymap: &XkbKeymap) -> Table<'gc> {
     result
 }
 
-fn view_transition_to_lua(ctx: Context<'_>, transition: ViewTransition) -> Table<'_> {
+pub(crate) fn view_transition_to_lua(ctx: Context<'_>, transition: ViewTransition) -> Table<'_> {
     let table = Table::new(&ctx);
     let (kind, item, from, targets) = match transition {
         ViewTransition::Populate(item) => ("populate", item, None, Vec::new()),
@@ -435,7 +451,7 @@ fn view_transition_to_lua(ctx: Context<'_>, transition: ViewTransition) -> Table
     table
 }
 
-fn execute_module<'gc>(
+pub(crate) fn execute_module<'gc>(
     ctx: Context<'gc>,
     name: &str,
     source: &[u8],
@@ -443,29 +459,10 @@ fn execute_module<'gc>(
 ) -> Result<LuaValue<'gc>, String> {
     let closure = Closure::load(ctx, Some(name), source).map_err(|error| error.to_string())?;
     let executor = Executor::start(ctx, closure.into(), ());
-    let budget = limits.effect_fuel;
-    let mut remaining = budget;
-    loop {
-        if remaining == 0 {
-            executor.stop(&ctx);
-            return Err(format!(
-                "Lua module fuel exhausted after {budget} instructions"
-            ));
-        }
-        let allowance = remaining.min(limits.slice_fuel.max(1) as u64) as i32;
-        let mut fuel = Fuel::with(allowance);
-        let finished = executor
-            .step(ctx, &mut fuel)
-            .map_err(|error| error.to_string())?;
-        let consumed = allowance.saturating_sub(fuel.remaining()).max(0) as u64;
-        remaining = remaining.saturating_sub(consumed.max(1));
-        if finished {
-            return match executor.take_result::<LuaValue>(ctx) {
-                Ok(Ok(value)) => Ok(value),
-                Ok(Err(error)) => Err(error.to_string()),
-                Err(error) => Err(error.to_string()),
-            };
-        }
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "module")?;
+    match executor.take_result::<LuaValue>(ctx) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
     }
 }
-

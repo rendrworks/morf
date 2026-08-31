@@ -1,3 +1,11 @@
+use animato::{Spring, Tween};
+use mold_reactive::GraphError;
+use std::error::Error as StdError;
+use std::fmt;
+use std::time::Duration;
+
+use crate::{groups::*, motion::*, types::*};
+
 /// Frame-pipeline work invalidated by an animated property.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PropertyClass {
@@ -89,7 +97,7 @@ impl Easing {
         color
     }
 
-    fn animato(self) -> animato::Easing {
+    pub(crate) fn animato(self) -> animato::Easing {
         match self {
             Self::Linear => animato::Easing::Linear,
             Self::InQuad => animato::Easing::EaseInQuad,
@@ -162,7 +170,7 @@ impl Repeat {
         matches!(self, Self::Forever | Self::PingPong)
     }
 
-    fn animato(self) -> animato::Loop {
+    pub(crate) fn animato(self) -> animato::Loop {
         match self {
             Self::Once => animato::Loop::Once,
             Self::Times(count) => animato::Loop::Times(count.max(1)),
@@ -217,7 +225,7 @@ impl Behavior {
     }
 
     /// Reports whether this behavior can intercept a write.
-    fn intercepts(self) -> bool {
+    pub(crate) fn intercepts(self) -> bool {
         self.enabled && (self.duration > Duration::ZERO || self.delay > Duration::ZERO)
     }
 }
@@ -240,6 +248,28 @@ pub enum Physics {
     Smoothed {
         /// Maximum property units travelled per second.
         velocity: f64,
+    },
+    /// Friction that coasts to a halt from whatever velocity it is given.
+    ///
+    /// The odd one out: a spring and a smoothing both *pursue a target*, so a
+    /// plain assignment is enough to start them. Decay has no target — it is
+    /// given a velocity and stops where friction leaves it — so it is started
+    /// by [`Scene::fling`] rather than by writing a value.
+    Decay {
+        /// Deceleration opposing motion, in property units per second squared.
+        friction: f64,
+        /// Speed below which the motion is considered stopped.
+        min_velocity: f64,
+        /// Inclusive limits the motion is caught by, if any.
+        bounds: Option<(f64, f64)>,
+        /// Constant acceleration along the property, in units per second
+        /// squared. Positive pulls towards larger values, which for `y` is
+        /// downwards.
+        gravity: f64,
+        /// How much speed survives hitting a bound: zero stops dead, one
+        /// returns at the speed it arrived, values between lose energy the way
+        /// a real bounce does.
+        restitution: f64,
     },
 }
 
@@ -280,7 +310,15 @@ pub struct AnimatedChange {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AnimationFrame {
     /// Properties whose current level advanced.
-    pub changes: Vec<AnimatedChange>,
+    /// How many property values this tick moved.
+    ///
+    /// A count, not a list. Each entry used to name the node, the property and
+    /// a `PropertyClass` worked out per property per frame — and every consumer
+    /// only ever asked whether the list was empty. The classification was
+    /// plainly meant to let a transform-only change skip the draw-list rebuild;
+    /// nothing ever wired it up, so it was arithmetic done sixty times a second
+    /// to fill in a field nobody read.
+    pub changed: usize,
     /// Animations that ended during or since the previous tick.
     pub events: Vec<AnimationEvent>,
     /// Animation groups that ended during or since the previous tick.
@@ -290,20 +328,36 @@ pub struct AnimationFrame {
 }
 
 #[derive(Clone, Debug)]
-struct Animation {
-    from: Value,
-    to: Value,
-    initial_velocity: Velocity,
-    preserve_velocity: bool,
-    clock: Tween<f32>,
-    behavior: Behavior,
+pub(crate) struct Animation {
+    pub(crate) from: Value,
+    pub(crate) to: Value,
+    pub(crate) initial_velocity: Velocity,
+    pub(crate) preserve_velocity: bool,
+    pub(crate) clock: Tween<f32>,
+    pub(crate) behavior: Behavior,
 }
 
 #[derive(Clone, Debug)]
-enum PhysicsAnimation {
+pub(crate) enum PhysicsAnimation {
     Spring {
         target: f64,
         motion: Spring,
+    },
+    /// Free motion under friction, gravity and elastic bounds.
+    ///
+    /// Integrated here rather than by Animato's `Inertia`, which models
+    /// friction alone: it stops dead when friction is zero, its bounds merely
+    /// clamp, and it settles on speed — and the top of a bounce is momentarily
+    /// still, so settling on speed would end the motion mid-flight. Animato's
+    /// tuning still supplies the friction numbers behind the named presets.
+    Decay {
+        position: f64,
+        velocity: f64,
+        friction: f64,
+        gravity: f64,
+        restitution: f64,
+        min_velocity: f64,
+        bounds: Option<(f64, f64)>,
     },
     Smoothed {
         target: f64,
@@ -313,28 +367,34 @@ enum PhysicsAnimation {
 }
 
 impl PhysicsAnimation {
-    fn target(&self) -> f64 {
+    pub(crate) fn target(&self) -> f64 {
         match self {
             Self::Spring { target, .. } | Self::Smoothed { target, .. } => *target,
+            // A fling is not going anywhere in particular, so where it has
+            // reached is the only honest answer. Assigning a value mid-flight
+            // hands this position, and the velocity below, to whatever takes
+            // over — which is how a flick can be caught by a spring.
+            Self::Decay { position, .. } => *position,
         }
     }
 
-    fn velocity(&self) -> f64 {
+    pub(crate) fn velocity(&self) -> f64 {
         match self {
             Self::Spring { motion, .. } => f64::from(motion.velocity()),
             Self::Smoothed { velocity, .. } => *velocity,
+            Self::Decay { velocity, .. } => *velocity,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Velocity {
+pub(crate) enum Velocity {
     Number(f64),
     Color([f64; 4]),
 }
 
 impl Velocity {
-    fn is_moving(self) -> bool {
+    pub(crate) fn is_moving(self) -> bool {
         match self {
             Self::Number(value) => value.abs() > 1e-6,
             Self::Color(values) => values.into_iter().any(|value| value.abs() > 1e-6),
@@ -343,10 +403,10 @@ impl Velocity {
 }
 
 #[derive(Clone)]
-struct PropertySpec {
-    name: &'static str,
-    kind: PropertyType,
-    default: Value,
+pub(crate) struct PropertySpec {
+    pub(crate) name: &'static str,
+    pub(crate) kind: PropertyType,
+    pub(crate) default: Value,
 }
 
 /// A scene graph operation failure.

@@ -1,4 +1,16 @@
-fn install_shell_api<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>, mold: Table<'gc>) {
+use luna::{Callback, CallbackReturn, Closure, Context, Table, Value as LuaValue};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::{
+    layer_parse::*, scene_bindings::*, state::*, table_menu::*, types::*, window_parse::*,
+};
+
+pub(crate) fn install_shell_api<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    mold: Table<'gc>,
+) {
     let surface_read_state = Rc::clone(&state);
     let surface_index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (_surface, key): (Table, String) = stack.consume(ctx)?;

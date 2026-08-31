@@ -1,4 +1,13 @@
-fn checked_window_node(
+use luna::{Callback, CallbackReturn, Context, Table, UserRef};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use mold_layout::Geometry;
+use mold_scene::NodeHandle;
+
+use crate::{runtime_helpers::*, scene_bindings::*, state::*, surface_types::*};
+
+pub(crate) fn checked_window_node(
     state: &ReactiveState,
     surface: u64,
     node: NodeHandle,
@@ -15,21 +24,21 @@ fn checked_window_node(
     Ok(node)
 }
 
-fn point_table(ctx: Context<'_>, point: (f64, f64)) -> Table<'_> {
+pub(crate) fn point_table(ctx: Context<'_>, point: (f64, f64)) -> Table<'_> {
     let result = Table::new(&ctx);
     result.set_field(ctx, "x", point.0);
     result.set_field(ctx, "y", point.1);
     result
 }
 
-fn geometry_table(ctx: Context<'_>, geometry: Geometry) -> Table<'_> {
+pub(crate) fn geometry_table(ctx: Context<'_>, geometry: Geometry) -> Table<'_> {
     let result = point_table(ctx, (geometry.x, geometry.y));
     result.set_field(ctx, "width", geometry.width);
     result.set_field(ctx, "height", geometry.height);
     result
 }
 
-fn window_item_position_method<'gc>(
+pub(crate) fn window_item_position_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -48,7 +57,7 @@ fn window_item_position_method<'gc>(
     })
 }
 
-fn window_item_rect_method<'gc>(
+pub(crate) fn window_item_rect_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -80,7 +89,7 @@ fn window_item_rect_method<'gc>(
     })
 }
 
-fn window_map_from_item_method<'gc>(
+pub(crate) fn window_map_from_item_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -102,7 +111,7 @@ fn window_map_from_item_method<'gc>(
     })
 }
 
-fn window_map_rect_from_item_method<'gc>(
+pub(crate) fn window_map_rect_from_item_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -138,7 +147,7 @@ fn window_map_rect_from_item_method<'gc>(
     })
 }
 
-fn floating_state_method<'gc>(
+pub(crate) fn floating_state_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     property: &'static str,
@@ -176,7 +185,7 @@ fn floating_state_method<'gc>(
     })
 }
 
-fn floating_string_method<'gc>(
+pub(crate) fn floating_string_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     property: &'static str,
@@ -217,7 +226,7 @@ fn floating_string_method<'gc>(
     })
 }
 
-fn floating_size_method<'gc>(
+pub(crate) fn floating_size_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     property: &'static str,
@@ -309,4 +318,3 @@ fn floating_size_method<'gc>(
         Ok(CallbackReturn::Return)
     })
 }
-

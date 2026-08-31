@@ -122,7 +122,7 @@ make.recipe{
 
 ---------------------------------------------------------------------------- rust
 
-local EXAMPLE = os.getenv("EXAMPLE") or "main"
+local EXAMPLE = os.getenv("EXAMPLE") or "examples/quickshell/init.lua"
 
 make.recipe{ name = "build", desc = "the workspace",
              run = function()
@@ -133,11 +133,10 @@ make.alias("b", "build")
 
 make.recipe{
   name = "run",
-  desc = "run a development example: --example NAME",
-  params = { { "--example", desc = "which example to run", default = EXAMPLE } },
+  desc = "run a configuration: --example PATH",
+  params = { { "--example", desc = "path to the Lua configuration", default = EXAMPLE } },
   run = function(a)
     local script = a.example or EXAMPLE
-    if script == "main" then script = "tests/fixtures/hello.lua" end
     sh.cargo("build", "--package", "mold-cli")
     local command = { "target/debug/mold", script }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
@@ -316,7 +315,7 @@ make.recipe{
     assert(not oslo.fs.stat("crates/patin"), "patin belongs downstream")
     local scan = oslo.run{
       "grep", "-RIl", "--exclude-dir=target", "-E", "patin|mold-widgets",
-      "crates", "tests", "examples", capture = true,
+      "crates", "examples", capture = true,
     }
     assert(not scan.ok, "downstream widget or shell ownership leaked into mold")
   end,

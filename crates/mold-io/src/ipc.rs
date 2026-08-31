@@ -1,3 +1,15 @@
+use std::fs;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use serde_json::{Map as JsonMap, Value as JsonValue};
+
 const IPC_MAX_CONNECTIONS: usize = 32;
 const IPC_MAX_REQUEST: usize = 64 * 1024;
 const IPC_MAX_RESPONSE: usize = 256 * 1024;
@@ -123,7 +135,24 @@ impl IpcServer {
                             active.fetch_sub(1, Ordering::AcqRel);
                         });
                     }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    // Recoverable: the socket is fine, this one attempt was
+                    // not. Ending the accept loop here would leave the server
+                    // looking alive — it keeps its join handle and its socket
+                    // path — while every later `mold call` failed to connect,
+                    // for the rest of the process's life. A client that
+                    // vanished between the SYN and the accept, an interrupted
+                    // syscall, or a momentary shortage of file descriptors are
+                    // all things this process can cause itself.
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock
+                                | io::ErrorKind::Interrupted
+                                | io::ErrorKind::ConnectionAborted
+                                | io::ErrorKind::ConnectionReset
+                        ) || error.raw_os_error() == Some(libc::EMFILE)
+                            || error.raw_os_error() == Some(libc::ENFILE) =>
+                    {
                         thread::sleep(Duration::from_millis(10));
                     }
                     Err(_) => break,
@@ -259,7 +288,7 @@ fn write_ipc_reply(mut stream: impl Write, reply: IpcReply) -> io::Result<()> {
     stream.write_all(&bytes)
 }
 
-fn encode_ipc_request(request: &IpcRequest) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_ipc_request(request: &IpcRequest) -> io::Result<Vec<u8>> {
     let value = match request {
         IpcRequest::Call { target, args } => serde_json::json!({
             "op": "call",
@@ -274,7 +303,7 @@ fn encode_ipc_request(request: &IpcRequest) -> io::Result<Vec<u8>> {
     serde_json::to_vec(&value).map_err(io::Error::other)
 }
 
-fn decode_ipc_request(bytes: &[u8]) -> io::Result<IpcRequest> {
+pub(crate) fn decode_ipc_request(bytes: &[u8]) -> io::Result<IpcRequest> {
     let value: JsonValue = serde_json::from_slice(bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let object = value
@@ -322,7 +351,7 @@ fn decode_ipc_request(bytes: &[u8]) -> io::Result<IpcRequest> {
     }
 }
 
-fn encode_ipc_reply(reply: &IpcReply) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_ipc_reply(reply: &IpcReply) -> io::Result<Vec<u8>> {
     let mut object = JsonMap::new();
     object.insert("ok".into(), JsonValue::Bool(reply.ok));
     object.insert("n".into(), JsonValue::from(reply.result.len()));
@@ -336,7 +365,7 @@ fn encode_ipc_reply(reply: &IpcReply) -> io::Result<Vec<u8>> {
     serde_json::to_vec(&JsonValue::Object(object)).map_err(io::Error::other)
 }
 
-fn decode_ipc_reply(bytes: &[u8]) -> io::Result<IpcReply> {
+pub(crate) fn decode_ipc_reply(bytes: &[u8]) -> io::Result<IpcReply> {
     let value: JsonValue = serde_json::from_slice(bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let object = value
@@ -393,4 +422,3 @@ fn ipc_value_from_json(value: &JsonValue) -> io::Result<IpcValue> {
         )),
     }
 }
-

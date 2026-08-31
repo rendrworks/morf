@@ -91,7 +91,10 @@ local spinner = ui.Sdf {
 -- ── Three dots that fuse as they pass ───────────────────────────────────────
 --
 -- A smooth union between neighbours, so the dots do not merely bob — they draw
--- out of one another and pinch back apart.
+-- out of one another and pinch back apart. Each one is *dropped* rather than
+-- driven: gravity pulls it down, the floor gives most of the speed back, and
+-- the three drift out of step because they were thrown at different strengths.
+-- Nothing here writes a position; a dot that has come to rest is thrown again.
 local dots = {}
 local dots_field = {
   x = 6, y = 20, width = 168, height = 140,
@@ -127,6 +130,21 @@ local bar = ui.Sdf {
   bar_fill,
 }
 
+--- Drops one dot again, a little harder or softer than last time.
+local function drop(index)
+  mold.animation.fling {
+    node = dots[index],
+    property = "y",
+    velocity = -150 - index * 22 - math.random() * 60,
+    gravity = 900,
+    friction = 0,
+    min_velocity = 26,
+    bounce = 0.72,
+    min = 12,
+    max = 88,
+  }
+end
+
 --- Drives every indicator from one clock and one progress value.
 local function advance()
   local now = elapsed:elapsed_ms()
@@ -136,8 +154,12 @@ local function advance()
   -- The gap travels, and breathes as it goes.
   spinner_gap.rotation = (now * 0.22) % 360
   spinner_gap.angle = 28 + math.sin(now * 0.0022) * 18
+  -- The dots are falling, not being positioned; each is thrown again once it
+  -- has settled on the floor.
   for index = 1, 3 do
-    dots[index].y = 50 + math.sin(now * 0.004 + index * 1.1) * 26
+    if not mold.animation.active(dots[index], "y") then
+      drop(index)
+    end
   end
 end
 
@@ -154,6 +176,14 @@ ui.Item {
   caption(570, "a capsule fill, round at any width"),
 
   ui.Timer { interval = 16, ["repeat"] = true, running = true, on_triggered = advance },
+  ui.Timer {
+    interval = 1,
+    ["repeat"] = false,
+    running = true,
+    on_triggered = function()
+      for index = 1, 3 do drop(index) end
+    end,
+  },
   ui.Timer {
     interval = 2400,
     ["repeat"] = true,

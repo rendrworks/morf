@@ -1,20 +1,12 @@
 //! Raster, SVG, and XDG icon-theme loading with size-aware caches.
 
-use std::collections::{HashMap, HashSet};
-use std::env;
-use std::error::Error as StdError;
-use std::fmt;
-use std::fs;
-use std::os::unix::ffi::OsStringExt;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+mod distance_field;
+mod icons;
+mod image_cache;
+mod quantize;
 
-use image::ImageReader;
-use resvg::{tiny_skia, usvg};
-
-include!("quantize.rs");
-include!("distance_field.rs");
-include!("image_cache.rs");
-include!("icons.rs");
+pub use icons::IconResolver;
+pub use image_cache::{ImageCache, ImageError};
+pub use quantize::{ImageData, ImageRect, quantize_colors};
 #[cfg(test)]
 mod tests;

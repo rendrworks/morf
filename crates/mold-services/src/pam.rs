@@ -156,9 +156,16 @@ fn load_pam() -> Result<Library, PamError> {
         .map(std::path::PathBuf::from)
         .collect::<Vec<_>>();
     candidates.extend([
+        // The loader's own search path first, then the two layouts distributions
+        // actually use: Debian's multiarch directories and everyone else's flat
+        // /usr/lib. Trying only the multiarch pair means no authentication at all
+        // on Arch, Fedora or SUSE.
         std::path::PathBuf::from("libpam.so.0"),
         format!("/usr/lib/{architecture}-linux-gnu/libpam.so.0").into(),
         format!("/lib/{architecture}-linux-gnu/libpam.so.0").into(),
+        std::path::PathBuf::from("/usr/lib/libpam.so.0"),
+        std::path::PathBuf::from("/lib/libpam.so.0"),
+        std::path::PathBuf::from("/usr/lib64/libpam.so.0"),
     ]);
     let mut last_error = None;
     for candidate in candidates {

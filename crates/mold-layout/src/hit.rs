@@ -1,3 +1,10 @@
+use mold_scene::{Element, NodeHandle, Scene};
+
+use crate::geometry::{Geometry, Transform2D};
+use crate::helpers::LayoutError;
+use crate::layout::Layout;
+use crate::transform::node_transform;
+
 /// One hit-tested MouseArea together with the tested point inside that node.
 ///
 /// The two coordinate spaces are deliberately distinct. A hit test is queried
@@ -59,11 +66,7 @@ impl Layout {
     }
 
     /// Accumulates the transform chain from the scene root down to one node.
-    fn chain_transform(
-        &self,
-        scene: &Scene,
-        node: NodeHandle,
-    ) -> Result<Transform2D, LayoutError> {
+    fn chain_transform(&self, scene: &Scene, node: NodeHandle) -> Result<Transform2D, LayoutError> {
         let mut chain = vec![node];
         let mut current = node;
         while let Some(parent) = scene.parent(current)? {
@@ -73,7 +76,9 @@ impl Layout {
         let mut transform = Transform2D::IDENTITY;
         for node in chain.into_iter().rev() {
             let Some(geometry) = self.geometry(node) else {
-                return Err(LayoutError::Scene("node has no resolved geometry".to_owned()));
+                return Err(LayoutError::Scene(
+                    "node has no resolved geometry".to_owned(),
+                ));
             };
             transform = transform.then(node_transform(scene, node, geometry)?);
         }
@@ -99,7 +104,7 @@ impl Layout {
         {
             rectangles.push(transform.bounds(geometry));
         }
-        for child in scene.children(node)? {
+        for &child in scene.children(node)? {
             self.collect_input_geometry(scene, child, transform, rectangles)?;
         }
         Ok(())
@@ -130,7 +135,7 @@ impl Layout {
         if !inside && scene.bool_value(node, "clip")? {
             return Ok(None);
         }
-        for child in scene.children(node)?.into_iter().rev() {
+        for &child in scene.children(node)?.iter().rev() {
             if let Some(hit) = self.hit_node(scene, child, transform, x, y)? {
                 return Ok(Some(hit));
             }
@@ -138,10 +143,12 @@ impl Layout {
         // The inverse point is measured in the space the node's own geometry
         // is resolved in, which is absolute; subtracting the node's origin is
         // what makes it node-local.
-        Ok((inside && scene.element(node)? == Element::MouseArea).then_some(Hit {
-            node,
-            local_x: local_x - geometry.x,
-            local_y: local_y - geometry.y,
-        }))
+        Ok(
+            (inside && scene.element(node)? == Element::MouseArea).then_some(Hit {
+                node,
+                local_x: local_x - geometry.x,
+                local_y: local_y - geometry.y,
+            }),
+        )
     }
 }

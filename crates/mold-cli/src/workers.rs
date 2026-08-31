@@ -1,4 +1,18 @@
-fn reconcile_workers(
+use mold_io::{IpcReply, IpcRequest, IpcValue as WireValue};
+use mold_lua::{Limits, Runtime, Screen};
+use mold_wayland::ScreenInfo;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self};
+use std::time::Duration;
+
+use crate::{
+    config::*, lock::*, paint::*, services::*, supervisor::*, surface_run::*, surfaces::*,
+};
+
+pub(crate) fn reconcile_workers(
     workers: &mut BTreeMap<String, Worker>,
     desired: &BTreeMap<String, ScreenInfo>,
     path: Arc<PathBuf>,
@@ -29,23 +43,28 @@ fn reconcile_workers(
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let (commands, command_rx) = mpsc::channel();
-        let join = thread::spawn(move || {
-            if let Err(error) = run_surface(
-                &path,
-                &source,
-                screen,
-                policy,
-                &tx,
-                &worker_stop,
-                &command_rx,
-            ) && !worker_stop.load(Ordering::Acquire)
-            {
-                let _ = tx.send(SupervisorMessage::Worker(WorkerMessage::Failed {
-                    output,
-                    error,
-                }));
-            }
-        });
+        // Named after the output it drives, so anything reporting per-thread —
+        // a profiler, a panic, a frame counter — says which screen it means.
+        let join = thread::Builder::new()
+            .name(output.clone())
+            .spawn(move || {
+                if let Err(error) = run_surface(
+                    &path,
+                    &source,
+                    screen,
+                    policy,
+                    &tx,
+                    &worker_stop,
+                    &command_rx,
+                ) && !worker_stop.load(Ordering::Acquire)
+                {
+                    let _ = tx.send(SupervisorMessage::Worker(WorkerMessage::Failed {
+                        output,
+                        error,
+                    }));
+                }
+            })
+            .expect("worker thread");
         workers.insert(
             name.clone(),
             Worker {
@@ -60,7 +79,7 @@ fn reconcile_workers(
 
 /// Hands every live worker the compositor's new output list, so each runtime's
 /// `mold.screens` follows a monitor being plugged in, moved, or unplugged.
-fn broadcast_screens(workers: &BTreeMap<String, Worker>, screens: &[ScreenInfo]) {
+pub(crate) fn broadcast_screens(workers: &BTreeMap<String, Worker>, screens: &[ScreenInfo]) {
     for worker in workers.values() {
         let _ = worker
             .commands
@@ -68,7 +87,7 @@ fn broadcast_screens(workers: &BTreeMap<String, Worker>, screens: &[ScreenInfo])
     }
 }
 
-fn handle_ipc(
+pub(crate) fn handle_ipc(
     workers: &BTreeMap<String, Worker>,
     daemon_logs: &mut Vec<String>,
     request: &IpcRequest,
@@ -142,14 +161,14 @@ fn handle_ipc(
 }
 
 #[derive(Clone, Copy, Default)]
-struct WorkerUpdate {
-    repaint: bool,
-    reset_input: bool,
-    refresh_idle: bool,
-    recreate_surface: bool,
+pub(crate) struct WorkerUpdate {
+    pub(crate) repaint: bool,
+    pub(crate) reset_input: bool,
+    pub(crate) refresh_idle: bool,
+    pub(crate) recreate_surface: bool,
 }
 
-fn handle_worker_command(
+pub(crate) fn handle_worker_command(
     runtime: &mut Runtime,
     screen: &Screen,
     policy: LoadPolicy,

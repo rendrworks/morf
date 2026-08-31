@@ -8,13 +8,11 @@ repository.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
-lyon_tessellation.workspace = true
 mold-image.workspace = true
 mold-layout.workspace = true
 mold-scene.workspace = true
 mold-text.workspace = true
 raw-window-handle.workspace = true
-svgtypes.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]

@@ -313,3 +313,66 @@ fn an_unknown_shape_or_operation_is_an_error_rather_than_a_default() {
     let error = DrawList::from_scene(&scene, &layout).unwrap_err();
     assert!(format!("{error}").contains("blend"), "{error}");
 }
+
+#[test]
+fn a_field_drives_the_morph_of_every_layer_that_does_not_speak_for_itself() {
+    // A compound shape is several layers that have to move together. Driving
+    // them from the container makes the whole compound one animatable number,
+    // rather than N numbers a configuration has to keep in step by hand — which
+    // is how a config acquires a frame runtime.
+    let (scene, root, _) = field_scene(&[
+        (
+            Element::SdfShape,
+            &[
+                ("width", Value::Number(40.0)),
+                ("height", Value::Number(40.0)),
+                ("shape", Value::String("circle".into())),
+                ("morph_to", Value::String("capsule".into())),
+            ],
+        ),
+        (
+            Element::SdfShape,
+            &[
+                ("width", Value::Number(20.0)),
+                ("height", Value::Number(20.0)),
+                ("shape", Value::String("ring".into())),
+                ("morph_to", Value::String("box".into())),
+            ],
+        ),
+        (
+            Element::SdfShape,
+            &[
+                ("width", Value::Number(10.0)),
+                ("height", Value::Number(10.0)),
+                ("shape", Value::String("star".into())),
+                // This one opts out and holds its own position.
+                ("morph_progress", Value::Number(0.25)),
+            ],
+        ),
+    ]);
+    let mut scene = scene;
+    scene.assign(root, "morph_progress", 0.75).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 200.0,
+            height: 200.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+    let list = DrawList::from_scene(&scene, &layout).unwrap();
+    let DrawCommand::Field { layers, .. } = list
+        .commands
+        .iter()
+        .find(|command| matches!(command, DrawCommand::Field { .. }))
+        .unwrap()
+    else {
+        unreachable!("found a field")
+    };
+
+    assert_eq!(layers[0].morph, 0.75, "follows the field");
+    assert_eq!(layers[1].morph, 0.75, "follows the field");
+    assert_eq!(layers[2].morph, 0.25, "keeps its own");
+}

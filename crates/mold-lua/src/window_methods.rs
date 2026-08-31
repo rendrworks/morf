@@ -1,4 +1,10 @@
-fn window_updates_enabled_method<'gc>(
+use luna::{Callback, CallbackReturn, Context, Table, UserRef, Value as LuaValue};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::{layer_parse::*, scene_bindings::*, state::*, surface_types::*, window_parse::*};
+
+pub(crate) fn window_updates_enabled_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -22,7 +28,10 @@ fn window_updates_enabled_method<'gc>(
     })
 }
 
-fn window_size_method<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>) -> Callback<'gc> {
+pub(crate) fn window_size_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Callback<'gc> {
     Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (surface, width, height): (UserRef<WindowSurfaceToken>, Option<i64>, Option<i64>) =
             stack.consume(ctx)?;
@@ -37,9 +46,11 @@ fn window_size_method<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>)
             _ => None,
         };
         if values.is_some_and(|(width, height)| {
-            width == 0 || height == 0 || width > 16_384 || height > 16_384
+            width == 0 || height == 0 || width > MAX_SURFACE_EXTENT || height > MAX_SURFACE_EXTENT
         }) {
-            return Err(HostError("window size is outside 1..16384".into()).into());
+            return Err(
+                HostError(format!("window size is outside 1..{MAX_SURFACE_EXTENT}")).into(),
+            );
         }
         let mut state = state.borrow_mut();
         let (width, height, changed) = {
@@ -67,7 +78,7 @@ fn window_size_method<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>)
     })
 }
 
-fn popup_bool_method<'gc>(
+pub(crate) fn popup_bool_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     property: &'static str,
@@ -99,7 +110,7 @@ fn popup_bool_method<'gc>(
     })
 }
 
-fn popup_string_method<'gc>(
+pub(crate) fn popup_string_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     property: &'static str,
@@ -135,7 +146,7 @@ fn popup_string_method<'gc>(
     })
 }
 
-fn popup_anchor_rect_method<'gc>(
+pub(crate) fn popup_anchor_rect_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -220,7 +231,10 @@ fn popup_anchor_rect_method<'gc>(
     })
 }
 
-fn popup_offset_method<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>) -> Callback<'gc> {
+pub(crate) fn popup_offset_method<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+) -> Callback<'gc> {
     Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (surface, x, y): (UserRef<WindowSurfaceToken>, Option<i64>, Option<i64>) =
             stack.consume(ctx)?;
@@ -261,7 +275,7 @@ fn popup_offset_method<'gc>(ctx: Context<'gc>, state: Rc<RefCell<ReactiveState>>
     })
 }
 
-fn popup_constraints_method<'gc>(
+pub(crate) fn popup_constraints_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -313,7 +327,7 @@ fn popup_constraints_method<'gc>(
     })
 }
 
-fn window_parent_id_method<'gc>(
+pub(crate) fn window_parent_id_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -337,7 +351,7 @@ fn window_parent_id_method<'gc>(
     })
 }
 
-fn window_set_parent_method<'gc>(
+pub(crate) fn window_set_parent_method<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
 ) -> Callback<'gc> {
@@ -418,4 +432,3 @@ fn window_set_parent_method<'gc>(
         Ok(CallbackReturn::Return)
     })
 }
-

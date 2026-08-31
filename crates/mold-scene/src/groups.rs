@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use crate::{animation::*, types::*};
+
 /// Handle to a group started on the scene.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct GroupId(u64);
@@ -33,9 +37,11 @@ pub enum AnimationStep {
 
 impl AnimationStep {
     /// How long the step occupies its parent's timeline.
-    fn duration(&self) -> Duration {
+    pub(crate) fn duration(&self) -> Duration {
         match self {
-            Self::Property { behavior, .. } => behavior.delay + behavior.duration * passes(*behavior),
+            Self::Property { behavior, .. } => {
+                behavior.delay + behavior.duration * passes(*behavior)
+            }
             Self::Pause(duration) => *duration,
             Self::Sequential(steps) => steps.iter().map(Self::duration).sum(),
             Self::Parallel(steps) => steps
@@ -51,7 +57,7 @@ impl AnimationStep {
     /// A step that never settles has no end for the rest of the group to wait
     /// on, so an endless repetition is refused here rather than silently
     /// stalling everything after it.
-    fn validate(&self) -> Result<(), SceneError> {
+    pub(crate) fn validate(&self) -> Result<(), SceneError> {
         match self {
             Self::Property {
                 property, behavior, ..
@@ -66,7 +72,7 @@ impl AnimationStep {
     }
 
     /// Flattens the tree into absolute start times measured from the group start.
-    fn schedule(&self, at: Duration, out: &mut Vec<ScheduledStep>) {
+    pub(crate) fn schedule(&self, at: Duration, out: &mut Vec<ScheduledStep>) {
         match self {
             Self::Property {
                 node,
@@ -110,29 +116,29 @@ pub struct GroupEvent {
 
 /// One property step resolved to an absolute offset from the group start.
 #[derive(Clone, Debug)]
-struct ScheduledStep {
-    at: Duration,
-    node: NodeHandle,
-    property: String,
-    from: Option<Value>,
-    to: Value,
-    behavior: Behavior,
+pub(crate) struct ScheduledStep {
+    pub(crate) at: Duration,
+    pub(crate) node: NodeHandle,
+    pub(crate) property: String,
+    pub(crate) from: Option<Value>,
+    pub(crate) to: Value,
+    pub(crate) behavior: Behavior,
 }
 
 /// A group being advanced by the scene's frame tick.
-struct RunningGroup {
-    steps: Vec<ScheduledStep>,
+pub(crate) struct RunningGroup {
+    pub(crate) steps: Vec<ScheduledStep>,
     /// Index of the first step that has not started yet.
-    cursor: usize,
-    elapsed: Duration,
-    total: Duration,
-    repeat: Repeat,
-    passes: u32,
-    paused: bool,
+    pub(crate) cursor: usize,
+    pub(crate) elapsed: Duration,
+    pub(crate) total: Duration,
+    pub(crate) repeat: Repeat,
+    pub(crate) passes: u32,
+    pub(crate) paused: bool,
 }
 
 /// How many times a settling repetition covers its interval.
-fn passes(behavior: Behavior) -> u32 {
+pub(crate) fn passes(behavior: Behavior) -> u32 {
     match behavior.repeat {
         Repeat::Once => 1,
         Repeat::Times(count) | Repeat::PingPongTimes(count) => count.max(1),
@@ -152,7 +158,12 @@ impl Scene {
         step: AnimationStep,
         repeat: Repeat,
     ) -> Result<GroupId, SceneError> {
-        if repeat.is_endless() && !matches!(repeat, Repeat::Forever) {
+        // Both alternating forms, not just the endless one. A group has no
+        // per-pass direction to reverse, so `PingPongTimes` used to slip past
+        // this guard and then find no arm in the tick — accepted, and quietly
+        // run once. A configuration asking for something the engine cannot do
+        // should be told so, whether it asked for it forever or five times.
+        if matches!(repeat, Repeat::PingPong | Repeat::PingPongTimes(_)) {
             return Err(SceneError::Reactive(
                 "an animation group cannot alternate direction".to_owned(),
             ));
@@ -245,7 +256,7 @@ impl Scene {
     /// tween delay, which the clock drains before it begins advancing. The step
     /// therefore ends the frame at exactly the progress its start time earned,
     /// and a long sequence does not drift a frame further out with every leg.
-    fn tick_groups(&mut self, delta: Duration) -> Result<Vec<GroupEvent>, SceneError> {
+    pub(crate) fn tick_groups(&mut self, delta: Duration) -> Result<Vec<GroupEvent>, SceneError> {
         let mut events = std::mem::take(&mut self.group_events);
         let mut due = Vec::new();
         let mut finished = Vec::new();
@@ -312,7 +323,7 @@ impl Scene {
     /// The event matters as much as the removal: a caller waiting on a group
     /// that can no longer run needs to hear that it ended, and any handler
     /// registered for it has to be released.
-    fn retain_live_groups(&mut self) {
+    pub(crate) fn retain_live_groups(&mut self) {
         let nodes = &self.nodes;
         let events = &mut self.group_events;
         self.groups.retain(|id, group| {

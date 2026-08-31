@@ -1,3 +1,13 @@
+use crate::*;
+use mold_io::DbusValue;
+use mold_scene::Value as SceneValue;
+use std::time::Duration;
+
+use super::*;
+
+use crate::serialization::lua_to_dbus;
+use luna::Table;
+use luna::Value as LuaValue;
 #[test]
 fn lua_dbus_arguments_preserve_positional_lists() {
     let mut runtime = Runtime::default();
@@ -78,17 +88,32 @@ fn touch_handlers_receive_contact_identity_and_coordinates() {
     let root = runtime.scene().roots()[0];
     let text = runtime.scene().children(root).unwrap()[0];
 
-    assert!(runtime.dispatch_touch_event(root, UiEvent::TouchPressed, 7, EventPoint::new((12.0, 18.0), (12.0, 18.0))));
+    assert!(runtime.dispatch_touch_event(
+        root,
+        UiEvent::TouchPressed,
+        7,
+        EventPoint::new((12.0, 18.0), (12.0, 18.0))
+    ));
     assert_eq!(
         runtime.scene().string_value(text, "text").unwrap(),
         "down:7:12:18"
     );
-    assert!(runtime.dispatch_touch_event(root, UiEvent::TouchMoved, 7, EventPoint::new((20.0, 30.0), (20.0, 30.0))));
+    assert!(runtime.dispatch_touch_event(
+        root,
+        UiEvent::TouchMoved,
+        7,
+        EventPoint::new((20.0, 30.0), (20.0, 30.0))
+    ));
     assert_eq!(
         runtime.scene().string_value(text, "text").unwrap(),
         "move:7:20:30"
     );
-    assert!(runtime.dispatch_touch_event(root, UiEvent::TouchReleased, 7, EventPoint::new((20.0, 30.0), (20.0, 30.0))));
+    assert!(runtime.dispatch_touch_event(
+        root,
+        UiEvent::TouchReleased,
+        7,
+        EventPoint::new((20.0, 30.0), (20.0, 30.0))
+    ));
     assert_eq!(runtime.scene().string_value(text, "text").unwrap(), "up:7");
 }
 
@@ -117,7 +142,12 @@ fn pointer_drag_handlers_receive_position_and_displacement() {
 
     assert!(!runtime.accepts_pointer_button(root, 0x110));
     assert!(runtime.accepts_pointer_button(root, 0x111));
-    assert!(runtime.dispatch_pointer_event(root, UiEvent::Dragged, EventPoint::new((20.0, 30.0), (20.0, 30.0)), (9.0, 12.0)));
+    assert!(runtime.dispatch_pointer_event(
+        root,
+        UiEvent::Dragged,
+        EventPoint::new((20.0, 30.0), (20.0, 30.0)),
+        (9.0, 12.0)
+    ));
     assert_eq!(
         runtime.scene().string_value(text, "text").unwrap(),
         "20:30:9:12"
@@ -146,7 +176,12 @@ fn wheel_handlers_receive_pixels_and_steps() {
     let root = runtime.scene().roots()[0];
     let text = runtime.scene().children(root).unwrap()[0];
 
-    assert!(runtime.dispatch_wheel_event(root, EventPoint::new((8.0, 12.0), (8.0, 12.0)), (-4.0, 15.0), (-1, 2)));
+    assert!(runtime.dispatch_wheel_event(
+        root,
+        EventPoint::new((8.0, 12.0), (8.0, 12.0)),
+        (-4.0, 15.0),
+        (-1, 2)
+    ));
     assert_eq!(
         runtime.scene().string_value(text, "text").unwrap(),
         "8:12:-4:15:-1:2"
@@ -350,7 +385,7 @@ fn list_view_builds_only_visible_lua_delegates() {
         .unwrap();
     let scene = runtime.scene();
     let root = scene.roots()[0];
-    let children = scene.children(root).unwrap();
+    let children = scene.children(root).unwrap().to_vec();
 
     assert_eq!(children.len(), 14);
     assert_eq!(scene.string_value(children[1], "text").unwrap(), "app300");
@@ -387,7 +422,7 @@ fn grid_view_virtualizes_complete_rows_in_rust() {
         .unwrap();
     let scene = runtime.scene();
     let root = scene.roots()[0];
-    let children = scene.children(root).unwrap();
+    let children = scene.children(root).unwrap().to_vec();
 
     assert_eq!(children.len(), 28);
     assert_eq!(scene.string_value(children[5], "text").unwrap(), "tile6");

@@ -1,4 +1,19 @@
-fn configure_element<'gc>(
+use crate::states::StateValue;
+use crate::states::*;
+use luna::{Context, Function, Table, Value as LuaValue};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::Duration;
+
+use mold_scene::{Behavior, NodeHandle, Physics, Repeat, RotationDirection, Value as SceneValue};
+
+use crate::{
+    events::*, lua_values::*, reactive_bindings::*, scene_bindings::*, state::*, table_menu::*,
+    types::*,
+};
+
+pub(crate) fn configure_element<'gc>(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'gc>,
     limits: Limits,
@@ -120,28 +135,14 @@ fn configure_element<'gc>(
     Ok(())
 }
 
-fn handler_event(property: &str) -> Option<UiEvent> {
-    match property {
-        "on_entered" => Some(UiEvent::PointerEntered),
-        "on_exited" => Some(UiEvent::PointerExited),
-        "on_position_changed" => Some(UiEvent::PointerMoved),
-        "on_pressed" => Some(UiEvent::Pressed),
-        "on_released" => Some(UiEvent::Released),
-        "on_clicked" => Some(UiEvent::Clicked),
-        "on_drag_started" => Some(UiEvent::DragStarted),
-        "on_dragged" => Some(UiEvent::Dragged),
-        "on_drag_finished" => Some(UiEvent::DragFinished),
-        "on_wheel" => Some(UiEvent::Wheel),
-        "on_key_pressed" => Some(UiEvent::KeyPressed),
-        "on_touch_pressed" => Some(UiEvent::TouchPressed),
-        "on_touch_moved" => Some(UiEvent::TouchMoved),
-        "on_touch_released" => Some(UiEvent::TouchReleased),
-        "on_touch_canceled" => Some(UiEvent::TouchCanceled),
-        _ => None,
-    }
+pub(crate) fn handler_event(property: &str) -> Option<UiEvent> {
+    EVENT_PROPERTIES
+        .iter()
+        .find(|(_, name)| *name == property)
+        .map(|(event, _)| *event)
 }
 
-fn configure_states<'gc>(
+pub(crate) fn configure_states<'gc>(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'gc>,
     node: NodeHandle,
@@ -265,7 +266,7 @@ fn configure_states<'gc>(
     Ok(())
 }
 
-fn configure_behaviors<'gc>(
+pub(crate) fn configure_behaviors<'gc>(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'gc>,
     node: NodeHandle,
@@ -377,7 +378,7 @@ fn configure_behaviors<'gc>(
 /// `loops` is either a pass count or one of the endless names, and `ping_pong`
 /// turns whichever of those was given into an alternating variant. Lua reserves
 /// `repeat` as a keyword, so the count field cannot carry that name.
-fn parse_repeat<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<Repeat, String> {
+pub(crate) fn parse_repeat<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<Repeat, String> {
     let alternating = match options.get_value(ctx, "ping_pong") {
         LuaValue::Nil => false,
         LuaValue::Boolean(value) => value,
@@ -411,7 +412,7 @@ fn parse_repeat<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<Repeat, S
 }
 
 /// Reads the optional `enabled` switch, defaulting an absent one to on.
-fn parse_enabled<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<bool, String> {
+pub(crate) fn parse_enabled<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<bool, String> {
     match options.get_value(ctx, "enabled") {
         LuaValue::Nil => Ok(true),
         LuaValue::Boolean(value) => Ok(value),
@@ -419,7 +420,7 @@ fn parse_enabled<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Result<bool, St
     }
 }
 
-fn parse_rotation_direction<'gc>(
+pub(crate) fn parse_rotation_direction<'gc>(
     ctx: Context<'gc>,
     options: Table<'gc>,
 ) -> Result<RotationDirection, String> {

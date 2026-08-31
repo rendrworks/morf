@@ -1,4 +1,12 @@
-include!("sdf_types.rs");
+use mold_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D};
+use mold_scene::{Color, NodeHandle, Scene};
+use std::ops::Range;
+
+use crate::{effects::*, field::*, paint::*, sdf::*};
+
+mod sdf_types;
+
+pub use sdf_types::*;
 
 /// One ordered paint operation emitted from the scene graph.
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +84,8 @@ pub enum DrawCommand {
         horizontal_alignment: TextAlignment,
         /// Vertical placement inside the resolved height.
         vertical_alignment: VerticalAlignment,
+        /// How the glyph field is thresholded: edge, softness and outline.
+        field_style: DistanceFieldStyle,
     },
     /// Rasterized image or theme icon.
     Texture {
@@ -91,8 +101,6 @@ pub enum DrawCommand {
         source: String,
         /// Theme name for an icon command.
         icon_theme: Option<String>,
-        /// Effective node opacity.
-        opacity: f32,
         /// Inherited colour overlay.
         color_overlay: Color,
         /// Aspect-ratio policy inside the resolved bounds.
@@ -103,27 +111,6 @@ pub enum DrawCommand {
         distance_field_spread: f32,
         /// Edge shaping applied to the sampled field.
         distance_field_style: DistanceFieldStyle,
-    },
-    /// Filled and optionally stroked SVG path.
-    Path {
-        /// Source scene node.
-        node: NodeHandle,
-        /// Logical surface bounds.
-        bounds: Geometry,
-        /// Composed node and ancestor transform.
-        transform: Transform2D,
-        /// Intersected ancestor clip in logical surface coordinates.
-        clip: Option<Geometry>,
-        /// SVG path data in the node coordinate space.
-        path: String,
-        /// Fill colour after node opacity.
-        fill_color: Color,
-        /// Stroke colour after node opacity.
-        stroke_color: Color,
-        /// Logical stroke width.
-        stroke_width: f64,
-        /// True for even-odd fill, false for nonzero fill.
-        even_odd: bool,
     },
     /// Composed signed-distance field resolved in one fragment shader.
     Field {
@@ -156,11 +143,18 @@ pub enum DrawCommand {
 /// property of the cached texture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DistanceFieldStyle {
-    /// Normalized distance treated as the shape edge.
+    /// How far to move the edge, in logical pixels, from where the shape says.
     ///
-    /// Below the neutral `0.5` the edge moves outwards and the shape thickens;
-    /// above it the shape thins, the way a variable font gains or loses weight.
-    pub weight: f32,
+    /// Positive thickens and negative thins, the way a variable font gains or
+    /// loses weight, and zero is the shape as drawn. Logical pixels rather than
+    /// normalised field units because that is what a configuration can reason
+    /// about: half a pixel more weight means the same thing at every size.
+    ///
+    /// This used to be an absolute threshold neutral at `0.5` for images and a
+    /// signed offset neutral at `0.0` for text — one field, two unit systems,
+    /// told apart only by which function had filled it in, with a `Default`
+    /// that was right for one of them and wrong for the other.
+    pub thickness: f32,
     /// Extra edge feathering in source pixels, on top of pixel-derived coverage.
     pub softness: f32,
     /// Outline band drawn outside the fill edge, in source pixels.
@@ -172,7 +166,7 @@ pub struct DistanceFieldStyle {
 impl Default for DistanceFieldStyle {
     fn default() -> Self {
         Self {
-            weight: 0.5,
+            thickness: 0.0,
             softness: 0.0,
             outline_width: 0.0,
             outline_color: Color::rgba8(0, 0, 0, 0),
@@ -227,17 +221,16 @@ pub enum Gradient {
 }
 
 impl DrawCommand {
-    fn node(&self) -> NodeHandle {
+    pub(crate) fn node(&self) -> NodeHandle {
         match self {
             Self::Quad { node, .. }
             | Self::Text { node, .. }
             | Self::Texture { node, .. }
-            | Self::Path { node, .. }
             | Self::Field { node, .. } => *node,
         }
     }
 
-    fn bounds(&self) -> Geometry {
+    pub(crate) fn bounds(&self) -> Geometry {
         let bounds = match self {
             Self::Quad {
                 bounds,
@@ -263,55 +256,32 @@ impl DrawCommand {
             | Self::Texture {
                 bounds, transform, ..
             } => transform.bounds(*bounds),
-            Self::Path {
-                bounds,
-                transform,
-                stroke_width,
-                ..
-            } => {
-                let half_stroke = stroke_width.max(0.0) / 2.0;
-                transform.bounds(Geometry {
-                    x: bounds.x - half_stroke,
-                    y: bounds.y - half_stroke,
-                    width: bounds.width + stroke_width.max(0.0),
-                    height: bounds.height + stroke_width.max(0.0),
-                })
-            }
             Self::Field {
-                bounds,
                 transform,
                 stroke_width,
                 softness,
-                layers,
+                layers: sources,
                 ..
             } => {
-                // The field is only evaluated inside the node's own rectangle,
-                // so a layer that reaches past it is what the bounds have to
-                // cover — plus the outline and the softened edge, which spread
-                // outwards from every crossing.
-                let mut area = *bounds;
-                for layer in layers {
-                    area = union_geometry(area, layer.bounds);
-                }
-                let spread = field_spread(*stroke_width, *softness, layers);
-                transform.bounds(Geometry {
-                    x: area.x - spread,
-                    y: area.y - spread,
-                    width: area.width + spread * 2.0,
-                    height: area.height + spread * 2.0,
-                })
+                // One computation, shared with the quad the shader is given.
+                // Written out separately here, the two drifted: this copy took
+                // the layer rectangles unrotated, so a rotated shape was drawn
+                // whole and damaged as though it were not.
+                let Some(reach) = field_reach(*stroke_width, *softness, sources) else {
+                    return Geometry::default();
+                };
+                transform.bounds(reach)
             }
         };
         self.clip()
             .map_or(bounds, |clip| intersect_geometry(bounds, clip))
     }
 
-    fn clip(&self) -> Option<Geometry> {
+    pub(crate) fn clip(&self) -> Option<Geometry> {
         match self {
             Self::Quad { clip, .. }
             | Self::Text { clip, .. }
             | Self::Texture { clip, .. }
-            | Self::Path { clip, .. }
             | Self::Field { clip, .. } => *clip,
         }
     }
@@ -366,22 +336,36 @@ impl DrawList {
     /// Builds a draw list from resolved scene geometry.
     pub fn from_scene(scene: &Scene, layout: &Layout) -> Result<Self, RenderError> {
         let mut list = Self::default();
+        list.rebuild(scene, layout)?;
+        Ok(list)
+    }
+
+    /// Refills this list from the scene, keeping the memory it already holds.
+    ///
+    /// A command is 350-odd bytes and a busy surface has thousands of them, so
+    /// a list built afresh every frame is hundreds of kilobytes allocated, filled
+    /// and returned to the allocator sixty times a second. Reusing the buffer
+    /// keeps the capacity and the pages, which is most of the cost once a scene
+    /// is large enough to leave the cache.
+    pub fn rebuild(&mut self, scene: &Scene, layout: &Layout) -> Result<(), RenderError> {
+        self.commands.clear();
+        self.layers.clear();
+        let list = self;
         for root in scene.roots() {
             append_node(
                 scene,
                 layout,
                 root,
                 PaintContext {
-                    opacity: 1.0,
                     transform: Transform2D::IDENTITY,
                     clip: None,
                     overlay: Color::rgba8(0, 0, 0, 0),
                     layer: None,
                     in_field: false,
                 },
-                &mut list,
+                list,
             )?;
         }
-        Ok(list)
+        Ok(())
     }
 }

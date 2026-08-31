@@ -1,3 +1,10 @@
+use std::fs;
+use std::path::Path;
+
+use resvg::usvg;
+
+use crate::image_cache::{ImageError, decode_path, normalize_source};
+
 /// Decoded straight-alpha RGBA pixels.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImageData {
@@ -71,7 +78,7 @@ pub fn quantize_colors(
     quantize_image(&image, depth, crop)
 }
 
-fn quantize_image(
+pub(crate) fn quantize_image(
     image: &ImageData,
     depth: u8,
     crop: Option<ImageRect>,
@@ -150,4 +157,3 @@ fn widest_channel(pixels: &[[u8; 4]]) -> usize {
         .max_by_key(|channel| maximum[*channel] - minimum[*channel])
         .unwrap_or(0)
 }
-

@@ -1,15 +1,19 @@
+use mold_layout::{Geometry, Layout, Transform2D, node_transform};
+use mold_scene::{Color, Element, NodeHandle, Scene};
+
+use crate::{commands::*, effects::*, paint_fields::*, sdf::*};
+
 #[derive(Clone, Copy)]
-struct PaintContext {
-    opacity: f64,
-    transform: Transform2D,
-    clip: Option<Geometry>,
-    overlay: Color,
-    layer: Option<usize>,
+pub(crate) struct PaintContext {
+    pub(crate) transform: Transform2D,
+    pub(crate) clip: Option<Geometry>,
+    pub(crate) overlay: Color,
+    pub(crate) layer: Option<usize>,
     /// Whether an enclosing field has already taken this node's shape.
-    in_field: bool,
+    pub(crate) in_field: bool,
 }
 
-fn append_node(
+pub(crate) fn append_node(
     scene: &Scene,
     layout: &Layout,
     node: NodeHandle,
@@ -29,9 +33,17 @@ fn append_node(
         0.0
     };
     let layer_blur = layer_config.blur.max(rect_blur);
-    let rounded_clip = scene.bool_value(node, "clip")?
+    // Both are asked for more than once further down, and each `rect_radii` is
+    // five property reads of its own.
+    let clips = scene.bool_value(node, "clip")?;
+    let radii = if matches!(element, Element::Rect | Element::ClipRect) {
+        rect_radii(scene, node)?
+    } else {
+        [0.0; 4]
+    };
+    let rounded_clip = clips
         && matches!(element, Element::Rect | Element::ClipRect)
-        && rect_radii(scene, node)?.iter().any(|radius| *radius > 0.0);
+        && radii.iter().any(|radius| *radius > 0.0);
     let creates_layer = layer_config.enabled
         || node_opacity < 1.0
         || rotation != 0.0
@@ -57,11 +69,6 @@ fn append_node(
         });
         index
     });
-    let opacity = if creates_layer {
-        inherited.opacity
-    } else {
-        inherited.opacity * node_opacity
-    };
     let color_overlay =
         compose_overlay(inherited.overlay, scene.color_value(node, "color_overlay")?);
     let Some(bounds) = layout.geometry(node) else {
@@ -77,10 +84,10 @@ fn append_node(
         list.layers[layer].mask = Some(LayerMask {
             bounds,
             transform,
-            radii: rect_radii(scene, node)?,
+            radii,
         });
     }
-    let clip = if scene.bool_value(node, "clip")? {
+    let clip = if clips {
         let bounds = transform.bounds(bounds);
         Some(
             inherited
@@ -94,16 +101,24 @@ fn append_node(
     // its own. Everything else — text, images, anything without a field —
     // paints normally over the composition.
     let painted = !(inherited.in_field && absorbed_by_field(element));
+    // A shadow is five numbers and a flag that only matter once the colour is
+    // visible, and a rect with no shadow is the overwhelming majority. Asking
+    // for the colour first turns six property reads into one for all of them.
+    let shadow = if painted && matches!(element, Element::Rect | Element::ClipRect) {
+        rect_shadow(scene, node)?
+    } else {
+        RectShadow::none()
+    };
     match element {
         Element::Rect | Element::ClipRect if painted => list.commands.push(DrawCommand::Quad {
             node,
             bounds,
             transform,
             clip,
-            color: with_opacity(scene.color_value(node, "color")?, opacity),
+            color: scene.color_value(node, "color")?,
             color_overlay,
-            gradient: scene_gradient(scene, node, opacity)?,
-            radii: rect_radii(scene, node)?,
+            gradient: scene_gradient(scene, node)?,
+            radii,
             border_width: if element == Element::ClipRect {
                 0.0
             } else {
@@ -112,14 +127,14 @@ fn append_node(
             antialiasing: element != Element::ClipRect || scene.bool_value(node, "antialiasing")?,
             border_pixel_aligned: element == Element::ClipRect
                 && scene.bool_value(node, "border_pixel_aligned")?,
-            border_color: with_opacity(scene.color_value(node, "border_color")?, opacity),
+            border_color: scene.color_value(node, "border_color")?,
             blur: if layer_blur > 0.0 { 0.0 } else { rect_blur },
-            shadow_color: with_opacity(scene.color_value(node, "shadow_color")?, opacity),
-            shadow_blur: scene.number(node, "shadow_blur")?.max(0.0),
-            shadow_spread: scene.number(node, "shadow_spread")?,
-            shadow_offset_x: scene.number(node, "shadow_offset_x")?,
-            shadow_offset_y: scene.number(node, "shadow_offset_y")?,
-            shadow_inner: scene.bool_value(node, "shadow_inner")?,
+            shadow_color: shadow.color,
+            shadow_blur: shadow.blur,
+            shadow_spread: shadow.spread,
+            shadow_offset_x: shadow.offset_x,
+            shadow_offset_y: shadow.offset_y,
+            shadow_inner: shadow.inner,
         }),
         Element::Text => list.commands.push(DrawCommand::Text {
             node,
@@ -131,7 +146,7 @@ fn append_node(
             font_source: scene.string_value(node, "font_source")?.to_owned(),
             size: scene.number(node, "font_size")?,
             font_weight: scene.number(node, "font_weight")?,
-            color: with_opacity(scene.color_value(node, "color")?, opacity),
+            color: scene.color_value(node, "color")?,
             color_overlay,
             wrap: scene.bool_value(node, "wrap")?,
             elide: render_text_elide(scene.string_value(node, "elide")?)?,
@@ -141,6 +156,7 @@ fn append_node(
             vertical_alignment: vertical_alignment(
                 scene.string_value(node, "vertical_alignment")?,
             )?,
+            field_style: text_field_style(scene, node)?,
         }),
         Element::Image => list.commands.push(DrawCommand::Texture {
             node,
@@ -149,12 +165,11 @@ fn append_node(
             clip,
             source: scene.string_value(node, "source")?.to_owned(),
             icon_theme: None,
-            opacity: opacity as f32,
             color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
             distance_field: scene.bool_value(node, "distance_field")?,
             distance_field_spread: scene.number(node, "distance_field_spread")?.max(0.5) as f32,
-            distance_field_style: distance_field_style(scene, node, opacity)?,
+            distance_field_style: text_field_style(scene, node)?,
         }),
         Element::Icon => list.commands.push(DrawCommand::Texture {
             node,
@@ -163,38 +178,21 @@ fn append_node(
             clip,
             source: scene.string_value(node, "name")?.to_owned(),
             icon_theme: Some(scene.string_value(node, "theme")?.to_owned()),
-            opacity: opacity as f32,
             color_overlay,
             fill_mode: image_fill_mode(scene.string_value(node, "fill_mode")?)?,
             distance_field: scene.bool_value(node, "distance_field")?,
             distance_field_spread: scene.number(node, "distance_field_spread")?.max(0.5) as f32,
-            distance_field_style: distance_field_style(scene, node, opacity)?,
-        }),
-        Element::Shape => list.commands.push(DrawCommand::Path {
-            node,
-            bounds,
-            transform,
-            clip,
-            path: scene.string_value(node, "path")?.to_owned(),
-            fill_color: apply_overlay(
-                with_opacity(scene.color_value(node, "fill_color")?, opacity),
-                color_overlay,
-            ),
-            stroke_color: apply_overlay(
-                with_opacity(scene.color_value(node, "stroke_color")?, opacity),
-                color_overlay,
-            ),
-            stroke_width: scene.number(node, "stroke_width")?.max(0.0),
-            even_odd: scene.string_value(node, "fill_rule")? == "even_odd",
+            distance_field_style: text_field_style(scene, node)?,
         }),
         Element::Sdf if painted => {
             let mut layers = Vec::new();
-            let blend = scene.number(node, "blend")?.max(0.0) as f32;
-            let fill = apply_overlay(
-                with_opacity(scene.color_value(node, "fill_color")?, opacity),
-                color_overlay,
-            );
-            field_layers(scene, layout, node, blend, fill, &mut layers)?;
+            let defaults = FieldDefaults {
+                blend: scene.number(node, "blend")?.max(0.0) as f32,
+                color: apply_overlay(scene.color_value(node, "fill_color")?, color_overlay),
+                morph: scene.number(node, "morph_progress")?.clamp(0.0, 1.0) as f32,
+                overlay: color_overlay,
+            };
+            field_layers(scene, layout, node, defaults, &mut layers)?;
             // A composition with nothing in it has no zero crossing and would
             // paint the whole rectangle, so it draws nothing at all.
             if !layers.is_empty() {
@@ -204,11 +202,11 @@ fn append_node(
                     transform,
                     clip,
                     fill_color: apply_overlay(
-                        with_opacity(scene.color_value(node, "fill_color")?, opacity),
+                        scene.color_value(node, "fill_color")?,
                         color_overlay,
                     ),
                     stroke_color: apply_overlay(
-                        with_opacity(scene.color_value(node, "stroke_color")?, opacity),
+                        scene.color_value(node, "stroke_color")?,
                         color_overlay,
                     ),
                     stroke_width: scene.number(node, "stroke_width")?.max(0.0),
@@ -258,7 +256,7 @@ fn append_node(
             mask: Some(LayerMask {
                 bounds: inner,
                 transform,
-                radii: rect_radii(scene, node)?.map(|radius| (radius - border).max(0.0)),
+                radii: radii.map(|radius| (radius - border).max(0.0)),
             }),
             bounds: inner,
         });
@@ -266,7 +264,7 @@ fn append_node(
     } else {
         None
     };
-    for child in scene.children(node)? {
+    for &child in scene.children(node)? {
         let child_clip = content_layer.map_or(clip, |(_, inner)| {
             let inner = transform.bounds(inner);
             Some(clip.map_or(inner, |clip| intersect_geometry(clip, inner)))
@@ -276,7 +274,6 @@ fn append_node(
             layout,
             child,
             PaintContext {
-                opacity,
                 transform,
                 clip: child_clip,
                 overlay: color_overlay,
@@ -305,14 +302,11 @@ fn append_node(
             color: Color::rgba8(0, 0, 0, 0),
             color_overlay: Color::rgba8(0, 0, 0, 0),
             gradient: Gradient::None,
-            radii: rect_radii(scene, node)?,
+            radii,
             border_width: scene.number(node, "border_width")?,
             antialiasing: scene.bool_value(node, "antialiasing")?,
             border_pixel_aligned: scene.bool_value(node, "border_pixel_aligned")?,
-            border_color: apply_overlay(
-                with_opacity(scene.color_value(node, "border_color")?, opacity),
-                color_overlay,
-            ),
+            border_color: apply_overlay(scene.color_value(node, "border_color")?, color_overlay),
             blur: 0.0,
             shadow_color: Color::rgba8(0, 0, 0, 0),
             shadow_blur: 0.0,
@@ -345,22 +339,54 @@ fn append_node(
     Ok(())
 }
 
-/// Reads the animatable edge shaping applied to a cached distance field.
+/// A rect's drop shadow, read only as far as it is visible.
+/// How a text node wants its glyph fields thresholded.
 ///
-/// The outline colour carries node opacity like every other painted colour, so
-/// fading an icon out takes its outline with it.
-fn distance_field_style(
-    scene: &Scene,
-    node: NodeHandle,
-    opacity: f64,
-) -> Result<DistanceFieldStyle, RenderError> {
+/// Thickness is in logical pixels of edge movement, which is what a
+/// configuration can reason about: asking for half a pixel more weight means
+/// the same thing at every size, where a shift in field units would not.
+fn text_field_style(scene: &Scene, node: NodeHandle) -> Result<DistanceFieldStyle, RenderError> {
     Ok(DistanceFieldStyle {
-        weight: scene.number(node, "distance_field_weight")?.clamp(0.0, 1.0) as f32,
-        softness: scene.number(node, "distance_field_softness")?.max(0.0) as f32,
-        outline_width: scene.number(node, "distance_field_outline_width")?.max(0.0) as f32,
-        outline_color: with_opacity(
-            scene.color_value(node, "distance_field_outline_color")?,
-            opacity,
-        ),
+        thickness: scene.number(node, "thickness")? as f32,
+        softness: scene.number(node, "softness")?.max(0.0) as f32,
+        outline_width: scene.number(node, "outline_width")?.max(0.0) as f32,
+        outline_color: scene.color_value(node, "outline_color")?,
+    })
+}
+
+struct RectShadow {
+    color: Color,
+    blur: f64,
+    spread: f64,
+    offset_x: f64,
+    offset_y: f64,
+    inner: bool,
+}
+
+impl RectShadow {
+    fn none() -> Self {
+        Self {
+            color: Color::rgba8(0, 0, 0, 0),
+            blur: 0.0,
+            spread: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            inner: false,
+        }
+    }
+}
+
+fn rect_shadow(scene: &Scene, node: NodeHandle) -> Result<RectShadow, RenderError> {
+    let color = scene.color_value(node, "shadow_color")?;
+    if color.alpha <= 0.0 {
+        return Ok(RectShadow::none());
+    }
+    Ok(RectShadow {
+        color,
+        blur: scene.number(node, "shadow_blur")?.max(0.0),
+        spread: scene.number(node, "shadow_spread")?,
+        offset_x: scene.number(node, "shadow_offset_x")?,
+        offset_y: scene.number(node, "shadow_offset_y")?,
+        inner: scene.bool_value(node, "shadow_inner")?,
     })
 }

@@ -1,10 +1,22 @@
+use luna::{Context, Table, Value as LuaValue};
+
+use mold_scene::NodeHandle;
+
+use crate::{surface_types::*, table_menu::*, window_parse::*};
+
+/// The largest a surface may be on either axis.
+///
+/// Chosen to match what `window:size()` has always enforced; the point is that
+/// one number now answers the question for every door onto a surface size.
+pub(crate) const MAX_SURFACE_EXTENT: u32 = 16_384;
+
 /// Assigns one setting and reports whether the value actually moved.
 ///
 /// A layer surface is reconfigured from the change flag this returns, so an
 /// assignment that writes the value already there must not raise it: Lua
 /// re-assigns the whole surface table on every binding run, and a flag set by
 /// an unchanged value would re-issue the geometry on every frame.
-fn assign_layer_setting<T: PartialEq>(field: &mut T, value: T) -> bool {
+pub(crate) fn assign_layer_setting<T: PartialEq>(field: &mut T, value: T) -> bool {
     let changed = *field != value;
     *field = value;
     changed
@@ -16,7 +28,7 @@ fn assign_layer_setting<T: PartialEq>(field: &mut T, value: T) -> bool {
 /// makes, and an interpolated value arrives as a Lua number rather than an
 /// integer. Rounding it keeps the setting animatable; rejecting it would make
 /// the geometry mutable in name only.
-fn layer_setting_number(value: LuaValue<'_>, key: &str) -> Result<i64, String> {
+pub(crate) fn layer_setting_number(value: LuaValue<'_>, key: &str) -> Result<i64, String> {
     match value {
         LuaValue::Integer(value) => Ok(value),
         LuaValue::Number(value) if value.is_finite() => Ok(value.round() as i64),
@@ -29,7 +41,7 @@ fn layer_setting_number(value: LuaValue<'_>, key: &str) -> Result<i64, String> {
 /// `mold.surface.<key> = value` and `window.layer { <key> = value }` are the
 /// same settings on the same struct, so they share one validator rather than
 /// drifting apart. The returned flag reports whether the configuration moved.
-fn apply_layer_setting<'gc>(
+pub(crate) fn apply_layer_setting<'gc>(
     ctx: Context<'gc>,
     config: &mut LayerSurfaceConfig,
     key: &str,
@@ -46,13 +58,20 @@ fn apply_layer_setting<'gc>(
             }
             Ok(assign_layer_setting(&mut config.namespace, value))
         }
+        // Both axes, one rule: zero means "as wide as the compositor makes it",
+        // which is what an edge-to-edge bar wants, and anything else has to be
+        // a size a surface can actually be. Width used to accept any `u32` and
+        // height to demand a positive one — two rules for two halves of one
+        // size, with a third at `window:size()`.
         "width" | "height" => {
             let value = layer_setting_number(value, key)?;
             let value = u32::try_from(value).map_err(|_| format!("surface {key} must fit u32"))?;
+            if value > MAX_SURFACE_EXTENT {
+                return Err(format!(
+                    "surface {key} must be 0 (compositor-sized) or at most {MAX_SURFACE_EXTENT}"
+                ));
+            }
             if key == "height" {
-                if value == 0 {
-                    return Err("surface height must be positive".into());
-                }
                 return Ok(assign_layer_setting(&mut config.height, value));
             }
             Ok(assign_layer_setting(&mut config.width, value))
@@ -125,7 +144,7 @@ fn apply_layer_setting<'gc>(
 }
 
 /// Reads the per-edge thicknesses of `mold.surface.reserve`.
-fn parse_surface_reserve<'gc>(
+pub(crate) fn parse_surface_reserve<'gc>(
     ctx: Context<'gc>,
     value: LuaValue<'gc>,
 ) -> Result<SurfaceReserve, String> {
@@ -166,7 +185,7 @@ fn parse_surface_reserve<'gc>(
 /// An additional layer surface defaults to reserving nothing: unlike the shell's
 /// own surface it is normally decoration drawn outside the usable area, and a
 /// surface that claims an exclusive zone by accident moves every tiled window.
-fn parse_layer_surface<'gc>(
+pub(crate) fn parse_layer_surface<'gc>(
     ctx: Context<'gc>,
     options: Table<'gc>,
 ) -> Result<(NodeHandle, bool, LayerSurfaceConfig), String> {
@@ -198,7 +217,7 @@ fn parse_layer_surface<'gc>(
 }
 
 /// Renders a reserve configuration back to Lua.
-fn reserve_to_lua<'gc>(ctx: Context<'gc>, reserve: SurfaceReserve) -> Table<'gc> {
+pub(crate) fn reserve_to_lua<'gc>(ctx: Context<'gc>, reserve: SurfaceReserve) -> Table<'gc> {
     let table = Table::new(&ctx);
     for (name, thickness) in reserve.edges() {
         table.set_field(ctx, name, i64::from(thickness));

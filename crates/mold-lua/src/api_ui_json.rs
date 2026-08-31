@@ -1,4 +1,12 @@
-fn install_ui_json_api<'gc>(
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use mold_scene::Element;
+
+use crate::{constructors::*, scene_bindings::*, serialization::*, state::*, types::*};
+
+pub(crate) fn install_ui_json_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -13,7 +21,6 @@ fn install_ui_json_api<'gc>(
         ("Text", Element::Text),
         ("Image", Element::Image),
         ("Icon", Element::Icon),
-        ("Shape", Element::Shape),
         ("Sdf", Element::Sdf),
         ("SdfShape", Element::SdfShape),
         ("MouseArea", Element::MouseArea),
@@ -87,8 +94,17 @@ fn install_ui_json_api<'gc>(
             kind,
             Callback::from_fn(&ctx, move |ctx, _, mut stack| {
                 let options: Table = stack.consume(ctx)?;
-                options.set_field(ctx, "kind", kind);
-                stack.replace(ctx, options);
+                // A copy, not the caller's table. Writing `kind` into what was
+                // handed over means `local settle = { duration = 200 }` reused
+                // for both a spring and a smoothing ends up as whichever was
+                // written last — in both places, including the one already
+                // built — and nothing says so.
+                let tagged = Table::new(&ctx);
+                for (key, value) in options.iter(ctx) {
+                    tagged.set(ctx, key, value)?;
+                }
+                tagged.set_field(ctx, "kind", kind);
+                stack.replace(ctx, tagged);
                 Ok(CallbackReturn::Return)
             }),
         );

@@ -1,4 +1,14 @@
-fn install_transform_api<'gc>(
+use luna::{
+    Callback, CallbackReturn, Context, Function, Table, UserData, UserRef, Value as LuaValue,
+};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use mold_layout::TransformWatcher as NativeTransformWatcher;
+
+use crate::{runtime_helpers::*, scene_bindings::*, state::*};
+
+pub(crate) fn install_transform_api<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
     mold: Table<'gc>,
@@ -111,4 +121,3 @@ fn install_transform_api<'gc>(
     });
     mold.set_field(ctx, "transform_watcher", transform_watcher);
 }
-

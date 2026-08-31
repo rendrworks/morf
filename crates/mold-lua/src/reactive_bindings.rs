@@ -1,4 +1,13 @@
-fn register_property_binding<'gc>(
+use crate::states::StateValue;
+use luna::{Closure, Context, Value as LuaValue};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use mold_scene::{NodeHandle, Value as SceneValue};
+
+use crate::{reactive_execute::*, scene_bindings::*, state::*, surface_types::*, types::*};
+
+pub(crate) fn register_property_binding<'gc>(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'gc>,
     limits: Limits,
@@ -27,7 +36,7 @@ fn register_property_binding<'gc>(
     let _ = flush_reactive(state, ctx, limits);
 }
 
-fn register_state_binding<'gc>(
+pub(crate) fn register_state_binding<'gc>(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'gc>,
     limits: Limits,
@@ -54,7 +63,7 @@ fn register_state_binding<'gc>(
     let _ = flush_reactive(state, ctx, limits);
 }
 
-fn apply_state(
+pub(crate) fn apply_state(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'_>,
     limits: Limits,
@@ -151,7 +160,7 @@ fn apply_state(
     Ok(())
 }
 
-fn lua_to_scene<'gc>(
+pub(crate) fn lua_to_scene<'gc>(
     ctx: Context<'gc>,
     value: LuaValue<'gc>,
     depth: usize,
@@ -205,7 +214,7 @@ fn lua_to_scene<'gc>(
     }
 }
 
-fn replace_status<'gc>(
+pub(crate) fn replace_status<'gc>(
     ctx: Context<'gc>,
     stack: &mut luna::Stack<'gc, '_>,
     result: Result<(), String>,
@@ -216,7 +225,7 @@ fn replace_status<'gc>(
     }
 }
 
-fn flush_reactive(
+pub(crate) fn flush_reactive(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'_>,
     limits: Limits,

@@ -1,5 +1,9 @@
-impl LayerClient {
+use smithay_client_toolkit::compositor::FrameCallbackData;
+use wayland_client::protocol::wl_surface;
 
+use crate::{state_types::*, surface_types::*};
+
+impl LayerClient {
     /// Requests exclusive compositor session ownership.
     pub fn begin_session_lock(&mut self) -> Result<(), WaylandError> {
         if self.state.session_lock.is_some() {
@@ -93,4 +97,3 @@ impl LayerClient {
         }
     }
 }
-

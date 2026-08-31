@@ -1,3 +1,6 @@
+use crate::*;
+use std::time::Duration;
+
 // Behavior repetition, lifecycle handlers, and the `mold.animation` controls.
 
 #[test]
@@ -246,9 +249,6 @@ fn a_declared_behavior_does_not_animate_the_element_into_existence() {
     assert!(!frame.active, "the element animated its own construction");
 
     // A later write still animates.
-    runtime
-        .scene_mut()
-        .assign(node, "width", 100.0)
-        .unwrap();
+    runtime.scene_mut().assign(node, "width", 100.0).unwrap();
     assert!(runtime.scene().is_animating(node, "width").unwrap());
 }

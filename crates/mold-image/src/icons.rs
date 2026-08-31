@@ -1,3 +1,10 @@
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fs;
+
+use crate::image_cache::ImageError;
+use std::path::{Path, PathBuf};
+
 /// XDG icon-theme resolver with inheritance and size matching.
 #[derive(Clone, Debug)]
 pub struct IconResolver {
@@ -35,12 +42,6 @@ impl IconResolver {
             pixmaps.push(root.join("pixmaps"));
         }
         Self { roots, pixmaps }
-    }
-
-    /// Adds a non-themed pixmap fallback directory.
-    pub fn with_pixmaps(mut self, path: PathBuf) -> Self {
-        self.pixmaps.push(path);
-        self
     }
 
     /// Finds the closest icon file for a physical pixel size.
@@ -216,4 +217,3 @@ fn find_named_file(directory: &Path, name: &str) -> Option<PathBuf> {
         .map(|extension| directory.join(format!("{name}.{extension}")))
         .find(|path| path.is_file())
 }
-

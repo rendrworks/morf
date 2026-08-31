@@ -1,17 +1,18 @@
 //! Text shaping, measurement, and glyph rasterization for mold.
 
-use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+use std::rc::Rc;
 
 use cosmic_text::{
-    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight,
-    Wrap,
+    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
 };
-use mold_layout::{Size, TextAlignment, TextElide, TextMeasurer, TextOptions};
-use mold_scene::NodeHandle;
+use mold_layout::{TextAlignment, TextElide, TextOptions};
+use mold_scene::{FastMap, NodeHandle};
 use unicode_segmentation::UnicodeSegmentation;
+
+use crate::glyph_fields::FieldImage;
 
 struct CachedBuffer {
     buffer: Buffer,
@@ -69,8 +70,15 @@ struct TextInput {
 pub struct TextSystem {
     fonts: FontSystem,
     glyphs: SwashCache,
-    buffers: HashMap<NodeHandle, CachedBuffer>,
+    buffers: FastMap<NodeHandle, CachedBuffer>,
     font_sources: HashSet<String>,
+    /// Fields already measured, by the glyph they belong to.
+    ///
+    /// The distance transform is far too slow to run per frame, and it does not
+    /// have to be: a glyph's shape does not change, so this is filled once the
+    /// first time a letter is drawn and read from thereafter however many sizes
+    /// it is later drawn at.
+    fields: FastMap<u64, Option<Rc<FieldImage>>>,
 }
 
 /// Pixel format of one rasterized glyph image.
@@ -80,6 +88,12 @@ pub enum RasterContent {
     Mask,
     /// Four RGBA bytes per pixel.
     Color,
+    /// One distance byte per pixel, measured at a fixed reference size.
+    ///
+    /// Shares the mask atlas — it is a single channel either way — but is read
+    /// as a distance from the glyph edge rather than as coverage of it, so one
+    /// entry draws the letter at any size.
+    Field,
 }
 
 /// Positioned glyph bitmap ready for atlas upload.
@@ -91,14 +105,29 @@ pub struct RasterGlyph {
     pub x: i32,
     /// Physical top edge relative to the render target.
     pub y: i32,
-    /// Bitmap width in physical pixels.
+    /// Bitmap width, in the pixels the bitmap was measured at.
     pub width: u32,
-    /// Bitmap height in physical pixels.
+    /// Bitmap height, in the pixels the bitmap was measured at.
     pub height: u32,
+    /// Quad width in physical pixels.
+    ///
+    /// The same as `width` for anything rasterized at the size it is drawn. A
+    /// distance field is measured once at a reference size and then drawn at
+    /// whatever size is asked for, so for those two this is the only place the
+    /// two numbers part company: the atlas holds `width`, the screen gets this.
+    pub draw_width: u32,
+    /// Quad height in physical pixels.
+    pub draw_height: u32,
     /// Bitmap pixel format.
     pub content: RasterContent,
     /// Tightly packed bitmap bytes.
-    pub data: Vec<u8>,
+    ///
+    /// Shared rather than owned. The atlas reads these only on a miss — once a
+    /// glyph is uploaded, every later frame finds it by key and never looks —
+    /// but the bytes were copied out of the cache on every frame regardless,
+    /// which for distance fields is a several-kilobyte memcpy per visible glyph
+    /// per frame to hand over something nobody reads.
+    pub data: Rc<Vec<u8>>,
 }
 
 impl Default for TextSystem {
@@ -115,8 +144,9 @@ impl TextSystem {
         let mut system = Self {
             fonts,
             glyphs: SwashCache::new(),
-            buffers: HashMap::new(),
+            buffers: FastMap::default(),
             font_sources: HashSet::new(),
+            fields: FastMap::default(),
         };
         if let Some(paths) = std::env::var_os("MOLD_FONT_PATH") {
             for path in std::env::split_paths(&paths) {
@@ -199,103 +229,10 @@ impl TextSystem {
             .collect();
         physical
             .into_iter()
-            .filter_map(|glyph| {
-                let mut hasher = DefaultHasher::new();
-                glyph.cache_key.hash(&mut hasher);
-                let cache_key = hasher.finish();
-                let image = self
-                    .glyphs
-                    .get_image(&mut self.fonts, glyph.cache_key)
-                    .clone()?;
-                let content = match image.content {
-                    SwashContent::Mask => RasterContent::Mask,
-                    SwashContent::Color => RasterContent::Color,
-                    SwashContent::SubpixelMask => RasterContent::Mask,
-                };
-                Some(RasterGlyph {
-                    cache_key,
-                    x: glyph.x + image.placement.left,
-                    y: glyph.y - image.placement.top,
-                    width: image.placement.width,
-                    height: image.placement.height,
-                    content,
-                    data: image.data,
-                })
-            })
+            .filter_map(|glyph| self.raster_glyph(&glyph))
             .collect()
     }
 }
-
-impl TextMeasurer for TextSystem {
-    fn measure(
-        &mut self,
-        node: NodeHandle,
-        text: &str,
-        family: &str,
-        size: f64,
-        options: TextOptions,
-    ) -> Size {
-        self.load_font_source(options.font_source.as_deref());
-        let size = size.max(1.0) as f32;
-        let font_weight = normalize_font_weight(options.font_weight);
-        let input = TextInput {
-            text: text.to_owned(),
-            family: family.to_owned(),
-            size: (size as f64).to_bits(),
-            width: options.width.map(f64::to_bits),
-            wrap: options.wrap,
-            alignment: options.alignment,
-            elide: options.elide,
-            font_weight,
-            font_source: options.font_source.clone(),
-        };
-        let cached = self.buffers.entry(node).or_insert_with(|| CachedBuffer {
-            buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),
-            input: None,
-        });
-        if cached.input.as_ref() != Some(&input) {
-            cached.buffer.set_metrics_and_size(
-                Metrics::relative(size, 1.2),
-                options.width.map(|value| value as f32),
-                None,
-            );
-            cached.buffer.set_wrap(if options.wrap {
-                Wrap::WordOrGlyph
-            } else {
-                Wrap::None
-            });
-            let displayed = elided_text(&mut self.fonts, text, family, size, &options);
-            let family = resolve_family(&self.fonts, family);
-            cached.buffer.set_text(
-                &displayed,
-                &Attrs::new()
-                    .family(family.family())
-                    .weight(Weight(font_weight)),
-                Shaping::Advanced,
-                Some(match options.alignment {
-                    TextAlignment::Left => Align::Left,
-                    TextAlignment::Right => Align::Right,
-                    TextAlignment::Center => Align::Center,
-                    TextAlignment::Justified => Align::Justified,
-                }),
-            );
-            cached.buffer.shape_until_scroll(&mut self.fonts, false);
-            cached.input = Some(input);
-        }
-
-        let mut width = 0.0_f32;
-        let mut height = 0.0_f32;
-        for run in cached.buffer.layout_runs() {
-            width = width.max(run.line_w);
-            height = height.max(run.line_top + run.line_height);
-        }
-        Size {
-            width: width as f64,
-            height: height as f64,
-        }
-    }
-}
-
 fn elided_text(
     fonts: &mut FontSystem,
     text: &str,
@@ -490,6 +427,14 @@ fn normalize_font_weight(weight: f64) -> u16 {
         400
     }
 }
+
+mod glyph_fields;
+mod measure;
+mod raster_glyph;
+
+pub use glyph_fields::{
+    FIELD_REFERENCE_PX as GLYPH_FIELD_REFERENCE_PX, FIELD_SPREAD_PX as GLYPH_FIELD_SPREAD_PX,
+};
 
 #[cfg(test)]
 mod tests;

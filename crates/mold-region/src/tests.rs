@@ -1,83 +1,81 @@
-mod tests {
-    use super::*;
+use super::*;
 
-    fn rectangle(x: i32, y: i32, width: i32, height: i32, operation: Operation) -> Region {
-        Region {
-            rect: Rect {
-                x,
-                y,
-                width,
-                height,
-            },
-            operation,
-            ..Region::default()
-        }
+fn rectangle(x: i32, y: i32, width: i32, height: i32, operation: Operation) -> Region {
+    Region {
+        rect: Rect {
+            x,
+            y,
+            width,
+            height,
+        },
+        operation,
+        ..Region::default()
     }
+}
 
-    #[test]
-    fn combines_subtracts_and_merges_vertical_runs() {
-        let regions = [Region {
-            rect: Rect {
+#[test]
+fn combines_subtracts_and_merges_vertical_runs() {
+    let regions = [Region {
+        rect: Rect {
+            x: 0,
+            y: 0,
+            width: 6,
+            height: 4,
+        },
+        children: vec![rectangle(2, 1, 2, 2, Operation::Subtract)],
+        ..Region::default()
+    }];
+    assert_eq!(
+        build(6, 4, &regions).unwrap(),
+        [
+            Rect {
                 x: 0,
                 y: 0,
                 width: 6,
-                height: 4,
+                height: 1
             },
-            children: vec![rectangle(2, 1, 2, 2, Operation::Subtract)],
-            ..Region::default()
-        }];
-        assert_eq!(
-            build(6, 4, &regions).unwrap(),
-            [
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: 6,
-                    height: 1
-                },
-                Rect {
-                    x: 0,
-                    y: 1,
-                    width: 2,
-                    height: 2
-                },
-                Rect {
-                    x: 4,
-                    y: 1,
-                    width: 2,
-                    height: 2
-                },
-                Rect {
-                    x: 0,
-                    y: 3,
-                    width: 6,
-                    height: 1
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn ellipse_and_xor_are_composable() {
-        let ellipse = Region {
-            rect: Rect {
+            Rect {
                 x: 0,
-                y: 0,
-                width: 5,
-                height: 5,
+                y: 1,
+                width: 2,
+                height: 2
             },
-            shape: Shape::Ellipse,
-            ..Region::default()
-        };
-        let regions = [
-            ellipse.clone(),
-            Region {
-                operation: Operation::Xor,
-                ..ellipse
+            Rect {
+                x: 4,
+                y: 1,
+                width: 2,
+                height: 2
             },
-        ];
-        assert!(build(5, 5, &regions).unwrap().is_empty());
-    }
+            Rect {
+                x: 0,
+                y: 3,
+                width: 6,
+                height: 1
+            },
+        ]
+    );
+}
+
+#[test]
+fn ellipse_and_xor_are_composable() {
+    let ellipse = Region {
+        rect: Rect {
+            x: 0,
+            y: 0,
+            width: 5,
+            height: 5,
+        },
+        shape: Shape::Ellipse,
+        ..Region::default()
+    };
+    let regions = [
+        ellipse.clone(),
+        Region {
+            operation: Operation::Xor,
+            ..ellipse
+        },
+    ];
+    assert!(build(5, 5, &regions).unwrap().is_empty());
 }
 
 #[cfg(test)]

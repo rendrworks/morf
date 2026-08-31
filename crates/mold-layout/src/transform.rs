@@ -1,3 +1,12 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+use mold_scene::{NodeHandle, Scene, Value};
+
+use crate::geometry::{Geometry, Transform2D, TransformParameters};
+use crate::helpers::LayoutError;
+use crate::layout::{Layout, TransformTracker, TransformWatcher};
+
 impl TransformTracker {
     /// Merges one rendered surface layout into the geometry cache.
     pub fn update(&mut self, layout: &Layout) {
@@ -166,7 +175,7 @@ fn ancestor_chain(scene: &Scene, node: NodeHandle) -> Result<Vec<NodeHandle>, La
     Ok(chain)
 }
 
-fn inset_margin(
+pub(crate) fn inset_margin(
     scene: &Scene,
     node: NodeHandle,
     property: &'static str,
@@ -179,7 +188,7 @@ fn inset_margin(
     Ok(margin + scene.number(node, "extra_margin")?)
 }
 
-fn distributed_margin(available: f64, leading: f64, trailing: f64) -> f64 {
+pub(crate) fn distributed_margin(available: f64, leading: f64, trailing: f64) -> f64 {
     let total = leading + trailing;
     let ratio = if total == 0.0 { 0.5 } else { leading / total };
     (available * ratio).round()
@@ -206,10 +215,7 @@ pub fn node_transform(
                 scale * scene.number(node, "scale_y")?,
             ],
             rotation: scene.number(node, "rotation")?,
-            skew: [
-                scene.number(node, "skew_x")?,
-                scene.number(node, "skew_y")?,
-            ],
+            skew: [scene.number(node, "skew_x")?, scene.number(node, "skew_y")?],
         },
     ))
 }

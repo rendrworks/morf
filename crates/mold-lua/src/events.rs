@@ -33,25 +33,35 @@ pub enum UiEvent {
     TouchCanceled,
 }
 
+/// Every event a configuration can handle, and the property it writes.
+///
+/// One table, read in both directions. It used to be written out twice — once
+/// each way, in two files — with nothing keeping the two in step, so an event
+/// added to one and forgotten in the other would either be unbindable or
+/// unnameable, and nothing would say which.
+pub(crate) const EVENT_PROPERTIES: &[(UiEvent, &str)] = &[
+    (UiEvent::PointerEntered, "on_entered"),
+    (UiEvent::PointerExited, "on_exited"),
+    (UiEvent::PointerMoved, "on_position_changed"),
+    (UiEvent::Pressed, "on_pressed"),
+    (UiEvent::Released, "on_released"),
+    (UiEvent::Clicked, "on_clicked"),
+    (UiEvent::DragStarted, "on_drag_started"),
+    (UiEvent::Dragged, "on_dragged"),
+    (UiEvent::DragFinished, "on_drag_finished"),
+    (UiEvent::Wheel, "on_wheel"),
+    (UiEvent::KeyPressed, "on_key_pressed"),
+    (UiEvent::TouchPressed, "on_touch_pressed"),
+    (UiEvent::TouchMoved, "on_touch_moved"),
+    (UiEvent::TouchReleased, "on_touch_released"),
+    (UiEvent::TouchCanceled, "on_touch_canceled"),
+];
+
 impl UiEvent {
-    fn property(self) -> &'static str {
-        match self {
-            Self::PointerEntered => "on_entered",
-            Self::PointerExited => "on_exited",
-            Self::PointerMoved => "on_position_changed",
-            Self::Pressed => "on_pressed",
-            Self::Released => "on_released",
-            Self::Clicked => "on_clicked",
-            Self::DragStarted => "on_drag_started",
-            Self::Dragged => "on_dragged",
-            Self::DragFinished => "on_drag_finished",
-            Self::Wheel => "on_wheel",
-            Self::KeyPressed => "on_key_pressed",
-            Self::TouchPressed => "on_touch_pressed",
-            Self::TouchMoved => "on_touch_moved",
-            Self::TouchReleased => "on_touch_released",
-            Self::TouchCanceled => "on_touch_canceled",
-        }
+    pub(crate) fn property(self) -> &'static str {
+        EVENT_PROPERTIES
+            .iter()
+            .find(|(event, _)| *event == self)
+            .map_or("on_unknown", |(_, property)| *property)
     }
 }
-

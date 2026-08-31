@@ -1,8 +1,66 @@
+use raw_window_handle::{
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
+    WaylandWindowHandle, WindowHandle,
+};
+use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::data_device_manager::DataDeviceManagerState;
+use smithay_client_toolkit::data_device_manager::data_device::DataDevice;
+use smithay_client_toolkit::data_device_manager::data_source::CopyPasteSource;
+use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::registry::RegistryState;
+use smithay_client_toolkit::seat::SeatState;
+use smithay_client_toolkit::session_lock::{SessionLock, SessionLockState, SessionLockSurface};
+use smithay_client_toolkit::shell::wlr_layer::{LayerShell, LayerSurface};
+use smithay_client_toolkit::shell::xdg::XdgShell;
+use smithay_client_toolkit::shell::xdg::popup::Popup;
+use smithay_client_toolkit::shell::xdg::window::Window;
+use smithay_client_toolkit::shm::Shm;
+use smithay_client_toolkit::shm::slot::{Buffer as ShmBuffer, SlotPool};
+use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::ptr::NonNull;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, mpsc};
+use std::time::Instant;
+use wayland_client::Proxy;
+use wayland_client::protocol::{
+    wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface, wl_touch,
+};
+use wayland_protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1::ExtIdleNotificationV1, ext_idle_notifier_v1::ExtIdleNotifierV1,
+};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::WpFractionalScaleV1,
+};
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3::ZwpTextInputV3,
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
+use wayland_protocols_misc::zwp_input_method_v2::client::{
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2::ZwpInputMethodV2,
+};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+};
+use wayland_protocols_wlr::output_power_management::v1::client::{
+    zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1, zwlr_output_power_v1::ZwlrOutputPowerV1,
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+};
+
+use crate::{client_surface::*, surface_types::*, types::*};
+
 /// Owned Wayland display and surface handles for graphics APIs.
 #[derive(Clone, Debug)]
 pub struct WaylandWindowTarget {
-    backend: wayland_backend::client::Backend,
-    surface: wl_surface::WlSurface,
+    pub(crate) backend: wayland_backend::client::Backend,
+    pub(crate) surface: wl_surface::WlSurface,
 }
 
 impl HasDisplayHandle for WaylandWindowTarget {
@@ -22,26 +80,26 @@ impl HasWindowHandle for WaylandWindowTarget {
 
 /// One live wlr-layer-shell surface and the per-surface state the compositor
 /// configures independently of every other layer surface this client owns.
-struct LayerRecord {
-    surface: LayerSurface,
-    fractional_scale: Option<WpFractionalScaleV1>,
-    viewport: Option<WpViewport>,
-    width: u32,
-    height: u32,
-    scale_120: u32,
+pub(crate) struct LayerRecord {
+    pub(crate) surface: LayerSurface,
+    pub(crate) fractional_scale: Option<WpFractionalScaleV1>,
+    pub(crate) viewport: Option<WpViewport>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) scale_120: u32,
     /// Whether this surface should map itself with a blank buffer once the
     /// compositor has configured it.
-    wants_blank: bool,
+    pub(crate) wants_blank: bool,
     /// Whether a configure has been acknowledged, which the protocol requires
     /// before any buffer may be attached.
-    configured: bool,
+    pub(crate) configured: bool,
     /// Backing store for a surface mapped with a blank buffer.
     ///
     /// A reserver has no renderer, but a layer surface that never attaches a
     /// buffer stays unmapped, and a compositor computes an output's usable area
     /// only from the layer surfaces it actually arranges. Holding the pool and
     /// the buffer here keeps the mapping alive for as long as the surface is.
-    blank: Option<(SlotPool, ShmBuffer)>,
+    pub(crate) blank: Option<(SlotPool, ShmBuffer)>,
 }
 
 impl Drop for LayerRecord {
@@ -55,84 +113,84 @@ impl Drop for LayerRecord {
     }
 }
 
-struct LayerState {
-    registry: RegistryState,
-    compositor: CompositorState,
-    outputs: OutputState,
-    seats: SeatState,
-    xdg_shell: XdgShell,
-    layer_shell: LayerShell,
-    layers: HashMap<u64, LayerRecord>,
-    popups: HashMap<u64, Popup>,
+pub(crate) struct LayerState {
+    pub(crate) registry: RegistryState,
+    pub(crate) compositor: CompositorState,
+    pub(crate) outputs: OutputState,
+    pub(crate) seats: SeatState,
+    pub(crate) xdg_shell: XdgShell,
+    pub(crate) layer_shell: LayerShell,
+    pub(crate) layers: HashMap<u64, LayerRecord>,
+    pub(crate) popups: HashMap<u64, Popup>,
     /// Reposition tokens sent to, and echoed back by, each live popup.
-    popup_repositions: HashMap<u64, PopupReposition>,
-    floatings: HashMap<u64, Window>,
-    floating_sizes: HashMap<u64, (u32, u32)>,
-    fractional_manager: Option<WpFractionalScaleManagerV1>,
-    viewporter: Option<WpViewporter>,
-    events: VecDeque<LayerEvent>,
-    pointer: Option<wl_pointer::WlPointer>,
-    pointer_seat: Option<wl_seat::WlSeat>,
-    keyboard: Option<wl_keyboard::WlKeyboard>,
-    touch: Option<wl_touch::WlTouch>,
-    touch_points: HashMap<i32, ((f64, f64), SurfaceRole)>,
-    keyboard_surface: Option<SurfaceRole>,
-    idle_notifier: Option<ExtIdleNotifierV1>,
-    idle_notifications: Vec<ExtIdleNotificationV1>,
-    idle_timeouts: Vec<u32>,
-    data_device_manager: Option<DataDeviceManagerState>,
-    data_devices: Vec<DataDevice>,
-    clipboard_source: Option<CopyPasteSource>,
-    clipboard_text: String,
-    clipboard_tx: mpsc::Sender<Option<String>>,
-    clipboard_rx: mpsc::Receiver<Option<String>>,
-    clipboard_reads: Arc<AtomicUsize>,
-    clipboard_writes: Arc<AtomicUsize>,
-    latest_input_serial: Option<u32>,
-    virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
-    virtual_keyboard: Option<ZwpVirtualKeyboardV1>,
-    virtual_keyboard_keymap: Option<String>,
-    virtual_keyboard_keymap_file: Option<File>,
-    virtual_keyboard_clock: Instant,
-    input_method_manager: Option<ZwpInputMethodManagerV2>,
-    input_method: Option<ZwpInputMethodV2>,
-    input_method_pending: InputMethodState,
-    input_method_state: InputMethodState,
-    text_input_manager: Option<ZwpTextInputManagerV3>,
-    text_input: Option<ZwpTextInputV3>,
-    text_input_requested: bool,
-    text_input_pending: TextInputState,
-    output_power_manager: Option<ZwlrOutputPowerManagerV1>,
-    output_power: Vec<OutputPowerControl>,
-    output_power_target: Option<wl_output::WlOutput>,
-    output_power_mode: Option<OutputPowerMode>,
-    shm: Option<Shm>,
-    screencopy_manager: Option<ZwlrScreencopyManagerV1>,
-    screencopies: Vec<PendingScreencopy>,
-    screens: Vec<ScreenInfo>,
-    session_locks: SessionLockState,
-    session_lock: Option<SessionLock>,
-    lock_surfaces: Vec<LockSurface>,
+    pub(crate) popup_repositions: HashMap<u64, PopupReposition>,
+    pub(crate) floatings: HashMap<u64, Window>,
+    pub(crate) floating_sizes: HashMap<u64, (u32, u32)>,
+    pub(crate) fractional_manager: Option<WpFractionalScaleManagerV1>,
+    pub(crate) viewporter: Option<WpViewporter>,
+    pub(crate) events: VecDeque<LayerEvent>,
+    pub(crate) pointer: Option<wl_pointer::WlPointer>,
+    pub(crate) pointer_seat: Option<wl_seat::WlSeat>,
+    pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub(crate) touch: Option<wl_touch::WlTouch>,
+    pub(crate) touch_points: HashMap<i32, ((f64, f64), SurfaceRole)>,
+    pub(crate) keyboard_surface: Option<SurfaceRole>,
+    pub(crate) idle_notifier: Option<ExtIdleNotifierV1>,
+    pub(crate) idle_notifications: Vec<ExtIdleNotificationV1>,
+    pub(crate) idle_timeouts: Vec<u32>,
+    pub(crate) data_device_manager: Option<DataDeviceManagerState>,
+    pub(crate) data_devices: Vec<DataDevice>,
+    pub(crate) clipboard_source: Option<CopyPasteSource>,
+    pub(crate) clipboard_text: String,
+    pub(crate) clipboard_tx: mpsc::Sender<Option<String>>,
+    pub(crate) clipboard_rx: mpsc::Receiver<Option<String>>,
+    pub(crate) clipboard_reads: Arc<AtomicUsize>,
+    pub(crate) clipboard_writes: Arc<AtomicUsize>,
+    pub(crate) latest_input_serial: Option<u32>,
+    pub(crate) virtual_keyboard_manager: Option<ZwpVirtualKeyboardManagerV1>,
+    pub(crate) virtual_keyboard: Option<ZwpVirtualKeyboardV1>,
+    pub(crate) virtual_keyboard_keymap: Option<String>,
+    pub(crate) virtual_keyboard_keymap_file: Option<File>,
+    pub(crate) virtual_keyboard_clock: Instant,
+    pub(crate) input_method_manager: Option<ZwpInputMethodManagerV2>,
+    pub(crate) input_method: Option<ZwpInputMethodV2>,
+    pub(crate) input_method_pending: InputMethodState,
+    pub(crate) input_method_state: InputMethodState,
+    pub(crate) text_input_manager: Option<ZwpTextInputManagerV3>,
+    pub(crate) text_input: Option<ZwpTextInputV3>,
+    pub(crate) text_input_requested: bool,
+    pub(crate) text_input_pending: TextInputState,
+    pub(crate) output_power_manager: Option<ZwlrOutputPowerManagerV1>,
+    pub(crate) output_power: Vec<OutputPowerControl>,
+    pub(crate) output_power_target: Option<wl_output::WlOutput>,
+    pub(crate) output_power_mode: Option<OutputPowerMode>,
+    pub(crate) shm: Option<Shm>,
+    pub(crate) screencopy_manager: Option<ZwlrScreencopyManagerV1>,
+    pub(crate) screencopies: Vec<PendingScreencopy>,
+    pub(crate) screens: Vec<ScreenInfo>,
+    pub(crate) session_locks: SessionLockState,
+    pub(crate) session_lock: Option<SessionLock>,
+    pub(crate) lock_surfaces: Vec<LockSurface>,
 }
 
-struct OutputPowerControl {
-    output: wl_output::WlOutput,
-    control: ZwlrOutputPowerV1,
+pub(crate) struct OutputPowerControl {
+    pub(crate) output: wl_output::WlOutput,
+    pub(crate) control: ZwlrOutputPowerV1,
 }
 
-struct PendingScreencopy {
-    request_id: u64,
-    frame: ZwlrScreencopyFrameV1,
-    offer: Option<(wl_shm::Format, u32, u32, u32)>,
-    pool: Option<SlotPool>,
-    buffer: Option<ShmBuffer>,
-    format: Option<ScreencopyFormat>,
-    y_invert: bool,
+pub(crate) struct PendingScreencopy {
+    pub(crate) request_id: u64,
+    pub(crate) frame: ZwlrScreencopyFrameV1,
+    pub(crate) offer: Option<(wl_shm::Format, u32, u32, u32)>,
+    pub(crate) pool: Option<SlotPool>,
+    pub(crate) buffer: Option<ShmBuffer>,
+    pub(crate) format: Option<ScreencopyFormat>,
+    pub(crate) y_invert: bool,
 }
 
-struct LockSurface {
-    surface: SessionLockSurface,
-    output: wl_output::WlOutput,
-    size: (u32, u32),
-    scale: u32,
+pub(crate) struct LockSurface {
+    pub(crate) surface: SessionLockSurface,
+    pub(crate) output: wl_output::WlOutput,
+    pub(crate) size: (u32, u32),
+    pub(crate) scale: u32,
 }

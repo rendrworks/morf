@@ -1,4 +1,12 @@
-fn update_process_view_config(
+use luna::{Context, Table, Value as LuaValue};
+use mold_image::{ImageRect as QuantizeRect, quantize_colors};
+use mold_io::{Process, ProcessConfig};
+use mold_scene::NodeHandle;
+use std::path::PathBuf;
+
+use crate::{state::*, surface_types::*};
+
+pub(crate) fn update_process_view_config(
     process: &ProcessViewToken,
     update: impl FnOnce(&mut ProcessConfig),
 ) -> Result<(), String> {
@@ -18,7 +26,7 @@ fn update_process_view_config(
     Ok(())
 }
 
-fn parse_quantizer_options<'gc>(
+pub(crate) fn parse_quantizer_options<'gc>(
     ctx: Context<'gc>,
     options: Table<'gc>,
 ) -> Result<(PathBuf, u8, Option<QuantizeRect>, u32), String> {
@@ -46,7 +54,7 @@ fn parse_quantizer_options<'gc>(
     Ok((source, depth, crop, rescale_size))
 }
 
-fn parse_quantizer_rect<'gc>(
+pub(crate) fn parse_quantizer_rect<'gc>(
     ctx: Context<'gc>,
     value: LuaValue<'gc>,
 ) -> Result<Option<QuantizeRect>, String> {
@@ -73,7 +81,7 @@ fn parse_quantizer_rect<'gc>(
     Ok(Some(rect))
 }
 
-fn quantizer_colors_to_lua<'gc>(ctx: Context<'gc>, colors: &[[u8; 4]]) -> Table<'gc> {
+pub(crate) fn quantizer_colors_to_lua<'gc>(ctx: Context<'gc>, colors: &[[u8; 4]]) -> Table<'gc> {
     let values = Table::new(&ctx);
     for (index, color) in colors.iter().enumerate() {
         let encoded = if color[3] == 255 {
@@ -91,7 +99,7 @@ fn quantizer_colors_to_lua<'gc>(ctx: Context<'gc>, colors: &[[u8; 4]]) -> Table<
     values
 }
 
-fn update_color_quantizer(
+pub(crate) fn update_color_quantizer(
     quantizer: &ColorQuantizerToken,
     update: impl FnOnce(&mut ColorQuantizerState),
 ) -> Result<(), String> {
@@ -104,3 +112,31 @@ fn update_color_quantizer(
     Ok(())
 }
 
+/// Registers one window surface and returns the id it was given.
+///
+/// The id allocation, the insert and the change flag were written out once per
+/// surface kind — three copies of the same six lines, differing only in which
+/// `WindowSurfaceKind` they wrapped — so adding a field to the record meant
+/// finding all three.
+pub(crate) fn register_window_surface(
+    state: &mut ReactiveState,
+    root: NodeHandle,
+    visible: bool,
+    updates_enabled: bool,
+    kind: WindowSurfaceKind,
+) -> u64 {
+    let id = state.next_window_surface;
+    state.next_window_surface = state.next_window_surface.wrapping_add(1);
+    state.window_surfaces.insert(
+        id,
+        WindowSurfaceConfig {
+            id,
+            root,
+            visible,
+            updates_enabled,
+            kind,
+        },
+    );
+    state.window_surfaces_changed = true;
+    id
+}

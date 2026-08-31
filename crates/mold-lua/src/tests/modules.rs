@@ -1,3 +1,8 @@
+use crate::*;
+use std::fs;
+
+use super::*;
+
 #[test]
 fn downstream_modules_are_not_embedded() {
     let mut runtime = Runtime::default();
@@ -415,4 +420,3 @@ fn virtual_keyboard_requests_preserve_protocol_order() {
         ]
     );
 }
-

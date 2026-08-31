@@ -1,4 +1,12 @@
-fn handle_surface_event(
+use mold_layout::Hit;
+use mold_lua::{EventPoint, Runtime, UiEvent};
+use mold_render::{RenderEngine, WgpuBackend};
+use mold_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, SurfaceRole, physical_size};
+use std::sync::mpsc;
+
+use crate::{lock::*, paint::*, services::*, surface_layers::*, surface_touch::*, surfaces::*};
+
+pub(crate) fn handle_surface_event(
     runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &mut LayerClient,
@@ -19,7 +27,7 @@ fn handle_surface_event(
             {
                 if let Some(renderer) = &mut surface.renderer {
                     let (width, height) =
-                        auxiliary_physical_size(surface.width, surface.height, client.scale_120());
+                        physical_size((surface.width, surface.height), client.scale_120());
                     renderer.backend_mut().resize(width, height);
                 }
             }
@@ -28,17 +36,39 @@ fn handle_surface_event(
         LayerEvent::Configure { id, width, height } => {
             layer_surface_configure(runtime, client, state, id, width, height)?;
         }
-        LayerEvent::Scale { id, .. } => layer_surface_scale(client, state, id),
+        LayerEvent::Scale { id, .. } => layer_surface_scale(runtime, client, state, id)?,
         LayerEvent::Frame { id, time_ms } if id == PRIMARY_LAYER => {
+            let delta = animation_delta(state.last_frame, time_ms);
             let frame = runtime
-                .tick_animations(animation_delta(state.last_frame, time_ms))
+                .tick_animations(delta)
                 .map_err(|error| error.to_string())?;
             // Carried forward only while motion continues, so the next run of
             // animation starts from a clean timebase rather than inheriting
             // however long the shell was idle.
             state.last_frame = frame.active.then_some(time_ms);
-            let advanced = frame.active || !frame.changes.is_empty();
-            repaint |= advanced;
+            // The callbacks themselves are the clock: whatever rate the
+            // compositor offers this output is the rate to pace against.
+            if !delta.is_zero() {
+                state.refresh = delta;
+            }
+            let advanced = frame.active || frame.changed > 0;
+            if advanced {
+                // A surface that cannot paint inside one refresh paints on
+                // every second callback instead, and keeps that cadence rather
+                // than missing deadlines at random.
+                if state.pacer.due(state.refresh) {
+                    repaint = true;
+                } else {
+                    // The next callback is asked for by painting, so a skipped
+                    // frame has to ask for itself — otherwise the compositor
+                    // has nothing outstanding, never calls back, and the
+                    // surface stops dead on the first frame it gives up.
+                    client.request_layer_frame(PRIMARY_LAYER);
+                    client.commit_layer(PRIMARY_LAYER);
+                }
+            } else {
+                state.pacer.rest();
+            }
             // Configured layer surfaces have no clock of their own; the shell's
             // tick is what tells them a repaint is due, and a surface that is
             // already idle needs a frame callback to come back on.
@@ -59,7 +89,6 @@ fn handle_surface_event(
         LayerEvent::Idle { timeout_ms, idle } => {
             repaint |= runtime.dispatch_idle(timeout_ms, idle);
         }
-        LayerEvent::OutputPower { .. } => {}
         LayerEvent::Clipboard { text } => {
             repaint |= runtime.dispatch_clipboard(text);
         }
@@ -304,28 +333,23 @@ fn handle_surface_event(
         } => {
             let Some(root) = surface_root(
                 surface,
-                primary_surface_root(runtime)?,
+                state.primary_root,
                 &state.popup_surfaces,
                 &state.floating_surfaces,
                 &state.layer_surfaces,
             ) else {
                 return Ok(false);
             };
-            let current = state
-                .focused
-                .get(&surface)
-                .copied()
-                .filter(|node| runtime.node_in_subtree(root, *node));
-            if keysym == 0xff09 {
-                if let Some(next) = runtime.next_key_target_in(root, current) {
-                    state.focused.insert(surface, next);
-                } else {
+            let mut focused = state.focused.get(&surface).copied();
+            repaint |=
+                dispatch_key_in_subtree(runtime, root, &mut focused, keysym, text.as_deref());
+            match focused {
+                Some(node) => {
+                    state.focused.insert(surface, node);
+                }
+                None => {
                     state.focused.remove(&surface);
                 }
-                repaint = true;
-            } else if let Some(node) = current.or_else(|| runtime.first_key_target_in(root)) {
-                state.focused.insert(surface, node);
-                repaint |= runtime.dispatch_key_event(node, keysym, text.as_deref());
             }
         }
         LayerEvent::PopupConfigure { id, width, height } => {
@@ -334,7 +358,7 @@ fn handle_surface_event(
                 surface.width = width.max(1);
                 surface.height = height.max(1);
                 let (physical_width, physical_height) =
-                    auxiliary_physical_size(surface.width, surface.height, client.scale_120());
+                    physical_size((surface.width, surface.height), client.scale_120());
                 if let Some(renderer) = &mut surface.renderer {
                     renderer
                         .backend_mut()
@@ -376,7 +400,7 @@ fn handle_surface_event(
                 surface.width = width.max(1);
                 surface.height = height.max(1);
                 let (physical_width, physical_height) =
-                    auxiliary_physical_size(surface.width, surface.height, client.scale_120());
+                    physical_size((surface.width, surface.height), client.scale_120());
                 if let Some(renderer) = &mut surface.renderer {
                     renderer
                         .backend_mut()
@@ -413,7 +437,6 @@ fn handle_surface_event(
             }
         }
         LayerEvent::Key { pressed: false, .. }
-        | LayerEvent::Modifiers { .. }
         | LayerEvent::SessionLocked
         | LayerEvent::SessionLockFinished
         | LayerEvent::SessionLockConfigure { .. }

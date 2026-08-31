@@ -1,3 +1,18 @@
+use std::collections::HashMap;
+use std::error::Error as StdError;
+use std::fmt;
+use std::fs;
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use image::ImageReader;
+use resvg::{tiny_skia, usvg};
+
+use crate::distance_field::distance_field_from_alpha;
+use crate::icons::IconResolver;
+use crate::quantize::ImageData;
+
 /// Image or icon loading failure.
 #[derive(Debug)]
 pub enum ImageError {
@@ -94,17 +109,6 @@ impl ImageCache {
         Ok(image)
     }
 
-    /// Resolves and loads an icon through XDG theme inheritance.
-    pub fn load_icon(
-        &mut self,
-        name: &str,
-        theme: &str,
-        logical_size: u32,
-        scale_120: u32,
-    ) -> Result<Arc<ImageData>, ImageError> {
-        self.load_icon_sized(name, theme, logical_size, logical_size, scale_120)
-    }
-
     /// Resolves and loads an icon into a logical rectangle.
     pub fn load_icon_sized(
         &mut self,
@@ -114,16 +118,8 @@ impl ImageCache {
         logical_height: u32,
         scale_120: u32,
     ) -> Result<Arc<ImageData>, ImageError> {
-        let logical_size = logical_width.max(logical_height);
-        let physical = physical_size(logical_size, scale_120)?;
-        let key = (name.to_owned(), theme.to_owned(), physical, scale_120);
-        let path = if let Some(path) = self.icons.get(&key) {
-            path.clone()
-        } else {
-            let path = IconResolver::from_environment().find(name, theme, physical)?;
-            self.icons.insert(key, path.clone());
-            path
-        };
+        let physical = physical_size(logical_width.max(logical_height), scale_120)?;
+        let path = self.resolve_icon(name, theme, physical, scale_120)?;
         self.load(path, logical_width, logical_height, scale_120)
     }
 
@@ -167,23 +163,9 @@ impl ImageCache {
         scale_120: u32,
         spread: f32,
     ) -> Result<Arc<ImageData>, ImageError> {
-        let logical_size = logical_width.max(logical_height);
-        let physical = physical_size(logical_size, scale_120)?;
-        let key = (name.to_owned(), theme.to_owned(), physical, scale_120);
-        let path = if let Some(path) = self.icons.get(&key) {
-            path.clone()
-        } else {
-            let path = IconResolver::from_environment().find(name, theme, physical)?;
-            self.icons.insert(key, path.clone());
-            path
-        };
-        self.load_distance_field(
-            path,
-            logical_width,
-            logical_height,
-            scale_120,
-            spread,
-        )
+        let physical = physical_size(logical_width.max(logical_height), scale_120)?;
+        let path = self.resolve_icon(name, theme, physical, scale_120)?;
+        self.load_distance_field(path, logical_width, logical_height, scale_120, spread)
     }
 
     /// Returns a source's unscaled pixel dimensions.
@@ -215,15 +197,35 @@ impl ImageCache {
         theme: &str,
         preferred_size: u32,
     ) -> Result<(u32, u32), ImageError> {
-        let key = (name.to_owned(), theme.to_owned(), preferred_size, 120);
-        let path = if let Some(path) = self.icons.get(&key) {
-            path.clone()
-        } else {
-            let path = IconResolver::from_environment().find(name, theme, preferred_size)?;
-            self.icons.insert(key, path.clone());
-            path
-        };
+        let path = self.resolve_icon(name, theme, preferred_size, 120)?;
         self.intrinsic_size(path)
+    }
+
+    /// Finds the file backing one themed icon, remembering the answer.
+    ///
+    /// Walking a theme index is the expensive half of drawing an icon, and this
+    /// block was written out three times — twice byte for byte — so a change to
+    /// how icons are found had three places to be made and two chances to be
+    /// forgotten.
+    fn resolve_icon(
+        &mut self,
+        name: &str,
+        theme: &str,
+        physical: u32,
+        scale_120: u32,
+    ) -> Result<PathBuf, ImageError> {
+        let key = (name.to_owned(), theme.to_owned(), physical, scale_120);
+        if let Some(path) = self.icons.get(&key) {
+            return Ok(path.clone());
+        }
+        let path = IconResolver::from_environment().find(name, theme, physical)?;
+        self.icons.insert(key, path.clone());
+        Ok(path)
+    }
+
+    /// How many decoded images are held right now.
+    pub fn decoded_len(&self) -> usize {
+        self.images.len() + self.distance_fields.len()
     }
 
     /// Removes all decoded and resolved entries.
@@ -233,16 +235,49 @@ impl ImageCache {
         self.intrinsic.clear();
         self.distance_fields.clear();
     }
+
+    /// Drops decoded pixels once the cache has grown past what a shell needs.
+    ///
+    /// Decoded images are keyed on the pixel size they were rasterised at, and
+    /// that size comes off live geometry — so animating an icon's width mints
+    /// one decode per step and keeps every one of them. Nothing ever called
+    /// `clear`, so this grew for the life of the process.
+    ///
+    /// The resolved icon paths and intrinsic sizes stay: they are small, and
+    /// they are the expensive half to rebuild, being a theme-index walk rather
+    /// than a decode.
+    pub fn shrink(&mut self) {
+        if self.images.len() > MAX_DECODED_IMAGES {
+            self.images.clear();
+        }
+        if self.distance_fields.len() > MAX_DECODED_IMAGES {
+            self.distance_fields.clear();
+        }
+    }
 }
 
+/// Converts one logical dimension to physical pixels for a decode request.
+///
+/// This crate depends on nothing, so it cannot share the surface-sizing
+/// conversion in `mold-wayland`, and it deliberately answers differently: a
+/// zero-sized image is a request that cannot be satisfied, where a zero-sized
+/// surface has to be rounded up to something drawable.
+///
+/// The width matters. Multiplying in `u32` and saturating first gives a
+/// *wrong* answer rather than a clamped one — `u32::MAX` divided by 120 — for
+/// any size big enough to overflow, so the multiply happens in `u64`.
 fn physical_size(logical: u32, scale_120: u32) -> Result<u32, ImageError> {
     if logical == 0 || scale_120 == 0 {
         return Err(ImageError::InvalidSize);
     }
-    Ok(logical.saturating_mul(scale_120).div_ceil(120))
+    let physical = (u64::from(logical) * u64::from(scale_120)).div_ceil(120);
+    u32::try_from(physical).map_err(|_| ImageError::InvalidSize)
 }
 
-fn normalize_source(source: &Path) -> Result<PathBuf, ImageError> {
+/// How many decoded images to hold before dropping them.
+const MAX_DECODED_IMAGES: usize = 128;
+
+pub(crate) fn normalize_source(source: &Path) -> Result<PathBuf, ImageError> {
     let Some(value) = source.to_str() else {
         return Ok(source.to_path_buf());
     };
@@ -283,7 +318,7 @@ fn hex_digit(value: u8) -> Option<u8> {
     }
 }
 
-fn decode_path(path: &Path, width: u32, height: u32) -> Result<ImageData, ImageError> {
+pub(crate) fn decode_path(path: &Path, width: u32, height: u32) -> Result<ImageData, ImageError> {
     let bytes = fs::read(path)?;
     if path.extension().and_then(|value| value.to_str()) == Some("svg") {
         decode_svg(&bytes, width, height)

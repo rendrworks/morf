@@ -1,4 +1,10 @@
-fn install_socket_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use mold_io::{Socket, SocketServer, SplitParser, StreamCollector};
+use std::cell::RefCell;
+
+use crate::{lua_values::*, scene_bindings::*, state::*, table_menu::*};
+
+pub(crate) fn install_socket_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     let socket_send = Callback::from_fn(&ctx, |ctx, _, mut stack| {
         let (socket, bytes): (UserRef<SocketToken>, String) = stack.consume(ctx)?;
         if bytes.len() > 64 * 1024 {
@@ -222,39 +228,6 @@ fn install_socket_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     });
     mold.set_field(ctx, "socket", socket);
 
-    let line_push = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (parser, chunk): (UserRef<LineParserToken>, String) = stack.consume(ctx)?;
-        let values = parser.parser.borrow_mut().push(chunk.as_bytes());
-        stack.replace(ctx, string_table(ctx, values));
-        Ok(CallbackReturn::Return)
-    });
-    let line_finish = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let parser: UserRef<LineParserToken> = stack.consume(ctx)?;
-        match parser.parser.borrow_mut().finish() {
-            Some(value) => stack.replace(ctx, value),
-            None => stack.replace(ctx, LuaValue::Nil),
-        }
-        Ok(CallbackReturn::Return)
-    });
-    let line_methods = Table::new(&ctx);
-    line_methods.set_field(ctx, "push", line_push);
-    line_methods.set_field(ctx, "finish", line_finish);
-    let line_metatable = Table::new(&ctx);
-    line_metatable.set_field(ctx, "__index", line_methods);
-    let line_metatable = ctx.stash(line_metatable);
-    let line_parser = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let userdata = UserData::new_static(
-            &ctx,
-            LineParserToken {
-                parser: RefCell::new(LineParser::default()),
-            },
-        );
-        userdata.set_metatable(ctx, Some(ctx.fetch(&line_metatable)));
-        stack.replace(ctx, userdata);
-        Ok(CallbackReturn::Return)
-    });
-    mold.set_field(ctx, "line_parser", line_parser);
-
     let split_push = Callback::from_fn(&ctx, |ctx, _, mut stack| {
         let (parser, chunk): (UserRef<SplitParserToken>, String) = stack.consume(ctx)?;
         let values = parser
@@ -303,8 +276,7 @@ fn install_socket_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     let split_metatable = ctx.stash(split_metatable);
     let split_parser = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let delimiter: String = stack.consume(ctx)?;
-        let parser = SplitParser::new(delimiter.into_bytes())
-            .map_err(|error| HostError(error.to_string()))?;
+        let parser = SplitParser::new(delimiter.into_bytes());
         let userdata = UserData::new_static(
             &ctx,
             SplitParserToken {
@@ -405,4 +377,3 @@ fn install_socket_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     });
     mold.set_field(ctx, "stream_collector", stream_collector);
 }
-

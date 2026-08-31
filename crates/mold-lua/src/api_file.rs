@@ -1,4 +1,10 @@
-fn install_file_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
+use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use mold_io::{FileDocument, FileEvent, FileView};
+use std::cell::RefCell;
+
+use crate::{lua_values::*, scene_bindings::*, state::*};
+
+pub(crate) fn install_file_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     let file_read = Callback::from_fn(&ctx, |ctx, _, mut stack| {
         let file: UserRef<FileToken> = stack.consume(ctx)?;
         let bytes = file
@@ -260,4 +266,3 @@ fn install_file_api<'gc>(ctx: Context<'gc>, mold: Table<'gc>) {
     });
     mold.set_field(ctx, "file_view", file_document);
 }
-

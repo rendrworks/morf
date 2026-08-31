@@ -1,5 +1,11 @@
-impl LayerClient {
+use smithay_client_toolkit::compositor::FrameCallbackData;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::xdg::window::{Window, WindowDecorations};
+use wayland_client::protocol::wl_surface;
 
+use crate::{state_types::*, surface_types::*};
+
+impl LayerClient {
     /// Creates an undecorated xdg toplevel surface.
     pub fn open_floating(
         &mut self,
@@ -55,9 +61,7 @@ impl LayerClient {
     pub fn close_floating(&mut self, id: u64) {
         self.state.floatings.remove(&id);
         self.state.floating_sizes.remove(&id);
-        if self.state.keyboard_surface == Some(SurfaceRole::Floating(id)) {
-            self.state.keyboard_surface = None;
-        }
+        self.forget_surface(SurfaceRole::Floating(id));
     }
 
     pub fn start_floating_move(&self, id: u64) -> bool {
@@ -109,4 +113,3 @@ impl LayerClient {
             })
     }
 }
-

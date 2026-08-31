@@ -1,5 +1,10 @@
-impl LayerClient {
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::time::Timespec;
+use std::time::Duration;
 
+use crate::{state_types::*, surface_types::*};
+
+impl LayerClient {
     /// Blocks until at least one Wayland event is dispatched.
     pub fn dispatch(&mut self) -> Result<(), WaylandError> {
         self.queue
@@ -148,4 +153,3 @@ impl LayerClient {
         self.state.data_device_manager.is_some() && !self.state.data_devices.is_empty()
     }
 }
-

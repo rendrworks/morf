@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use crate::{animation::*, groups::*, types::*};
+
 /// One stop on a keyframe track.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Keyframe {
@@ -65,19 +69,11 @@ pub fn keyframe_steps(
     }
     for pair in frames.windows(2) {
         let (previous, frame) = (&pair[0], &pair[1]);
+        // A zero span is not a special case: two stops at the same offset are a
+        // deliberate jump, and a zero-duration tween is exactly that. It used
+        // to be written out separately, building a step identical in every
+        // field to the one below.
         let span = seconds(frame.at - previous.at, duration);
-        if span.is_zero() {
-            // Two stops at the same offset are a deliberate jump: the value
-            // changes with no time to interpolate over.
-            steps.push(AnimationStep::Property {
-                node,
-                property: property.to_owned(),
-                from: Some(previous.value.clone()),
-                to: frame.value.clone(),
-                behavior: Behavior::timed(Duration::ZERO, frame.easing),
-            });
-            continue;
-        }
         steps.push(AnimationStep::Property {
             node,
             property: property.to_owned(),
@@ -90,6 +86,6 @@ pub fn keyframe_steps(
 }
 
 /// The share of `duration` a normalized span occupies.
-fn seconds(fraction: f64, duration: Duration) -> Duration {
+pub(crate) fn seconds(fraction: f64, duration: Duration) -> Duration {
     Duration::from_secs_f64((duration.as_secs_f64() * fraction.max(0.0)).max(0.0))
 }

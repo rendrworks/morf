@@ -1,3 +1,9 @@
+use crate::*;
+use mold_layout::Layout;
+use std::collections::HashSet;
+
+use super::*;
+
 #[test]
 fn executes_a_chunk() {
     let mut runtime = Runtime::default();
@@ -425,4 +431,3 @@ fn popup_anchor_tracks_native_item_geometry() {
     );
     assert!(runtime.take_window_surface_change());
 }
-

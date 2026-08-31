@@ -1,6 +1,7 @@
 use mold_layout::{Geometry, TextAlignment, TextElide, Transform2D};
 use mold_render::{
-    DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, VerticalAlignment, WgpuBackend,
+    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, Gradient, RenderBackend,
+    VerticalAlignment, WgpuBackend,
 };
 use mold_scene::{Color, Element, Scene};
 use mold_wayland::{BarConfig, LayerClient, LayerEvent, OutputPowerMode};
@@ -84,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 elide: TextElide::None,
                 horizontal_alignment: TextAlignment::Left,
                 vertical_alignment: VerticalAlignment::Top,
+                field_style: DistanceFieldStyle::default(),
             },
         ],
         layers: Vec::new(),
