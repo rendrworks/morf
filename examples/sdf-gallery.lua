@@ -6,17 +6,17 @@
 -- of them rebuilds geometry — there is no geometry — so a parameter can be
 -- driven every frame for nothing.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
 local COLUMNS = 5
 local CELL = 190
 local LABEL = 46
 
-mold.surface.width = COLUMNS * CELL
-mold.surface.height = 2 * (CELL + LABEL)
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = COLUMNS * CELL
+morf.surface.height = 2 * (CELL + LABEL)
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 local PANEL = "#141a1c"
@@ -24,7 +24,7 @@ local ACCENT = "#b4e1ea"
 local MUTED = "#6a8389"
 
 -- One value swinging between zero and one drives every cell.
-local phase = mold.signal("gallery.phase", 0)
+local phase = morf.signal("gallery.phase", 0)
 
 local function lerp(a, b) return function() return a + (b - a) * phase:get() end end
 

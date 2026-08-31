@@ -11,14 +11,14 @@
 -- re-expressed rather than dropped:
 --
 -- * Each panel is its own `wlr-layer-shell` surface whose horizontal MARGIN is
---   animated to slide it out from under the bar. mold hosts one layer surface
+--   animated to slide it out from under the bar. morf hosts one layer surface
 --   per process and fixes its geometry at startup, so the slide is node
 --   geometry inside the shared overlay instead. The surfaces were transparent,
 --   claimed no exclusive zone and took no keyboard focus, so nothing about them
 --   was visible except the pixels they drew: the substitution is exact.
 --
 -- * Ten QML `Timer`s become one repeating `ui.Timer` with Lua deadlines. Each
---   `ui.Timer` costs an OS thread (`crates/mold-io/src/timer.rs:17-23`), and
+--   `ui.Timer` costs an OS thread (`crates/morf-io/src/timer.rs:17-23`), and
 --   nine of the ten were only ever counting down to a single assignment.
 --
 -- * The two morphs are driven per frame from that tick rather than declared as
@@ -31,10 +31,10 @@
 -- original they live on the opposite edge of a second monitor and there is only
 -- one bar here.
 
-local mold = require("mold")
-local ui = require("mold.ui")
-local io = require("mold.io")
-local core = require("mold.core")
+local morf = require("morf")
+local ui = require("morf.ui")
+local io = require("morf.io")
+local core = require("morf.core")
 local theme = require("theme")
 
 local settings = {}
@@ -54,7 +54,7 @@ local TICK_MS = 16
 
 local BRIGHT_COMMAND = (core.env("HOME") or "") .. "/.local/sbin/bright"
 
--- `pactl`, `pamixer` and `bright` are system binaries. mold is launched through
+-- `pactl`, `pamixer` and `bright` are system binaries. morf is launched through
 -- a nixGL-style wrapper that rewrites LD_LIBRARY_PATH to nix store paths, and a
 -- child that inherits those fails to find its own libc and exits before writing
 -- a line, so every child clears it.
@@ -64,7 +64,7 @@ local CHILD_ENVIRONMENT = { LD_LIBRARY_PATH = "" }
 
 --- Blends `fg` over `bg` at `amount`, in sRGB.
 ---
---- mold composites alpha in linear light and Qt composites it in sRGB, so a
+--- morf composites alpha in linear light and Qt composites it in sRGB, so a
 --- translucent fill that must match the original is blended here and handed
 --- over opaque. Only the panel's own outline keeps its alpha, because what sits
 --- behind it is whatever window the panel is over.
@@ -99,7 +99,7 @@ local morphs = {}
 --- A 0..1 progress driven by hand, so its easing curve is actually rendered.
 local function morph(name)
   local entry = {
-    signal = mold.signal(name, 0),
+    signal = morf.signal(name, 0),
     from = 0,
     to = 0,
     start = 0,
@@ -130,7 +130,7 @@ local function advance(entry, now)
     progress = 1
     entry.duration = 0
   end
-  local value = entry.from + (entry.to - entry.from) * mold.easing.value(entry.curve, progress)
+  local value = entry.from + (entry.to - entry.from) * morf.easing.value(entry.curve, progress)
   if value ~= entry.signal:get() then write(entry.signal, value) end
 end
 
@@ -140,20 +140,20 @@ local function smooth(t)
 end
 
 -- Shared device state.
-local volume = mold.signal("quickshell.settings.volume", 0.5)
-local muted = mold.signal("quickshell.settings.muted", false)
-local headphone = mold.signal("quickshell.settings.headphone", false)
-local brightness = mold.signal("quickshell.settings.brightness", 0.7)
-local app_count = mold.signal("quickshell.settings.app_count", 0)
-local app_interacting = mold.signal("quickshell.settings.app_interacting", false)
+local volume = morf.signal("quickshell.settings.volume", 0.5)
+local muted = morf.signal("quickshell.settings.muted", false)
+local headphone = morf.signal("quickshell.settings.headphone", false)
+local brightness = morf.signal("quickshell.settings.brightness", 0.7)
+local app_count = morf.signal("quickshell.settings.app_count", 0)
+local app_interacting = morf.signal("quickshell.settings.app_interacting", false)
 
 local apps = {}
 for index = 1, MAX_APPS do
   apps[index] = {
     -- The `pactl` sink input id, or 0 when the row is empty.
-    id = mold.signal("quickshell.settings.app." .. index .. ".id", 0),
-    name = mold.signal("quickshell.settings.app." .. index .. ".name", ""),
-    value = mold.signal("quickshell.settings.app." .. index .. ".value", 0),
+    id = morf.signal("quickshell.settings.app." .. index .. ".id", 0),
+    name = morf.signal("quickshell.settings.app." .. index .. ".name", ""),
+    value = morf.signal("quickshell.settings.app." .. index .. ".value", 0),
     dragging = false,
     pending = nil,
   }
@@ -165,12 +165,12 @@ local function channel(prefix)
     prefix = prefix,
     bubble = morph("quickshell.settings." .. prefix .. ".bubble"),
     expand = morph("quickshell.settings." .. prefix .. ".expand"),
-    pill_hover = mold.signal("quickshell.settings." .. prefix .. ".pill_hover", false),
-    ext_hover = mold.signal("quickshell.settings." .. prefix .. ".ext_hover", false),
-    interacting = mold.signal("quickshell.settings." .. prefix .. ".interacting", false),
-    expanded = mold.signal("quickshell.settings." .. prefix .. ".expanded", false),
-    shown = mold.signal("quickshell.settings." .. prefix .. ".shown", false),
-    wide = mold.signal("quickshell.settings." .. prefix .. ".wide", false),
+    pill_hover = morf.signal("quickshell.settings." .. prefix .. ".pill_hover", false),
+    ext_hover = morf.signal("quickshell.settings." .. prefix .. ".ext_hover", false),
+    interacting = morf.signal("quickshell.settings." .. prefix .. ".interacting", false),
+    expanded = morf.signal("quickshell.settings." .. prefix .. ".expanded", false),
+    shown = morf.signal("quickshell.settings." .. prefix .. ".shown", false),
+    wide = morf.signal("quickshell.settings." .. prefix .. ".wide", false),
     -- Deadlines, in `clock` milliseconds. Nothing binds to them, so they stay
     -- plain Lua rather than becoming three more signals.
     dismiss_at = nil,
@@ -312,8 +312,8 @@ end)
 
 -- The original's one-liner: read the default sink's active port and decide
 -- whether it is a headset. `pactl` has no direct query for it, and
--- `mold.pipewire` reports no port information at all
--- (`crates/mold-services/src/pipewire/runtime.rs:282,287-310`), so the shell
+-- `morf.pipewire` reports no port information at all
+-- (`crates/morf-services/src/pipewire/runtime.rs:282,287-310`), so the shell
 -- pipeline is kept as-is.
 local PORT_SCRIPT = "default_sink=$(pactl get-default-sink | tr -d '\\n'); "
   .. "pactl list sinks | awk -v target=\"$default_sink\" "
@@ -559,11 +559,11 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
   --- Hover handlers shared by every mouse area inside a panel.
   ---
   --- The original stacks one `NoButton` MouseArea on top of the panel to track
-  --- the pointer. mold delivers an event to a single node, the topmost hit, so
+  --- the pointer. morf delivers an event to a single node, the topmost hit, so
   --- an area on top would swallow every click beneath it; the tracker goes to
   --- the bottom of the stack instead and each interactive area keeps the flag
   --- up on its own. Exit is dispatched before enter
-  --- (`crates/mold-cli/src/surface_events.rs:85-88`), so moving between two of
+  --- (`crates/morf-cli/src/surface_events.rs:85-88`), so moving between two of
   --- them never reads as a gap.
   local function hover(ch)
     return function() write(ch.ext_hover, true) update_panel(ch, clock:elapsed_ms()) end,
@@ -577,7 +577,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
   ---
   --- `origin` reports the bar's absolute left edge. Pointer events carry surface
   --- coordinates rather than node-local ones
-  --- (`crates/mold-cli/src/surface_events.rs:94`), so the fraction has to be
+  --- (`crates/morf-cli/src/surface_events.rs:94`), so the fraction has to be
   --- worked out against it.
   local function progress_bar(cfg)
     local gap = line_h * 0.8
@@ -632,10 +632,10 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
     --- Suppresses the smoothing while the pointer is driving the value, as the
     --- original's `Behavior { enabled: !mouseArea.pressed }` does.
     local function smoothing(enabled)
-      mold.animation.set_enabled(past, "width", enabled)
-      mold.animation.set_enabled(indicator, "x", enabled)
-      mold.animation.set_enabled(future, "x", enabled)
-      mold.animation.set_enabled(future, "width", enabled)
+      morf.animation.set_enabled(past, "width", enabled)
+      morf.animation.set_enabled(indicator, "x", enabled)
+      morf.animation.set_enabled(future, "x", enabled)
+      morf.animation.set_enabled(future, "width", enabled)
     end
 
     return ui.Item {
@@ -932,8 +932,8 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
 
   --- The pointer tracker, sized to the surface the original would have opened.
   --- Being invisible when the panel is down keeps it out of the input region,
-  --- which mold re-derives from live MouseArea geometry every paint
-  --- (`crates/mold-cli/src/paint.rs:26-42`).
+  --- which morf re-derives from live MouseArea geometry every paint
+  --- (`crates/morf-cli/src/paint.rs:26-42`).
   local function tracker(ch)
     local enter, leave = hover(ch)
     return ui.MouseArea {
@@ -953,11 +953,11 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
 
   --- One ribbon pill. The compact/expanded/hovered machine is three discrete
   --- looks with one 200ms crossfade between any two of them, which is what
-  --- mold's states and transitions are
-  --- (`crates/mold-lua/src/configure.rs:160-252`); the morphs above are not,
+  --- morf's states and transitions are
+  --- (`crates/morf-lua/src/configure.rs:160-252`); the morphs above are not,
   --- because their curves are not linear in the progress.
   local function pill(ch, y)
-    local hovered = mold.signal("quickshell.settings." .. ch.prefix .. ".hovered", false)
+    local hovered = morf.signal("quickshell.settings." .. ch.prefix .. ".hovered", false)
     return ui.Rect {
       x = place((bar_width - pill_width) / 2, pill_width),
       y = y,
@@ -1073,7 +1073,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
     ),
   })
 
-  -- Order is paint order and hit order both: mold's renderer and its hit test
+  -- Order is paint order and hit order both: morf's renderer and its hit test
   -- walk children in declaration order and ignore `z`, so the bubble is
   -- declared after the panel it overlaps (the original gives it `z: 1`), the
   -- tracker before everything it sits behind, and the pills last so they stay

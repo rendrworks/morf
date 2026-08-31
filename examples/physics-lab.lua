@@ -7,17 +7,17 @@
 -- A fling does not. It is thrown at a speed and stops where friction leaves it,
 -- or where a bound catches it. Nothing in the configuration chooses the landing
 -- point; it is a consequence of how hard the throw was. That is why it is a
--- verb — `mold.animation.fling` — rather than another `kind` in a behavior
+-- verb — `morf.animation.fling` — rather than another `kind` in a behavior
 -- table: there is no target for an assignment to set.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
 local W, H = 900, 420
-mold.surface.width = W
-mold.surface.height = H
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = W
+morf.surface.height = H
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 local PANEL = "#141a1c"
@@ -28,7 +28,7 @@ local MUTED = "#6a8389"
 local LANE_X, LANE_W = 250, 560
 local ROW_H = 62
 
-local target = mold.signal("physics.target", 0)
+local target = morf.signal("physics.target", 0)
 
 --- The puck for a lane driven by a behavior, which knows where it is going.
 local function driven(y, behavior, tint)
@@ -114,7 +114,7 @@ rows[#rows + 1] = ui.Timer {
     assert(ok, error)
     -- Thrown from wherever it happens to be, at a speed that varies, and
     -- caught by the ends of its own lane.
-    mold.animation.fling {
+    morf.animation.fling {
       node = thrown,
       property = "x",
       velocity = (target:get() > 0.5 and 1 or -1) * throws[next_throw],

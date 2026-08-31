@@ -1,6 +1,6 @@
 # Animation and transform parity
 
-This audit compares Mold with the Quickshell source pinned in `xtra/quickshell`.
+This audit compares Morf with the Quickshell source pinned in `xtra/quickshell`.
 Quickshell obtains its general animation model from Qt Quick; the files below
 show which parts the pinned Quickshell tree actually uses or exposes.
 
@@ -16,22 +16,22 @@ show which parts the pinned Quickshell tree actually uses or exposes.
 - `xtra/quickshell/src/core/transformwatcher.cpp` watches geometry, scale,
   rotation, parent chains, and window chains.
 
-## Mold coverage
+## Morf coverage
 
-| Capability | Mold status |
+| Capability | Morf status |
 |---|---|
 | Numeric and color property behavior | Native Rust behavior with target/current values; Animato 1.7.2 advances tween progress |
 | Easing | Animato-backed easing families and cubic Bezier curves |
-| Spring and smoothed motion | Animato-backed springs plus Mold smoothed motion, with retargeted velocity preservation |
+| Spring and smoothed motion | Animato-backed springs plus Morf smoothed motion, with retargeted velocity preservation |
 | State transitions | Native Rust property transitions and reparent transitions |
 | Frame clock | Animation advances on Rust frame ticks without running Lua |
 | Idle handling | The frame timebase is dropped once the scene settles, so idle time is never charged to the next animation |
 | Delay and time scaling | Animato tween `delay` and `time_scale` on every behavior |
 | Loops and ping-pong | Animato `Loop` exposed as `loops` and `ping_pong` on a behavior |
 | Playback control | Native pause, resume, stop, finish, restart, reverse, and seek |
-| Enabling a behavior | `mold.animation.set_enabled` toggles one without discarding it |
+| Enabling a behavior | `morf.animation.set_enabled` toggles one without discarding it |
 | Completion callbacks | `on_finished(property, reason)` reports completed, stopped, or canceled |
-| Compound interpolation | `mold.easing` evaluates a curve and interpolates numbers, points, rects, and colours |
+| Compound interpolation | `morf.easing` evaluates a curve and interpolates numbers, points, rects, and colours |
 | Sequential and parallel groups | Native Rust scheduler over ordinary property animations, with pause steps and repetition |
 | Transform watching | Native Rust watcher includes geometry and ancestor transforms |
 | Uniform scale and rotation | Native Rust affine transform |
@@ -50,7 +50,7 @@ The Lua example only declares property targets and handlers. Interpolation,
 spring integration, transform composition, damage classification, layout hit
 testing, and rendering remain in Rust.
 
-Animato does not own Mold's runtime or compositor loop. Mold supplies frame
+Animato does not own Morf's runtime or compositor loop. Morf supplies frame
 deltas from its Rust compositor clock and advances Animato state inside the
 scene engine. `signed-distance-field` is a renderer/image
 dependencies, not Lua modules. Their exact roles and limits are documented in
@@ -79,7 +79,7 @@ behavior = {
 `reason` is `completed`, `stopped`, or `canceled`, and is delivered for spring
 and smoothed motion as well as for tweens.
 
-`mold.animation` controls motion already in flight. Every call names a node and
+`morf.animation` controls motion already in flight. Every call names a node and
 one of its properties and returns whether it found an animation to act on, so
 Lua can branch without asking first:
 
@@ -99,12 +99,12 @@ nothing for a spring while `pause`, `stop`, `finish`, and `restart` all apply.
 
 ## Animation groups
 
-`mold.animation.play` schedules several property animations against one clock.
+`morf.animation.play` schedules several property animations against one clock.
 The array part is played in order; `parallel` and `sequential` nest, and `pause`
 occupies time without changing anything:
 
 ```lua
-local run = mold.animation.play {
+local run = morf.animation.play {
   loops = 2,                                    -- pass count or "forever"
   on_finished = function(reason) end,
   { node = card, property = "opacity", to = 1, duration = 200, easing = "out_quad" },
@@ -142,7 +142,7 @@ Keyframe tracks are now provided. A track names one property, one duration, and
 a list of stops at normalized offsets, each with the curve used to reach it:
 
 ```lua
-mold.animation.play {
+morf.animation.play {
   {
     node = card, property = "x", duration = 1000,
     keyframes = {

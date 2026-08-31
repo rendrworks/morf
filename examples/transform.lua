@@ -1,13 +1,13 @@
-local mold = require("mold")
-local core = require("mold.core")
-local ui = require("mold.ui")
-local window = require("mold.window")
+local morf = require("morf")
+local core = require("morf.core")
+local ui = require("morf.ui")
+local window = require("morf.window")
 
-mold.surface.width = 320
-mold.surface.height = 120
-mold.surface.anchors = { top = true, left = true }
+morf.surface.width = 320
+morf.surface.height = 120
+morf.surface.anchors = { top = true, left = true }
 
-local revision = mold.signal("transform.revision", 0)
+local revision = morf.signal("transform.revision", 0)
 local shifted = false
 local target = ui.Rect {
   x = 16,

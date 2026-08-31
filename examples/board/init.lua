@@ -1,4 +1,4 @@
--- A port of `~/.config/quickshell/board` onto mold primitives.
+-- A port of `~/.config/quickshell/board` onto morf primitives.
 --
 -- The original is a Quickshell `Scope` that loads `board/Board.qml` when the
 -- focused workspace goes empty. Board.qml is a single `PanelWindow` holding six
@@ -16,11 +16,11 @@
 -- calendar service (khal is not installed here, so the original draws no event
 -- dots either).
 
-local mold = require("mold")
-local core = require("mold.core")
-local io = require("mold.io")
-local ui = require("mold.ui")
-local window = require("mold.window")
+local morf = require("morf")
+local core = require("morf.core")
+local io = require("morf.io")
+local ui = require("morf.ui")
+local window = require("morf.window")
 
 local font = "IosevkaTerm Nerd Font Mono"
 local font_source = core.shell_path("assets/fonts")
@@ -108,7 +108,7 @@ end
 -- Live state
 --------------------------------------------------------------------------------
 
--- Every child process here is a system binary. mold is normally launched
+-- Every child process here is a system binary. morf is normally launched
 -- through a nixGL-style wrapper that rewrites LD_LIBRARY_PATH to nix store
 -- paths; a child that inherits it fails to load its own libraries and exits
 -- before printing a line, so the search path is cleared for every spawn.
@@ -118,21 +118,21 @@ local CHILD_ENVIRONMENT = { LD_LIBRARY_PATH = "" }
 -- through `pamixer` and brightness through `~/.local/sbin/bright`. Battery and
 -- brightness are plain sysfs files, so they are read directly and cost no
 -- process at all.
-local battery = mold.signal("board.battery", 0)         -- percent, 0..100
-local brightness = mold.signal("board.brightness", -1)  -- 0..1, negative = unknown
-local volume = mold.signal("board.volume", -1)          -- 0..1, negative = unknown
-local uptime = mold.signal("board.uptime", "Loading...")
+local battery = morf.signal("board.battery", 0)         -- percent, 0..100
+local brightness = morf.signal("board.brightness", -1)  -- 0..1, negative = unknown
+local volume = morf.signal("board.volume", -1)          -- 0..1, negative = unknown
+local uptime = morf.signal("board.uptime", "Loading...")
 
-local media_revision = mold.signal("board.media.revision", 0)
-local media_position = mold.signal("board.media.position", 0)
-local media_hover = mold.signal("board.media.hover", "")
+local media_revision = morf.signal("board.media.revision", 0)
+local media_position = morf.signal("board.media.position", 0)
+local media_hover = morf.signal("board.media.hover", "")
 
 local now = calendar_clock:snapshot()
-local calendar_year = mold.signal("board.calendar.year", now.year)
-local calendar_month = mold.signal("board.calendar.month", now.month)
-local calendar_hover = mold.signal("board.calendar.hover", 0)
+local calendar_year = morf.signal("board.calendar.year", now.year)
+local calendar_month = morf.signal("board.calendar.month", now.month)
+local calendar_hover = morf.signal("board.calendar.hover", 0)
 
-local colon_visible = mold.signal("board.clock.colon", true)
+local colon_visible = morf.signal("board.clock.colon", true)
 
 --- The first of `paths` that reads back, or nil.
 local function first_readable(paths)
@@ -1293,10 +1293,10 @@ end
 -- The board
 --------------------------------------------------------------------------------
 
--- One board, on the output this process drives. `mold.screens[1]` is that
+-- One board, on the output this process drives. `morf.screens[1]` is that
 -- output; the entries after it are the other monitors the compositor reports.
-local own_screen = mold.screens[1]
-mold.variants(own_screen and { own_screen } or {}, function(screen)
+local own_screen = morf.screens[1]
+morf.variants(own_screen and { own_screen } or {}, function(screen)
   local screen_width = screen.width or 1920
   local screen_height = screen.height or 1080
   local short_side = math.min(screen_width, screen_height)
@@ -1325,18 +1325,18 @@ mold.variants(own_screen and { own_screen } or {}, function(screen)
   local media_width = (right_width - gap) * 0.44
   local right_x = inset + left_width + gap
 
-  mold.surface.namespace = "mold-board"
-  mold.surface.width = width
-  mold.surface.height = height
-  mold.surface.exclusive_zone = 0
-  mold.surface.anchors = { top = true, left = true }
-  mold.surface.margin_left = left
-  mold.surface.margin_top = top
-  mold.surface.layer = "top"
-  mold.surface.keyboard_focus = "none"
+  morf.surface.namespace = "morf-board"
+  morf.surface.width = width
+  morf.surface.height = height
+  morf.surface.exclusive_zone = 0
+  morf.surface.anchors = { top = true, left = true }
+  morf.surface.margin_left = left
+  morf.surface.margin_top = top
+  morf.surface.layer = "top"
+  morf.surface.keyboard_focus = "none"
   -- `mask: Region { item: container }` in the original: the whole rounded
   -- board takes the pointer, not just the parts with a MouseArea under them.
-  mold.surface.mask = window.region {
+  morf.surface.mask = window.region {
     width = width,
     height = height,
     radius = math.floor(radius + 0.5),

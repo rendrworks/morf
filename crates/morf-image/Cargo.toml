@@ -1,0 +1,12 @@
+[package]
+name = "morf-image"
+description = "Image and icon loading for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+image.workspace = true
+resvg.workspace = true
+signed-distance-field.workspace = true

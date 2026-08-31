@@ -11,7 +11,7 @@
 --
 -- The original gives each piece its own layer surface, one per monitor, and
 -- mirrors the whole thing to the right edge on monitors left of the main one.
--- mold hosts one layer surface per process, so all three live on a single
+-- morf hosts one layer surface per process, so all three live on a single
 -- strip wide enough to hold the badge at full extension, positioned against
 -- whichever edge `Workspace.qml` would have chosen.
 --
@@ -28,9 +28,9 @@
 -- written from there, off a clock, with the curve evaluated at the value of
 -- `morphProgress` that frame actually has.
 
-local mold = require("mold")
-local ui = require("mold.ui")
-local core = require("mold.core")
+local morf = require("morf")
+local ui = require("morf.ui")
+local core = require("morf.core")
 local theme = require("theme")
 local hypr = require("hypr")
 
@@ -102,7 +102,7 @@ local last_shown_id = -1
 local bar_on_right = false
 local expand_progress = 0
 
-local badge_workspace = mold.signal("quickshell.line.badge_workspace", 1)
+local badge_workspace = morf.signal("quickshell.line.badge_workspace", 1)
 
 -- Nodes, filled in by `build`.
 local strip, column, frame, badge, anchor, field, label, pump
@@ -120,9 +120,9 @@ local function apply_frame(animated)
   if not frame then return end
   local inset = frame_inset()
   local x = bar_on_right and (strip_width - inset) or inset
-  if not animated then mold.animation.set_enabled(frame, "x", false) end
+  if not animated then morf.animation.set_enabled(frame, "x", false) end
   frame.x = x
-  if not animated then mold.animation.set_enabled(frame, "x", true) end
+  if not animated then morf.animation.set_enabled(frame, "x", true) end
 end
 
 --- Writes every dimension the morph owns for one value of `morphProgress`.
@@ -171,9 +171,9 @@ end
 --- Sets the badge's row without sliding to it, as `displayY = ...` does.
 local function place_row(index)
   local row = track_top + row_offset(index)
-  mold.animation.set_enabled(badge, "y", false)
+  morf.animation.set_enabled(badge, "y", false)
   badge.y = row
-  mold.animation.set_enabled(badge, "y", true)
+  morf.animation.set_enabled(badge, "y", true)
   anchor.y = row + (item_height - badge_size) / 2
 end
 
@@ -224,11 +224,11 @@ end
 local function advance()
   if morph_mode == "in" then
     local progress = math.min(1, morph_clock:elapsed_ms() / MORPH_IN_MS)
-    apply_morph(mold.easing.value("out_cubic", progress))
+    apply_morph(morf.easing.value("out_cubic", progress))
     if progress >= 1 then morph_mode = "hold" end
   elseif morph_mode == "out" then
     local progress = math.min(1, morph_clock:elapsed_ms() / MORPH_OUT_MS)
-    apply_morph(1 - mold.easing.value("in_cubic", progress))
+    apply_morph(1 - morf.easing.value("in_cubic", progress))
     if progress >= 1 then morph_mode = "idle" end
   end
 end
@@ -237,7 +237,7 @@ end
 
 --- One workspace pill.
 local function pill(index)
-  local hovered = mold.signal("quickshell.line.hover." .. index, false)
+  local hovered = morf.signal("quickshell.line.hover." .. index, false)
   return ui.Rect {
     x = (bar_width - pill_width) / 2,
     y = track_top + row_offset(index),

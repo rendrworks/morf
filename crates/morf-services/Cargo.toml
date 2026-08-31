@@ -1,0 +1,14 @@
+[package]
+name = "morf-services"
+description = "Native system services for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc.workspace = true
+libloading.workspace = true
+morf-io.workspace = true
+serde_json.workspace = true
+xkbcommon.workspace = true

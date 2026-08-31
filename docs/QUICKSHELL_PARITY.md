@@ -1,9 +1,9 @@
 # Quickshell parity
 
 An audit of `~/.config/quickshell` — border, line, osd, settings, board — against
-what mold can express, and what it took to close the gaps.
+what morf can express, and what it took to close the gaps.
 
-Method: five agents read one module each against the mold source, every claimed
+Method: five agents read one module each against the morf source, every claimed
 gap then went through three independent adversarial verifiers instructed to
 *refute* it, and only claims that survived a majority are recorded here. Every
 status is backed by a file:line citation rather than by inference from names.
@@ -23,7 +23,7 @@ zero-size `Reserve` windows (`Border.qml:124-143`) whose entire purpose is
 `exclusiveZone: reservedThickness` on one anchored edge each. The reservation is
 the module's function; the frame is only its decoration.
 
-mold could express neither half:
+morf could express neither half:
 
 - `state_types.rs:29` — `layer: Option<LayerSurface>`. One surface per process,
   created once at `client_connection.rs:137`. Compare its siblings on the next
@@ -46,7 +46,7 @@ The engine was never the obstacle.
 
 - `api_module.rs:423-424` — `window.popup` and `window.floating` are real
   constructors. (`window.layer_surface` was *not*; it was an alias of the
-  `mold.surface` table. That name was a trap.)
+  `morf.surface` table. That name was a trap.)
 - `client_surface.rs:139-147` — a parentless popup is created as an xdg popup and
   adopted by the layer surface via `layer().get_popup(...)`, the same
   construction Quickshell's `PopupWindow` uses.
@@ -81,7 +81,7 @@ audit, both now **fixed**:
   exclusive zones and committed — with no buffer attached. wlroots skips
   unmapped layer surfaces when computing usable area, so the reservation
   reserved nothing. The protocol requires the initial commit to carry no buffer,
-  a configure, and only then an attach; mold now defers a 1×1 transparent SHM
+  a configure, and only then an attach; morf now defers a 1×1 transparent SHM
   buffer to the configure handler. No test could have caught this: the reserve
   tests asserted on the config struct, never on a round trip.
 - **Configured layer surfaces repainted forever.** `paint_layer` requested a
@@ -95,9 +95,9 @@ And one that predates all of this, **fixed**:
   every element animated its own construction — colours easing up from the
   schema default, widths growing from zero. A flash-in on every config,
   including `examples/board`. Qt's `Behavior` withholds itself during component
-  construction; mold now does the same.
+  construction; morf now does the same.
 
-## A hidden popup cannot be kept alive — protocol limit, not a mold gap
+## A hidden popup cannot be kept alive — protocol limit, not a morf gap
 
 Gap 5 has two halves. The half that hurt in practice — a popup that *moves* —
 is fixed: `sync_window_surfaces` now classifies a popup config change as
@@ -116,7 +116,7 @@ surface" (`xdg-shell.xml:1283-1285`). An unmapped xdg_surface must redo its
 initial commit before a buffer may be attached again (`xdg-shell.xml:455-458`),
 and with the role object gone that means a new `xdg_popup`, a new `wl_surface`
 and therefore a new swapchain. So `visible = false` on a popup does cut a
-fade-out at frame zero, and mold cannot keep the renderer across it. The re-open
+fade-out at frame zero, and morf cannot keep the renderer across it. The re-open
 path is at least as cheap as it can be — one `open_popup` and one
 `WgpuBackend::new_surface` on the first configure, nothing else.
 
@@ -136,11 +136,11 @@ unmapped and re-mapped, or on no extra surface at all:
 | | Change | Status |
 |---|---|---|
 | **E1** | Plural layer role: `SurfaceRole::Layer(u64)`, `layers: HashMap<u64, LayerRecord>`, `open_layer`/`close_layer`, `WindowSurfaceKind::Layer`, a real `window.layer{}` constructor | **done** |
-| **E2** | `mold.surface.reserve = { top, right, bottom, left }` opening one internal single-anchor reserver per edge | **done** |
+| **E2** | `morf.surface.reserve = { top, right, bottom, left }` opening one internal single-anchor reserver per edge | **done** |
 | **E3** | `xdg_popup.reposition` — popup change detection split into structural (parent, grab: `surfaces.rs:148`) and positional (everything the positioner carries), so a moving popup is repositioned at `surfaces.rs:352` and keeps its `wl_surface`, its GPU surface and its swapchain | **done** |
-| **E4** | Runtime layer geometry — `set_size`/`set_anchor`/`set_margin`/`set_exclusive_zone`/`set_keyboard_interactivity` re-issued on a mapped surface (`client_layer.rs:132`), applied from `mold.surface` at `surface_run.rs:190`. Nothing is destroyed: the zwlr surface, the `wl_surface`, the viewport and the renderer all survive | **done** |
-| **E5** | Pointer coordinates on button events. `Hit` (`mold-layout/src/hit.rs`) now carries `local_x`/`local_y` instead of discarding them, and `EventPoint` (`mold-lua/src/runtime_input.rs`) delivers both spaces to `on_pressed`, `on_released`, `on_clicked`, `on_dragged` and the touch handlers | **done** |
-| **E6** | Enumerate all outputs from Lua — the supervisor records the list every worker reports (`supervisor.rs`), applies it before a configuration loads and broadcasts it on hotplug; `Runtime::set_screens` rebuilds `mold.screens` with the instance's own output still at index 1 | **done** |
+| **E4** | Runtime layer geometry — `set_size`/`set_anchor`/`set_margin`/`set_exclusive_zone`/`set_keyboard_interactivity` re-issued on a mapped surface (`client_layer.rs:132`), applied from `morf.surface` at `surface_run.rs:190`. Nothing is destroyed: the zwlr surface, the `wl_surface`, the viewport and the renderer all survive | **done** |
+| **E5** | Pointer coordinates on button events. `Hit` (`morf-layout/src/hit.rs`) now carries `local_x`/`local_y` instead of discarding them, and `EventPoint` (`morf-lua/src/runtime_input.rs`) delivers both spaces to `on_pressed`, `on_released`, `on_clicked`, `on_dragged` and the touch handlers | **done** |
+| **E6** | Enumerate all outputs from Lua — the supervisor records the list every worker reports (`supervisor.rs`), applies it before a configuration loads and broadcasts it on hotplug; `Runtime::set_screens` rebuilds `morf.screens` with the instance's own output still at index 1 | **done** |
 
 Every one of these is covered by a test that exercises the behaviour rather
 than the struct, which is the lesson the reserver bug taught:
@@ -182,7 +182,7 @@ writer anywhere and rendered a permanently empty bar, now have one.
 Three defects compounded, and none of them showed up in a test.
 
 **The input region was rasterized over the whole output, on every paint.**
-`mold_region::build` allocated a `width * height` boolean mask *per region* and
+`morf_region::build` allocated a `width * height` boolean mask *per region* and
 scanned another one to extract rectangles — 8.3M pixels a pass on a 4K output,
 however small the regions were. A shell whose interactive parts are a 19px bar
 and two panels paid for 3840×2160, four times over. It now works in windows
@@ -214,22 +214,22 @@ than on what a frame costs.
 
 ## One thing that will not match
 
-mold blends alpha in **linear light**; Qt blends in **sRGB**. Measured:
+morf blends alpha in **linear light**; Qt blends in **sRGB**. Measured:
 
 ```
 60% of color240 (#6a8389) over color0 (#0e1213)
   blended in sRGB space   → #45565a   (original measures #46565a)
-  blended in linear light → #54686d   (mold measures  #54686d)
+  blended in linear light → #54686d   (morf measures  #54686d)
 ```
 
-Both predictions land on the measurement, mold's exactly. Linear is the
-physically correct way to blend and the reason mold does it — but any port from a
+Both predictions land on the measurement, morf's exactly. Linear is the
+physically correct way to blend and the reason morf does it — but any port from a
 Qt or GTK shell reads lighter wherever alpha is used. Anything that must match
 pixel-for-pixel needs the blend precomputed and handed over as an opaque colour.
 
 ## Two traps worth knowing
 
-**Child processes inherit the dynamic linker environment.** Launching mold
+**Child processes inherit the dynamic linker environment.** Launching morf
 through a nixGL-style wrapper (`oslo make run` does, when `nixVulkan` is present)
 replaces `LD_LIBRARY_PATH` with nix store paths. A system binary that inherits it
 fails to load its own libstdc++ and exits 1 with every byte on stderr — which

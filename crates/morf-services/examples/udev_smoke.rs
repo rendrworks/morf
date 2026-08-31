@@ -1,0 +1,10 @@
+use std::time::Duration;
+
+use morf_services::UdevMonitor;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut monitor = UdevMonitor::new(None)?;
+    let _ = monitor.next_event(Duration::ZERO)?;
+    println!("udev monitor ready");
+    Ok(())
+}

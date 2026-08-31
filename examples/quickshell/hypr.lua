@@ -25,9 +25,9 @@
 -- Nothing here is engine surface: the engine supplies sockets, a line parser,
 -- JSON, processes and a timer, and a shell plugin decides what a workspace is.
 
-local core = require("mold.core")
-local io = require("mold.io")
-local mold = require("mold")
+local core = require("morf.core")
+local io = require("morf.io")
+local morf = require("morf")
 
 local hypr = {}
 
@@ -37,31 +37,31 @@ hypr.ROW_COUNT = ROW_COUNT
 
 -- Bumped whenever a refresh changes anything, so bindings can depend on the
 -- workspace set without every row being its own signal.
-hypr.revision = mold.signal("quickshell.hypr.revision", 0)
+hypr.revision = morf.signal("quickshell.hypr.revision", 0)
 
 local rows = {}
 for index = 1, ROW_COUNT do
   rows[index] = { id = index, active = index == 1, windows = 0 }
 end
 
--- Monitor geometry, kept for the side the bar hangs on. `mold.screens` only
+-- Monitor geometry, kept for the side the bar hangs on. `morf.screens` only
 -- reports the output this process draws to, so the neighbours have to come
 -- from the compositor.
 local monitors = {}
 local monitor_order = {}
 
--- Which output this shell follows. `MOLD_MONITOR` wins, then the output the
+-- Which output this shell follows. `MORF_MONITOR` wins, then the output the
 -- surface was placed on, then whichever monitor Hyprland reports as focused.
-local monitor_name = core.env("MOLD_MONITOR")
+local monitor_name = core.env("MORF_MONITOR")
 if not monitor_name or monitor_name == "" then
-  local screen = (mold.screens or {})[1]
+  local screen = (morf.screens or {})[1]
   monitor_name = screen and screen.name or nil
 end
 
 -- `Workspace.qml` mirrors the ribbon to the right edge on every monitor that
 -- sits left of the main one; `positionMode` overrides that either way.
-local MAIN_MONITOR = core.env("MOLD_MAIN_MONITOR") or "eDP-1"
-local POSITION_MODE = core.env("MOLD_BAR_SIDE") or "auto"
+local MAIN_MONITOR = core.env("MORF_MAIN_MONITOR") or "eDP-1"
+local POSITION_MODE = core.env("MORF_BAR_SIDE") or "auto"
 
 local pending_badge = nil
 local last_active_id = nil
@@ -110,9 +110,9 @@ local events = nil
 local command_path = nil
 local event_lines = io.split_parser("\n")
 
--- `MOLD_HYPR_TRANSPORT=hyprctl` forces the fallback, which is the only way to
+-- `MORF_HYPR_TRANSPORT=hyprctl` forces the fallback, which is the only way to
 -- exercise it on a machine whose sockets are perfectly healthy.
-local FORCE_HYPRCTL = core.env("MOLD_HYPR_TRANSPORT") == "hyprctl"
+local FORCE_HYPRCTL = core.env("MORF_HYPR_TRANSPORT") == "hyprctl"
 
 local function connect_events()
   if FORCE_HYPRCTL then return nil end
@@ -281,7 +281,7 @@ local COMMANDS = {
   workspaces = { "hyprctl", "workspaces", "-j" },
 }
 -- `hyprctl` is a system binary and must not inherit this process's dynamic
--- linker search path. Launching mold through a nixGL-style wrapper replaces
+-- linker search path. Launching morf through a nixGL-style wrapper replaces
 -- LD_LIBRARY_PATH with nix store paths, and a child that picks those up fails
 -- to load its own libstdc++ and exits before printing a line.
 local CHILD_ENVIRONMENT = { LD_LIBRARY_PATH = "" }
@@ -558,7 +558,7 @@ end
 
 --- `barOnRight` from `Workspace.qml`: the main monitor keeps the ribbon on the
 --- left, everything left of it mirrors to the right edge, and an explicit
---- `MOLD_BAR_SIDE` decides on its own.
+--- `MORF_BAR_SIDE` decides on its own.
 function hypr.bar_on_right()
   if POSITION_MODE == "left" then return false end
   if POSITION_MODE == "right" then return true end

@@ -7,15 +7,15 @@
 -- image cannot — a gap that closes, a bar whose ends melt together, dots that
 -- fuse as they pass.
 
-local mold = require("mold")
-local ui = require("mold.ui")
-local core = require("mold.core")
+local morf = require("morf")
+local ui = require("morf.ui")
+local core = require("morf.core")
 
 local W, H = 760, 260
-mold.surface.width = W
-mold.surface.height = H
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = W
+morf.surface.height = H
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 local PANEL = "#141a1c"
@@ -25,7 +25,7 @@ local MUTED = "#6a8389"
 
 local elapsed = core.elapsed_timer()
 -- Progress runs 0 to 1 and back, so the indicators have something to report.
-local progress = mold.signal("loaders.progress", 0)
+local progress = morf.signal("loaders.progress", 0)
 
 local function caption(x, text)
   return ui.Text { x = x + 18, y = 196, width = 150, text = text, font_size = 12, wrap = true, color = MUTED }
@@ -132,7 +132,7 @@ local bar = ui.Sdf {
 
 --- Drops one dot again, a little harder or softer than last time.
 local function drop(index)
-  mold.animation.fling {
+  morf.animation.fling {
     node = dots[index],
     property = "y",
     velocity = -150 - index * 22 - math.random() * 60,
@@ -157,7 +157,7 @@ local function advance()
   -- The dots are falling, not being positioned; each is thrown again once it
   -- has settled on the floor.
   for index = 1, 3 do
-    if not mold.animation.active(dots[index], "y") then
+    if not morf.animation.active(dots[index], "y") then
       drop(index)
     end
   end

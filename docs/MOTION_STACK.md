@@ -11,17 +11,17 @@ about shape.
 drawn* — resolution independently, and with a defined way for two shapes to
 combine. They know nothing about time.
 
-Every animation in Mold is those two meeting: a number that Animato moves, read
+Every animation in Morf is those two meeting: a number that Animato moves, read
 by a field that decides what the frame looks like. Neither half needs to know
 about the other, which is why a morph, a merge and a colour fade are all the
 same mechanism.
 
-| Library | Mold responsibility | Integration boundary |
+| Library | Morf responsibility | Integration boundary |
 |---|---|---|
-| [Animato 1.7.2](https://github.com/AarambhDevHub/animato) | Tween clocks with delay, time scaling and looping; spring state; friction inertia | `mold-scene`; Mold supplies frame deltas and retains the compositor clock |
-| [`signed-distance-field` 0.6.3](https://crates.io/crates/signed-distance-field) | Binary alpha-mask distance transforms | `mold-image`; results are cached by decoded source and spread, then sampled with a live edge on the GPU |
+| [Animato 1.7.2](https://github.com/AarambhDevHub/animato) | Tween clocks with delay, time scaling and looping; spring state; friction inertia | `morf-scene`; Morf supplies frame deltas and retains the compositor clock |
+| [`signed-distance-field` 0.6.3](https://crates.io/crates/signed-distance-field) | Binary alpha-mask distance transforms | `morf-image`; results are cached by decoded source and spread, then sampled with a live edge on the GPU |
 
-Analytic fields — the `Sdf` element below — are Mold's own, not a dependency.
+Analytic fields — the `Sdf` element below — are Morf's own, not a dependency.
 
 Polymorpher was the third library and has been removed. It answered the same
 question fields do, "what shape is this", by matching two rounded polygons by
@@ -31,10 +31,10 @@ splitting in two, cannot express a seamless join between neighbours, and needs
 re-tessellating on the CPU for every frame of a morph. Two answers to one
 question is worse than one, so the one that could do less is gone.
 
-Mold drives an Animato `Tween` as the clock behind every timed property, which
+Morf drives an Animato `Tween` as the clock behind every timed property, which
 is where `delay`, `time_scale`, `Loop`, pause, resume, seek, and reset come
 from. Animato's own timeline and orchestration crates are not pulled in: the
-scene keeps ownership of scheduling so Mold's retargeting rules, damage
+scene keeps ownership of scheduling so Morf's retargeting rules, damage
 classification, and Rust frame clock stay in one place.
 
 A spring settles when both its distance from the target and its velocity fall
@@ -105,7 +105,7 @@ surface keeps going after the finger lifts — and it is what Animato's
 `physics` feature provides, through `Inertia`.
 
 ```lua
-mold.animation.fling {
+morf.animation.fling {
   node = panel,
   property = "content_y",
   velocity = -1800,
@@ -123,13 +123,13 @@ next, a flick can be caught by a spring and carried past the target before it
 comes back. That interaction is the point of expressing it as physics rather
 than as a curve, and it is what the tests pin down.
 
-### Forces: `mold.animation.impulse`
+### Forces: `morf.animation.impulse`
 
 A fling *sets* a speed. An impulse *adds* to one:
 
 ```lua
 -- Every so often, work out what pulls on what, and hand it over.
-mold.animation.impulse(blob, "x", acceleration_x * step)
+morf.animation.impulse(blob, "x", acceleration_x * step)
 ```
 
 That is the whole difference between a flick and a force, and it is what lets a
@@ -271,7 +271,7 @@ from becoming an unbounded per-fragment loop.
 
 ## Frame cost
 
-`cargo run --release -p mold-cli --example frame_bench -- <config.lua>` times the
+`cargo run --release -p morf-cli --example frame_bench -- <config.lua>` times the
 three things every paint does on the CPU — layout, the draw list, the input
 region — without needing a compositor. All three are pure functions of the
 scene, so they measure exactly and repeatably. It reports the fastest of several

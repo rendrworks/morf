@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/rendrworks/mold"
+repository = "https://github.com/rendrworks/morf"
 
 [workspace.dependencies]
 animato = { version = "=1.7.2", default-features = false, features = ["tween", "spring", "physics"] }
@@ -35,20 +35,20 @@ wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "gles", "wgsl"] }
 xkbcommon = "=0.8.0"
 zbus = "=5.19.0"
-mold-image = { path = "crates/mold-image" }
-mold-desktop = { path = "crates/mold-desktop" }
-mold-io = { path = "crates/mold-io" }
-mold-layout = { path = "crates/mold-layout" }
-mold-lifecycle = { path = "crates/mold-lifecycle" }
-mold-lua = { path = "crates/mold-lua" }
-mold-menu = { path = "crates/mold-menu" }
-mold-reactive = { path = "crates/mold-reactive" }
-mold-region = { path = "crates/mold-region" }
-mold-render = { path = "crates/mold-render" }
-mold-scene = { path = "crates/mold-scene" }
-mold-services = { path = "crates/mold-services" }
-mold-text = { path = "crates/mold-text" }
-mold-wayland = { path = "crates/mold-wayland" }
+morf-image = { path = "crates/morf-image" }
+morf-desktop = { path = "crates/morf-desktop" }
+morf-io = { path = "crates/morf-io" }
+morf-layout = { path = "crates/morf-layout" }
+morf-lifecycle = { path = "crates/morf-lifecycle" }
+morf-lua = { path = "crates/morf-lua" }
+morf-menu = { path = "crates/morf-menu" }
+morf-reactive = { path = "crates/morf-reactive" }
+morf-region = { path = "crates/morf-region" }
+morf-render = { path = "crates/morf-render" }
+morf-scene = { path = "crates/morf-scene" }
+morf-services = { path = "crates/morf-services" }
+morf-text = { path = "crates/morf-text" }
+morf-wayland = { path = "crates/morf-wayland" }
 
 [profile.release]
 opt-level = "s"

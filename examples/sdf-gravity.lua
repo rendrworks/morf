@@ -12,26 +12,26 @@
 -- Bounding the turn instead means the pull can point wherever the charges say
 -- while the motion it produces stays something an eye can follow.
 --
--- `MOLD_BLOB_LAYER` picks where it sits: `bottom` (the default) puts it above
+-- `MORF_BLOB_LAYER` picks where it sits: `bottom` (the default) puts it above
 -- the wallpaper and beneath the windows; `overlay` floats it over everything.
 
-local mold = require("mold")
-local ui = require("mold.ui")
-local core = require("mold.core")
+local morf = require("morf")
+local ui = require("morf.ui")
+local core = require("morf.core")
 
-local screen = mold.screens[1]
+local screen = morf.screens[1]
 local W = (screen and screen.width) or 1920
 local H = (screen and screen.height) or 1080
 local SHORT = math.min(W, H)
 
 local SURFACE_W = W
 local SURFACE_H = H
-mold.surface.width = SURFACE_W
-mold.surface.height = SURFACE_H
-mold.surface.anchors = { top = true, left = true, right = true, bottom = true }
-mold.surface.layer = core.env("MOLD_BLOB_LAYER") or "bottom"
-mold.surface.keyboard_focus = "none"
-mold.surface.exclusive_zone = -1
+morf.surface.width = SURFACE_W
+morf.surface.height = SURFACE_H
+morf.surface.anchors = { top = true, left = true, right = true, bottom = true }
+morf.surface.layer = core.env("MORF_BLOB_LAYER") or "bottom"
+morf.surface.keyboard_focus = "none"
+morf.surface.exclusive_zone = -1
 
 --- Sizes are fractions of the short side, so it fills any output alike.
 local function s(fraction) return SHORT * fraction end
@@ -107,7 +107,7 @@ end
 --- Throws one blob. Everything after this arrives as an impulse.
 local function throw(index)
   local size = size_of[index]
-  mold.animation.fling {
+  morf.animation.fling {
     node = blobs[index],
     property = "x",
     velocity = start_vx[index],
@@ -117,7 +117,7 @@ local function throw(index)
     min = 0,
     max = FIELD_W - size,
   }
-  mold.animation.fling {
+  morf.animation.fling {
     node = blobs[index],
     property = "y",
     velocity = start_vy[index],
@@ -255,8 +255,8 @@ local function steer(dt)
       local turn_y = wish_y / wish * want - vy[index]
       local turn = math.sqrt(turn_x * turn_x + turn_y * turn_y)
       local cap = math.min(AGILITY / math.max(turn, 0.001), 1.0)
-      mold.animation.impulse(blobs[index], "x", turn_x * cap * dt)
-      mold.animation.impulse(blobs[index], "y", turn_y * cap * dt)
+      morf.animation.impulse(blobs[index], "x", turn_x * cap * dt)
+      morf.animation.impulse(blobs[index], "y", turn_y * cap * dt)
     end
   end
 end
@@ -300,7 +300,7 @@ ui.Item {
       recharge(STEP / 1000)
       steer(STEP / 1000)
       for index, node in ipairs(blobs) do
-        if not mold.animation.active(node, "x") and not mold.animation.active(node, "y") then
+        if not morf.animation.active(node, "x") and not morf.animation.active(node, "y") then
           throw(index)
         end
       end

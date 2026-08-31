@@ -15,14 +15,14 @@
 -- That is the rule in full: anything with a shape becomes part of the surface,
 -- anything else draws on top.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
 local W, H = 900, 400
-mold.surface.width = W
-mold.surface.height = H
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = W
+morf.surface.height = H
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 local SURFACE = "#b4e1ea"
@@ -46,7 +46,7 @@ local TABS = {
 }
 local TAB_W, TAB_H, GAP = 150, 62, 26
 
-local selected = mold.signal("foundation.selected", 1)
+local selected = morf.signal("foundation.selected", 1)
 
 --- One tab bar. `blend` is the only thing that differs between the two rows.
 ---

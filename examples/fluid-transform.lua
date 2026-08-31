@@ -1,11 +1,11 @@
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
-mold.surface.width = 520
-mold.surface.height = 280
-mold.surface.anchors = { top = true, left = true }
+morf.surface.width = 520
+morf.surface.height = 280
+morf.surface.anchors = { top = true, left = true }
 
-local transformed = mold.signal("fluid-transform.transformed", false)
+local transformed = morf.signal("fluid-transform.transformed", false)
 
 local shape = ui.Rect {
   x = 56,

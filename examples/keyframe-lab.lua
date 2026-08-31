@@ -13,14 +13,14 @@
 -- else. Offsets are fractions of the whole, which is what makes a track
 -- editable: move a stop and the segments after it follow.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
 local W, H = 820, 420
-mold.surface.width = W
-mold.surface.height = H
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = W
+morf.surface.height = H
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 local PANEL = "#141a1c"
@@ -126,7 +126,7 @@ local function play()
         easing = frame.easing,
       }
     end
-    mold.animation.play {
+    morf.animation.play {
       {
         node = puck.node,
         property = lane.property,
@@ -139,7 +139,7 @@ end
 
 rows[#rows + 1] = ui.Text {
   x = 40, y = H - 44, width = W - 80,
-  text = "each lane is one mold.animation.play track, replayed every 2.6s",
+  text = "each lane is one morf.animation.play track, replayed every 2.6s",
   font_size = 12,
   color = MUTED,
 }

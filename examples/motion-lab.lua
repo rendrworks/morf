@@ -1,22 +1,22 @@
 -- Every piece of motion below is declared in Lua and advanced in Rust: the
 -- tween clocks, the spring integration, the rounded-polygon morph, and the
--- distance-field edge are all evaluated on mold's frame tick without Lua
+-- distance-field edge are all evaluated on morf's frame tick without Lua
 -- running per frame.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
-mold.surface.width = 860
-mold.surface.height = 420
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = 860
+morf.surface.height = 420
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
-local points = mold.signal("motion-lab.points", 5)
-local extended = mold.signal("motion-lab.extended", false)
-local bold = mold.signal("motion-lab.bold", false)
-local running = mold.signal("motion-lab.running", true)
-local laps = mold.signal("motion-lab.laps", 0)
-local intro = mold.signal("motion-lab.intro", "idle")
+local points = morf.signal("motion-lab.points", 5)
+local extended = morf.signal("motion-lab.extended", false)
+local bold = morf.signal("motion-lab.bold", false)
+local running = morf.signal("motion-lab.running", true)
+local laps = morf.signal("motion-lab.laps", 0)
+local intro = morf.signal("motion-lab.intro", "idle")
 
 -- Declared here so a button below can close over it; the group itself is
 -- started once the nodes it schedules against exist.
@@ -241,9 +241,9 @@ ui.Item {
     return running:get() and "pause sweep" or "resume sweep"
   end, function()
     if running:get() then
-      mold.animation.pause(sweep, "translate_x")
+      morf.animation.pause(sweep, "translate_x")
     else
-      mold.animation.resume(sweep, "translate_x")
+      morf.animation.resume(sweep, "translate_x")
     end
     write(running, not running:get())
   end),
@@ -256,7 +256,7 @@ ui.Item {
 -- One schedule across three properties on two nodes: the badge fades and lifts,
 -- then the glyph thickens while the badge settles back. The group owns only the
 -- ordering; each step is an ordinary property animation once it starts.
-introduction = mold.animation.play {
+introduction = morf.animation.play {
   on_finished = function(reason) write(intro, reason) end,
   { node = badge, property = "opacity", from = 0, to = 1, duration = 260, easing = "out_quad" },
   { pause = 80 },

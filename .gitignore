@@ -1,7 +1,7 @@
 *.exe
 *.test
 *.out
-/mold
+/morf
 /coverage.out
 /bin
 /build

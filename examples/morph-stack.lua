@@ -1,14 +1,14 @@
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
-mold.surface.width = 820
-mold.surface.height = 360
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = 820
+morf.surface.height = 360
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
-local active = mold.signal("morph-stack.active", 1)
-local hovered = mold.signal("morph-stack.hovered", 0)
-local pinned = mold.signal("morph-stack.pinned", true)
+local active = morf.signal("morph-stack.active", 1)
+local hovered = morf.signal("morph-stack.hovered", 0)
+local pinned = morf.signal("morph-stack.pinned", true)
 
 local stages = {
   { name = "Plan", detail = "Scope locked and ready", progress = 0.18, color = "#a78bfa" },
@@ -109,7 +109,7 @@ ui.Item {
     x = 570,
     y = 25,
     width = 145,
-    text = function() return mold.clock:get() end,
+    text = function() return morf.clock:get() end,
     horizontal_alignment = "right",
     color = "#94a3b8",
     font_size = 14,

@@ -1,6 +1,6 @@
 # Board example
 
-A port of `~/.config/quickshell/board` onto mold primitives: the same six cards
+A port of `~/.config/quickshell/board` onto morf primitives: the same six cards
 on the same screen-scaled grid, the same pywal palette, borders, font family and
 weights, and the same easing. Everything is composed from `Item`, `Rect`,
 `ClipRect`, `Text`, `Image`, `MouseArea` and `Timer`; nothing about a "card" or a
@@ -43,7 +43,7 @@ does in `Board.qml`. On top of that:
   Previous restarts the track when it is more than eight seconds in, exactly as
   `MediaPanel.qml` does.
 
-Pressed and released carry no coordinates in mold, so a bar keeps the pointer
+Pressed and released carry no coordinates in morf, so a bar keeps the pointer
 position from the motion and drag events that precede them.
 
 ## Deliberate omissions
@@ -58,15 +58,15 @@ position from the motion and drag events that precede them.
 * **The distro glyph.** `UserInfoCard.qml` puts a hardcoded Arch glyph between
   the user name and the uptime. Adding it would move the two lines the port was
   measured against, so the left column is left as it is.
-* **Album art over http.** mold's image cache resolves `file://` and nothing
+* **Album art over http.** morf's image cache resolves `file://` and nothing
   else, so a player advertising a remote cover falls back to the same note glyph
   the empty state uses.
 * **The album-art blob.** `DankAlbumArt.qml` morphs a 28-segment `Shape` behind
   the cover from a fake audio spectrum. That is a per-frame path rebuild, which
-  needs a driver mold does not expose to Lua; the cover keeps its ring instead.
+  needs a driver morf does not expose to Lua; the cover keeps its ring instead.
 
 Nothing here is a Hyprland, Bluetooth or notification integration, and nothing
-here adds a widget to mold. The example renders the board through general
+here adds a widget to morf. The example renders the board through general
 primitives.
 
 ## Running

@@ -14,21 +14,21 @@
 --   * a smooth union has no seam at all — the surfaces bulge into each other
 --     over a radius, the way two drops of liquid meet.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
-mold.surface.width = 900
-mold.surface.height = 340
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = 900
+morf.surface.height = 340
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 local ACCENT = "#b4e1ea"
 local WARM = "#f0b47a"
 
 -- One phase drives everything, so the panels stay in step.
-local phase = mold.signal("sdf.phase", 0)
-local merged = mold.signal("sdf.merged", false)
+local phase = morf.signal("sdf.phase", 0)
+local merged = morf.signal("sdf.merged", false)
 
 local function write(signal, value)
   local ok, error = signal:set(value)

@@ -1192,25 +1192,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "mold-cli"
+name = "morf-cli"
 version = "0.1.0"
 dependencies = [
  "jiff",
- "mold-io",
- "mold-layout",
- "mold-lua",
- "mold-render",
- "mold-scene",
- "mold-wayland",
+ "morf-io",
+ "morf-layout",
+ "morf-lua",
+ "morf-render",
+ "morf-scene",
+ "morf-wayland",
  "pollster",
 ]
 
 [[package]]
-name = "mold-desktop"
+name = "morf-desktop"
 version = "0.1.0"
 
 [[package]]
-name = "mold-image"
+name = "morf-image"
 version = "0.1.0"
 dependencies = [
  "image",
@@ -1219,7 +1219,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mold-io"
+name = "morf-io"
 version = "0.1.0"
 dependencies = [
  "libc",
@@ -1230,104 +1230,104 @@ dependencies = [
 ]
 
 [[package]]
-name = "mold-layout"
+name = "morf-layout"
 version = "0.1.0"
 dependencies = [
- "mold-scene",
+ "morf-scene",
 ]
 
 [[package]]
-name = "mold-lifecycle"
+name = "morf-lifecycle"
 version = "0.1.0"
 
 [[package]]
-name = "mold-lua"
+name = "morf-lua"
 version = "0.1.0"
 dependencies = [
  "jiff",
  "luna",
- "mold-desktop",
- "mold-image",
- "mold-io",
- "mold-layout",
- "mold-lifecycle",
- "mold-menu",
- "mold-reactive",
- "mold-region",
- "mold-scene",
- "mold-services",
+ "morf-desktop",
+ "morf-image",
+ "morf-io",
+ "morf-layout",
+ "morf-lifecycle",
+ "morf-menu",
+ "morf-reactive",
+ "morf-region",
+ "morf-scene",
+ "morf-services",
  "serde_json",
 ]
 
 [[package]]
-name = "mold-menu"
+name = "morf-menu"
 version = "0.1.0"
 
 [[package]]
-name = "mold-reactive"
+name = "morf-reactive"
 version = "0.1.0"
 dependencies = [
  "slotmap",
 ]
 
 [[package]]
-name = "mold-region"
+name = "morf-region"
 version = "0.1.0"
 
 [[package]]
-name = "mold-render"
+name = "morf-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "mold-image",
- "mold-layout",
- "mold-region",
- "mold-scene",
- "mold-text",
+ "morf-image",
+ "morf-layout",
+ "morf-region",
+ "morf-scene",
+ "morf-text",
  "pollster",
  "raw-window-handle",
  "wgpu",
 ]
 
 [[package]]
-name = "mold-scene"
+name = "morf-scene"
 version = "0.1.0"
 dependencies = [
  "animato",
- "mold-reactive",
+ "morf-reactive",
  "slotmap",
 ]
 
 [[package]]
-name = "mold-services"
+name = "morf-services"
 version = "0.1.0"
 dependencies = [
  "libc",
  "libloading",
- "mold-io",
+ "morf-io",
  "serde_json",
  "xkbcommon",
 ]
 
 [[package]]
-name = "mold-text"
+name = "morf-text"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
- "mold-layout",
- "mold-scene",
+ "morf-layout",
+ "morf-scene",
  "signed-distance-field",
  "unicode-segmentation",
 ]
 
 [[package]]
-name = "mold-wayland"
+name = "morf-wayland"
 version = "0.1.0"
 dependencies = [
- "mold-layout",
- "mold-region",
- "mold-render",
- "mold-scene",
+ "morf-layout",
+ "morf-region",
+ "morf-render",
+ "morf-scene",
  "pollster",
  "raw-window-handle",
  "rustix",

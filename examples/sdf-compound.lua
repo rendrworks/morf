@@ -10,14 +10,14 @@
 -- special-cased; it is the shape morph, the layer rectangle and the label's
 -- opacity all reading one signal.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
 local W, H = 940, 320
-mold.surface.width = W
-mold.surface.height = H
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = W
+morf.surface.height = H
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 local PANEL = "#141a1c"
@@ -26,7 +26,7 @@ local WARM = "#f0b47a"
 local MUTED = "#6a8389"
 
 -- One number for every panel, so they move in step and the comparison is fair.
-local open = mold.signal("compound.open", 0)
+local open = morf.signal("compound.open", 0)
 local SWING = { duration = 900, easing = "in_out_cubic" }
 
 local function t() return open:get() end

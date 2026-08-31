@@ -1,4 +1,4 @@
--- mold's build, as recipes. This replaced the Makefile; there is no other.
+-- morf's build, as recipes. This replaced the Makefile; there is no other.
 --
 --   make            the recipes, with what each of them says it does
 --   make build      the binary
@@ -17,7 +17,7 @@ local function project()
     local value = line:match("^%s*([^#%[%s]%S*)%s*$")
     if value then found[#found + 1] = value end
   end
-  return found[1] or "mold", found[2] or "0.1.0"
+  return found[1] or "morf", found[2] or "0.1.0"
 end
 
 local NAME, VERSION = project()
@@ -127,7 +127,7 @@ local EXAMPLE = os.getenv("EXAMPLE") or "examples/quickshell/init.lua"
 make.recipe{ name = "build", desc = "the workspace",
              run = function()
                sh.cargo("build", "--workspace")
-               report("target/debug/mold")
+               report("target/debug/morf")
              end }
 make.alias("b", "build")
 
@@ -137,13 +137,13 @@ make.recipe{
   params = { { "--example", desc = "path to the Lua configuration", default = EXAMPLE } },
   run = function(a)
     local script = a.example or EXAMPLE
-    sh.cargo("build", "--package", "mold-cli")
-    local command = { "target/debug/mold", script }
+    sh.cargo("build", "--package", "morf-cli")
+    local command = { "target/debug/morf", script }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
       command = { (wrapper.out or ""):match("[^\n]+"), command[1], command[2] }
     end
-    assert(oslo.run(command).ok, "mold exited with an error")
+    assert(oslo.run(command).ok, "morf exited with an error")
   end,
 }
 make.alias("r", "run")
@@ -156,7 +156,7 @@ make.recipe{
   name = "gpu-smoke",
   desc = "initialize the GPU and submit an SDF frame",
   run = function()
-    sh.cargo("build", "--package", "mold-render", "--example", "gpu_smoke")
+    sh.cargo("build", "--package", "morf-render", "--example", "gpu_smoke")
     local command = { "target/debug/examples/gpu_smoke" }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
@@ -170,7 +170,7 @@ make.recipe{
   name = "wayland-smoke",
   desc = "present a layer surface and receive its frame callback",
   run = function()
-    sh.cargo("build", "--package", "mold-wayland", "--example", "layer_smoke")
+    sh.cargo("build", "--package", "morf-wayland", "--example", "layer_smoke")
     local command = { "target/debug/examples/layer_smoke" }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
@@ -184,7 +184,7 @@ make.recipe{
   name = "popup-smoke",
   desc = "present an xdg popup anchored to a layer-surface click",
   run = function()
-    sh.cargo("build", "--package", "mold-wayland", "--example", "popup_smoke")
+    sh.cargo("build", "--package", "morf-wayland", "--example", "popup_smoke")
     local command = { "target/debug/examples/popup_smoke" }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
@@ -198,7 +198,7 @@ make.recipe{
   name = "io-smoke",
   desc = "exchange bytes through a Unix-domain socket",
   run = function()
-    sh.cargo("run", "--package", "mold-io", "--example", "socket_smoke")
+    sh.cargo("run", "--package", "morf-io", "--example", "socket_smoke")
   end,
 }
 
@@ -206,8 +206,8 @@ make.recipe{
   name = "dbus-smoke",
   desc = "call and introspect the session message bus",
   run = function()
-    sh.cargo("run", "--package", "mold-io", "--example", "dbus_smoke")
-    sh.cargo("run", "--package", "mold-lua", "--example", "dbus_smoke")
+    sh.cargo("run", "--package", "morf-io", "--example", "dbus_smoke")
+    sh.cargo("run", "--package", "morf-lua", "--example", "dbus_smoke")
   end,
 }
 
@@ -215,7 +215,7 @@ make.recipe{
   name = "pam-smoke",
   desc = "load PAM and reject invalid credentials",
   run = function()
-    sh.cargo("run", "--package", "mold-services", "--example", "pam_smoke")
+    sh.cargo("run", "--package", "morf-services", "--example", "pam_smoke")
   end,
 }
 
@@ -223,8 +223,8 @@ make.recipe{
   name = "pipewire-smoke",
   desc = "enumerate the native PipeWire graph and round-trip sink volume",
   run = function()
-    sh.cargo("run", "--package", "mold-services", "--example", "pipewire_smoke")
-    sh.cargo("run", "--package", "mold-lua", "--example", "pipewire_smoke")
+    sh.cargo("run", "--package", "morf-services", "--example", "pipewire_smoke")
+    sh.cargo("run", "--package", "morf-lua", "--example", "pipewire_smoke")
   end,
 }
 
@@ -232,7 +232,7 @@ make.recipe{
   name = "udev-smoke",
   desc = "open the native kernel uevent monitor",
   run = function()
-    sh.cargo("run", "--package", "mold-services", "--example", "udev_smoke")
+    sh.cargo("run", "--package", "morf-services", "--example", "udev_smoke")
   end,
 }
 
@@ -311,13 +311,13 @@ make.recipe{
   desc = "enforce the engine-only repository boundary",
   run = function()
     assert(not oslo.fs.stat("runtime"), "runtime/ must not contain engine implementations")
-    assert(not oslo.fs.stat("crates/mold-widgets"), "widgets belong downstream")
+    assert(not oslo.fs.stat("crates/morf-widgets"), "widgets belong downstream")
     assert(not oslo.fs.stat("crates/patin"), "patin belongs downstream")
     local scan = oslo.run{
-      "grep", "-RIl", "--exclude-dir=target", "-E", "patin|mold-widgets",
+      "grep", "-RIl", "--exclude-dir=target", "-E", "patin|morf-widgets",
       "crates", "examples", capture = true,
     }
-    assert(not scan.ok, "downstream widget or shell ownership leaked into mold")
+    assert(not scan.ok, "downstream widget or shell ownership leaked into morf")
   end,
 }
 

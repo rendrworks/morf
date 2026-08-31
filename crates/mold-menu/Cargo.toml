@@ -1,7 +1,0 @@
-[package]
-name = "mold-menu"
-description = "General menu models for mold"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true

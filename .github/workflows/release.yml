@@ -16,9 +16,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: "mold-linux-amd64"
+            artifact: "morf-linux-amd64"
           - os: ubuntu-24.04-arm
-            artifact: "mold-linux-arm64"
+            artifact: "morf-linux-arm64"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -27,9 +27,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
       - name: Build
-        run: cargo build --release --bin mold
+        run: cargo build --release --bin morf
       - name: Package
-        run: tar -czf "${{ matrix.artifact }}.tar.gz" -C target/release mold
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" -C target/release morf
       - name: Upload artifact
         uses: softprops/action-gh-release@v2
         with:

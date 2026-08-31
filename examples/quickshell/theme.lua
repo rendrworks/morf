@@ -5,9 +5,9 @@
 -- expressed against a 2160px reference short side, so the shell keeps its
 -- proportions on any output rather than being pinned to one panel.
 
-local mold = require("mold")
-local io = require("mold.io")
-local core = require("mold.core")
+local morf = require("morf")
+local io = require("morf.io")
+local core = require("morf.core")
 
 local theme = {}
 
@@ -25,7 +25,7 @@ for key, value in pairs(FALLBACK) do colors[key] = value end
 
 -- Bumped whenever the palette is reloaded, so bindings that read a colour can
 -- depend on it without the palette itself having to be a signal.
-theme.revision = mold.signal("quickshell.theme.revision", 0)
+theme.revision = morf.signal("quickshell.theme.revision", 0)
 
 local wal = io.file_view {
   path = (core.env("HOME") or "") .. "/.cache/wal/colors.json",
@@ -85,7 +85,7 @@ end
 
 --- The first reported output, which every size is measured against.
 function theme.reference()
-  local screens = mold.screens or {}
+  local screens = morf.screens or {}
   local screen = screens[1]
   local width = screen and screen.width or 3840
   local height = screen and screen.height or 2160

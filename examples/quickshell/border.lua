@@ -4,14 +4,14 @@
 -- windows that punch a quarter-disc out of a filled square with a Canvas, and
 -- four zero-size windows whose only job is to claim an exclusive zone.
 --
--- mold hosts one layer surface per process, so the whole frame is drawn once
+-- morf hosts one layer surface per process, so the whole frame is drawn once
 -- instead. And a frame is not really a path: it is the output rectangle with a
 -- rounded rectangle taken out of the middle, which is one subtraction between
 -- two distance fields. Written that way there is nothing to tessellate, no
 -- arc commands to get right, and the inset and the corner radius are ordinary
 -- animatable numbers rather than text baked into an SVG string.
 
-local ui = require("mold.ui")
+local ui = require("morf.ui")
 local theme = require("theme")
 
 local border = {}

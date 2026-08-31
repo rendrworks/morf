@@ -5,11 +5,11 @@
 -- transparent, `exclusiveZone: 0` and `keyboardFocus: None`, and each fades in
 -- on a state change and out again after a delay.
 --
--- mold hosts one layer surface per process, so all three are nodes inside the
+-- morf hosts one layer surface per process, so all three are nodes inside the
 -- shell's existing fullscreen overlay rather than surfaces of their own. That
 -- is the better shape here, not a compromise: a popup surface is unmapped the
 -- instant it stops being visible (`sync_window_surfaces` in
--- `mold-cli/src/surfaces.rs` closes every popup that is not effectively
+-- `morf-cli/src/surfaces.rs` closes every popup that is not effectively
 -- visible, on the same pass that would have drawn the fade), which
 -- would cut the fade-out at frame zero. As plain nodes nothing is destroyed, so
 -- the 200ms `Behavior on opacity` actually runs to completion.
@@ -17,15 +17,15 @@
 -- Placement. `osd.build()` returns one `ui.Item` the size of the output, with
 -- the panels positioned absolutely inside it, exactly as `border.build()` does.
 -- It therefore expects to sit at the surface origin. Pointer events carry
--- surface coordinates (`mold-cli/src/surface_events.rs`, `PointerMotion`), and
--- mold exposes no way to ask a node for its laid-out absolute position, so the
+-- surface coordinates (`morf-cli/src/surface_events.rs`, `PointerMotion`), and
+-- morf exposes no way to ask a node for its laid-out absolute position, so the
 -- sliders convert surface x to a bar-local fraction using the geometry computed
 -- here. `osd.set_origin(x, y)` corrects that if the subtree is placed elsewhere.
 
-local mold = require("mold")
-local ui = require("mold.ui")
-local io = require("mold.io")
-local core = require("mold.core")
+local morf = require("morf")
+local ui = require("morf.ui")
+local io = require("morf.io")
+local core = require("morf.core")
 local theme = require("theme")
 
 local osd = {}
@@ -115,20 +115,20 @@ local WARNING_COLOR = "#d32f2f"
 -- State
 -- ---------------------------------------------------------------------------
 
-local volume = mold.signal("quickshell.osd.volume", 0.5)
-local volume_muted = mold.signal("quickshell.osd.volume_muted", false)
-local volume_headphone = mold.signal("quickshell.osd.volume_headphone", false)
-local volume_shown = mold.signal("quickshell.osd.volume_shown", false)
+local volume = morf.signal("quickshell.osd.volume", 0.5)
+local volume_muted = morf.signal("quickshell.osd.volume_muted", false)
+local volume_headphone = morf.signal("quickshell.osd.volume_headphone", false)
+local volume_shown = morf.signal("quickshell.osd.volume_shown", false)
 
-local brightness = mold.signal("quickshell.osd.brightness", 0.7)
-local brightness_shown = mold.signal("quickshell.osd.brightness_shown", false)
+local brightness = morf.signal("quickshell.osd.brightness", 0.7)
+local brightness_shown = morf.signal("quickshell.osd.brightness_shown", false)
 
-local battery = mold.signal("quickshell.osd.battery", 1.0)
-local battery_charging = mold.signal("quickshell.osd.battery_charging", false)
-local battery_shown = mold.signal("quickshell.osd.battery_shown", false)
+local battery = morf.signal("quickshell.osd.battery", 1.0)
+local battery_charging = morf.signal("quickshell.osd.battery_charging", false)
+local battery_shown = morf.signal("quickshell.osd.battery_shown", false)
 -- Drives the warning's flash. Toggled by a timer that only exists while the
 -- battery is actually critical, so nothing asks for frames the rest of the time.
-local battery_pulse = mold.signal("quickshell.osd.battery_pulse", 1.0)
+local battery_pulse = morf.signal("quickshell.osd.battery_pulse", 1.0)
 
 -- `lastVolume` / `lastBrightness`: a poll only shows the OSD when the value
 -- actually moved, so a steady state does not keep it on screen.
@@ -144,8 +144,8 @@ local brightness_interacting = false
 local volume_pointer = 0
 local brightness_pointer = 0
 
-local volume_hide = mold.elapsed_timer()
-local brightness_hide = mold.elapsed_timer()
+local volume_hide = morf.elapsed_timer()
+local brightness_hide = morf.elapsed_timer()
 
 local function write(signal, value)
   local ok, error = signal:set(value)
@@ -163,7 +163,7 @@ end
 --
 -- Every view is created here, at module load. One made later, inside a timer
 -- callback, is not picked up by the running service loop and never reports a
--- line. `LD_LIBRARY_PATH` is cleared because mold runs under a nixGL-style
+-- line. `LD_LIBRARY_PATH` is cleared because morf runs under a nixGL-style
 -- wrapper that points it at nix store paths; a system binary that inherits
 -- those fails to load its own libraries and exits before printing anything.
 -- ---------------------------------------------------------------------------
@@ -280,7 +280,7 @@ end)
 -- PulseAudio announces its own changes, so the volume does not have to be
 -- asked for. `pactl subscribe` is one long-lived child that prints a line
 -- whenever a sink or the server changes; asking on a timer instead meant two
--- `pamixer` forks every 750ms, and mold runs one worker per output, so on a
+-- `pamixer` forks every 750ms, and morf runs one worker per output, so on a
 -- three-monitor desktop that was the single most expensive thing the shell
 -- did. The timer stays as a fallback for when the subscription is unavailable.
 local sink_events = io.process_view {
@@ -337,8 +337,8 @@ local mute_toggle = job({ "pamixer", "-t" })
 -- script only reads two sysfs files and converts between them, so the read is
 -- done here directly and no child is spawned for it. Writing still goes
 -- through the script, which is what owns the mapping and the clamping.
-local BRIGHT = core.env("MOLD_BRIGHT") or ((core.env("HOME") or "") .. "/.local/sbin/bright")
-local BACKLIGHT = core.env("MOLD_BACKLIGHT") or "/sys/class/backlight/intel_backlight"
+local BRIGHT = core.env("MORF_BRIGHT") or ((core.env("HOME") or "") .. "/.local/sbin/bright")
+local BACKLIGHT = core.env("MORF_BACKLIGHT") or "/sys/class/backlight/intel_backlight"
 
 local brightness_set = job({ BRIGHT, "50" })
 
@@ -366,7 +366,7 @@ end
 
 -- Battery. The original runs `bash -c "cat capacity status"`; both files are
 -- read here directly instead, which is the same two reads without the child.
-local BATTERY = core.env("MOLD_BATTERY") or "/sys/class/power_supply/BAT0"
+local BATTERY = core.env("MORF_BATTERY") or "/sys/class/power_supply/BAT0"
 local capacity_view = io.file_view { path = BATTERY .. "/capacity", preload = true }
 local status_view = io.file_view { path = BATTERY .. "/status", preload = true }
 
@@ -529,7 +529,7 @@ local function icon_circle(text, fill, on_clicked, enabled)
       anchors = { fill = true },
       -- A hidden OSD must not take the click. `enabled` gates both hit
       -- testing and the derived input region
-      -- (`mold-layout/src/layout.rs:140`, `:166`), and unlike `visible` it
+      -- (`morf-layout/src/layout.rs:140`, `:166`), and unlike `visible` it
       -- leaves the node on screen so the fade-out still renders.
       enabled = enabled,
       on_clicked = on_clicked,
@@ -592,10 +592,10 @@ local function progress_bar(value, seek, commit, pointer, enabled)
       anchors = { fill = true },
       enabled = enabled,
       -- Press and release carry no coordinates today
-      -- (`mold-cli/src/surface_events.rs`, `LayerEvent::PointerButton` goes
+      -- (`morf-cli/src/surface_events.rs`, `LayerEvent::PointerButton` goes
       -- through `dispatch_ui_event`, which takes no position), so the position
       -- comes from the last motion. A pointer entering a surface is delivered
-      -- as a motion as well (`mold-wayland/src/input_handlers.rs:88-90`), so
+      -- as a motion as well (`morf-wayland/src/input_handlers.rs:88-90`), so
       -- the cache is populated before any click can land.
       on_position_changed = function(x) pointer(slider_position(x)) end,
       on_dragged = function(x) seek(pointer(slider_position(x))) end,
@@ -692,7 +692,7 @@ end
 --- two endpoints, and both live inside a `ui.Loader` keyed on the critical
 --- state. That gating is the point. An endless animation never settles, so the
 --- compositor is asked for a frame forever; dropping the loader's child removes
---- its timer outright (`mold-lua/src/runtime_helpers.rs:71`), and the shell
+--- its timer outright (`morf-lua/src/runtime_helpers.rs:71`), and the shell
 --- goes quiet again the moment the battery is no longer critical.
 local function battery_panel()
   local circle = BATTERY_SIZE * 0.8
@@ -749,8 +749,8 @@ end
 
 --- All three OSDs and their timers, as one subtree.
 ---
---- Every timer lives inside it: mold accepts exactly one primary scene root
---- (`mold-cli/src/surfaces.rs:386`), so a timer parked at the top level would
+--- Every timer lives inside it: morf accepts exactly one primary scene root
+--- (`morf-cli/src/surfaces.rs:386`), so a timer parked at the top level would
 --- be a second root and fail startup.
 function osd.build()
   return ui.Item {

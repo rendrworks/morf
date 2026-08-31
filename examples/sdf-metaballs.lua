@@ -11,22 +11,22 @@
 -- two closed paths needs a correspondence between their points; a splitting or
 -- merging outline has none.
 
-local mold = require("mold")
-local ui = require("mold.ui")
+local morf = require("morf")
+local ui = require("morf.ui")
 
 local WIDTH, HEIGHT = 680, 420
 
-mold.surface.width = WIDTH
-mold.surface.height = HEIGHT
-mold.surface.anchors = { top = true, left = true }
-mold.surface.keyboard_focus = "none"
+morf.surface.width = WIDTH
+morf.surface.height = HEIGHT
+morf.surface.anchors = { top = true, left = true }
+morf.surface.keyboard_focus = "none"
 
 local INK = "#0e1213"
 
 -- One clock, read every frame. The orbits are plain trigonometry; the engine
 -- only ever sees `x` and `y` being assigned.
-local clock = mold.core and nil
-local core = require("mold.core")
+local clock = morf.core and nil
+local core = require("morf.core")
 local elapsed = core.elapsed_timer()
 
 -- Each blob carries its own fill. A composition is one surface but not one

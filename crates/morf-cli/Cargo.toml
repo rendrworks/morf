@@ -1,0 +1,21 @@
+[package]
+name = "morf-cli"
+description = "Command-line interface for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "morf"
+path = "src/main.rs"
+
+[dependencies]
+jiff.workspace = true
+morf-layout.workspace = true
+morf-lua.workspace = true
+morf-io.workspace = true
+morf-render.workspace = true
+morf-scene.workspace = true
+morf-wayland.workspace = true
+pollster.workspace = true

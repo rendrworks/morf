@@ -5,7 +5,7 @@
 -- like to be heading and hand the difference to the engine as an impulse.
 -- Forces come from the configuration, integration stays in the engine: the
 -- steering is recomputed about thirty times a second, and every frame in
--- between is moved by mold.
+-- between is moved by morf.
 --
 -- There is no gravity in it, downwards or between the blobs. Attraction is a
 -- force with no upper bound, and a handful of blobs pulling on each other only
@@ -15,14 +15,14 @@
 -- That is Reynolds' flocking, and it is why the swarm can neither collapse nor
 -- escape however its parts happen to line up.
 --
--- `MOLD_BLOB_LAYER` picks where it sits: `bottom` (the default) puts it above
+-- `MORF_BLOB_LAYER` picks where it sits: `bottom` (the default) puts it above
 -- the wallpaper and beneath the windows; `overlay` floats it over everything.
 
-local mold = require("mold")
-local ui = require("mold.ui")
-local core = require("mold.core")
+local morf = require("morf")
+local ui = require("morf.ui")
+local core = require("morf.core")
 
-local screen = mold.screens[1]
+local screen = morf.screens[1]
 local W = (screen and screen.width) or 1920
 local H = (screen and screen.height) or 1080
 local SHORT = math.min(W, H)
@@ -33,12 +33,12 @@ local SHORT = math.min(W, H)
 -- passes straight to whatever is underneath.
 local SURFACE_W = W
 local SURFACE_H = H
-mold.surface.width = SURFACE_W
-mold.surface.height = SURFACE_H
-mold.surface.anchors = { top = true, left = true, right = true, bottom = true }
-mold.surface.layer = core.env("MOLD_BLOB_LAYER") or "bottom"
-mold.surface.keyboard_focus = "none"
-mold.surface.exclusive_zone = -1
+morf.surface.width = SURFACE_W
+morf.surface.height = SURFACE_H
+morf.surface.anchors = { top = true, left = true, right = true, bottom = true }
+morf.surface.layer = core.env("MORF_BLOB_LAYER") or "bottom"
+morf.surface.keyboard_focus = "none"
+morf.surface.exclusive_zone = -1
 
 --- Sizes are fractions of the short side, so the lamp fills any output alike.
 local function s(fraction) return SHORT * fraction end
@@ -165,7 +165,7 @@ end
 --- bound that returns what it takes makes an escape recoverable.
 local function throw(index)
   local size = size_of[index]
-  mold.animation.fling {
+  morf.animation.fling {
     node = blobs[index],
     property = "x",
     velocity = start_vx[index],
@@ -175,7 +175,7 @@ local function throw(index)
     min = 0,
     max = FIELD_W - size,
   }
-  mold.animation.fling {
+  morf.animation.fling {
     node = blobs[index],
     property = "y",
     velocity = start_vy[index],
@@ -308,8 +308,8 @@ local function steer(dt)
       local turn_y = wish_y / wish * want - vy[index]
       local turn = math.sqrt(turn_x * turn_x + turn_y * turn_y)
       local cap = math.min(AGILITY / math.max(turn, 0.001), 1.0)
-      mold.animation.impulse(blobs[index], "x", turn_x * cap * dt)
-      mold.animation.impulse(blobs[index], "y", turn_y * cap * dt)
+      morf.animation.impulse(blobs[index], "x", turn_x * cap * dt)
+      morf.animation.impulse(blobs[index], "y", turn_y * cap * dt)
     end
   end
 end
@@ -354,7 +354,7 @@ ui.Item {
         -- A blob only stops if it somehow lost all its speed at a wall. It
         -- should not happen; if it does, put it back in the swarm rather than
         -- leave a dead lump in the corner.
-        if not mold.animation.active(node, "x") and not mold.animation.active(node, "y") then
+        if not morf.animation.active(node, "x") and not morf.animation.active(node, "y") then
           throw(index)
         end
       end
