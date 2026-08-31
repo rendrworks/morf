@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "morf-cli"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "jiff",
  "morf-io",
@@ -1207,11 +1207,11 @@ dependencies = [
 
 [[package]]
 name = "morf-desktop"
-version = "0.1.0"
+version = "0.1.3"
 
 [[package]]
 name = "morf-image"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "image",
  "resvg",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "morf-io"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "libc",
  "rustix",
@@ -1231,18 +1231,18 @@ dependencies = [
 
 [[package]]
 name = "morf-layout"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "morf-scene",
 ]
 
 [[package]]
 name = "morf-lifecycle"
-version = "0.1.0"
+version = "0.1.3"
 
 [[package]]
 name = "morf-lua"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "jiff",
  "luna",
@@ -1261,22 +1261,22 @@ dependencies = [
 
 [[package]]
 name = "morf-menu"
-version = "0.1.0"
+version = "0.1.3"
 
 [[package]]
 name = "morf-reactive"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "slotmap",
 ]
 
 [[package]]
 name = "morf-region"
-version = "0.1.0"
+version = "0.1.3"
 
 [[package]]
 name = "morf-render"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "bytemuck",
  "morf-image",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "morf-scene"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animato",
  "morf-reactive",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "morf-services"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "libc",
  "libloading",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "morf-text"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "cosmic-text",
  "morf-layout",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "morf-wayland"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "morf-layout",
  "morf-region",
