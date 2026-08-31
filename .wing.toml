@@ -3,7 +3,7 @@
 # from one the template changed. Commit it.
 
 template = "rust"
-name = "mold"
+name = "morf"
 generated_at = "2026-08-29T15:34:19Z"
 
 [[files]]

@@ -1,0 +1,10 @@
+[package]
+name = "morf-reactive"
+description = "Reactive signal graph for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+slotmap.workspace = true

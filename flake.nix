@@ -1,5 +1,5 @@
 {
-  description = "mold Rust development shell";
+  description = "morf Rust development shell";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
@@ -80,7 +80,7 @@
             pkgs.rust-analyzer
             pkgs.git-cliff
             pkgs.clang
-            pkgs.mold
+            pkgs.morf
             pkgs.pkg-config
 
             nixGLAlias

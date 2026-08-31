@@ -1,16 +1,57 @@
-[package]
-name = "mold"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.3"
 edition = "2024"
-description = "mold"
 license = "MIT"
-readme = "README.md"
-publish = false
+repository = "https://github.com/rendrworks/morf"
 
-[lib]
-path = "src/lib.rs"
+[workspace.dependencies]
+animato = { version = "=1.7.2", default-features = false, features = ["tween", "spring", "physics"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+cosmic-text = "=0.19.0"
+jiff = "=0.2.35"
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+libc = "0.2"
+libloading = "0.8"
+luna = { git = "https://github.com/onix-os/luna", rev = "e8b7e98ec977c8973ce1a182d935d0ca1f06f465" }
+pollster = "1.0"
+raw-window-handle = "0.6"
+resvg = { version = "=0.48.1", default-features = false, features = ["raster-images", "text"] }
+rustix = { version = "1.1", features = ["event", "fs"] }
+slotmap = "1.0"
+signed-distance-field = "=0.6.3"
+serde = "1.0"
+serde_json = "1.0"
+unicode-segmentation = "=1.13.3"
+smithay-client-toolkit = "=0.21.1"
+wayland-backend = { version = "=0.3.17", features = ["client_system", "rwh_06"] }
+wayland-client = { version = "=0.31.15", features = ["system"] }
+wayland-protocols = { version = "=0.32.13", features = ["client", "staging"] }
+wayland-protocols-misc = { version = "=0.3.12", features = ["client"] }
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "gles", "wgsl"] }
+xkbcommon = "=0.8.0"
+zbus = "=5.19.0"
+morf-image = { path = "crates/morf-image" }
+morf-desktop = { path = "crates/morf-desktop" }
+morf-io = { path = "crates/morf-io" }
+morf-layout = { path = "crates/morf-layout" }
+morf-lifecycle = { path = "crates/morf-lifecycle" }
+morf-lua = { path = "crates/morf-lua" }
+morf-menu = { path = "crates/morf-menu" }
+morf-reactive = { path = "crates/morf-reactive" }
+morf-region = { path = "crates/morf-region" }
+morf-render = { path = "crates/morf-render" }
+morf-scene = { path = "crates/morf-scene" }
+morf-services = { path = "crates/morf-services" }
+morf-text = { path = "crates/morf-text" }
+morf-wayland = { path = "crates/morf-wayland" }
 
-[dependencies]
-
-[dev-dependencies]
-
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

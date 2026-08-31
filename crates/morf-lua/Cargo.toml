@@ -1,0 +1,22 @@
+[package]
+name = "morf-lua"
+description = "Sandboxed Lua configuration host for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jiff.workspace = true
+luna.workspace = true
+morf-desktop.workspace = true
+morf-image.workspace = true
+morf-io.workspace = true
+morf-lifecycle.workspace = true
+morf-layout.workspace = true
+morf-menu.workspace = true
+morf-reactive.workspace = true
+morf-region.workspace = true
+morf-scene.workspace = true
+morf-services.workspace = true
+serde_json.workspace = true

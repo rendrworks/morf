@@ -1,0 +1,12 @@
+[package]
+name = "morf-scene"
+description = "Scene graph and animation system for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+animato.workspace = true
+morf-reactive.workspace = true
+slotmap.workspace = true

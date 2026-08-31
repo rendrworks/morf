@@ -1,0 +1,20 @@
+[package]
+name = "morf-render"
+description = "GPU renderer for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+morf-image.workspace = true
+morf-layout.workspace = true
+morf-region.workspace = true
+morf-scene.workspace = true
+morf-text.workspace = true
+raw-window-handle.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true

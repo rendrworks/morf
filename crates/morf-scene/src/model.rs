@@ -1,0 +1,361 @@
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+
+use crate::Value;
+
+/// Stable identity assigned to one list-model entry.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ModelId(u64);
+
+impl ModelId {
+    /// Returns the process-local numeric identity.
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// One mutation emitted by a list model.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ListChange {
+    /// A new item was inserted.
+    Added { index: usize, id: ModelId },
+    /// An item was removed.
+    Removed { index: usize, id: ModelId },
+    /// An existing item changed index.
+    Moved { from: usize, to: usize, id: ModelId },
+    /// An item's value changed without changing identity.
+    Updated { index: usize, id: ModelId },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Entry {
+    pub(crate) id: ModelId,
+    pub(crate) value: Value,
+}
+
+/// Mutable ordered values with stable item identity and a change journal.
+#[derive(Clone, Debug, Default)]
+pub struct ListModel {
+    pub(crate) next_id: u64,
+    pub(crate) entries: Vec<Entry>,
+    pub(crate) changes: Vec<ListChange>,
+}
+
+impl ListModel {
+    /// Creates a model from ordered values.
+    pub fn new(values: impl IntoIterator<Item = Value>) -> Self {
+        let mut model = Self::default();
+        for value in values {
+            let id = model.allocate_id();
+            model.entries.push(Entry { id, value });
+        }
+        model
+    }
+
+    /// Returns the item count.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the model has no items.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns one item and its stable identity.
+    pub fn get(&self, index: usize) -> Option<(ModelId, &Value)> {
+        self.entries
+            .get(index)
+            .map(|entry| (entry.id, &entry.value))
+    }
+
+    /// Appends a value and returns its identity.
+    pub fn push(&mut self, value: Value) -> ModelId {
+        self.insert(self.entries.len(), value)
+            .expect("the end index is valid")
+    }
+
+    /// Inserts a value at an index.
+    pub fn insert(&mut self, index: usize, value: Value) -> Option<ModelId> {
+        if index > self.entries.len() {
+            return None;
+        }
+        let id = self.allocate_id();
+        self.entries.insert(index, Entry { id, value });
+        self.changes.push(ListChange::Added { index, id });
+        Some(id)
+    }
+
+    /// Removes and returns a value.
+    pub fn remove(&mut self, index: usize) -> Option<Value> {
+        if index >= self.entries.len() {
+            return None;
+        }
+        let entry = self.entries.remove(index);
+        self.changes.push(ListChange::Removed {
+            index,
+            id: entry.id,
+        });
+        Some(entry.value)
+    }
+
+    /// Moves an item while retaining its identity.
+    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.entries.len() || to >= self.entries.len() || from == to {
+            return from == to && from < self.entries.len();
+        }
+        let entry = self.entries.remove(from);
+        let id = entry.id;
+        self.entries.insert(to, entry);
+        self.changes.push(ListChange::Moved { from, to, id });
+        true
+    }
+
+    /// Replaces a value while retaining its identity.
+    pub fn set(&mut self, index: usize, value: Value) -> bool {
+        let Some(entry) = self.entries.get_mut(index) else {
+            return false;
+        };
+        entry.value = value;
+        self.changes.push(ListChange::Updated {
+            index,
+            id: entry.id,
+        });
+        true
+    }
+
+    /// Reconciles ordered unique values while preserving matching item identities.
+    pub fn reconcile(&mut self, values: Vec<Value>, object_property: Option<&str>) {
+        let target_len = values.len();
+        for (target, value) in values.into_iter().enumerate() {
+            let matching = self.entries[target.min(self.entries.len())..]
+                .iter()
+                .position(|entry| model_values_match(&entry.value, &value, object_property))
+                .map(|position| target + position);
+            match matching {
+                Some(current) => {
+                    if current != target {
+                        self.move_item(current, target);
+                    }
+                    if self.entries[target].value != value {
+                        self.set(target, value);
+                    }
+                }
+                None => {
+                    self.insert(target, value);
+                }
+            }
+        }
+        while self.entries.len() > target_len {
+            self.remove(self.entries.len() - 1);
+        }
+    }
+
+    /// Drains mutations since the previous call.
+    pub fn take_changes(&mut self) -> Vec<ListChange> {
+        std::mem::take(&mut self.changes)
+    }
+
+    pub(crate) fn allocate_id(&mut self) -> ModelId {
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        ModelId(self.next_id)
+    }
+}
+
+pub(crate) fn model_values_match(
+    left: &Value,
+    right: &Value,
+    object_property: Option<&str>,
+) -> bool {
+    let Some(property) = object_property else {
+        return left == right;
+    };
+    match (left, right) {
+        (Value::Map(left), Value::Map(right)) => match (left.get(property), right.get(property)) {
+            (Some(left), Some(right)) => left == right,
+            _ => left == right,
+        },
+        _ => left == right,
+    }
+}
+
+/// Delegate metadata for one visible model item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewItem {
+    pub id: ModelId,
+    pub index: usize,
+    pub destination: f64,
+}
+
+/// Delegate transition generated by a virtual view update.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViewTransition {
+    Populate(ViewItem),
+    Add(ViewItem),
+    Remove(ViewItem),
+    Move {
+        item: ViewItem,
+        from: usize,
+        target_indexes: Vec<usize>,
+    },
+    Displaced {
+        item: ViewItem,
+        from: usize,
+        target_indexes: Vec<usize>,
+    },
+}
+
+/// Fixed-extent vertical virtualization and transition tracker.
+#[derive(Clone, Debug)]
+pub struct VirtualList {
+    pub(crate) item_extent: f64,
+    pub(crate) viewport_extent: f64,
+    pub(crate) offset: f64,
+    pub(crate) overscan: usize,
+    pub(crate) columns: usize,
+    pub(crate) active: HashMap<ModelId, usize>,
+    pub(crate) initialized: bool,
+}
+
+impl VirtualList {
+    /// Creates a virtual list with a fixed delegate extent.
+    pub fn new(item_extent: f64, viewport_extent: f64, overscan: usize) -> Option<Self> {
+        (item_extent.is_finite()
+            && item_extent > 0.0
+            && viewport_extent.is_finite()
+            && viewport_extent >= 0.0)
+            .then_some(Self {
+                item_extent,
+                viewport_extent,
+                offset: 0.0,
+                overscan,
+                columns: 1,
+                active: HashMap::new(),
+                initialized: false,
+            })
+    }
+
+    /// Creates a fixed-cell grid virtualizer with a vertical row extent.
+    pub fn new_grid(
+        row_extent: f64,
+        viewport_extent: f64,
+        overscan: usize,
+        columns: usize,
+    ) -> Option<Self> {
+        let mut view = Self::new(row_extent, viewport_extent, overscan)?;
+        if columns == 0 {
+            return None;
+        }
+        view.columns = columns;
+        Some(view)
+    }
+
+    /// Sets the scroll offset, clamped to the model's content range on sync.
+    pub fn set_offset(&mut self, offset: f64) {
+        if offset.is_finite() {
+            self.offset = offset.max(0.0);
+        }
+    }
+
+    /// Returns the fixed logical extent assigned to every delegate.
+    pub fn item_extent(&self) -> f64 {
+        self.item_extent
+    }
+
+    /// Returns the number of delegates placed in each row.
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
+    /// Returns indexes requiring live delegates.
+    pub fn visible_range(&self, item_count: usize) -> Range<usize> {
+        let rows = item_count.div_ceil(self.columns);
+        let maximum = (rows as f64 * self.item_extent - self.viewport_extent).max(0.0);
+        let offset = self.offset.min(maximum);
+        let first_row = (offset / self.item_extent).floor() as usize;
+        let row_count = (self.viewport_extent / self.item_extent).ceil() as usize + 1;
+        let start_row = first_row.saturating_sub(self.overscan);
+        let end_row = (first_row + row_count + self.overscan).min(rows);
+        start_row.saturating_mul(self.columns)..end_row.saturating_mul(self.columns).min(item_count)
+    }
+
+    /// Reconciles visible delegates and returns their transition metadata.
+    pub fn sync(&mut self, model: &ListModel, changes: &[ListChange]) -> Vec<ViewTransition> {
+        let range = self.visible_range(model.len());
+        let visible: Vec<_> = range
+            .filter_map(|index| model.get(index).map(|(id, _)| (id, index)))
+            .collect();
+        let next_ids: HashSet<_> = visible.iter().map(|(id, _)| *id).collect();
+        let added: HashSet<_> = changes
+            .iter()
+            .filter_map(|change| match change {
+                ListChange::Added { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let removed: HashSet<_> = changes
+            .iter()
+            .filter_map(|change| match change {
+                ListChange::Removed { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let moved: HashSet<_> = changes
+            .iter()
+            .filter_map(|change| match change {
+                ListChange::Moved { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let target_indexes: Vec<_> = changes
+            .iter()
+            .map(|change| match change {
+                ListChange::Added { index, .. }
+                | ListChange::Removed { index, .. }
+                | ListChange::Updated { index, .. } => *index,
+                ListChange::Moved { to, .. } => *to,
+            })
+            .collect();
+        let mut transitions = Vec::new();
+        for (id, from) in &self.active {
+            if !next_ids.contains(id) && removed.contains(id) {
+                transitions.push(ViewTransition::Remove(ViewItem {
+                    id: *id,
+                    index: *from,
+                    destination: (*from / self.columns) as f64 * self.item_extent,
+                }));
+            }
+        }
+        for (id, index) in &visible {
+            let item = ViewItem {
+                id: *id,
+                index: *index,
+                destination: (*index / self.columns) as f64 * self.item_extent,
+            };
+            match self.active.get(id) {
+                None if !self.initialized => transitions.push(ViewTransition::Populate(item)),
+                None if added.contains(id) => transitions.push(ViewTransition::Add(item)),
+                None => transitions.push(ViewTransition::Populate(item)),
+                Some(from) if from != index && moved.contains(id) => {
+                    transitions.push(ViewTransition::Move {
+                        item,
+                        from: *from,
+                        target_indexes: target_indexes.clone(),
+                    });
+                }
+                Some(from) if from != index => transitions.push(ViewTransition::Displaced {
+                    item,
+                    from: *from,
+                    target_indexes: target_indexes.clone(),
+                }),
+                _ => {}
+            }
+        }
+        self.active = visible.into_iter().collect();
+        self.initialized = true;
+        transitions
+    }
+}
+
+#[cfg(test)]
+mod tests;
