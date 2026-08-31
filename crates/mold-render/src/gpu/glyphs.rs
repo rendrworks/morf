@@ -1,21 +1,11 @@
-use crate::{LayerMask, SdfQuadInstance};
+use crate::LayerMask;
 use mold_layout::{Geometry, Transform2D};
 use mold_scene::Color;
 use mold_text::{RasterContent, RasterGlyph};
 use std::collections::{HashMap, HashSet};
-use std::mem;
 use std::ops::Range;
 
 use super::backend_types::*;
-
-pub(crate) fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("mold SDF instances"),
-        size: (capacity * mem::size_of::<SdfQuadInstance>()) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
 
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]

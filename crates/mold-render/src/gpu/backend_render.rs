@@ -52,8 +52,7 @@ impl RenderBackend for WgpuBackend {
         damage: &[DamageRect],
         scale_120: u32,
     ) -> Result<(), Self::Error> {
-        let (quad_indices, instances) = collect_quad_instances(list, scale_120);
-        let (field_indices, field_instances, field_layers) =
+        let (field_indices, field_instances, field_layers, field_materials) =
             collect_field_instances(list, scale_120);
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
@@ -209,14 +208,17 @@ impl RenderBackend for WgpuBackend {
                 shadow,
             });
         }
-        self.ensure_instances(instances.len().max(1));
         self.ensure_textures(texture_batch.instances.len().max(1));
         self.ensure_glyphs(
             glyph_batch
                 .as_ref()
                 .map_or(1, |batch| batch.instances.len().max(1)),
         );
-        self.ensure_fields(field_instances.len().max(1), field_layers.len().max(1));
+        self.ensure_fields(
+            field_instances.len().max(1),
+            field_layers.len().max(1),
+            field_materials.len().max(1),
+        );
         if !field_instances.is_empty() {
             self.queue.write_buffer(
                 &self.field_buffer,
@@ -228,10 +230,11 @@ impl RenderBackend for WgpuBackend {
                 0,
                 bytemuck::cast_slice(&field_layers),
             );
-        }
-        if !instances.is_empty() {
-            self.queue
-                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+            self.queue.write_buffer(
+                &self.field_material_buffer,
+                0,
+                bytemuck::cast_slice(&field_materials),
+            );
         }
         if let Some(batch) = &glyph_batch {
             self.queue.write_buffer(
@@ -269,12 +272,6 @@ impl RenderBackend for WgpuBackend {
                         clamp_scissor(command_damage, self.width, self.height)
                 {
                     $pass.set_scissor_rect(x, y, width, height);
-                    if let Some(instance) = quad_indices[command_index] {
-                        $pass.set_pipeline(&self.pipeline);
-                        $pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                        $pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-                        $pass.draw(0..6, instance..instance + 1);
-                    }
                     if let Some(instance) = field_indices[command_index] {
                         $pass.set_pipeline(&self.field_pipeline);
                         $pass.set_bind_group(0, &self.field_bind_group, &[]);

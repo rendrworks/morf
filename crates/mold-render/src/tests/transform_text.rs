@@ -227,10 +227,14 @@ fn rectangles_emit_normalized_gradient_instances() {
     assert_eq!(list.layers[0].opacity, 0.5);
     assert_eq!(list.layers[0].blur, 0.0);
     assert_eq!(list.layers[0].shadow_color.alpha, 0.0);
-    let instance = SdfQuadInstance::from_command(&list.commands[0], 120).unwrap();
-    assert_eq!(instance.gradient_data[0], 1.0);
-    assert_eq!(instance.gradient_points, [0.0, 0.0, 1.0, 1.0]);
-    assert_eq!(instance.radii, [4.0, 12.0, 4.0, 4.0]);
+    let mut layers = Vec::new();
+    let mut materials = Vec::new();
+    SdfFieldInstance::from_command(&list.commands[0], 120, &mut layers, &mut materials).unwrap();
+    assert_eq!(materials[0].gradient_data[0], 1.0);
+    assert_eq!(materials[0].gradient_points, [0.0, 0.0, 1.0, 1.0]);
+    // The corner radii now belong to the rectangle's own layer, which is where
+    // every other shape in the vocabulary has always kept them.
+    assert_eq!(layers[0].radii, [4.0, 12.0, 4.0, 4.0]);
 }
 
 #[test]

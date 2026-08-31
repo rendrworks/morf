@@ -1281,6 +1281,7 @@ dependencies = [
  "bytemuck",
  "mold-image",
  "mold-layout",
+ "mold-region",
  "mold-scene",
  "mold-text",
  "pollster",

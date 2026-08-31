@@ -44,14 +44,16 @@ fn layers_are_packed_into_the_fields_own_space_and_scaled() {
         .unwrap();
 
     let mut layers = Vec::new();
+    let mut materials = Vec::new();
     // 240/120 is a doubled surface: every length doubles.
-    let instance = SdfFieldInstance::from_command(command, 240, &mut layers).unwrap();
+    let instance =
+        SdfFieldInstance::from_command(command, 240, &mut layers, &mut materials).unwrap();
 
     assert_eq!(layers.len(), 1);
     // Centre is (20 + 40, 30 + 30) inside the field, doubled.
     assert_eq!(layers[0].rect, [120.0, 120.0, 80.0, 60.0]);
-    assert_eq!(layers[0].kinds[0], SdfShapeKind::Ring.code() as f32);
-    assert_eq!(layers[0].kinds[1], SdfShapeKind::Hexagon.code() as f32);
+    assert_eq!(layers[0].kinds[0], Shape::Ring.code() as f32);
+    assert_eq!(layers[0].kinds[1], Shape::Hexagon.code() as f32);
     assert_eq!(layers[0].kinds[2], 0.25);
     assert_eq!(layers[0].params[1], 7.0, "a point count is not a length");
     assert_eq!(layers[0].params[2], 0.4, "a ratio is not a length");
@@ -89,8 +91,9 @@ fn layer_runs_are_addressed_per_field_within_one_shared_buffer() {
         .unwrap();
 
     let mut layers = Vec::new();
-    let first = SdfFieldInstance::from_command(command, 120, &mut layers).unwrap();
-    let second = SdfFieldInstance::from_command(command, 120, &mut layers).unwrap();
+    let mut materials = Vec::new();
+    let first = SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
+    let second = SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
 
     assert_eq!(first.style[2], 0.0);
     assert_eq!(first.style[3], 2.0);
@@ -123,7 +126,9 @@ fn a_composition_past_the_cap_is_truncated_rather_than_unbounded() {
         .unwrap();
 
     let mut layers = Vec::new();
-    let instance = SdfFieldInstance::from_command(command, 120, &mut layers).unwrap();
+    let mut materials = Vec::new();
+    let instance =
+        SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
 
     assert_eq!(layers.len(), MAX_FIELD_LAYERS);
     assert_eq!(instance.style[3], MAX_FIELD_LAYERS as f32);
@@ -189,10 +194,10 @@ fn a_blend_widens_the_area_a_field_may_reach() {
                 height: 40.0,
             },
             color: Color::rgba8(255, 255, 255, 255),
-            shape: SdfShapeKind::Circle,
-            morph_to: SdfShapeKind::Circle,
+            shape: Shape::Circle,
+            morph_to: Shape::Circle,
             morph: 0.0,
-            operation: SdfOperation::SmoothUnion,
+            operation: Operation::SmoothUnion,
             blend,
             rotation: 0.0,
             radii: [0.0; 4],

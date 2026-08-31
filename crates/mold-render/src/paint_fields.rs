@@ -1,4 +1,5 @@
 use mold_layout::Layout;
+use mold_region::{Operation, Shape};
 use mold_scene::{Color, Element, NodeHandle, Scene};
 
 use crate::{commands::*, effects::*, sdf::*};
@@ -86,17 +87,17 @@ fn shape_layer(
         return Ok(None);
     };
     let name = scene.string_value(node, "shape")?;
-    let shape = SdfShapeKind::parse(name)
+    let shape = Shape::parse(name)
         .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape shape `{name}`")))?;
     let target = scene.string_value(node, "morph_to")?;
     let morph_to = if target.is_empty() {
         shape
     } else {
-        SdfShapeKind::parse(target)
+        Shape::parse(target)
             .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape shape `{target}`")))?
     };
     let operation = scene.string_value(node, "operation")?;
-    let operation = SdfOperation::parse(operation)
+    let operation = Operation::parse(operation)
         .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape operation `{operation}`")))?;
     Ok(Some(SdfLayer {
         bounds,
@@ -151,16 +152,16 @@ fn rect_layer(
             .map_or(defaults.color, |color| {
                 apply_overlay(color, defaults.overlay)
             }),
-        shape: SdfShapeKind::Box,
-        morph_to: SdfShapeKind::Box,
+        shape: Shape::Box,
+        morph_to: Shape::Box,
         morph: 0.0,
         // A rect joins what is already there, smoothly when the field asks for
         // it. Nothing about the rect had to be written differently to take
         // part; it is the container that decides.
         operation: if blend > 0.0 {
-            SdfOperation::SmoothUnion
+            Operation::SmoothUnion
         } else {
-            SdfOperation::Union
+            Operation::Union
         },
         blend,
         rotation: scene.number(node, "rotation")? as f32,

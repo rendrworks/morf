@@ -4,7 +4,7 @@ use mold_scene::{Color, NodeHandle};
 use super::*;
 use crate::*;
 
-use crate::{SdfLayer, SdfOperation, SdfShapeKind};
+use crate::{Operation, SdfLayer, Shape};
 
 /// Renders one command into a `size`-square target and reads the pixels back.
 pub(super) fn render_readback(list: &DrawList, size: u32) -> Vec<u8> {
@@ -80,7 +80,7 @@ pub(super) fn read_frame(backend: &mut WgpuBackend, list: &DrawList, size: u32) 
     out
 }
 
-pub(super) fn field_layer(x: f64, y: f64, size: f64, shape: SdfShapeKind) -> SdfLayer {
+pub(super) fn field_layer(x: f64, y: f64, size: f64, shape: Shape) -> SdfLayer {
     SdfLayer {
         bounds: Geometry {
             x,
@@ -92,7 +92,7 @@ pub(super) fn field_layer(x: f64, y: f64, size: f64, shape: SdfShapeKind) -> Sdf
         shape,
         morph_to: shape,
         morph: 0.0,
-        operation: SdfOperation::Union,
+        operation: Operation::Union,
         blend: 0.0,
         rotation: 0.0,
         radii: [0.0; 4],
@@ -117,7 +117,16 @@ pub(super) fn field_command(node: NodeHandle, layers: Vec<SdfLayer>) -> DrawComm
         fill_color: Color::rgba8(255, 255, 255, 255),
         stroke_color: Color::rgba8(0, 0, 0, 0),
         stroke_width: 0.0,
+        stroke_alignment: BorderAlignment::Centred,
         softness: 0.0,
+        gradient: Gradient::None,
+        color_overlay: Color::rgba8(0, 0, 0, 0),
+        shadow_color: Color::rgba8(0, 0, 0, 0),
+        shadow_blur: 0.0,
+        shadow_spread: 0.0,
+        shadow_offset_x: 0.0,
+        shadow_offset_y: 0.0,
+        shadow_inner: false,
         layers,
     }
 }
@@ -136,7 +145,7 @@ pub(crate) fn a_field_paints_its_shape_and_leaves_the_outside_clear() {
     let list = DrawList {
         commands: vec![field_command(
             node,
-            vec![field_layer(16.0, 16.0, 32.0, SdfShapeKind::Circle)],
+            vec![field_layer(16.0, 16.0, 32.0, Shape::Circle)],
         )],
         layers: Vec::new(),
     };
@@ -158,22 +167,22 @@ pub(crate) fn a_smooth_union_fills_the_gap_that_a_hard_union_leaves_open() {
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
     let pair = |operation, blend| {
-        let mut right = field_layer(36.0, 22.0, 20.0, SdfShapeKind::Circle);
+        let mut right = field_layer(36.0, 22.0, 20.0, Shape::Circle);
         right.operation = operation;
         right.blend = blend;
-        vec![field_layer(8.0, 22.0, 20.0, SdfShapeKind::Circle), right]
+        vec![field_layer(8.0, 22.0, 20.0, Shape::Circle), right]
     };
 
     let hard = render_readback(
         &DrawList {
-            commands: vec![field_command(node, pair(SdfOperation::Union, 0.0))],
+            commands: vec![field_command(node, pair(Operation::Union, 0.0))],
             layers: Vec::new(),
         },
         64,
     );
     let smooth = render_readback(
         &DrawList {
-            commands: vec![field_command(node, pair(SdfOperation::SmoothUnion, 24.0))],
+            commands: vec![field_command(node, pair(Operation::SmoothUnion, 24.0))],
             layers: Vec::new(),
         },
         64,
@@ -192,12 +201,12 @@ pub(crate) fn a_smooth_union_fills_the_gap_that_a_hard_union_leaves_open() {
 pub(crate) fn subtracting_a_layer_opens_a_hole_through_the_one_before_it() {
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
-    let mut hole = field_layer(24.0, 24.0, 16.0, SdfShapeKind::Circle);
-    hole.operation = SdfOperation::Subtract;
+    let mut hole = field_layer(24.0, 24.0, 16.0, Shape::Circle);
+    hole.operation = Operation::Subtract;
     let list = DrawList {
         commands: vec![field_command(
             node,
-            vec![field_layer(4.0, 4.0, 56.0, SdfShapeKind::Box), hole],
+            vec![field_layer(4.0, 4.0, 56.0, Shape::Box), hole],
         )],
         layers: Vec::new(),
     };
@@ -227,10 +236,10 @@ pub(crate) fn a_morph_at_its_ends_matches_the_shape_at_each_end() {
         )
     };
 
-    let circle = render(SdfShapeKind::Circle, SdfShapeKind::Circle, 0.0);
-    let at_zero = render(SdfShapeKind::Circle, SdfShapeKind::Box, 0.0);
-    let boxed = render(SdfShapeKind::Box, SdfShapeKind::Box, 0.0);
-    let at_one = render(SdfShapeKind::Circle, SdfShapeKind::Box, 1.0);
+    let circle = render(Shape::Circle, Shape::Circle, 0.0);
+    let at_zero = render(Shape::Circle, Shape::Box, 0.0);
+    let boxed = render(Shape::Box, Shape::Box, 0.0);
+    let at_one = render(Shape::Circle, Shape::Box, 1.0);
 
     assert_eq!(circle, at_zero, "morph 0 is the start shape");
     assert_eq!(boxed, at_one, "morph 1 is the end shape");
@@ -253,10 +262,10 @@ pub(crate) fn a_morph_between_one_shape_and_two_passes_through_a_split() {
     let node = scene.create(mold_scene::Element::Sdf);
     // One wide capsule, morphing towards a narrow one, beside a second circle.
     let render = |morph| {
-        let mut left = field_layer(4.0, 22.0, 24.0, SdfShapeKind::Circle);
-        left.morph_to = SdfShapeKind::Circle;
-        let mut right = field_layer(36.0, 22.0, 24.0, SdfShapeKind::Circle);
-        right.operation = SdfOperation::SmoothUnion;
+        let mut left = field_layer(4.0, 22.0, 24.0, Shape::Circle);
+        left.morph_to = Shape::Circle;
+        let mut right = field_layer(36.0, 22.0, 24.0, Shape::Circle);
+        right.operation = Operation::SmoothUnion;
         right.blend = morph;
         render_readback(
             &DrawList {
@@ -282,15 +291,15 @@ pub(crate) fn every_shape_family_paints_something_and_stays_inside_its_layer() {
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
     for shape in [
-        SdfShapeKind::Circle,
-        SdfShapeKind::Box,
-        SdfShapeKind::Capsule,
-        SdfShapeKind::Triangle,
-        SdfShapeKind::Hexagon,
-        SdfShapeKind::Star,
-        SdfShapeKind::Ring,
-        SdfShapeKind::Pie,
-        SdfShapeKind::Cross,
+        Shape::Circle,
+        Shape::Box,
+        Shape::Capsule,
+        Shape::Triangle,
+        Shape::Hexagon,
+        Shape::Star,
+        Shape::Ring,
+        Shape::Pie,
+        Shape::Cross,
     ] {
         let pixels = render_readback(
             &DrawList {
@@ -331,7 +340,7 @@ pub(crate) fn a_fractional_point_count_grows_a_star_point_instead_of_popping_it_
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
     let at = |points: f32| {
-        let mut layer = field_layer(8.0, 8.0, 48.0, SdfShapeKind::Star);
+        let mut layer = field_layer(8.0, 8.0, 48.0, Shape::Star);
         layer.points = points;
         layer.inner_radius = 0.45;
         render_readback(
@@ -376,7 +385,7 @@ pub(crate) fn a_layer_reaching_outside_its_node_is_drawn_whole() {
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
     // The node occupies the middle; the layer hangs well off its left side.
-    let mut layer = field_layer(-12.0, 20.0, 24.0, SdfShapeKind::Box);
+    let mut layer = field_layer(-12.0, 20.0, 24.0, Shape::Box);
     layer.radii = [6.0; 4];
     let command = DrawCommand::Field {
         node,
@@ -391,9 +400,18 @@ pub(crate) fn a_layer_reaching_outside_its_node_is_drawn_whole() {
         fill_color: Color::rgba8(255, 255, 255, 255),
         stroke_color: Color::rgba8(0, 0, 0, 0),
         stroke_width: 0.0,
+        stroke_alignment: BorderAlignment::Centred,
         // No blend and no outline, so nothing else widens the quad: if the
         // layers are not accounted for, the overhang is simply gone.
         softness: 0.0,
+        gradient: Gradient::None,
+        color_overlay: Color::rgba8(0, 0, 0, 0),
+        shadow_color: Color::rgba8(0, 0, 0, 0),
+        shadow_blur: 0.0,
+        shadow_spread: 0.0,
+        shadow_offset_x: 0.0,
+        shadow_offset_y: 0.0,
+        shadow_inner: false,
         layers: vec![layer],
     };
     let pixels = render_readback(

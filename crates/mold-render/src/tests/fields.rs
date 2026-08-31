@@ -69,8 +69,8 @@ fn a_field_absorbs_the_rects_beneath_it_and_leaves_everything_else_alone() {
         unreachable!("found a field")
     };
     assert_eq!(layers.len(), 2, "the rect became a layer");
-    assert_eq!(layers[0].shape, SdfShapeKind::Star);
-    assert_eq!(layers[1].shape, SdfShapeKind::Box);
+    assert_eq!(layers[0].shape, Shape::Star);
+    assert_eq!(layers[1].shape, Shape::Box);
     assert_eq!(
         layers[1].radii, [9.0; 4],
         "the rect keeps its corner radius"
@@ -139,7 +139,7 @@ fn a_field_reaches_through_the_positioners_that_laid_its_shapes_out() {
     assert_eq!(layers[2].bounds.x, 144.0);
     // And the field's own blend reached every one of them, so they fuse.
     for layer in layers {
-        assert_eq!(layer.operation, SdfOperation::SmoothUnion);
+        assert_eq!(layer.operation, Operation::SmoothUnion);
         assert_eq!(layer.blend, 18.0);
     }
 }
@@ -175,7 +175,7 @@ fn a_field_without_a_blend_composes_the_same_shapes_with_hard_edges() {
         unreachable!("found a field")
     };
     for layer in layers {
-        assert_eq!(layer.operation, SdfOperation::Union);
+        assert_eq!(layer.operation, Operation::Union);
         assert_eq!(layer.blend, 0.0);
     }
 }
@@ -284,7 +284,7 @@ fn an_invisible_layer_leaves_the_composition_rather_than_emptying_it() {
         unreachable!("found a field")
     };
     assert_eq!(layers.len(), 1);
-    assert_eq!(layers[0].operation, SdfOperation::Union);
+    assert_eq!(layers[0].operation, Operation::Union);
 }
 
 #[test]

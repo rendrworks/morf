@@ -27,8 +27,39 @@ struct Layer {
     radii: vec4<f32>,
 };
 
+/// Everything about a field's surface that is not its shape.
+///
+/// One per instance, read by `instance_index`, because there is exactly one of
+/// these per composed field and threading an index through the vertex
+/// attributes to say so would only be a way of getting it wrong. It lives in a
+/// storage buffer rather than in attributes because the quad pipeline this
+/// pass absorbed already used sixteen of them, and sixteen is the limit.
+struct Material {
+    // [alignment, antialiased, unused, unused]. Alignment is 0 inside, 1
+    // centred, 2 outside; the width itself rides in `style.x`, where the host
+    // already needs it to size the quad.
+    border: vec4<f32>,
+    border_color: vec4<f32>,
+    // [offset x, offset y, inner, unused]
+    shadow: vec4<f32>,
+    shadow_color: vec4<f32>,
+    // [unused, shadow blur, shadow spread, conic rotation]
+    effects: vec4<f32>,
+    gradient_start_color: vec4<f32>,
+    gradient_end_color: vec4<f32>,
+    // Normalised start and end of a linear gradient.
+    gradient_points: vec4<f32>,
+    // [kind, centre x, centre y, radius]
+    gradient_data: vec4<f32>,
+    color_overlay: vec4<f32>,
+    // The rectangle a gradient is measured across, in the field's own space:
+    // origin then size.
+    shape: vec4<f32>,
+};
+
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> layers: array<Layer>;
+@group(0) @binding(2) var<storage, read> materials: array<Material>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -37,11 +68,13 @@ struct VertexOutput {
     @location(2) outline: vec4<f32>,
     // [stroke width, softness, first layer, layer count]
     @location(3) style: vec4<f32>,
+    @location(4) @interpolate(flat) material: u32,
 };
 
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
+    @builtin(instance_index) instance_index: u32,
     @location(0) bounds: vec4<f32>,
     @location(1) fill: vec4<f32>,
     @location(2) outline: vec4<f32>,
@@ -77,6 +110,7 @@ fn vs_main(
     output.fill = fill;
     output.outline = outline;
     output.style = style;
+    output.material = instance_index;
     return output;
 }
 
@@ -116,7 +150,16 @@ fn sd_triangle(point: vec2<f32>, half: vec2<f32>) -> f32 {
     return -length(p) * sign(p.y);
 }
 
-fn sd_hexagon(point: vec2<f32>, radius: f32) -> f32 {
+/// A regular hexagon inscribed in the layer box.
+///
+/// The classic form takes the apothem, whose circumradius is `2r/sqrt(3)` —
+/// so passing the box's half-extent gave a hexagon 15% wider than the box it
+/// was in, and the field's drawn area is computed from layer *rectangles*, so
+/// the overhang was clipped off. Scaling to the apothem that inscribes puts
+/// the widest points on the box edge, which is where every other family in the
+/// vocabulary sits.
+fn sd_hexagon(point: vec2<f32>, circumradius: f32) -> f32 {
+    let radius = circumradius * 0.8660254037844386;
     let k = vec3<f32>(-0.8660254037844386, 0.5, 0.5773502691896258);
     var p = abs(point);
     p = p - 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
@@ -180,6 +223,19 @@ fn sd_cross(point: vec2<f32>, half: vec2<f32>, thickness: f32) -> f32 {
     return min(horizontal, vertical);
 }
 
+/// An ellipse filling the layer box.
+///
+/// The exact ellipse distance needs a root solve; this scales the point into
+/// the unit circle and back by the shorter half-extent instead. The sign stays
+/// exact — inside is exactly a normalised radius under one — and only the
+/// magnitude is an underestimate, which widens the antialiasing ramp slightly
+/// on a very eccentric ellipse. The sign is what the input-region rasteriser
+/// reads, so a click and a pixel agree regardless.
+fn sd_ellipse(point: vec2<f32>, half: vec2<f32>) -> f32 {
+    let r = max(half, vec2<f32>(0.0001, 0.0001));
+    return (length(point / r) - 1.0) * min(r.x, r.y);
+}
+
 fn shape_distance(kind: u32, point: vec2<f32>, layer: Layer) -> f32 {
     let half = layer.rect.zw;
     let radius = min(half.x, half.y);
@@ -192,6 +248,7 @@ fn shape_distance(kind: u32, point: vec2<f32>, layer: Layer) -> f32 {
         case 5u: { return sd_star(point, radius, layer.params.y, layer.params.z); }
         case 6u: { return sd_ring(point, radius, layer.params.w); }
         case 7u: { return sd_pie(point, radius, layer.extra.x); }
+        case 9u: { return sd_ellipse(point, half); }
         default: { return sd_cross(point, half, layer.params.w); }
     }
 }
@@ -226,7 +283,8 @@ fn combine_color_weight(
 ) -> f32 {
     let k = max(blend, 0.0001);
     switch operation {
-        case 0u: { return select(0.0, 1.0, layer_distance < accumulated); }
+        // Union and xor both add surface, so both bring a colour with them.
+        case 0u, 6u: { return select(0.0, 1.0, layer_distance < accumulated); }
         case 3u: {
             let h = clamp(0.5 + 0.5 * (layer_distance - accumulated) / k, 0.0, 1.0);
             return 1.0 - h;
@@ -245,19 +303,36 @@ fn combine(accumulated: f32, layer_distance: f32, operation: u32, blend: f32) ->
         case 2u: { return max(accumulated, layer_distance); }
         case 3u: { return smooth_union(accumulated, layer_distance, k); }
         case 4u: { return smooth_subtract(accumulated, layer_distance, k); }
-        default: { return smooth_intersect(accumulated, layer_distance, k); }
+        case 5u: { return smooth_intersect(accumulated, layer_distance, k); }
+        // Symmetric difference: outside the union, or inside the intersection,
+        // whichever boundary is nearer.
+        default: {
+            return max(
+                min(accumulated, layer_distance),
+                -max(accumulated, layer_distance),
+            );
+        }
     }
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let first = u32(input.style.z);
-    let count = u32(input.style.w);
-    var distance = 1e20;
-    var fill = input.fill;
+/// The composed distance and fill at one point in the field's own space.
+struct Composed {
+    distance: f32,
+    fill: vec4<f32>,
+};
+
+/// Walks the field's layers and resolves them into one surface.
+///
+/// Factored out because a shadow is the same composition sampled at an offset
+/// point: one function, called twice, rather than a second copy of the loop
+/// that could drift from this one.
+fn compose(local: vec2<f32>, base: vec4<f32>, first: u32, count: u32) -> Composed {
+    var out: Composed;
+    out.distance = 1e20;
+    out.fill = base;
     for (var index = 0u; index < count; index = index + 1u) {
         let layer = layers[first + index];
-        let centred = rotate(input.local - layer.rect.xy, layer.extra.y);
+        let centred = rotate(local - layer.rect.xy, layer.extra.y);
         let start = shape_distance(u32(layer.kinds.x), centred, layer);
         // The morph is a straight interpolation of the two distance fields.
         // Where the fields disagree about which side of the edge a point is on,
@@ -266,8 +341,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         //
         // A layer that is not morphing — the common case, and every layer of a
         // composition that only moves — evaluates one shape rather than two.
-        // Both branches cost the same when the morph is real; skipping is worth
-        // half the fragment work for everything else.
         var value = start;
         if layer.kinds.z > 0.0 && u32(layer.kinds.y) != u32(layer.kinds.x) {
             value = mix(
@@ -277,35 +350,123 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             );
         }
         if index == 0u {
-            distance = value;
-            fill = layer.color;
+            out.distance = value;
+            out.fill = layer.color;
         } else {
             let weight = combine_color_weight(
-                distance,
+                out.distance,
                 value,
                 u32(layer.kinds.w),
                 layer.extra.z,
             );
-            fill = mix(fill, layer.color, weight);
-            distance = combine(distance, value, u32(layer.kinds.w), layer.extra.z);
+            out.fill = mix(out.fill, layer.color, weight);
+            out.distance = combine(out.distance, value, u32(layer.kinds.w), layer.extra.z);
         }
     }
+    return out;
+}
+
+/// The fill a gradient paints at this point, or the flat colour if there is none.
+fn gradient_fill(material: Material, local: vec2<f32>, flat_color: vec4<f32>) -> vec4<f32> {
+    let kind = material.gradient_data.x;
+    if kind == 0.0 {
+        return flat_color;
+    }
+    // Normalised across the material's own rectangle, so a gradient reads the
+    // same whatever the node's size — which is what a configuration means by
+    // giving its endpoints as fractions.
+    let point = local - material.shape.xy;
+    let normalized = point / max(material.shape.zw, vec2<f32>(0.000001));
+    if kind == 1.0 {
+        let direction = material.gradient_points.zw - material.gradient_points.xy;
+        let amount = dot(normalized - material.gradient_points.xy, direction)
+            / max(dot(direction, direction), 0.000001);
+        return mix(
+            material.gradient_start_color,
+            material.gradient_end_color,
+            clamp(amount, 0.0, 1.0),
+        );
+    }
+    if kind == 2.0 {
+        let amount = distance(normalized, material.gradient_data.yz)
+            / max(material.gradient_data.w, 0.000001);
+        return mix(
+            material.gradient_start_color,
+            material.gradient_end_color,
+            clamp(amount, 0.0, 1.0),
+        );
+    }
+    let delta = normalized - material.gradient_data.yz;
+    let amount = fract((atan2(delta.y, delta.x) - material.effects.w) / 6.28318530718);
+    return mix(material.gradient_start_color, material.gradient_end_color, amount);
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let first = u32(input.style.z);
+    let count = u32(input.style.w);
+    let material = materials[input.material];
+    let surface = compose(input.local, input.fill, first, count);
+    let distance = surface.distance;
+
     // The derivative gives one pixel of coverage whatever the surface scale,
     // and `softness` widens it deliberately on top of that.
     let edge = max(fwidth(distance), 0.0001) * 0.5;
     let softness = max(input.style.y, edge);
-    let coverage = smoothstep(softness, -softness, distance);
-    var color = fill;
-    color.a = color.a * coverage;
-    let stroke = input.style.x;
-    if stroke > 0.0 && input.outline.a > 0.0 {
-        // Centred on the crossing, so growing the width does not move the edge.
-        let outline_coverage = smoothstep(softness, -softness, abs(distance) - stroke * 0.5);
-        let outline_alpha = input.outline.a * outline_coverage;
-        color = vec4<f32>(
-            mix(color.rgb, input.outline.rgb, outline_alpha),
-            color.a + outline_alpha * (1.0 - color.a),
-        );
+    // An unantialiased border is a hard step: the same crossing, with no ramp.
+    let antialiased = material.border.y > 0.5;
+    let ramp = select(0.0001, softness, antialiased);
+
+    // One outline, placed by its alignment. Inside is what a rectangle border
+    // has always meant; centred is what a field stroke has always meant. They
+    // were two mechanisms in two shaders for the same band of pixels.
+    let width = max(input.style.x, 0.0);
+    let alignment = material.border.x;
+    let outset = select(select(0.0, width, alignment >= 1.5), width * 0.5, alignment == 1.0);
+    let inset = width - outset;
+
+    let coverage = smoothstep(ramp, -ramp, distance - outset);
+    let filled = smoothstep(ramp, -ramp, distance + inset);
+
+    var fill_color = gradient_fill(material, input.local, surface.fill);
+    let fill_alpha = fill_color.a * filled;
+    let outline_alpha = input.outline.a * max(coverage - filled, 0.0);
+    let shape = vec4<f32>(
+        fill_color.rgb * fill_alpha + input.outline.rgb * outline_alpha,
+        fill_alpha + outline_alpha,
+    );
+
+    var result = shape;
+    if material.shadow_color.a > 0.0 {
+        // A shadow is this same composition, moved and dilated. Dilating a
+        // signed distance field is subtraction — no need to grow every layer's
+        // rectangle and hope the corners follow, which is what the rounded-box
+        // shadow used to do.
+        let spread = material.effects.z;
+        let shadow_softness = max(material.effects.y, edge);
+        let inner = material.shadow.z > 0.5;
+        let offset_point = input.local - material.shadow.xy;
+        let shadow_distance =
+            compose(offset_point, input.fill, first, count).distance - spread;
+        if inner {
+            // Inside the surface, darkened where the offset shape is *not*.
+            let amount = material.shadow_color.a
+                * coverage
+                * smoothstep(-shadow_softness, shadow_softness, shadow_distance);
+            result = vec4<f32>(
+                mix(result.rgb, material.shadow_color.rgb * result.a, amount),
+                result.a,
+            );
+        } else {
+            let alpha = material.shadow_color.a
+                * smoothstep(shadow_softness, -shadow_softness, shadow_distance);
+            let layer = vec4<f32>(material.shadow_color.rgb * alpha, alpha);
+            result = shape + layer * (1.0 - shape.a);
+        }
     }
-    return vec4<f32>(color.rgb * color.a, color.a);
+
+    return vec4<f32>(
+        mix(result.rgb, material.color_overlay.rgb * result.a, material.color_overlay.a),
+        result.a,
+    );
 }

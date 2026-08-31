@@ -7,7 +7,6 @@ use crate::commands::*;
 use crate::damage::*;
 use crate::effects::*;
 use crate::field::*;
-use crate::sdf::*;
 
 #[test]
 fn scene_srgb_colors_are_linearized_for_gpu_output() {

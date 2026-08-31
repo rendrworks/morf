@@ -1,7 +1,15 @@
-//! Composable rectangular, rounded, and elliptical surface regions.
+//! Composable surface regions, over the shape vocabulary in [`shapes`].
+//!
+//! Every family the renderer can draw can be composed into an input region
+//! here, by the same analytic distance function, so a star-shaped node is
+//! clickable as a star rather than as the rectangle that contains it.
 
 use std::error::Error;
 use std::fmt;
+
+pub mod shapes;
+
+pub use shapes::{Operation, Shape, ShapeParams, combine, distance};
 
 const MAX_PIXELS: usize = 16_777_216;
 const MAX_RECTS: usize = 65_536;
@@ -15,43 +23,35 @@ pub struct Rect {
     pub height: i32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Shape {
-    Rectangle {
-        top_left: u32,
-        top_right: u32,
-        bottom_right: u32,
-        bottom_left: u32,
-    },
-    Ellipse,
-}
-
-impl Default for Shape {
-    fn default() -> Self {
-        Self::Rectangle {
-            top_left: 0,
-            top_right: 0,
-            bottom_right: 0,
-            bottom_left: 0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Operation {
-    #[default]
-    Combine,
-    Subtract,
-    Intersect,
-    Xor,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// One shape placed on a surface, and how it joins what came before it.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Region {
     pub rect: Rect,
     pub shape: Shape,
+    /// The family's own parameters — corner radii, star points, ring
+    /// thickness. Flat rather than inside the `Shape` variants so that this is
+    /// the same layout the renderer packs into a layer uniform.
+    pub params: ShapeParams,
     pub operation: Operation,
     pub children: Vec<Region>,
+}
+
+impl Default for Region {
+    /// A plain rectangle covering its own bounds.
+    ///
+    /// Not `Shape::default()`, which is a circle: a region that names no shape
+    /// means the whole rectangle it was given, and always has. The shape
+    /// enum's own default belongs to the renderer, where a bare field is a
+    /// circle.
+    fn default() -> Self {
+        Self {
+            rect: Rect::default(),
+            shape: Shape::Box,
+            params: ShapeParams::default(),
+            operation: Operation::default(),
+            children: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,14 +225,25 @@ fn compose(
     if depth >= MAX_DEPTH {
         return Err(RegionError::TooDeep);
     }
+    // A mask has no partial coverage, so a smooth seam has no room to exist
+    // here: the shapes are the same, and every pixel of the seam has to be in
+    // or out either way.
+    let operation = region.operation.hard();
     if !reaches(region, window) {
-        if region.operation == Operation::Intersect {
+        if operation == Operation::Intersect {
             mask.fill(false);
         }
         return Ok(());
     }
     if region.children.is_empty() {
-        stamp(window, region.rect, region.shape, region.operation, mask);
+        stamp(
+            window,
+            region.rect,
+            region.shape,
+            &region.params,
+            operation,
+            mask,
+        );
         return Ok(());
     }
     let mut own = vec![false; mask.len()];
@@ -240,18 +251,26 @@ fn compose(
         window,
         region.rect,
         region.shape,
-        Operation::Combine,
+        &region.params,
+        Operation::Union,
         &mut own,
     );
     for child in &region.children {
         compose(window, child, &mut own, depth + 1)?;
     }
-    apply(mask, &own, region.operation);
+    apply(mask, &own, operation);
     Ok(())
 }
 
 /// Writes one shape onto a mask under `operation`, in the window's frame.
-fn stamp(window: Rect, rect: Rect, shape: Shape, operation: Operation, mask: &mut [bool]) {
+fn stamp(
+    window: Rect,
+    rect: Rect,
+    shape: Shape,
+    params: &ShapeParams,
+    operation: Operation,
+    mask: &mut [bool],
+) {
     let stride = window.width as usize;
     let area = clip(rect, window);
     if operation == Operation::Intersect {
@@ -262,7 +281,7 @@ fn stamp(window: Rect, rect: Rect, shape: Shape, operation: Operation, mask: &mu
                         && y >= area.y
                         && x < area.x + area.width
                         && y < area.y + area.height
-                }) && contains(rect, shape, x, y);
+                }) && contains(rect, shape, params, x, y);
                 if !inside {
                     mask[(y - window.y) as usize * stride + (x - window.x) as usize] = false;
                 }
@@ -273,20 +292,12 @@ fn stamp(window: Rect, rect: Rect, shape: Shape, operation: Operation, mask: &mu
     let Some(area) = area else {
         return;
     };
-    let square = matches!(
-        shape,
-        Shape::Rectangle {
-            top_left: 0,
-            top_right: 0,
-            bottom_right: 0,
-            bottom_left: 0,
-        }
-    );
+    let square = shape.fills_box(params);
     // A plain rectangle covers whole rows, and most regions are plain
     // rectangles. Writing a row at a time skips the per-pixel corner and
     // ellipse arithmetic entirely.
     if square && operation != Operation::Xor {
-        let value = operation == Operation::Combine;
+        let value = operation == Operation::Union;
         for y in area.y..area.y + area.height {
             let row = (y - window.y) as usize * stride;
             let start = row + (area.x - window.x) as usize;
@@ -296,74 +307,50 @@ fn stamp(window: Rect, rect: Rect, shape: Shape, operation: Operation, mask: &mu
     }
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            if !contains(rect, shape, x, y) {
+            if !contains(rect, shape, params, x, y) {
                 continue;
             }
             let index = (y - window.y) as usize * stride + (x - window.x) as usize;
             mask[index] = match operation {
-                Operation::Combine => true,
+                Operation::Union => true,
                 Operation::Subtract => false,
                 Operation::Xor => !mask[index],
                 Operation::Intersect => unreachable!("handled above"),
+                smooth => unreachable!("{} was hardened by compose", smooth.name()),
             };
         }
     }
 }
 
-fn contains(rect: Rect, shape: Shape, x: i32, y: i32) -> bool {
-    let local_x = f64::from(x - rect.x) + 0.5;
-    let local_y = f64::from(y - rect.y) + 0.5;
-    let width = f64::from(rect.width.max(0));
-    let height = f64::from(rect.height.max(0));
-    match shape {
-        Shape::Ellipse => {
-            let radius_x = width / 2.0;
-            let radius_y = height / 2.0;
-            radius_x > 0.0
-                && radius_y > 0.0
-                && ((local_x - radius_x) / radius_x).powi(2)
-                    + ((local_y - radius_y) / radius_y).powi(2)
-                    <= 1.0
-        }
-        Shape::Rectangle {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } => {
-            corner_contains(local_x, local_y, width, height, top_left, 0)
-                && corner_contains(local_x, local_y, width, height, top_right, 1)
-                && corner_contains(local_x, local_y, width, height, bottom_right, 2)
-                && corner_contains(local_x, local_y, width, height, bottom_left, 3)
-        }
+/// Whether the pixel at `(x, y)` is covered by the shape in `rect`.
+///
+/// The pixel is sampled at its own centre, and coverage is the sign of the
+/// same distance function the shader evaluates — so a click lands exactly
+/// where the shape was drawn, for every family, rather than only for the two
+/// the region rasteriser used to know.
+fn contains(rect: Rect, shape: Shape, params: &ShapeParams, x: i32, y: i32) -> bool {
+    let half = [
+        f64::from(rect.width.max(0)) as f32 / 2.0,
+        f64::from(rect.height.max(0)) as f32 / 2.0,
+    ];
+    if half[0] <= 0.0 || half[1] <= 0.0 {
+        return false;
     }
-}
-
-fn corner_contains(x: f64, y: f64, width: f64, height: f64, radius: u32, corner: u8) -> bool {
-    let radius = f64::from(radius).min(width / 2.0).min(height / 2.0);
-    if radius == 0.0 {
-        return true;
-    }
-    let (center_x, center_y, relevant) = match corner {
-        0 => (radius, radius, x < radius && y < radius),
-        1 => (width - radius, radius, x > width - radius && y < radius),
-        2 => (
-            width - radius,
-            height - radius,
-            x > width - radius && y > height - radius,
-        ),
-        _ => (radius, height - radius, x < radius && y > height - radius),
-    };
-    !relevant || (x - center_x).powi(2) + (y - center_y).powi(2) <= radius.powi(2)
+    let point = [
+        (x - rect.x) as f32 + 0.5 - half[0],
+        (y - rect.y) as f32 + 0.5 - half[1],
+    ];
+    distance(shape, params, half, point) <= 0.0
 }
 
 fn apply(target: &mut [bool], source: &[bool], operation: Operation) {
     for (target, source) in target.iter_mut().zip(source) {
         *target = match operation {
-            Operation::Combine => *target || *source,
+            Operation::Union => *target || *source,
             Operation::Subtract => *target && !*source,
             Operation::Intersect => *target && *source,
             Operation::Xor => *target != *source,
+            smooth => unreachable!("{} was hardened by compose", smooth.name()),
         };
     }
 }

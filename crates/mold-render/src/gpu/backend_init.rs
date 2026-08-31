@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 use super::{
-    backend_types::*, field_pass::*, glyphs::*, pipelines::*, quad_pipeline::*, shaders::*,
+    backend_types::*, clear_pipeline::*, field_pass::*, glyphs::*, pipelines::*, shaders::*,
     targets::*,
 };
 
@@ -86,10 +86,6 @@ impl WgpuBackend {
                 resource: viewport_buffer.as_entire_binding(),
             }],
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("mold SDF shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source(include_str!("../sdf.wgsl")).into()),
-        });
         let clear_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mold damage clear shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -97,20 +93,17 @@ impl WgpuBackend {
             ),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("mold SDF pipeline layout"),
+            label: Some("mold clear pipeline layout"),
             bind_group_layouts: &[Some(&viewport_layout)],
             immediate_size: 0,
         });
-        let pipeline = create_pipeline(&device, &pipeline_layout, &shader, true);
-        let clear_pipeline = create_pipeline(&device, &pipeline_layout, &clear_shader, false);
+        let clear_pipeline = create_clear_pipeline(&device, &pipeline_layout, &clear_shader);
         let (glyph_pipeline, glyph_layout, glyph_sampler) = create_glyph_pipeline(&device);
         let glyph_mask_atlas =
             GlyphAtlas::new(&device, &glyph_layout, &glyph_sampler, RasterContent::Mask);
         let glyph_color_atlas =
             GlyphAtlas::new(&device, &glyph_layout, &glyph_sampler, RasterContent::Color);
         let (blur_pipeline, blur_layout, blur_sampler) = create_blur_pipeline(&device);
-        let instance_capacity = 1;
-        let instance_buffer = create_instance_buffer(&device, instance_capacity);
         let glyph_capacity = 1;
         let glyph_buffer = create_glyph_buffer(&device, glyph_capacity);
         let texture_capacity = 1;
@@ -128,11 +121,14 @@ impl WgpuBackend {
         );
         let field_layer_capacity = 1;
         let field_layer_buffer = create_field_layer_buffer(&device, field_layer_capacity);
+        let field_material_capacity = 1;
+        let field_material_buffer = create_field_material_buffer(&device, field_material_capacity);
         let field_bind_group = create_field_bind_group(
             &device,
             &field_layout,
             &viewport_buffer,
             &field_layer_buffer,
+            &field_material_buffer,
         );
         let (texture, view) = create_target(&device, width, height);
         let surface = surface
@@ -142,12 +138,9 @@ impl WgpuBackend {
         Ok(Self {
             device,
             queue,
-            pipeline,
             clear_pipeline,
             viewport_buffer,
             viewport_bind_group,
-            instance_buffer,
-            instance_capacity,
             glyph_pipeline,
             glyph_layout,
             glyph_sampler,
@@ -166,6 +159,8 @@ impl WgpuBackend {
             field_capacity,
             field_layer_buffer,
             field_layer_capacity,
+            field_material_buffer,
+            field_material_capacity,
             field_bind_group,
             images: ImageCache::default(),
             image_textures: HashMap::new(),
@@ -218,16 +213,9 @@ impl WgpuBackend {
         &self.texture
     }
 
-    pub(crate) fn ensure_instances(&mut self, required: usize) {
-        if required <= self.instance_capacity {
-            return;
-        }
-        self.instance_capacity = required.next_power_of_two();
-        self.instance_buffer = create_instance_buffer(&self.device, self.instance_capacity);
-    }
-
-    /// Grows the field instance and layer buffers, rebinding when either moves.
-    pub(crate) fn ensure_fields(&mut self, instances: usize, layers: usize) {
+    /// Grows the field instance, layer and material buffers, rebinding when
+    /// either of the two storage buffers moves.
+    pub(crate) fn ensure_fields(&mut self, instances: usize, layers: usize, materials: usize) {
         if instances > self.field_capacity {
             self.field_capacity = instances.next_power_of_two();
             self.field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
@@ -236,17 +224,28 @@ impl WgpuBackend {
                 "mold field instances",
             );
         }
+        let mut rebind = false;
         if layers > self.field_layer_capacity {
             self.field_layer_capacity = layers.next_power_of_two();
             self.field_layer_buffer =
                 create_field_layer_buffer(&self.device, self.field_layer_capacity);
-            // The bind group holds the old buffer, so it has to be rebuilt
-            // whenever the storage grows or the shader reads freed memory.
+            rebind = true;
+        }
+        if materials > self.field_material_capacity {
+            self.field_material_capacity = materials.next_power_of_two();
+            self.field_material_buffer =
+                create_field_material_buffer(&self.device, self.field_material_capacity);
+            rebind = true;
+        }
+        if rebind {
+            // The bind group holds the old buffers, so it has to be rebuilt
+            // whenever either storage grows or the shader reads freed memory.
             self.field_bind_group = create_field_bind_group(
                 &self.device,
                 &self.field_layout,
                 &self.viewport_buffer,
                 &self.field_layer_buffer,
+                &self.field_material_buffer,
             );
         }
     }

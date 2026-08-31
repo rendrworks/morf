@@ -4,7 +4,7 @@ use mold_scene::Color;
 use crate::*;
 
 use super::field_tests::{field_command, field_layer, render_readback};
-use crate::{SdfOperation, SdfShapeKind};
+use crate::{Operation, Shape};
 
 #[test]
 #[ignore = "requires a GPU adapter"]
@@ -15,11 +15,11 @@ pub(crate) fn a_fused_surface_carries_each_layer_s_own_colour_across_the_seam() 
     // legible instead of flattening to a single fill.
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
-    let mut left = field_layer(4.0, 20.0, 26.0, SdfShapeKind::Circle);
+    let mut left = field_layer(4.0, 20.0, 26.0, Shape::Circle);
     left.color = Color::rgba8(255, 0, 0, 255);
-    let mut right = field_layer(34.0, 20.0, 26.0, SdfShapeKind::Circle);
+    let mut right = field_layer(34.0, 20.0, 26.0, Shape::Circle);
     right.color = Color::rgba8(0, 0, 255, 255);
-    right.operation = SdfOperation::SmoothUnion;
+    right.operation = Operation::SmoothUnion;
     right.blend = 22.0;
     let pixels = render_readback(
         &DrawList {
@@ -57,7 +57,7 @@ pub(crate) fn a_box_keeps_a_radius_per_corner() {
     // come out rounded all round once it joined a composition.
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
-    let mut layer = field_layer(8.0, 8.0, 48.0, SdfShapeKind::Box);
+    let mut layer = field_layer(8.0, 8.0, 48.0, Shape::Box);
     // Top-left, top-right, bottom-right, bottom-left.
     layer.radii = [22.0, 0.0, 22.0, 0.0];
     let pixels = render_readback(
@@ -90,10 +90,10 @@ pub(crate) fn a_smooth_seam_may_bulge_outside_the_node_without_being_clipped() {
     // A node in the middle of the target, with a box filling it exactly, so
     // anything the seam adds necessarily lands outside the node.
     let field = |blend: f32| {
-        let mut filled = field_layer(18.0, 18.0, 28.0, SdfShapeKind::Box);
+        let mut filled = field_layer(18.0, 18.0, 28.0, Shape::Box);
         filled.radii = [4.0; 4];
-        let mut joined = field_layer(30.0, 18.0, 28.0, SdfShapeKind::Circle);
-        joined.operation = SdfOperation::SmoothUnion;
+        let mut joined = field_layer(30.0, 18.0, 28.0, Shape::Circle);
+        joined.operation = Operation::SmoothUnion;
         joined.blend = blend;
         DrawCommand::Field {
             node,
@@ -108,6 +108,15 @@ pub(crate) fn a_smooth_seam_may_bulge_outside_the_node_without_being_clipped() {
             fill_color: Color::rgba8(255, 255, 255, 255),
             stroke_color: Color::rgba8(0, 0, 0, 0),
             stroke_width: 0.0,
+            stroke_alignment: BorderAlignment::Centred,
+            gradient: Gradient::None,
+            color_overlay: Color::rgba8(0, 0, 0, 0),
+            shadow_color: Color::rgba8(0, 0, 0, 0),
+            shadow_blur: 0.0,
+            shadow_spread: 0.0,
+            shadow_offset_x: 0.0,
+            shadow_offset_y: 0.0,
+            shadow_inner: false,
             softness: 0.0,
             layers: vec![filled, joined],
         }
@@ -144,11 +153,11 @@ pub(crate) fn alpha_cross_fades_across_a_seam_like_any_other_channel() {
     // is no edge where one sits on top of the other.
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
-    let mut solid = field_layer(4.0, 20.0, 26.0, SdfShapeKind::Circle);
+    let mut solid = field_layer(4.0, 20.0, 26.0, Shape::Circle);
     solid.color = Color::rgba8(255, 255, 255, 255);
-    let mut faint = field_layer(34.0, 20.0, 26.0, SdfShapeKind::Circle);
+    let mut faint = field_layer(34.0, 20.0, 26.0, Shape::Circle);
     faint.color = Color::rgba8(255, 255, 255, 40);
-    faint.operation = SdfOperation::SmoothUnion;
+    faint.operation = Operation::SmoothUnion;
     faint.blend = 22.0;
     let pixels = render_readback(
         &DrawList {

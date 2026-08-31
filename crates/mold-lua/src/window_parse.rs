@@ -1,6 +1,8 @@
 use luna::{Context, Table, Value as LuaValue};
 
-use mold_region::{Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape};
+use mold_region::{
+    Operation as RegionOperation, Rect as RegionRect, Region, Shape as RegionShape, ShapeParams,
+};
 use mold_scene::NodeHandle;
 
 use crate::{state::*, surface_types::*, table_menu::*};
@@ -264,45 +266,52 @@ pub(crate) fn parse_region<'gc>(
     if width < 0 || height < 0 {
         return Err("region width and height cannot be negative".into());
     }
-    let radius = u32::try_from(integer("radius", 0)?)
-        .map_err(|_| "region radius cannot be negative".to_owned())?;
-    let corner = |field: &str| {
-        u32::try_from(integer(field, radius as i32)?)
-            .map_err(|_| format!("region {field} cannot be negative"))
+    let number = |field: &str, default: f32| match table.get_value(ctx, field) {
+        LuaValue::Nil => Ok(default),
+        LuaValue::Integer(value) => Ok(value as f32),
+        LuaValue::Number(value) => Ok(value as f32),
+        _ => Err(format!("region {field} must be a number")),
     };
+    // Radii are fractional now, because the renderer's are: a corner and a
+    // clickable corner are the same number, and rounding one of them to a whole
+    // pixel is what made them two.
+    let radius = number("radius", 0.0)?;
+    let corner = |field: &str| {
+        let value = number(field, radius)?;
+        (value >= 0.0)
+            .then_some(value)
+            .ok_or_else(|| format!("region {field} cannot be negative"))
+    };
+    // The same vocabulary the renderer draws with, so a star-shaped node can be
+    // given a star-shaped clickable area instead of the rectangle around it.
     let shape = match table.get_value(ctx, "shape") {
-        LuaValue::Nil => RegionShape::Rectangle {
-            top_left: corner("top_left_radius")?,
-            top_right: corner("top_right_radius")?,
-            bottom_right: corner("bottom_right_radius")?,
-            bottom_left: corner("bottom_left_radius")?,
-        },
-        LuaValue::String(value) if value.display_lossy().to_string() == "rect" => {
-            RegionShape::Rectangle {
-                top_left: corner("top_left_radius")?,
-                top_right: corner("top_right_radius")?,
-                bottom_right: corner("bottom_right_radius")?,
-                bottom_left: corner("bottom_left_radius")?,
-            }
-        }
-        LuaValue::String(value) if value.display_lossy().to_string() == "ellipse" => {
-            RegionShape::Ellipse
-        }
-        _ => return Err("region shape must be rect or ellipse".into()),
+        LuaValue::Nil => RegionShape::Box,
+        LuaValue::String(value) => RegionShape::parse(&value.display_lossy().to_string())
+            .ok_or_else(|| format!("region shape {} is not a shape", value.display_lossy()))?,
+        _ => return Err("region shape must be a string".into()),
+    };
+    let defaults = ShapeParams::default();
+    let params = ShapeParams {
+        radii: [
+            corner("top_left_radius")?,
+            corner("top_right_radius")?,
+            corner("bottom_right_radius")?,
+            corner("bottom_left_radius")?,
+        ],
+        points: number("points", defaults.points)?,
+        inner_radius: number("inner_radius", defaults.inner_radius)?,
+        thickness: number("thickness", defaults.thickness)?,
+        angle: number("angle", defaults.angle)?,
     };
     let operation = match table.get_value(ctx, "intersection") {
-        LuaValue::Nil => RegionOperation::Combine,
-        LuaValue::String(value) => match value.display_lossy().to_string().as_str() {
-            "combine" => RegionOperation::Combine,
-            "subtract" => RegionOperation::Subtract,
-            "intersect" => RegionOperation::Intersect,
-            "xor" => RegionOperation::Xor,
-            _ => {
-                return Err(
-                    "region intersection must be combine, subtract, intersect, or xor".into(),
-                );
-            }
-        },
+        LuaValue::Nil => RegionOperation::Union,
+        LuaValue::String(value) => RegionOperation::parse(&value.display_lossy().to_string())
+            .ok_or_else(|| {
+                format!(
+                    "region intersection {} is not an operation",
+                    value.display_lossy()
+                )
+            })?,
         _ => return Err("region intersection must be a string".into()),
     };
     let mut children = Vec::new();
@@ -340,6 +349,7 @@ pub(crate) fn parse_region<'gc>(
             height,
         },
         shape,
+        params,
         operation,
         children,
     })
@@ -351,33 +361,20 @@ pub(crate) fn region_to_lua<'gc>(ctx: Context<'gc>, region: &Region) -> Table<'g
     table.set_field(ctx, "y", i64::from(region.rect.y));
     table.set_field(ctx, "width", i64::from(region.rect.width));
     table.set_field(ctx, "height", i64::from(region.rect.height));
-    table.set_field(
-        ctx,
-        "intersection",
-        match region.operation {
-            RegionOperation::Combine => "combine",
-            RegionOperation::Subtract => "subtract",
-            RegionOperation::Intersect => "intersect",
-            RegionOperation::Xor => "xor",
-        },
-    );
-    match region.shape {
-        RegionShape::Ellipse => {
-            table.set_field(ctx, "shape", "ellipse");
-        }
-        RegionShape::Rectangle {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } => {
-            table.set_field(ctx, "shape", "rect");
-            table.set_field(ctx, "top_left_radius", i64::from(top_left));
-            table.set_field(ctx, "top_right_radius", i64::from(top_right));
-            table.set_field(ctx, "bottom_right_radius", i64::from(bottom_right));
-            table.set_field(ctx, "bottom_left_radius", i64::from(bottom_left));
-        }
-    }
+    table.set_field(ctx, "intersection", region.operation.name());
+    table.set_field(ctx, "shape", region.shape.name());
+    // Every family's parameters, read back whatever the shape is: a config that
+    // round-trips a region gets the same region, and which of these a given
+    // family reads is the distance function's business, not this table's.
+    let [top_left, top_right, bottom_right, bottom_left] = region.params.radii;
+    table.set_field(ctx, "top_left_radius", f64::from(top_left));
+    table.set_field(ctx, "top_right_radius", f64::from(top_right));
+    table.set_field(ctx, "bottom_right_radius", f64::from(bottom_right));
+    table.set_field(ctx, "bottom_left_radius", f64::from(bottom_left));
+    table.set_field(ctx, "points", f64::from(region.params.points));
+    table.set_field(ctx, "inner_radius", f64::from(region.params.inner_radius));
+    table.set_field(ctx, "thickness", f64::from(region.params.thickness));
+    table.set_field(ctx, "angle", f64::from(region.params.angle));
     let children = Table::new(&ctx);
     for (index, child) in region.children.iter().enumerate() {
         children

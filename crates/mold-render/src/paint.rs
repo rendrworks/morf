@@ -210,7 +210,18 @@ pub(crate) fn append_node(
                         color_overlay,
                     ),
                     stroke_width: scene.number(node, "stroke_width")?.max(0.0),
+                    stroke_alignment: stroke_alignment(
+                        scene.string_value(node, "stroke_alignment")?,
+                    )?,
                     softness: scene.number(node, "softness")?.max(0.0),
+                    gradient: scene_gradient(scene, node)?,
+                    color_overlay,
+                    shadow_color: scene.color_value(node, "shadow_color")?,
+                    shadow_blur: scene.number(node, "shadow_blur")?.max(0.0),
+                    shadow_spread: scene.number(node, "shadow_spread")?,
+                    shadow_offset_x: scene.number(node, "shadow_offset_x")?,
+                    shadow_offset_y: scene.number(node, "shadow_offset_y")?,
+                    shadow_inner: scene.bool_value(node, "shadow_inner")?,
                     layers,
                 });
             }

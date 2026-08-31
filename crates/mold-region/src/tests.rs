@@ -94,20 +94,28 @@ mod equivalence {
                         && y >= region.rect.y
                         && x < region.rect.x.saturating_add(region.rect.width)
                         && y < region.rect.y.saturating_add(region.rect.height)
-                        && contains(region.rect, region.shape, x, y);
+                        && contains(region.rect, region.shape, &region.params, x, y);
                     if inside {
                         mask[y as usize * width as usize + x as usize] = true;
                     }
                 }
             }
             for child in &region.children {
-                apply(&mut mask, &draw(width, height, child), child.operation);
+                apply(
+                    &mut mask,
+                    &draw(width, height, child),
+                    child.operation.hard(),
+                );
             }
             mask
         }
         let mut mask = vec![false; width as usize * height as usize];
         for region in regions {
-            apply(&mut mask, &draw(width, height, region), region.operation);
+            apply(
+                &mut mask,
+                &draw(width, height, region),
+                region.operation.hard(),
+            );
         }
         // The rectangles the mask covers, as a pixel set rather than a cover,
         // so the two need only agree on which pixels are in.
@@ -147,9 +155,26 @@ mod equivalence {
         out
     }
 
+    /// Every family the vocabulary has, so the composition is exercised over
+    /// all of them and not just the two the region rasteriser used to know.
+    fn family(seed: u64) -> Shape {
+        match seed % 10 {
+            0 => Shape::Circle,
+            1 => Shape::Box,
+            2 => Shape::Capsule,
+            3 => Shape::Triangle,
+            4 => Shape::Hexagon,
+            5 => Shape::Star,
+            6 => Shape::Ring,
+            7 => Shape::Pie,
+            8 => Shape::Cross,
+            _ => Shape::Ellipse,
+        }
+    }
+
     fn operation(seed: u64) -> Operation {
         match seed % 4 {
-            0 => Operation::Combine,
+            0 => Operation::Union,
             1 => Operation::Subtract,
             2 => Operation::Intersect,
             _ => Operation::Xor,
@@ -179,15 +204,15 @@ mod equivalence {
                                 width: (next() % 12) as i32,
                                 height: (next() % 12) as i32,
                             },
-                            shape: if next() % 3 == 0 {
-                                Shape::Ellipse
-                            } else {
-                                Shape::Rectangle {
-                                    top_left: (next() % 4) as u32,
-                                    top_right: (next() % 4) as u32,
-                                    bottom_right: (next() % 4) as u32,
-                                    bottom_left: (next() % 4) as u32,
-                                }
+                            shape: family(next()),
+                            params: ShapeParams {
+                                radii: [
+                                    (next() % 4) as f32,
+                                    (next() % 4) as f32,
+                                    (next() % 4) as f32,
+                                    (next() % 4) as f32,
+                                ],
+                                ..ShapeParams::default()
                             },
                             operation: operation(next()),
                             children: Vec::new(),
@@ -200,11 +225,8 @@ mod equivalence {
                             width: (next() % 16) as i32,
                             height: (next() % 16) as i32,
                         },
-                        shape: if next() % 4 == 0 {
-                            Shape::Ellipse
-                        } else {
-                            Shape::default()
-                        },
+                        shape: family(next()),
+                        params: ShapeParams::default(),
                         operation: operation(next()),
                         children,
                     }
@@ -225,8 +247,8 @@ mod equivalence {
         // edges of a large surface. Both survive, and nothing between them is
         // in the result.
         let regions = vec![
-            rectangle(0, 1000, 20, 100, Operation::Combine),
-            rectangle(3800, 1000, 20, 100, Operation::Combine),
+            rectangle(0, 1000, 20, 100, Operation::Union),
+            rectangle(3800, 1000, 20, 100, Operation::Union),
         ];
         let built = build(3840, 2160, &regions).expect("composition stays within limits");
         assert_eq!(built.len(), 2);
@@ -239,8 +261,8 @@ mod equivalence {
         // `Intersect` is the one operation that acts outside its own bounds:
         // intersecting with a shape somewhere else leaves nothing anywhere.
         let regions = vec![
-            rectangle(0, 0, 20, 20, Operation::Combine),
-            rectangle(3800, 2100, 20, 20, Operation::Combine),
+            rectangle(0, 0, 20, 20, Operation::Union),
+            rectangle(3800, 2100, 20, 20, Operation::Union),
             rectangle(1000, 1000, 10, 10, Operation::Intersect),
         ];
         assert!(
@@ -257,13 +279,13 @@ mod equivalence {
         // children are what the windows must follow — the root spans them all.
         let root = Region {
             rect: Rect::default(),
-            shape: Shape::default(),
-            operation: Operation::Combine,
+            operation: Operation::Union,
             children: vec![
-                rectangle(0, 0, 17, 2160, Operation::Combine),
-                rectangle(1258, 1912, 940, 140, Operation::Combine),
-                rectangle(2717, 976, 739, 513, Operation::Combine),
+                rectangle(0, 0, 17, 2160, Operation::Union),
+                rectangle(1258, 1912, 940, 140, Operation::Union),
+                rectangle(2717, 976, 739, 513, Operation::Union),
             ],
+            ..Region::default()
         };
         let built = build(3456, 2160, std::slice::from_ref(&root))
             .expect("composition stays within limits");
@@ -287,9 +309,98 @@ mod equivalence {
                 width,
                 height,
             },
-            shape: Shape::default(),
             operation,
-            children: Vec::new(),
+            ..Region::default()
         }
+    }
+}
+
+#[test]
+fn a_star_region_is_not_the_rectangle_around_it() {
+    // The point of the merge. A star used to be drawable and not clickable:
+    // the only clickable area a star-shaped node could be given was its own
+    // bounding rectangle, because the rasteriser's whole vocabulary was a
+    // rectangle and an ellipse.
+    let star = Region {
+        rect: Rect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
+        },
+        shape: Shape::Star,
+        ..Region::default()
+    };
+    let built = build(32, 32, std::slice::from_ref(&star)).expect("a star composes");
+    let covered: i32 = built.iter().map(|rect| rect.width * rect.height).sum();
+    assert!(covered > 0, "the star covers something");
+    assert!(
+        covered < 32 * 32 / 2,
+        "a five-pointed star covers well under half its box, not {covered} of 1024",
+    );
+    // The waist between two points is open, and the centre is solid.
+    let filled = |x: i32, y: i32| {
+        built
+            .iter()
+            .any(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
+    };
+    assert!(filled(16, 16), "the middle of the star is inside it");
+    assert!(!filled(0, 0), "and its bounding corner is not");
+}
+
+#[test]
+fn a_smooth_operation_composes_as_its_hard_one_on_a_mask() {
+    // A mask has no partial coverage, so there is no seam to round. The shapes
+    // still have to be the same ones — a smooth union that quietly composed
+    // nothing would pass a test that only checked it did not crash.
+    let square = |operation| Region {
+        rect: Rect {
+            x: 4,
+            y: 4,
+            width: 12,
+            height: 12,
+        },
+        shape: Shape::Box,
+        operation,
+        ..Region::default()
+    };
+    let smooth = build(
+        24,
+        24,
+        &[square(Operation::Union), square(Operation::SmoothUnion)],
+    );
+    let hard = build(
+        24,
+        24,
+        &[square(Operation::Union), square(Operation::Union)],
+    );
+    assert_eq!(smooth.unwrap(), hard.unwrap());
+}
+
+#[test]
+fn every_family_the_renderer_draws_can_be_composed_into_a_region() {
+    // The vocabulary is one list or it is two. If a family is ever added to
+    // the shader without a distance function here, it becomes drawable and not
+    // clickable again, and this is what says so.
+    for name in [
+        "circle", "rect", "capsule", "triangle", "hexagon", "star", "ring", "pie", "cross",
+        "ellipse",
+    ] {
+        let shape = Shape::parse(name).unwrap_or_else(|| panic!("{name} is a shape"));
+        let region = Region {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 24,
+                height: 24,
+            },
+            shape,
+            ..Region::default()
+        };
+        let built = build(24, 24, std::slice::from_ref(&region))
+            .unwrap_or_else(|error| panic!("{name} composes: {error}"));
+        let covered: i32 = built.iter().map(|rect| rect.width * rect.height).sum();
+        assert!(covered > 0, "{name} covers something");
+        assert!(covered <= 24 * 24, "{name} stays inside its own rectangle");
     }
 }

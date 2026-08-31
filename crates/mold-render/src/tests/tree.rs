@@ -107,12 +107,10 @@ fn color_overlay_propagates_through_a_subtree() {
         panic!("child did not emit a quad");
     };
     assert_eq!(*color_overlay, overlay);
-    assert_eq!(
-        SdfQuadInstance::from_command(&list.commands[0], 120)
-            .unwrap()
-            .color_overlay,
-        color_array(overlay)
-    );
+    let mut layers = Vec::new();
+    let mut materials = Vec::new();
+    SdfFieldInstance::from_command(&list.commands[0], 120, &mut layers, &mut materials).unwrap();
+    assert_eq!(materials[0].color_overlay, color_array(overlay));
 }
 
 #[test]

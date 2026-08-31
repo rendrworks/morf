@@ -55,7 +55,9 @@ impl SurfaceReserve {
 }
 
 /// Native layer-surface settings assigned by Lua before startup.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Not `Eq`: a region carries its shape's parameters, and those are floats.
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayerSurfaceConfig {
     pub namespace: String,
     pub width: u32,
@@ -128,7 +130,7 @@ pub struct FloatingSurfaceConfig {
     pub fullscreen: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WindowSurfaceKind {
     Popup(PopupSurfaceConfig),
     Floating(FloatingSurfaceConfig),
@@ -136,7 +138,7 @@ pub enum WindowSurfaceKind {
     Layer(LayerSurfaceConfig),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WindowSurfaceConfig {
     pub id: u64,
     pub root: NodeHandle,

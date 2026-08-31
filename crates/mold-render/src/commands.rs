@@ -126,10 +126,26 @@ pub enum DrawCommand {
         fill_color: Color,
         /// Outline colour after node opacity.
         stroke_color: Color,
-        /// Logical outline width, centred on the zero crossing.
+        /// Logical outline width.
         stroke_width: f64,
+        /// Where that outline sits against the edge.
+        stroke_alignment: BorderAlignment,
         /// Extra edge softness in logical pixels.
         softness: f64,
+        /// Gradient across the node's own rectangle, if any.
+        gradient: Gradient,
+        /// Multiplied over the finished surface.
+        color_overlay: Color,
+        /// Drop shadow colour; fully transparent means no shadow.
+        shadow_color: Color,
+        /// Shadow edge softness in logical pixels.
+        shadow_blur: f64,
+        /// How far the shadow is dilated past the shape.
+        shadow_spread: f64,
+        shadow_offset_x: f64,
+        shadow_offset_y: f64,
+        /// Whether the shadow falls inside the shape rather than behind it.
+        shadow_inner: bool,
         /// Layers in composition order; the first establishes the field.
         layers: Vec<SdfLayer>,
     },

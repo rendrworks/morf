@@ -5,16 +5,18 @@ mod backend_init;
 mod backend_render;
 mod backend_types;
 mod batches;
+mod clear_pipeline;
 mod field_pass;
 mod glyph_batch;
 mod glyphs;
 mod pipelines;
-mod quad_pipeline;
 mod shaders;
 mod targets;
 mod textures;
 
 pub use backend_types::*;
+#[cfg(test)]
+mod field_agreement_tests;
 #[cfg(test)]
 mod field_color_tests;
 #[cfg(test)]

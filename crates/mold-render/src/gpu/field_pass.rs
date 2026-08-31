@@ -1,5 +1,5 @@
 use super::FORMAT;
-use crate::{SdfFieldInstance, SdfFieldLayer};
+use crate::{SdfFieldInstance, SdfFieldLayer, SdfFieldMaterial};
 use std::mem;
 
 use super::shaders::*;
@@ -27,6 +27,18 @@ pub(crate) fn create_field_pipeline(
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // One material per instance: the gradient, border, shadow and
+            // overlay that used to belong to the quad pipeline alone.
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -100,11 +112,21 @@ pub(crate) fn create_field_layer_buffer(device: &wgpu::Device, capacity: usize) 
     })
 }
 
+pub(crate) fn create_field_material_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("mold field materials"),
+        size: (capacity.max(1) * mem::size_of::<SdfFieldMaterial>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 pub(crate) fn create_field_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     viewport: &wgpu::Buffer,
     layers: &wgpu::Buffer,
+    materials: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("mold field bind group"),
@@ -117,6 +139,10 @@ pub(crate) fn create_field_bind_group(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: layers.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: materials.as_entire_binding(),
             },
         ],
     })

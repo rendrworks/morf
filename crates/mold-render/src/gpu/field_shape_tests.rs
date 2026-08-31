@@ -5,7 +5,7 @@ use crate::*;
 // an oversized corner radius, a rotated bar.
 
 use crate::gpu::field_tests::{alpha_at, field_command, field_layer, read_frame, render_readback};
-use crate::{SdfOperation, SdfShapeKind};
+use crate::{Operation, Shape};
 
 #[test]
 #[ignore = "requires a GPU adapter"]
@@ -18,15 +18,10 @@ pub(crate) fn a_frame_is_one_box_with_another_taken_out_of_the_middle() {
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
     let thickness = 6.0;
-    let mut whole = field_layer(0.0, 0.0, 64.0, SdfShapeKind::Box);
-    whole.operation = SdfOperation::Union;
-    let mut hole = field_layer(
-        thickness,
-        thickness,
-        64.0 - thickness * 2.0,
-        SdfShapeKind::Box,
-    );
-    hole.operation = SdfOperation::Subtract;
+    let mut whole = field_layer(0.0, 0.0, 64.0, Shape::Box);
+    whole.operation = Operation::Union;
+    let mut hole = field_layer(thickness, thickness, 64.0 - thickness * 2.0, Shape::Box);
+    hole.operation = Operation::Subtract;
     hole.radii = [10.0; 4];
     let list = DrawList {
         commands: vec![field_command(node, vec![whole, hole])],
@@ -58,7 +53,7 @@ pub(crate) fn an_oversized_corner_radius_makes_a_capsule_through_every_path() {
     // numbers painted a capsule in two places and a plain square in the third.
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
-    let mut layer = field_layer(8.0, 20.0, 48.0, SdfShapeKind::Box);
+    let mut layer = field_layer(8.0, 20.0, 48.0, Shape::Box);
     layer.bounds.height = 24.0;
     layer.radii = [9_999.0; 4];
     let list = DrawList {
@@ -104,7 +99,7 @@ pub(crate) fn a_rotated_layer_is_not_sliced_flat_by_its_own_quad() {
     // contain it.
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
-    let mut layer = field_layer(14.0, 26.0, 36.0, SdfShapeKind::Box);
+    let mut layer = field_layer(14.0, 26.0, 36.0, Shape::Box);
     layer.bounds.height = 12.0;
     layer.rotation = 45.0;
     let list = DrawList {
@@ -135,8 +130,8 @@ pub(crate) fn a_reused_layer_target_does_not_carry_the_last_frame_into_this_one(
     let mut scene = mold_scene::Scene::new();
     let node = scene.create(mold_scene::Element::Sdf);
     let framed = |x: f64| {
-        let mut layer = field_layer(x, 20.0, 24.0, SdfShapeKind::Circle);
-        layer.operation = SdfOperation::Union;
+        let mut layer = field_layer(x, 20.0, 24.0, Shape::Circle);
+        layer.operation = Operation::Union;
         DrawList {
             commands: vec![field_command(node, vec![layer])],
             layers: Vec::new(),

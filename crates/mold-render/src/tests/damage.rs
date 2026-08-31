@@ -190,11 +190,19 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
             height: 36.0,
         }
     );
-    let instance = SdfQuadInstance::from_command(&command, 120).unwrap();
-    assert_eq!(instance.bounds, [15.0, 16.0, 56.0, 36.0]);
-    assert_eq!(instance.shape, [5.0, 4.0, 40.0, 20.0]);
-    assert_eq!(instance.effects[..3], [2.0, 6.0, 2.0]);
-    assert_eq!(instance.border[..2], [1.0, 0.0]);
+    // The rectangle is a one-layer field now, so its own rect is the instance
+    // bounds and the effect expansion is the `area` the shader walks — the
+    // quad no longer carries the expanded rectangle with the shape offset
+    // inside it.
+    let mut layers = Vec::new();
+    let mut materials = Vec::new();
+    let instance =
+        SdfFieldInstance::from_command(&command, 120, &mut layers, &mut materials).unwrap();
+    assert_eq!(instance.bounds, [20.0, 20.0, 40.0, 20.0]);
+    assert_eq!(instance.area, [-5.0, -4.0, 51.0, 32.0]);
+    assert_eq!(instance.style[..2], [1.0, 2.0]);
+    assert_eq!(materials[0].effects[1..3], [6.0, 2.0]);
+    assert_eq!(layers[0].rect, [20.0, 10.0, 20.0, 10.0]);
 
     let mut inner = command;
     if let DrawCommand::Quad {
@@ -213,8 +221,10 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
             height: 20.0,
         }
     );
-    let instance = SdfQuadInstance::from_command(&inner, 120).unwrap();
-    assert_eq!(instance.shadow[2], 1.0);
+    let mut layers = Vec::new();
+    let mut materials = Vec::new();
+    SdfFieldInstance::from_command(&inner, 120, &mut layers, &mut materials).unwrap();
+    assert_eq!(materials[0].shadow[2], 1.0);
 }
 
 #[test]

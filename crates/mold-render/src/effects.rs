@@ -1,7 +1,7 @@
 use mold_layout::{Geometry, TextAlignment, TextElide};
 use mold_scene::{Color, NodeHandle, Scene, Value};
 
-use crate::{commands::*, damage::*, sdf::*};
+use crate::{commands::*, damage::*, field::*, sdf::*};
 
 #[derive(Clone, Copy)]
 pub(crate) struct LayerConfig {
@@ -139,6 +139,20 @@ pub(crate) fn intersect_geometry(left: Geometry, right: Geometry) -> Geometry {
         width: (right_edge - x).max(0.0),
         height: (bottom_edge - y).max(0.0),
     }
+}
+
+/// Parses where a stroke sits against the edge.
+pub(crate) fn stroke_alignment(name: &str) -> Result<BorderAlignment, RenderError> {
+    Ok(match name {
+        "inside" | "inner" => BorderAlignment::Inside,
+        "centre" | "center" | "centred" | "centered" => BorderAlignment::Centred,
+        "outside" | "outer" => BorderAlignment::Outside,
+        other => {
+            return Err(RenderError::Scene(format!(
+                "stroke_alignment {other} is not inside, centre or outside"
+            )));
+        }
+    })
 }
 
 pub(crate) fn scene_gradient(scene: &Scene, node: NodeHandle) -> Result<Gradient, RenderError> {
