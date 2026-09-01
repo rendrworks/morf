@@ -34,7 +34,7 @@ relational functions.
 |---|---|---|---|
 | types | `f32` `i32` `u32` `vec2` `vec3` `vec4` `bool` `mat2` `mat3` `mat4` `array<T, N>` | `f16`, structs | §4.5 |
 | operators | everything Lua has except `..` | — | done |
-| statements | `local` assign `if` `while` `for` `repeat` `break` `return` | `continue`, `discard` | §4.3 |
+| statements | `local` assign `if` `while` `for` `repeat` `break` `continue` `discard` `return` | `switch`, deliberately | §4.3 |
 | functions | entry point, helpers (monomorphised) | — | done |
 | math builtins | **55 of 79** | 24 | §3 |
 | derivatives | `dpdx` `dpdy` `fwidth` | the coarse/fine variants, deliberately | §4.4 |
@@ -157,14 +157,23 @@ what the port suite used because it had no choice. `integer_hash_noise_ports`
 is the port that could not be written before this, and
 `integer_hash_noise_paints` is the same thing through a real adapter.
 
-### 4.3 Statements
+### 4.3 Statements — **W6 done**
 
-- [ ] `continue` — Lua has no `continue`; it would have to be spelled, and the
-      obvious spelling is `goto continue`, which the language rejects. Worth
-      deciding on a keyword rather than inventing syntax silently.
-- [ ] `discard` — meaningful in Surface mode, where the shader owns coverage
-- [ ] `switch` — Lua has none; an `if` chain covers it and the emitter could
-      recognise the shape. Low value.
+- [x] `continue`, spelled `goto continue` with a `::continue::` label. The
+      question was whether to invent a keyword; the answer was that Lua authors
+      already have an idiom for this and it is real Lua syntax, so nothing had
+      to be invented. Any other `goto` is still refused, and says which one is
+      available.
+- [x] `discard`, spelled as a call — Lua has no keyword to spare, and it is the
+      one call whose entire point is its effect rather than its value.
+- [ ] `switch` — Lua has none; an `if` chain covers it. Still low value.
+
+**The bug `continue` could have had.** A `continue` jumps past the tail of the
+loop body, so a numeric `for` whose counter advanced there would never advance
+at all — bounded by the guard, but silently wrong. WGSL's `continuing` block
+exists for exactly this, and the counter lives in it now. A `while` loop gets
+none, because its condition is already re-checked at the top and an empty
+`continuing` would be noise in every generated shader.
 
 ### 4.4 Derivatives and relational — **W4 done**
 
@@ -326,4 +335,9 @@ actually caught anything:
 - [x] **W3 — integers and bitwise.** 53 of 79, and a real hash is writable.
 - [x] **W4 — derivatives and relational.** A shader can antialias its own edge.
 - [x] **W5 — arrays and indexing.** Structs deferred; nothing wants one yet.
-- [ ] W6 — `continue` and `discard`
+- [x] **W6 — `continue` and `discard`.** No new syntax was invented.
+
+**W1–W6 are done.** What remains is §3.4's packing family, which has nothing
+here to pack for; structs, which nothing yet wants; and §5, which is host design
+rather than compiler work and should be planned separately once something is
+asking for it.

@@ -161,10 +161,22 @@ impl Emitter {
                 self.out.push_str(";\n");
             }
             Stmt::If { arms, otherwise } => self.branch(arms, otherwise.as_ref()),
-            Stmt::Loop { guard, body } => self.loop_(*guard, body),
+            Stmt::Loop {
+                guard,
+                body,
+                continuing,
+            } => self.loop_(*guard, body, continuing),
             Stmt::Break => {
                 self.indent();
                 self.out.push_str("break;\n");
+            }
+            Stmt::Continue => {
+                self.indent();
+                self.out.push_str("continue;\n");
+            }
+            Stmt::Discard => {
+                self.indent();
+                self.out.push_str("discard;\n");
             }
             Stmt::Return(value) => {
                 self.indent();
@@ -201,7 +213,7 @@ impl Emitter {
     ///
     /// The counter is not an optimisation and not advice: it is the only reason
     /// a configuration cannot take the compositor down with `while true do end`.
-    fn loop_(&mut self, guard: u32, body: &Block) {
+    fn loop_(&mut self, guard: u32, body: &Block, continuing: &Block) {
         let counter = format!("morf_guard{}", self.loops);
         self.loops += 1;
         self.indent();
@@ -214,6 +226,17 @@ impl Emitter {
         self.indent();
         let _ = writeln!(self.out, "{counter} = {counter} + 1u;");
         self.block(body);
+        // Whatever has to happen on the way round, including after a
+        // `continue`. A counting loop's increment lives here or it is skipped.
+        if !continuing.0.is_empty() {
+            self.indent();
+            self.out.push_str("continuing {\n");
+            self.depth += 1;
+            self.block(continuing);
+            self.depth -= 1;
+            self.indent();
+            self.out.push_str("}\n");
+        }
         self.depth -= 1;
         self.indent();
         self.out.push_str("}\n");

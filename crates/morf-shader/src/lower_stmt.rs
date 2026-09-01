@@ -60,19 +60,46 @@ impl Lowerer<'_> {
                     out.push(Stmt::Break);
                 }
             }
+            // `discard()` is spelled as a call because Lua has no keyword to
+            // spare, and it is the one call whose whole point is its effect.
+            Statement::FunctionCall(call)
+                if matches!(
+                    &call.head.primary,
+                    luna::compiler::parser::PrimaryExpression::Name(name)
+                        if text(name) == "discard"
+                ) =>
+            {
+                out.push(Stmt::Discard);
+            }
             Statement::FunctionCall(_) => self.error_note(
                 line,
                 "a call on its own does nothing in a shader",
-                "every value a shader computes has to reach the return",
+                "every value a shader computes has to reach the return,                  unless it is `discard()`",
             ),
             Statement::Function(_) | Statement::LocalFunction(_) => self.error_note(
                 line,
                 "a shader cannot define functions inside itself",
                 "write the arithmetic where it is used",
             ),
-            Statement::Label(_) | Statement::Goto(_) => {
-                self.error(line, "`goto` is not available in shaders")
+            // Lua has no `continue`, and the idiom every Lua author already
+            // writes is `goto continue` with a `::continue::` label at the end
+            // of the loop body. That is real Lua syntax rather than something
+            // invented here, so it is what a shader spells `continue` with.
+            Statement::Goto(target) if text(&target.name) == "continue" => {
+                if self.loop_depth == 0 {
+                    self.error(line, "`goto continue` outside a loop");
+                } else {
+                    out.push(Stmt::Continue);
+                }
             }
+            // The label the idiom pairs with. WGSL's `continue` needs no
+            // landing site, so it is accepted and does nothing.
+            Statement::Label(label) if text(&label.name) == "continue" => {}
+            Statement::Label(_) | Statement::Goto(_) => self.error_note(
+                line,
+                "`goto` is not available in shaders",
+                "`goto continue` is, as the way Lua spells a loop continuation",
+            ),
         }
     }
 
@@ -224,7 +251,7 @@ impl Lowerer<'_> {
         }];
         body.extend(self.block(&loop_.block).0);
         self.loop_depth -= 1;
-        self.push_loop(out, MAX_ITERATIONS, Block(body), line);
+        self.push_loop(out, MAX_ITERATIONS, Block(body), Block::default(), line);
     }
 
     fn repeat_loop(
@@ -245,7 +272,7 @@ impl Lowerer<'_> {
             arms: vec![(condition, Block(vec![Stmt::Break]))],
             otherwise: None,
         });
-        self.push_loop(out, MAX_ITERATIONS, Block(body), line);
+        self.push_loop(out, MAX_ITERATIONS, Block(body), Block::default(), line);
     }
 
     fn for_loop(&mut self, loop_: &ForStatement<Name>, line: u32, out: &mut Vec<Stmt>) {
@@ -311,7 +338,10 @@ impl Lowerer<'_> {
             otherwise: None,
         }];
         statements.extend(inner.0);
-        statements.push(Stmt::Assign {
+        // The counter advances in the `continuing` block, not at the end of the
+        // body: a `continue` jumps past the body's tail, and an increment left
+        // there would turn a counting loop into one that never advances.
+        let advance = Block(vec![Stmt::Assign {
             target: counter.clone(),
             value: Expr::Binary {
                 op: BinOp::Add,
@@ -322,23 +352,34 @@ impl Lowerer<'_> {
                 }),
                 right: Box::new(increment),
             },
-        });
+        }]);
         out.push(Stmt::Let {
             name: counter,
             ty: Type::F32,
             value: initial,
             mutable: true,
         });
-        self.push_loop(out, MAX_ITERATIONS, Block(statements), line);
+        self.push_loop(out, MAX_ITERATIONS, Block(statements), advance, line);
     }
 
     /// Emits a loop, rejecting a nest deeper than the guard can bound.
-    fn push_loop(&mut self, out: &mut Vec<Stmt>, guard: u32, body: Block, line: u32) {
+    fn push_loop(
+        &mut self,
+        out: &mut Vec<Stmt>,
+        guard: u32,
+        body: Block,
+        continuing: Block,
+        line: u32,
+    ) {
         if self.loop_depth >= MAX_LOOP_NESTING {
             self.error(line, format!("loops nested deeper than {MAX_LOOP_NESTING}"));
             return;
         }
-        out.push(Stmt::Loop { guard, body });
+        out.push(Stmt::Loop {
+            guard,
+            body,
+            continuing,
+        });
     }
 
     fn numeric(&mut self, expression: &Expression<Name>, line: u32, what: &str) -> Expr {

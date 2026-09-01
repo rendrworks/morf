@@ -37,6 +37,7 @@
 
 use luna::compiler::{interning::BasicInterner, parser::parse_chunk};
 
+mod builtin_names;
 mod builtins;
 mod diagnostics;
 mod emit;

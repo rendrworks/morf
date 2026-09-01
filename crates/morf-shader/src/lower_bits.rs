@@ -299,7 +299,11 @@ fn walk_returns(block: &Block, found: &mut Option<Type>) {
                 }
             }
             Stmt::Loop { body, .. } => walk_returns(body, found),
-            Stmt::Let { .. } | Stmt::Assign { .. } | Stmt::Break => {}
+            Stmt::Let { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Discard => {}
         }
     }
 }

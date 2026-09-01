@@ -80,7 +80,7 @@ fn uniformity(block: &Block, inside: bool, offender: &mut Option<&'static str>) 
                     *offender = Some(name);
                 }
             }
-            Stmt::Break => {}
+            Stmt::Break | Stmt::Continue | Stmt::Discard => {}
         }
     }
 }
@@ -134,7 +134,11 @@ fn returned_types(block: &Block, diagnostics: &mut Vec<Diagnostic>) {
                 }
             }
             Stmt::Loop { body, .. } => returned_types(body, diagnostics),
-            Stmt::Let { .. } | Stmt::Assign { .. } | Stmt::Break => {}
+            Stmt::Let { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Discard => {}
         }
     }
 }
