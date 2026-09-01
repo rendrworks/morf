@@ -14,6 +14,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Instant;
 use wayland_client::Connection;
 use wayland_client::globals::registry_queue_init;
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
 use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
@@ -67,6 +68,12 @@ impl LayerClient {
             .bind::<ZwlrOutputPowerManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
         let shm = Shm::bind(&globals, &qh).ok();
+        // Blur behind a surface. Absent on compositors that do not implement it,
+        // in which case a configuration asking for one simply does not get it —
+        // it is a finish, not a function.
+        let background_effect = globals
+            .bind::<ExtBackgroundEffectManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
         let screencopy_manager = globals
             .bind::<ZwlrScreencopyManagerV1, _, _>(&qh, 1..=3, ())
             .ok();
@@ -124,6 +131,10 @@ impl LayerClient {
             output_power_mode: None,
             shm,
             screencopy_manager,
+            background_effect,
+            // Assumed absent until the manager says otherwise: the capability
+            // arrives as an event, so anything sent before it would be a guess.
+            blur_capable: false,
             screencopies: Vec::new(),
             screens: Vec::new(),
             session_locks,

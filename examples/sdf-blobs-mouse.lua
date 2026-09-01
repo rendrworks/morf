@@ -1,0 +1,405 @@
+-- The lava swarm, with one blob on the end of your cursor.
+--
+--     oslo make run --example examples/sdf-blobs-mouse.lua
+--
+-- Everything from `sdf-blobs-chroma.lua` — one merged field, a per-blob
+-- chromatic split, and no split where blobs have fused — plus a seventh blob
+-- that follows the pointer. It is an ordinary layer of the same field, so it
+-- does what the others do: push it into one and they neck and fuse, pull away
+-- and the surface pinches and breaks. Nothing in the scene knows how many blobs
+-- there are; the count is a consequence of the field.
+--
+-- It eases toward the cursor rather than snapping to it, which is most of the
+-- difference between a blob and a mouse pointer with a circle drawn on it.
+--
+-- The pointer is asked of the *compositor*, not of Wayland, and that is the
+-- whole trick. A Wayland surface is told about the pointer only where it claims
+-- an input region, and claiming one means swallowing the clicks — there is no
+-- "watch the pointer but let the clicks past" at the protocol level. The
+-- compositor knows where the cursor is regardless, and will say so if asked.
+--
+-- So this claims nothing. Every click still lands on whatever is underneath,
+-- and the blob follows your cursor across the top of it. The cost is one
+-- connect-send-read on Hyprland's control socket per tick, measured at about
+-- fifteen microseconds — against a frame budget of sixteen thousand.
+--
+-- Off Hyprland there is no socket and the blob simply rests in the middle. The
+-- swarm carries on regardless; nothing else depends on it.
+
+local morf = require("morf")
+local ui = require("morf.ui")
+local core = require("morf.core")
+local io = require("morf.io")
+
+local screen = morf.screens[1]
+local W = (screen and screen.width) or 1920
+local H = (screen and screen.height) or 1080
+local SHORT = math.min(W, H)
+
+morf.surface.width = W
+morf.surface.height = H
+morf.surface.anchors = { top = true, left = true, right = true, bottom = true }
+morf.surface.layer = core.env("MORF_BLOB_LAYER") or "overlay"
+morf.surface.keyboard_focus = "none"
+morf.surface.exclusive_zone = -1
+
+local function s(fraction) return SHORT * fraction end
+
+-- Six numbers a blob: centre x, centre y, radius, how alone it is, and the
+-- direction its colour splits along. No colour here — the field keeps its own
+-- layer fills, and a shift only moves what it is given.
+local STRIDE = 6
+
+--------------------------------------------------------------------------------
+-- The lens.
+--------------------------------------------------------------------------------
+
+morf.shader("chromatic", {
+  kind = "effect",
+  -- Parameters arrive alphabetically whatever order they are declared in, so
+  -- the entry point lists them that way: amount, jolt, pulse.
+  params = {
+    -- How far apart the red and blue are, in pixels. Everything inside the
+    -- shader is in `uv`, where a plausible-looking number like 7 would mean
+    -- seven times the whole screen, so the conversion happens in one place and
+    -- this parameter means what a person reading it would think it means.
+    amount = 9.0,
+    -- Occasional horizontal tearing, in pixels: a torn signal, not a lens.
+    jolt = 6.0,
+    -- How much the separation breathes. 0 holds it still.
+    pulse = 0.35,
+  },
+  data = { blobs = 42 },
+  fragment = [[
+    -- Enough bits for a believable stutter. An f32 has twenty-four of mantissa
+    -- and these constants need thirty-two, so this is only writable at all
+    -- because the shader language has real integers.
+    function hash(seed)
+      local h = seed * u32(747796405) + u32(2891336453)
+      local word = ((h >> ((h >> u32(28)) + u32(4))) ~ h) * u32(277803737)
+      return f32((word >> u32(22)) ~ word & u32(65535)) / 65535.0
+    end
+
+    function fragment(uv, time, resolution, amount, jolt, pulse)
+      -- The surface is not square, so ownership has to be measured in one
+      -- consistent unit or every blob's reach comes out an ellipse.
+      local aspect = resolution.x / resolution.y
+      local here = vec2(uv.x * aspect, uv.y)
+
+      -- Which blob owns this pixel, and therefore which way its colour splits
+      -- and whether it splits at all. Accumulated as a weighted sum, so through
+      -- a neck the direction turns from one blob's to the other's instead of
+      -- jumping.
+      local weight = 0.0
+      local solo = 0.0
+      local dir = vec2(0.0, 0.0)
+      local index = i32(0)
+      while index < i32(7) do
+        local at = index * i32(6)
+        local centre = vec2(blobs[at] * aspect, blobs[at + 1])
+        local radius = max(blobs[at + 2], 0.0001)
+        local away = here - centre
+        -- Reach a little past the blob's own edge, so ownership is handed over
+        -- by the time the surface gets there — but only a little.
+        local reach = radius * 1.35
+        local near = clamp(1.0 - dot(away, away) / (reach * reach), 0.0, 1.0)
+        -- Cubed rather than squared: whichever blob a pixel is actually in
+        -- should win outright, and only genuinely shared ground should blend.
+        -- Plus a floor that never quite reaches zero, because the merged
+        -- surface bulges past every blob's reach in a deep neck and a pixel
+        -- there would otherwise have no owner and no direction at all.
+        local pull = 0.0015 / (dot(away, away) / (radius * radius) + 0.2)
+        local w = near * near * near + pull
+        weight = weight + w
+        solo = solo + blobs[at + 3] * w
+        dir = dir + vec2(blobs[at + 4], blobs[at + 5]) * w
+        index = index + i32(1)
+      end
+      local total = max(weight, 0.0001)
+      solo = solo / total
+      dir = dir / total
+      -- Back to a unit direction: the weights decided which way, not how far.
+      dir = dir / max(length(dir), 0.0001)
+
+      -- How far, in pixels, and then the same offset for every pixel of this
+      -- blob. Constant is the whole point — a shift that grew with distance
+      -- from some centre would scale the channels instead of displacing them,
+      -- and the shape would appear to change size rather than the colour to
+      -- come apart.
+      local breathe = 1.0 + sin(time * 0.9) * pulse
+      local pixels = amount * breathe * solo
+      local shift = vec2(dir.x * pixels / resolution.x, dir.y * pixels / resolution.y)
+
+      -- A few rows torn sideways for a moment. The band and the slide both come
+      -- from the clock, so this is one more thing the configuration never has
+      -- to drive.
+      local band = floor(uv.y * 24.0)
+      local tick = floor(time * 12.0)
+      local tear = hash(u32(band) * u32(374761393) + u32(tick) * u32(668265263))
+      -- Almost always zero: the point of a glitch is that it is rare. The
+      -- surviving seven percent is stretched back to a full zero-to-one so
+      -- `jolt` can be read as the pixels it actually moves.
+      local torn = min(max(tear - 0.93, 0.0) * 14.3, 1.0)
+      local slide = vec2(torn * jolt * solo / resolution.x, 0.0)
+
+      -- Red one way, blue the other, green where it was. Three samples of the
+      -- same picture at three places — nothing is scaled, nothing is added.
+      local r = texture(uv + shift + slide)
+      local g = texture(uv + slide)
+      local b = texture(uv - shift + slide)
+
+      -- Alpha from whichever sample found something, so the ghosts are visible
+      -- past the edge of the shape rather than clipped to it. That overhang on
+      -- either side is the effect.
+      return vec4(r.x, g.y, b.z, max(r.w, max(g.w, b.w)))
+    end
+  ]],
+})
+
+--------------------------------------------------------------------------------
+-- The lamp, merged exactly as before.
+--------------------------------------------------------------------------------
+
+local BLOBS = {
+  { radius = 0.150, orbit = 0.185, speed = 0.00040, phase = 0.0, wobble = 0.052, tilt = 0.4, color = "#f0b47a" },
+  { radius = 0.122, orbit = 0.225, speed = -0.00057, phase = 1.9, wobble = 0.066, tilt = 2.1, color = "#e8735a" },
+  { radius = 0.104, orbit = 0.152, speed = 0.00079, phase = 3.4, wobble = 0.038, tilt = 3.9, color = "#b4e1ea" },
+  { radius = 0.088, orbit = 0.248, speed = -0.00098, phase = 5.0, wobble = 0.074, tilt = 5.2, color = "#7fb7c9" },
+  { radius = 0.074, orbit = 0.118, speed = 0.00121, phase = 2.4, wobble = 0.044, tilt = 1.2, color = "#f5d98b" },
+  { radius = 0.062, orbit = 0.272, speed = -0.00142, phase = 0.7, wobble = 0.058, tilt = 4.6, color = "#c98fd1" },
+}
+
+-- The seventh. No orbit — where it goes is up to you.
+local MOUSE = { radius = 0.100, tilt = 2.7, color = "#ffd7a1" }
+local COUNT = #BLOBS + 1
+
+local elapsed = core.elapsed_timer()
+local blobs = {}
+local lens
+local places = {}
+local centres = {}
+
+-- Where the pointer last was, and where the blob has got to. They are separate
+-- because the blob is chasing rather than tracking: `EASE` is the fraction of
+-- the remaining gap it closes each tick, so it lags into motion and settles
+-- instead of stopping dead.
+-- Where this output starts in the compositor's global layout. Cursor positions
+-- come back in that global space, and on a single-output machine the two happen
+-- to coincide — which is exactly the kind of thing that works everywhere it is
+-- tested and breaks on somebody's second monitor.
+local ORIGIN_X = (screen and screen.x) or 0
+local ORIGIN_Y = (screen and screen.y) or 0
+
+local SIGNATURE = core.env("HYPRLAND_INSTANCE_SIGNATURE")
+
+--- Every place this build of Hyprland might have put its sockets.
+local function socket_paths()
+  local paths = {}
+  if not SIGNATURE or SIGNATURE == "" then return paths end
+  local runtime = core.env("XDG_RUNTIME_DIR")
+  if runtime and runtime ~= "" then
+    paths[#paths + 1] = runtime .. "/hypr/" .. SIGNATURE .. "/.socket.sock"
+  end
+  paths[#paths + 1] = "/tmp/hypr/" .. SIGNATURE .. "/.socket.sock"
+  return paths
+end
+
+--- The pointer, in this surface's coordinates, or nil if it cannot be had.
+---
+--- The control socket answers one request and closes, so this reconnects every
+--- time rather than holding one open. That is cheaper than it sounds: a hundred
+--- of these round trips take about a millisecond and a half, none of it a
+--- process.
+local function cursor()
+  for _, path in ipairs(socket_paths()) do
+    local ok, socket = pcall(io.socket, path)
+    if ok and socket then
+      socket:send("cursorpos")
+      socket:flush()
+      -- Two milliseconds is a hundred times the round trip, and returns nil
+      -- rather than stalling the frame if the compositor is busy.
+      local reply = socket:receive(64, 2)
+      socket:close()
+      if reply then
+        local comma = reply:find(",")
+        if comma then
+          local x = tonumber(reply:sub(1, comma - 1))
+          local y = tonumber(reply:sub(comma + 1))
+          if x and y then
+            return x - ORIGIN_X, y - ORIGIN_Y
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local mouse_node
+local aim_x, aim_y = W / 2, H / 2
+local at_x, at_y = W / 2, H / 2
+local EASE = 0.18
+
+-- The seam radius the field melts its layers with, and the distance over which
+-- a blob counts as losing its own rim. Fusion has no instant: the field starts
+-- bulging one surface towards another well before they meet, so the lens has to
+-- start going before they meet too.
+local BLEND = s(0.038)
+local NECK = BLEND * 2.5
+
+--- Moves every blob, works out how alone each one is, and tells the lens.
+local function advance()
+  local now = elapsed:elapsed_ms()
+
+  -- Where everything is, before anything can be said about what it is near.
+  for index, spec in ipairs(BLOBS) do
+    local node = blobs[index]
+    if node then
+      local size = s(spec.radius)
+      local angle = spec.phase + now * spec.speed
+      -- The orbit breathes, so the blobs do not circle at a fixed distance and
+      -- never touch.
+      local orbit = s(spec.orbit) + math.sin(now * 0.00037 + spec.phase) * s(spec.wobble)
+      local x = W / 2 + math.cos(angle) * orbit - size / 2
+      local y = H / 2 + math.sin(angle) * orbit * 0.68 - size / 2
+      node.x = x
+      node.y = y
+
+      local centre = centres[index] or {}
+      centre.x = x + size / 2
+      centre.y = y + size / 2
+      centre.r = size / 2
+      centres[index] = centre
+    end
+  end
+
+  -- The seventh does not orbit. It closes some of the distance to wherever the
+  -- pointer was last seen, which is what makes it feel like something being
+  -- dragged rather than something being teleported.
+  if mouse_node then
+    local size = s(MOUSE.radius)
+    local cx, cy = cursor()
+    if cx then
+      aim_x = cx
+      aim_y = cy
+    end
+    at_x = at_x + (aim_x - at_x) * EASE
+    at_y = at_y + (aim_y - at_y) * EASE
+    mouse_node.x = at_x - size / 2
+    mouse_node.y = at_y - size / 2
+
+    local centre = centres[COUNT] or {}
+    centre.x = at_x
+    centre.y = at_y
+    centre.r = size / 2
+    centres[COUNT] = centre
+  end
+
+  -- How alone each one is: the gap to its nearest neighbour's *surface* rather
+  -- than its centre, so a big blob and a small one are judged the same way.
+  -- Six blobs is thirty comparisons a tick, which is nothing — and the
+  -- alternative is the shader rediscovering it for every pixel on the screen,
+  -- sixty times a second.
+  for index = 1, COUNT do
+    local mine = centres[index]
+    if mine then
+      local nearest = math.huge
+      for other = 1, COUNT do
+        if other ~= index and centres[other] then
+          local theirs = centres[other]
+          local dx = mine.x - theirs.x
+          local dy = mine.y - theirs.y
+          local gap = math.sqrt(dx * dx + dy * dy) - (mine.r + theirs.r)
+          if gap < nearest then
+            nearest = gap
+          end
+        end
+      end
+
+      -- In the units the shader measures in: `uv` for the centres, and the
+      -- height for the radius, because that is the axis the aspect correction
+      -- leaves alone.
+      local base = (index - 1) * STRIDE
+      places[base + 1] = mine.x / W
+      places[base + 2] = mine.y / H
+      places[base + 3] = mine.r / H
+      places[base + 4] = math.max(0, math.min(1, nearest / NECK))
+      -- Which way this blob's colour comes apart. It turns slowly, so the
+      -- split is not a fixed artefact of the file but something the lamp does.
+      local tilt = (BLOBS[index] or MOUSE).tilt + now * 0.00009
+      places[base + 5] = math.cos(tilt)
+      places[base + 6] = math.sin(tilt)
+    end
+  end
+
+  if lens then
+    morf.shader_data(lens, "blobs", places)
+  end
+end
+
+-- One field. One draw. The layers melt into each other, and keep their colours.
+local field = { x = 0, y = 0, width = W, height = H }
+field.fill_color = "#f0b47a"
+field.stroke_color = "#8a4a17"
+field.stroke_width = math.max(2, SHORT * 0.0028)
+for index, spec in ipairs(BLOBS) do
+  local size = s(spec.radius)
+  blobs[index] = ui.SdfShape {
+    x = W / 2,
+    y = H / 2,
+    width = size,
+    height = size,
+    shape = "circle",
+    fill_color = spec.color,
+    -- The first layer establishes the field; the rest melt into it.
+    operation = index == 1 and "union" or "smooth_union",
+    -- About a third of the smallest blob: enough that two passing close draw a
+    -- neck between them, not so much that the swarm reads as one skin.
+    blend = BLEND,
+  }
+  field[#field + 1] = blobs[index]
+end
+
+-- The cursor's blob is the last layer, so it melts into everything before it.
+local mouse_size = s(MOUSE.radius)
+mouse_node = ui.SdfShape {
+  x = W / 2 - mouse_size / 2,
+  y = H / 2 - mouse_size / 2,
+  width = mouse_size,
+  height = mouse_size,
+  shape = "circle",
+  fill_color = MOUSE.color,
+  operation = "smooth_union",
+  blend = BLEND,
+}
+field[#field + 1] = mouse_node
+
+-- The lens wraps the field rather than lying over it: an effect shader samples
+-- the layer its own node became, and a layer holds that node's subtree.
+lens = ui.Item {
+  width = W,
+  height = H,
+  shader = "chromatic",
+  -- A transparent rectangle the size of the surface, so the layer's bounds are
+  -- the screen and not whatever the blobs happen to span this frame. Without
+  -- it `uv` would be measured against a box that moves, and the blob positions
+  -- the shader is handed would mean something different every frame.
+  ui.Rect { width = W, height = H, color = "#00000000" },
+  ui.Sdf(field),
+}
+
+-- Fill the block before the first frame, so nothing is drawn against zeroes.
+advance()
+
+ui.Item {
+  width = W,
+  height = H,
+  lens,
+
+  ui.Timer {
+    interval = 16,
+    ["repeat"] = true,
+    running = true,
+    on_triggered = advance,
+  },
+}

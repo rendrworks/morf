@@ -1,5 +1,6 @@
 //! Wayland layer surfaces, fractional scale, and compositor frame callbacks.
 
+mod client_backdrop;
 mod client_connection;
 mod client_floating;
 mod client_input;

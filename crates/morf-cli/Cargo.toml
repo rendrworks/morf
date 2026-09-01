@@ -15,6 +15,7 @@ jiff.workspace = true
 morf-layout.workspace = true
 morf-lua.workspace = true
 morf-io.workspace = true
+morf-region.workspace = true
 morf-render.workspace = true
 morf-scene.workspace = true
 morf-wayland.workspace = true

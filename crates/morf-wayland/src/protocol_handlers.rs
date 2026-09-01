@@ -9,6 +9,10 @@ use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::protocol::{wl_output, wl_region, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::{self, ExtBackgroundEffectManagerV1},
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+};
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::{self, ExtIdleNotificationV1},
     ext_idle_notifier_v1::ExtIdleNotifierV1,
@@ -406,3 +410,30 @@ wayland_client::delegate_noop!(LayerState: ignore ZwpInputMethodManagerV2);
 wayland_client::delegate_noop!(LayerState: ignore ZwpTextInputManagerV3);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
+// The per-surface object is inert: it is only ever a handle to call
+// `set_blur_region` on, and it sends nothing back.
+wayland_client::delegate_noop!(LayerState: ignore ExtBackgroundEffectSurfaceV1);
+
+impl Dispatch<ExtBackgroundEffectManagerV1, ()> for LayerState {
+    /// The manager's one event: what the compositor is currently willing to do.
+    ///
+    /// It arrives when the manager is bound and again whenever it changes, so
+    /// blur can be withdrawn while a session is running — and when it is, the
+    /// compositor stops applying it even to regions that were already set.
+    /// Tracking it means a configuration can be told the truth rather than
+    /// being left to wonder why its panel is sharp.
+    fn event(
+        state: &mut Self,
+        _manager: &ExtBackgroundEffectManagerV1,
+        event: ext_background_effect_manager_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        if let ext_background_effect_manager_v1::Event::Capabilities { flags } = event {
+            state.blur_capable = flags.into_result().is_ok_and(|capabilities| {
+                capabilities.contains(ext_background_effect_manager_v1::Capability::Blur)
+            });
+        }
+    }
+}

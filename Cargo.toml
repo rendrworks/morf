@@ -52,7 +52,25 @@ morf-text = { path = "crates/morf-text" }
 morf-wayland = { path = "crates/morf-wayland" }
 
 [profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
+# Speed, not size. This was `"s"`, which asks the optimiser to keep the binary
+# small and gives up real throughput to do it — the wrong trade for a client
+# that redraws several large outputs sixty times a second.
+opt-level = 3
+# Thin LTO and parallel codegen, not fat and one. Fat LTO optimises the whole
+# program — every dependency included — as a single unit on essentially one
+# thread, and it is the reason a release build here took minutes rather than
+# the seconds the rest of it takes. It buys low single-digit percent.
+#
+# Thin LTO still inlines across crate boundaries, which is the part that matters
+# here: the hot path runs layout into paint into the region rasteriser into
+# wgpu, and none of those are the same crate.
+lto = "thin"
+codegen-units = 16
 strip = true
+
+# What to ship. Everything above, plus the last few percent, for the one build
+# an hour of linking is worth: `cargo build --profile dist`.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

@@ -362,7 +362,15 @@ impl RenderBackend for WgpuBackend {
             }
         }
         let frame = if let Some(surface) = &mut self.surface {
-            let frame = acquire_frame(&self.device, surface)?;
+            // `None` means this frame is skipped: there is no image to draw
+            // into. Everything already encoded is still submitted below —
+            // offscreen layers, glyph atlases, the field pass — because that
+            // work is what the next frame composites, and throwing it away
+            // would make a skipped frame cost more than a drawn one.
+            let Some(frame) = acquire_frame(&self.device, surface)? else {
+                self.queue.submit(Some(encoder.finish()));
+                return Ok(());
+            };
             let frame_view = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());

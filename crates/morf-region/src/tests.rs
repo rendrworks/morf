@@ -404,3 +404,78 @@ fn every_family_the_renderer_draws_can_be_composed_into_a_region() {
         assert!(covered <= 24 * 24, "{name} stays inside its own rectangle");
     }
 }
+
+#[test]
+fn a_coarse_build_covers_what_the_fine_one_did() {
+    // The point of the coarse grid is speed, and the thing that would make it
+    // useless is coming out *smaller* than the shape — a blur region a pixel
+    // short of the edge painted over it shows a hard line. Rounding outward is
+    // what stops that, so it is asserted rather than assumed.
+    let circle = Region {
+        rect: Rect {
+            x: 30,
+            y: 30,
+            width: 100,
+            height: 100,
+        },
+        shape: Shape::Box,
+        params: ShapeParams {
+            radii: [50.0; 4],
+            ..ShapeParams::default()
+        },
+        ..Region::default()
+    };
+    let fine = build(256, 256, std::slice::from_ref(&circle)).unwrap();
+    let covered = |rects: &[Rect], x: i32, y: i32| {
+        rects.iter().any(|rect| {
+            x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+        })
+    };
+    // Every divisor a caller might reach for, including the shared default.
+    //
+    // The claim is not that nothing is dropped — a circle sampled on a coarser
+    // grid loses slivers along its tangent, which is inherent and was found by
+    // asserting the stronger thing and watching it fail. The claim is that the
+    // error is bounded by one cell: everything further inside than that is
+    // covered, so a caller painting its own edge over the boundary never sees
+    // a hole in the middle of the shape.
+    for divisor in [2, 4, COVERED_EDGE_GRID, 16] {
+        let coarse = build_scaled(256, 256, std::slice::from_ref(&circle), divisor).unwrap();
+        let step = divisor as i32;
+        for y in 0..256 {
+            for x in 0..256 {
+                let well_inside = (-step..=step)
+                    .all(|dy| (-step..=step).all(|dx| covered(&fine, x + dx, y + dy)));
+                if well_inside {
+                    assert!(
+                        covered(&coarse, x, y),
+                        "divisor {divisor} dropped ({x}, {y}), a cell inside the shape"
+                    );
+                }
+            }
+        }
+        assert!(
+            coarse.len() < fine.len(),
+            "divisor {divisor}: coarse {} vs fine {}",
+            coarse.len(),
+            fine.len()
+        );
+    }
+}
+
+#[test]
+fn a_divisor_of_one_is_the_ordinary_build() {
+    let square = Region {
+        rect: Rect {
+            x: 4,
+            y: 6,
+            width: 20,
+            height: 12,
+        },
+        ..Region::default()
+    };
+    assert_eq!(
+        build_scaled(64, 64, std::slice::from_ref(&square), 1).unwrap(),
+        build(64, 64, std::slice::from_ref(&square)).unwrap(),
+    );
+}

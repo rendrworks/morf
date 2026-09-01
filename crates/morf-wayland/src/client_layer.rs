@@ -111,6 +111,17 @@ impl LayerClient {
             .viewporter
             .as_ref()
             .map(|manager| manager.get_viewport(layer.wl_surface(), &qh, ()));
+        // One background-effect object for the life of the surface. Asking a
+        // second time is a protocol error, and the object is only a handle to
+        // call `set_blur_region` on — so it is made here, once, and the paint
+        // path only ever uses it. A surface that never asks for a blur has paid
+        // for one small object it does not use, which is cheaper than the
+        // interior mutability that creating it lazily would need.
+        let backdrop = self
+            .state
+            .background_effect
+            .as_ref()
+            .map(|manager| manager.get_background_effect(layer.wl_surface(), &qh, ()));
         // A surface with no input region set accepts the pointer over the whole
         // of itself. That is the wrong default for a shell: between this commit
         // and the first paint — which is where the real region is derived from
@@ -126,6 +137,7 @@ impl LayerClient {
             id,
             LayerRecord {
                 surface: layer,
+                backdrop,
                 fractional_scale,
                 viewport,
                 width: config.width.max(1),

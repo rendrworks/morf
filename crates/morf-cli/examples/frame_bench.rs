@@ -367,9 +367,90 @@ fn main() {
         })
         .collect();
 
+    // Nodes asking the compositor to blur behind them. Reported because the
+    // failure is silent from up here: the region is derived on the CPU and
+    // handed to the compositor, so a configuration that never sets the property
+    // and one whose compositor ignores it look exactly alike on screen.
+    let backdrop_shapes = computed.backdrop_geometry(&scene).unwrap_or_default();
+    let backdrops = backdrop_shapes.len();
+    // How many rectangles the region rasterises to, which is the only way to
+    // see the shape from here: a square is one, and a circle is one span per
+    // scanline. A blur region that came out as a box when a circle was asked
+    // for looks identical from every other angle.
+    let backdrop_rects = if backdrop_shapes.is_empty() {
+        0
+    } else {
+        let shapes: Vec<morf_region::Region> = backdrop_shapes
+            .iter()
+            .map(|(geometry, radii)| morf_region::Region {
+                rect: morf_region::Rect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii: *radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..morf_region::Region::default()
+            })
+            .collect();
+        morf_region::build_scaled(
+            width as u32,
+            height as u32,
+            &shapes,
+            morf_region::COVERED_EDGE_GRID,
+        )
+        .map(|rects| rects.len())
+        .unwrap_or(0)
+    };
+    // Rasterising a blur region is CPU work, done per surface per frame, and it
+    // scales with the surface — so on a full-screen overlay it is one of the
+    // largest single costs in the frame and none of the other numbers here
+    // would show it.
+    let backdrop_cost = if backdrop_shapes.is_empty() {
+        Duration::ZERO
+    } else {
+        let shapes: Vec<morf_region::Region> = backdrop_shapes
+            .iter()
+            .map(|(geometry, radii)| morf_region::Region {
+                rect: morf_region::Rect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii: *radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..morf_region::Region::default()
+            })
+            .collect();
+        best(5, 20, || {
+            std::hint::black_box(
+                morf_region::build_scaled(
+                    width as u32,
+                    height as u32,
+                    &shapes,
+                    morf_region::COVERED_EDGE_GRID,
+                )
+                .ok(),
+            );
+        })
+    };
+
     let frame = layout + draw + region;
     println!("{config}");
     println!("  scene nodes        {nodes}");
+    if backdrops > 0 {
+        println!(
+            "  backdrop regions   {backdrops}  ({backdrop_rects} rectangles, {backdrop_cost:?} to rasterise)"
+        );
+    }
     if material > 0 || !effects.is_empty() {
         println!("  shaded commands    {material}");
         for covered in &effects {

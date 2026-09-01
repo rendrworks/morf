@@ -1,5 +1,6 @@
 use morf_layout::{Layout, Size};
 use morf_lua::{LayerSurfaceConfig, Runtime};
+use morf_region::{Rect as RegionRect, Region};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
 use morf_wayland::{InputRect, LayerClient, PRIMARY_LAYER, physical_size};
@@ -48,6 +49,14 @@ pub(crate) struct CachedLayout {
     /// protocol traffic and the derivation that produced it, and changes
     /// nothing.
     pub(crate) input: Vec<InputRect>,
+    /// The backdrop-blur shapes last handed to the compositor.
+    ///
+    /// The *shapes*, not the rectangles they rasterise to, because rasterising
+    /// is the expensive half — six milliseconds for a full-screen region in
+    /// release — and comparing first means a swarm that has drifted less than
+    /// the grid does no work at all rather than doing all of it and discovering
+    /// the answer was the same.
+    pub(crate) backdrop: Vec<Region>,
 }
 
 impl CachedLayout {
@@ -139,6 +148,64 @@ pub(crate) fn paint_layer(
         }
         input
     };
+    let mut backdrop = Vec::new();
+    // Where the compositor should blur what is behind this surface. Nothing is
+    // read back: the blur happens on the far side of this call, underneath a
+    // surface that is about to be composited over it, and the only thing that
+    // makes it visible is the alpha this configuration painted with.
+    if client.supports_backdrop_blur() {
+        let shapes: Vec<Region> = layout
+            .backdrop_geometry(&scene)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|(geometry, radii)| Region {
+                // Whole pixels, not grid cells. Quantising the *position*
+                // here was worth nothing — a moving shape never compares equal
+                // to its cached self whatever the grid, and a still one
+                // compares equal without any — and it cost up to half a cell of
+                // registration against the shape drawn over it, in a direction
+                // that changed every frame.
+                rect: RegionRect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..Region::default()
+            })
+            .collect();
+        // What is *sent* is the previous frame's shapes, not this frame's.
+        //
+        // We do not own the commit. Mesa's Vulkan display queue attaches and
+        // commits the buffer on its own thread, at its own pace, and repeats a
+        // buffer when it has nothing newer — so a region set here lands on
+        // whichever commit happens next, which may carry a buffer older than
+        // the geometry it was derived from. There is no pairing to rely on.
+        //
+        // Which direction that error falls in is not symmetric. A blur that
+        // trails the shape by a frame is what a blur does; a blur that arrives
+        // before the thing casting it is wrong in a way that reads instantly as
+        // the effect predicting the motion. So the region is deliberately one
+        // frame behind: it can only ever lag, and lag is the physical answer.
+        let previous = cache
+            .map(|cached| cached.backdrop.clone())
+            .unwrap_or_default();
+        if previous != shapes && !previous.is_empty() {
+            let rectangles =
+                morf_region::build_scaled(width, height, &previous, morf_region::COVERED_EDGE_GRID)
+                    .map_err(|error| error.to_string())?;
+            client
+                .set_layer_backdrop_region(layer, Some(&rectangles))
+                .map_err(|error| error.to_string())?;
+        }
+        backdrop = shapes;
+    }
+
     client.request_layer_frame(layer);
     let surface = client
         .layer_surface(layer)
@@ -170,6 +237,7 @@ pub(crate) fn paint_layer(
         size: (width, height),
         scale_120,
         input,
+        backdrop,
     })
 }
 
@@ -344,6 +412,7 @@ pub(crate) fn paint_auxiliary_surface(
         size,
         scale_120,
         input: Vec::new(),
+        backdrop: Vec::new(),
     });
     Ok(())
 }
