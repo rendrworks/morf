@@ -1,3 +1,4 @@
+use crate::api_shader::attach_shader;
 use crate::states::StateValue;
 use crate::states::*;
 use luna::{Context, Function, Table, Value as LuaValue};
@@ -57,8 +58,31 @@ pub(crate) fn configure_element<'gc>(
             .map_or(LuaValue::Nil, |(_, value)| *value);
         configure_states(state, ctx, node, *states, transitions)?;
     }
+    // A shader is resolved here rather than kept as a property: the name is
+    // looked up once, at configuration time, so painting never consults a
+    // registry and a name that does not resolve is reported where it was
+    // written.
+    if let Some((_, LuaValue::String(name))) = named.iter().find(|(key, _)| key == "shader") {
+        let overrides = named
+            .iter()
+            .find(|(key, _)| key == "shader_params")
+            .and_then(|(_, value)| match value {
+                LuaValue::Table(table) => Some(*table),
+                _ => None,
+            });
+        attach_shader(
+            state,
+            ctx,
+            node,
+            &name.display_lossy().to_string(),
+            overrides,
+        )?;
+    }
     for (property, value) in named {
-        if matches!(property.as_str(), "behavior" | "states" | "transitions") {
+        if matches!(
+            property.as_str(),
+            "behavior" | "states" | "transitions" | "shader" | "shader_params"
+        ) {
             continue;
         }
         if property == "state" {

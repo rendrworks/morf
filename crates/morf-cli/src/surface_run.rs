@@ -109,6 +109,9 @@ pub(crate) fn run_surface(
     ))
     .map_err(|error| error.to_string())?;
     let mut renderer = RenderEngine::new(backend);
+    register_shaders(&runtime, &mut renderer)?;
+    let animating_shaders = runtime.shaders_animate();
+    let started = Instant::now();
     let mut clock = clock_text();
     runtime
         .update_clock(&clock)
@@ -154,7 +157,10 @@ pub(crate) fn run_surface(
             .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
             .map_err(|error| error.to_string())?;
         let next_clock = clock_text();
-        let mut repaint = runtime.poll_services();
+        // A shader that reads the clock has to be redrawn every frame; one
+        // that does not costs nothing after the first. The compiler worked out
+        // which this configuration has, so nothing here has to be told.
+        let mut repaint = runtime.poll_services() || animating_shaders;
         let mut recreate_surface = false;
         while let Ok(command) = commands.try_recv() {
             let update = handle_worker_command(&mut runtime, &runtime_screen, policy, command);
@@ -181,6 +187,8 @@ pub(crate) fn run_surface(
             ))
             .map_err(|error| error.to_string())?;
             renderer = RenderEngine::new(backend);
+            // The adapter is new, so every pipeline it held is gone with it.
+            register_shaders(&runtime, &mut renderer)?;
             state.popup_surfaces.clear();
             state.floating_surfaces.clear();
             state.layer_surfaces.clear();
@@ -252,6 +260,9 @@ pub(crate) fn run_surface(
         apply_window_surface_actions(&mut runtime, &client, &state.floating_surfaces);
         if repaint {
             let painted = Instant::now();
+            renderer
+                .backend_mut()
+                .set_elapsed(started.elapsed().as_secs_f32());
             // Before anything is drawn, tell the renderer what died. Its caches
             // are keyed on nodes and it has no other way to find out; without
             // this a shaped text buffer survives every view switch for the life
@@ -294,4 +305,27 @@ pub(crate) fn run_surface(
             state.pacer.observed(painted.elapsed());
         }
     }
+}
+
+/// Builds a pipeline for every shader the configuration registered.
+///
+/// Once, at startup and after a device loss — never during a frame. Compiling a
+/// pipeline costs tens of milliseconds, which is several frames' worth of
+/// budget, and a shader is known the moment the configuration finishes loading.
+fn register_shaders(
+    runtime: &Runtime,
+    renderer: &mut RenderEngine<WgpuBackend>,
+) -> Result<(), String> {
+    for shader in runtime.shaders() {
+        renderer
+            .backend_mut()
+            .register_shader(
+                shader.program,
+                &shader.wgsl,
+                &shader.offsets,
+                shader.uniform_size,
+            )
+            .map_err(|error| format!("shader pipeline: {error}"))?;
+    }
+    Ok(())
 }

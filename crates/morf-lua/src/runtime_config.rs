@@ -262,3 +262,54 @@ impl Runtime {
         !callbacks.is_empty()
     }
 }
+
+/// One shader a configuration registered, as the host needs it.
+pub struct ShaderProgram {
+    /// Hash of the generated WGSL: what a node carries and the backend keys on.
+    pub program: u64,
+    pub wgsl: String,
+    /// Byte offset of each parameter in the uniform block.
+    pub offsets: Vec<u32>,
+    pub uniform_size: u32,
+    /// Whether the shader reads the frame clock, and so repaints every frame.
+    pub reads_time: bool,
+}
+
+impl Runtime {
+    /// Every shader the configuration registered.
+    ///
+    /// The host hands these to the renderer once, at startup: compiling a
+    /// pipeline costs tens of milliseconds and cannot happen during a frame.
+    pub fn shaders(&self) -> Vec<ShaderProgram> {
+        self.reactive
+            .borrow()
+            .shaders
+            .values()
+            .map(|shader| ShaderProgram {
+                program: shader.compiled.hash,
+                wgsl: shader.compiled.wgsl.clone(),
+                offsets: shader
+                    .compiled
+                    .params
+                    .iter()
+                    .map(|slot| slot.offset)
+                    .collect(),
+                uniform_size: shader.compiled.uniform_size,
+                reads_time: shader.compiled.reads_time,
+            })
+            .collect()
+    }
+
+    /// Whether any registered shader animates on its own.
+    ///
+    /// A shader that reads the clock has to repaint every frame; one that does
+    /// not costs nothing after the first. Derived from the compiler rather than
+    /// declared, so it cannot be forgotten.
+    pub fn shaders_animate(&self) -> bool {
+        self.reactive
+            .borrow()
+            .shaders
+            .values()
+            .any(|shader| shader.compiled.reads_time)
+    }
+}

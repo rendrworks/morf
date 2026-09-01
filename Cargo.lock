@@ -1256,6 +1256,7 @@ dependencies = [
  "morf-region",
  "morf-scene",
  "morf-services",
+ "morf-shader",
  "serde_json",
 ]
 

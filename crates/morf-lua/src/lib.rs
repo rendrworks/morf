@@ -11,6 +11,7 @@ mod api_menu;
 mod api_module;
 mod api_process;
 mod api_retention;
+mod api_shader;
 mod api_shell;
 mod api_signal;
 mod api_socket;

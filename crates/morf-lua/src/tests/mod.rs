@@ -30,4 +30,5 @@ mod modules;
 mod sandbox_limits;
 mod scene;
 mod screens;
+mod shaders;
 mod views_states;

@@ -1,3 +1,4 @@
+pub(crate) use crate::api_shader::RegisteredShader;
 use crate::states::{Capture, StateSet};
 use luna::{StashedClosure, StashedTable, UserRef};
 use morf_desktop::DesktopEntries;
@@ -328,6 +329,11 @@ pub(crate) struct ReactiveState {
     pub(crate) next_effect: u64,
     pub(crate) active: Option<Capture>,
     pub(crate) logs: Vec<String>,
+    /// Shaders the configuration registered, by name.
+    ///
+    /// Compiled once at load. The renderer is handed the generated WGSL when
+    /// the host starts up, and a node only ever carries the program's hash.
+    pub(crate) shaders: HashMap<String, RegisteredShader>,
     pub(crate) scene: Scene,
     pub(crate) effect_runs: u64,
     pub(crate) clock: SignalId,
@@ -411,6 +417,7 @@ impl ReactiveState {
             next_effect: 0,
             active: None,
             logs: Vec::new(),
+            shaders: HashMap::new(),
             scene: Scene::new(),
             effect_runs: 0,
             clock,

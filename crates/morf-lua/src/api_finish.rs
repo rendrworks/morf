@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::api_shader::install_shader_api;
 use crate::{
     api_animation::*, api_file::*, api_fling::*, api_group::*, api_host::*, api_image::*,
     api_menu::*, api_module::*, api_process::*, api_retention::*, api_shell::*, api_signal::*,
@@ -102,6 +103,7 @@ pub(crate) fn install_reactive_api(
         install_shell_api(ctx, Rc::clone(&state), morf);
         install_time_api(ctx, Rc::clone(&state), morf);
         install_image_api(ctx, morf);
+        install_shader_api(ctx, morf, Rc::clone(&state));
         install_transform_api(ctx, Rc::clone(&state), morf);
         install_animation_api(ctx, Rc::clone(&state), morf);
         install_easing_api(ctx, morf);
