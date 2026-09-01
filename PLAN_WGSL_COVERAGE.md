@@ -36,13 +36,13 @@ relational functions.
 | operators | `+ - * / % ^ // == ~= < <= > >= and or not` unary `-` | bitwise, shifts | §4.2 |
 | statements | `local` assign `if` `while` `for` `repeat` `break` `return` | `continue`, `discard` | §4.3 |
 | functions | entry point, helpers (monomorphised) | — | done |
-| math builtins | **36 of 79** | 43 | §3 |
+| math builtins | **44 of 79** | 35 | §3 |
 | derivatives | none | `dpdx` `dpdy` `fwidth` (+ coarse/fine) | §4.4 |
 | relational | none | `all` `any` `isNan` `isInf` | §4.4 |
 | textures | one implicit source via `texture(uv)` | everything else | §5 |
 
-Two of the 36 are `select` and `texture`, which are not `MathFunction`s — the
-math count proper is 34 of 79.
+Two of the 44 are `select` and `texture`, which are not `MathFunction`s — the
+math count proper is 42 of 79 after W1.
 
 ---
 
@@ -50,18 +50,28 @@ math count proper is 34 of 79.
 
 Exact, from naga's own enum. Grouped by whether they are worth having.
 
-### 3.1 Worth adding — ordinary shader arithmetic (13)
+### 3.1 Worth adding — ordinary shader arithmetic (13) — **W1 done**
 
-- [ ] `saturate` — `clamp(x, 0, 1)`, written constantly
-- [ ] `trunc`
-- [ ] `inverseSqrt` — the fast reciprocal length every normalisation wants
-- [ ] `fma`
-- [ ] `faceForward`
-- [ ] `refract` — we have `reflect` and not this, which is an odd pair to split
-- [ ] `asinh` `acosh` `atanh` — completing the set already half-present
-- [ ] `modf` `frexp` — return a struct in WGSL, so they need §4.5 first
-- [ ] `ldexp`
-- [ ] `quantizeToF16`
+- [x] `saturate` — `clamp(x, 0, 1)`, written constantly
+- [x] `trunc`
+- [x] `inverseSqrt` — the fast reciprocal length every normalisation wants.
+      Spelled `inversesqrt` and `inverse_sqrt`: WGSL writes it one way and
+      GLSL, which is what a shader author has read more of, writes it the other
+- [x] `fma`
+- [x] `faceForward`
+- [x] `refract` — we had `reflect` and not this, which was an odd pair to split
+- [x] `asinh` `acosh` `atanh` — completing the set already half-present
+- [x] `quantizeToF16`
+- [ ] `modf` `frexp` — return a struct in WGSL, so they moved to W5 (§4.5)
+- [ ] `ldexp` — takes an `i32` exponent, so it moved to W3 (§4.2)
+
+**What W1 caught.** `refract` is the only one of these with a shape of its own —
+two vectors and a scalar ratio — and the emitter widened its scalar to the
+call's vector type, producing WGSL naga rejects. That is the worst failure this
+compiler can produce, because the author gets a validation error with no line
+number; the fix was to list the arguments that are *meant* to be a different
+type beside `select`'s condition. The GPU test in §8.3 is what found it, which
+is the argument for that test existing at all.
 
 ### 3.2 Worth adding — matrix (4)
 
@@ -268,5 +278,9 @@ actually caught anything:
 
 ## 9. Status
 
-Nothing in this document is implemented yet. The compiler as it stands is
-`PLAN_LUA_SHADER.md` M1–M8 plus helper functions, at 36 of 79 builtins.
+- [x] **W1 — the ordinary builtins.** 42 of 79 math functions, from 34.
+- [ ] W2 — matrices
+- [ ] W3 — integers and bitwise
+- [ ] W4 — derivatives and relational
+- [ ] W5 — arrays, indexing, structs
+- [ ] W6 — `continue` and `discard`

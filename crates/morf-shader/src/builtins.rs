@@ -22,6 +22,8 @@ pub(crate) enum Shape {
     Select,
     /// `cross(a, b)` — two vec3 in, vec3 out. Only defined in three dimensions.
     Cross,
+    /// `refract(incident, normal, eta)` — two vectors and a scalar ratio.
+    Refract,
     /// `texture(uv)` — vec2 in, vec4 out.
     Texture,
 }
@@ -34,6 +36,9 @@ pub(crate) enum Shape {
 /// more than the cleverness would have been.
 pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("abs", Builtin::Abs, Shape::Componentwise1),
+    ("acosh", Builtin::Acosh, Shape::Componentwise1),
+    ("asinh", Builtin::Asinh, Shape::Componentwise1),
+    ("atanh", Builtin::Atanh, Shape::Componentwise1),
     ("acos", Builtin::Acos, Shape::Componentwise1),
     ("asin", Builtin::Asin, Shape::Componentwise1),
     ("atan", Builtin::Atan, Shape::Componentwise1),
@@ -50,8 +55,15 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("dot", Builtin::Dot, Shape::Fold2),
     ("exp", Builtin::Exp, Shape::Componentwise1),
     ("exp2", Builtin::Exp2, Shape::Componentwise1),
+    ("faceforward", Builtin::FaceForward, Shape::Componentwise3),
+    ("face_forward", Builtin::FaceForward, Shape::Componentwise3),
+    ("fma", Builtin::Fma, Shape::Componentwise3),
     ("floor", Builtin::Floor, Shape::Componentwise1),
     ("fract", Builtin::Fract, Shape::Componentwise1),
+    // Both spellings: WGSL writes it one way and GLSL, which is what a shader
+    // author has read more of, writes it the other.
+    ("inversesqrt", Builtin::InverseSqrt, Shape::Componentwise1),
+    ("inverse_sqrt", Builtin::InverseSqrt, Shape::Componentwise1),
     ("length", Builtin::Length, Shape::Fold1),
     ("log", Builtin::Log, Shape::Componentwise1),
     ("log2", Builtin::Log2, Shape::Componentwise1),
@@ -60,9 +72,17 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("mix", Builtin::Mix, Shape::MixScalar),
     ("normalize", Builtin::Normalize, Shape::Componentwise1),
     ("pow", Builtin::Pow, Shape::Componentwise2),
+    (
+        "quantize_to_f16",
+        Builtin::QuantizeToF16,
+        Shape::Componentwise1,
+    ),
     ("radians", Builtin::Radians, Shape::Componentwise1),
     ("reflect", Builtin::Reflect, Shape::Componentwise2),
+    ("refract", Builtin::Refract, Shape::Refract),
     ("round", Builtin::Round, Shape::Componentwise1),
+    // `clamp(x, 0, 1)`, which is written often enough to have its own name.
+    ("saturate", Builtin::Saturate, Shape::Componentwise1),
     ("select", Builtin::Select, Shape::Select),
     ("sign", Builtin::Sign, Shape::Componentwise1),
     ("sin", Builtin::Sin, Shape::Componentwise1),
@@ -74,6 +94,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     // Shadertoy tonemaps with `tanh` constantly, and it cannot be written out
     // of the rest.
     ("tanh", Builtin::Tanh, Shape::Componentwise1),
+    ("trunc", Builtin::Trunc, Shape::Componentwise1),
     ("texture", Builtin::Texture, Shape::Texture),
 ];
 
@@ -102,7 +123,11 @@ pub(crate) fn arity(shape: Shape) -> usize {
     match shape {
         Shape::Componentwise1 | Shape::Fold1 | Shape::Texture => 1,
         Shape::Componentwise2 | Shape::Fold2 | Shape::Cross => 2,
-        Shape::Componentwise3 | Shape::MixScalar | Shape::EdgeScalar | Shape::Select => 3,
+        Shape::Componentwise3
+        | Shape::MixScalar
+        | Shape::EdgeScalar
+        | Shape::Select
+        | Shape::Refract => 3,
     }
 }
 
@@ -197,6 +222,17 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
             (left == Type::Vec3 && right == Type::Vec3)
                 .then_some(Type::Vec3)
                 .ok_or_else(|| format!("cross takes two vec3, not {left} and {right}"))
+        }
+        Shape::Refract => {
+            let (incident, normal, eta) = (args[0], args[1], args[2]);
+            if incident != normal || !incident.is_vector() {
+                return Err(format!(
+                    "refract takes two vectors of one type, not {incident} and {normal}"
+                ));
+            }
+            (eta == Type::F32)
+                .then_some(incident)
+                .ok_or_else(|| format!("refract's ratio must be an f32, not {eta}"))
         }
         Shape::Texture => {
             let ty = args[0];

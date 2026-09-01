@@ -1,4 +1,5 @@
 mod caps;
+mod coverage;
 mod diagnostics;
 mod golden;
 mod ports;

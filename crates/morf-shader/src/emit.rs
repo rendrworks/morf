@@ -393,8 +393,14 @@ impl Emitter {
             }
             // `select`'s condition and the fold builtins keep their own types;
             // everything else widens to the call's result.
+            // Most builtins take their own result type, so a scalar written
+            // against a vector call widens. The exceptions are the arguments
+            // that are *meant* to be a different type: widening one of those
+            // produces WGSL a driver rejects with no line number, which is the
+            // worst failure this compiler can hand somebody.
             let context = match (builtin, index) {
                 (Builtin::Select, 2) => Type::Bool,
+                (Builtin::Refract, 2) => Type::F32,
                 (Builtin::Length | Builtin::Dot | Builtin::Distance, _) => arg.ty(),
                 _ => ty,
             };
