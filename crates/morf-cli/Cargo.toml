@@ -19,3 +19,6 @@ morf-render.workspace = true
 morf-scene.workspace = true
 morf-wayland.workspace = true
 pollster.workspace = true
+
+[dev-dependencies]
+image.workspace = true

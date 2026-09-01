@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use morf_layout::{Layout, Size, TextMeasurer, TextOptions};
 use morf_lua::{Limits, Runtime, Screen};
-use morf_render::DrawList;
+use morf_render::{DrawList, RenderEngine, ShaderRegistration, WgpuBackend};
 use morf_scene::{Element, NodeHandle};
 
 /// Text measured by a rule rather than a font stack.
@@ -228,6 +228,60 @@ fn main() {
     let size = Size { width, height };
     let computed = Layout::compute(&scene, root, size, &mut RuledText).expect("layout");
 
+    // `gpu` renders one frame on a real adapter instead of timing anything.
+    //
+    // Everything above this line runs on the CPU, and a shader that compiles to
+    // WGSL the driver then refuses looks exactly the same from up here as one
+    // that works: the configuration loads, the scene is built, the numbers come
+    // out fine. The only way to find out is to build the pipelines and draw,
+    // which is what this does — headless, so it can run over every example
+    // without a compositor.
+    if std::env::args().nth(2).as_deref() == Some("gpu") {
+        let backend = pollster::block_on(WgpuBackend::new(width as u32, height as u32))
+            .expect("a GPU adapter");
+        let mut engine = RenderEngine::new(backend);
+        let mut shaders = 0usize;
+        for shader in runtime.shaders() {
+            engine
+                .backend_mut()
+                .register_shader(ShaderRegistration {
+                    program: shader.program,
+                    wgsl: Some(&shader.wgsl),
+                    vertex: shader.vertex.as_deref(),
+                    offsets: &shader.offsets,
+                    uniform_size: shader.uniform_size,
+                    owns_coverage: shader.owns_coverage,
+                    effect: shader.samples_behind,
+                    textures: &shader.textures,
+                    data: &shader.data,
+                })
+                .unwrap_or_else(|error| panic!("{config}: shader pipeline: {error}"));
+            shaders += 1;
+        }
+        // Twice: the first frame damages everything, the second takes the
+        // incremental path, and an effect layer's target is only reused on the
+        // second.
+        for _ in 0..2 {
+            engine
+                .render(&runtime.scene(), &computed, 120, |_| {})
+                .unwrap_or_else(|error| panic!("{config}: render: {error}"));
+        }
+        println!("{config}");
+        println!("  {shaders} shader(s) built and one frame drawn on the GPU");
+        // A fourth argument names a PNG to write the frame to. Every gate in
+        // this repository can pass while a shader is visibly wrong, and the
+        // only way to find that out is to look at what it drew.
+        if let Some(path) = std::env::args().nth(3) {
+            let pixels = engine.backend_mut().read_pixels();
+            image::RgbaImage::from_raw(width as u32, height as u32, pixels)
+                .expect("the readback is the size of the target")
+                .save(&path)
+                .expect("the image is written");
+            println!("  written to {path}");
+        }
+        return;
+    }
+
     // Layout reads about a dozen properties per node, so this is the floor the
     // rest of the pass is built on.
     let mut all = Vec::new();
@@ -276,9 +330,59 @@ fn main() {
         std::hint::black_box(computed.input_geometry(&scene).expect("input geometry"));
     });
 
+    // Shaders are counted because the way they fail is silent. A material
+    // shader that never reached a command, or an effect whose layer holds
+    // nothing to sample, renders as a configuration that simply ignored it —
+    // and the only place that is visible without a GPU is here.
+    let shaded = DrawList::from_scene(&scene, &computed).expect("draw list");
+    let material = shaded
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                morf_render::DrawCommand::Field {
+                    shader: Some(_),
+                    ..
+                } | morf_render::DrawCommand::Quad {
+                    shader: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    // What an effect layer holds *other than the node carrying it*. A rectangle
+    // laid over its siblings still draws its own quad, so counting commands
+    // would say 1 and mean nothing; the question is whether any content came
+    // with it.
+    let effects: Vec<usize> = shaded
+        .layers
+        .iter()
+        .filter(|layer| layer.shader.is_some())
+        .map(|layer| {
+            shaded.commands[layer.commands.clone()]
+                .iter()
+                .filter(|command| command.node() != layer.node)
+                .count()
+        })
+        .collect();
+
     let frame = layout + draw + region;
     println!("{config}");
     println!("  scene nodes        {nodes}");
+    if material > 0 || !effects.is_empty() {
+        println!("  shaded commands    {material}");
+        for covered in &effects {
+            println!(
+                "  effect layer       {covered} command(s) to sample{}",
+                if *covered == 0 {
+                    "  <-- wraps nothing, so it will sample an empty target"
+                } else {
+                    ""
+                },
+            );
+        }
+    }
     println!(
         "  DrawCommand size   {} bytes  ({} KiB for this scene)",
         std::mem::size_of::<morf_render::DrawCommand>(),

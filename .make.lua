@@ -167,6 +167,33 @@ make.recipe{
 }
 
 make.recipe{
+  name = "config-smoke",
+  desc = "build every example's shaders and draw a frame on the GPU",
+  run = function()
+    -- The CPU gates say a configuration loads, lays out and paints. None of
+    -- them say the driver will accept the shaders it declared: a pipeline that
+    -- fails validation looks identical from the CPU side, and the first sign
+    -- of it is a black screen or a panic in front of whoever ran it. This
+    -- builds the pipelines and draws, for every example there is.
+    sh.cargo("build", "--package", "morf-cli", "--example", "frame_bench")
+    local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
+    local prefix = wrapper.ok and (wrapper.out or ""):match("[^\n]+") or nil
+    local listed = oslo.run{ "sh", "-c", "ls examples/*.lua", capture = true }
+    assert(listed.ok, "no examples to check")
+    local checked = 0
+    for path in (listed.out or ""):gmatch("[^\n]+") do
+      local command = { "target/debug/examples/frame_bench", path, "gpu" }
+      if prefix then
+        command = { prefix, command[1], command[2], command[3] }
+      end
+      assert(oslo.run(command).ok, path .. " does not render")
+      checked = checked + 1
+    end
+    print(("%d configurations rendered"):format(checked))
+  end,
+}
+
+make.recipe{
   name = "wayland-smoke",
   desc = "present a layer surface and receive its frame callback",
   run = function()

@@ -21,7 +21,7 @@ fn scene_srgb_colors_are_linearized_for_gpu_output() {
     assert_eq!(srgb_channel_to_linear(1.0), 1.0);
 }
 
-struct NoText;
+pub(crate) struct NoText;
 
 impl TextMeasurer for NoText {
     fn measure(

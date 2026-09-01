@@ -245,3 +245,113 @@ fn rounded_clip_emits_a_transformed_layer_mask() {
     assert_eq!(mask.radii, [7.0; 4]);
     assert_ne!(mask.transform, Transform2D::IDENTITY);
 }
+
+#[test]
+fn an_effect_layer_covers_the_subtree_it_wraps() {
+    // An effect shader samples the layer its node became, and a layer holds
+    // that node's own subtree. So the content has to be *inside* the node
+    // carrying the effect: a childless rectangle laid over its siblings makes
+    // an empty layer, and an effect over nothing returns nothing. That reads on
+    // screen as a shader that simply does not run, which is the most expensive
+    // possible way to be told about it.
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let wrapper = scene.create(Element::Item);
+    let inner = scene.create(Element::Rect);
+    scene.assign(inner, "width", 20.0).unwrap();
+    scene.assign(inner, "height", 10.0).unwrap();
+    scene.attach_shader(
+        wrapper,
+        morf_scene::NodeShader {
+            program: 7,
+            params: vec![0.5],
+            data: Vec::new(),
+            samples_behind: true,
+            owns_coverage: false,
+        },
+    );
+    scene.reparent(inner, Some(wrapper)).unwrap();
+    scene.reparent(wrapper, Some(root)).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 100.0,
+            height: 20.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+
+    let list = DrawList::from_scene(&scene, &layout).unwrap();
+
+    let layer = list
+        .layers
+        .iter()
+        .find(|layer| layer.node == wrapper)
+        .expect("the effect made its node into a layer");
+    assert_eq!(
+        layer.shader.as_ref().map(|shader| shader.program),
+        Some(7),
+        "and the effect went to the layer rather than staying on the node",
+    );
+    assert!(
+        !layer.commands.is_empty(),
+        "and the layer holds the subtree's drawing, or there is nothing to \
+         sample: {:?}",
+        layer.commands,
+    );
+}
+
+#[test]
+fn an_effect_beside_its_content_covers_nothing() {
+    // The mistake the test above guards against, stated directly: a sibling
+    // laid over the content is not a wrapper, and its layer is empty.
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let content = scene.create(Element::Rect);
+    let overlay = scene.create(Element::Rect);
+    scene.assign(content, "width", 20.0).unwrap();
+    scene.assign(content, "height", 10.0).unwrap();
+    scene.attach_shader(
+        overlay,
+        morf_scene::NodeShader {
+            program: 9,
+            params: Vec::new(),
+            data: Vec::new(),
+            samples_behind: true,
+            owns_coverage: false,
+        },
+    );
+    scene.reparent(content, Some(root)).unwrap();
+    scene.reparent(overlay, Some(root)).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 100.0,
+            height: 20.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+
+    let list = DrawList::from_scene(&scene, &layout).unwrap();
+
+    let layer = list
+        .layers
+        .iter()
+        .find(|layer| layer.node == overlay)
+        .expect("it still became a layer");
+    // It is not empty — the overlay draws its own quad, transparent though it
+    // is — but the content is not in it, which is what matters. The effect
+    // samples a transparent rectangle and faithfully returns nothing.
+    let inside: Vec<_> = list.commands[layer.commands.clone()]
+        .iter()
+        .map(|command| command.node())
+        .collect();
+    assert!(
+        !inside.contains(&content),
+        "the sibling's layer does not hold the content: {inside:?}",
+    );
+}

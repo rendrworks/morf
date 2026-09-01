@@ -1195,6 +1195,7 @@ dependencies = [
 name = "morf-cli"
 version = "0.1.3"
 dependencies = [
+ "image",
  "jiff",
  "morf-io",
  "morf-layout",
