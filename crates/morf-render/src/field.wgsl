@@ -71,6 +71,16 @@ struct VertexOutput {
     @location(4) @interpolate(flat) material: u32,
 };
 
+/// Where a configuration's own shader gets to move a corner.
+///
+/// The default returns it untouched, so an ordinary field costs nothing.
+/// A vertex shader moves the *quad*, not the shape inside it: the fragment
+/// stage still walks the field in the node's own space, so a displaced node
+/// keeps its geometry and takes it somewhere else.
+fn morf_vertex_hook(corner: vec2<f32>, size: vec2<f32>, time: f32) -> vec2<f32> {
+    return corner;
+}
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
@@ -93,8 +103,19 @@ fn vs_main(
         vec2<f32>(area.x, area.w),
         vec2<f32>(area.z, area.w),
     );
+    // Where a configuration's own shader gets to move a corner.
+    //
+    // The default returns it untouched, so an ordinary field costs nothing.
+    // A vertex shader moves the *quad*, not the shape inside it: the fragment
+    // stage still walks the field in the node's own space, so a displaced node
+    // keeps its geometry and takes it somewhere else.
     let local = corners[vertex_index];
-    let point = bounds.xy + local;
+    // The displacement moves where the corner is *drawn*, not where the
+    // fragment stage looks. `local` goes to the fragment unchanged, so the
+    // field is still evaluated in the node's own space — displacing both would
+    // move the quad and the shape inside it by the same amount and cancel out,
+    // which is the shape this took before the GPU test caught it.
+    let point = bounds.xy + morf_vertex_hook(local, bounds.zw, uniforms.viewport.z);
     let placed = vec2<f32>(
         transform.x * point.x + transform.z * point.y + transform_offset.x,
         transform.y * point.x + transform.w * point.y + transform_offset.y,

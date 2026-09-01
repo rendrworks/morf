@@ -6,6 +6,7 @@
 //! for code that type-checked. Three of the six steps had a bug that only this
 //! file could find.
 
+use crate::gpu::backend_types::ShaderRegistration;
 use crate::gpu::field_tests::alpha_at;
 use crate::gpu::shader_mode_tests::surface;
 use crate::gpu::shader_tests::{SIZE, channel, shaded};
@@ -90,6 +91,9 @@ pub(crate) fn a_matrix_parameter_arrives_with_its_columns_intact() {
             ty: morf_shader::Type::Mat3,
         }],
         entry: "fragment".to_owned(),
+        textures: Vec::new(),
+        data: Vec::new(),
+        vertex: false,
     };
     let compiled = morf_shader::compile(
         "function fragment(uv, time, resolution, coverage, turn)
@@ -110,14 +114,17 @@ pub(crate) fn a_matrix_parameter_arrives_with_its_columns_intact() {
 
     let mut backend = pollster::block_on(WgpuBackend::new(SIZE, SIZE)).unwrap();
     backend
-        .register_shader(
-            compiled.hash,
-            &compiled.wgsl,
-            &[compiled.params[0].offset],
-            compiled.uniform_size,
-            false,
-            false,
-        )
+        .register_shader(ShaderRegistration {
+            program: compiled.hash,
+            wgsl: Some(&compiled.wgsl),
+            vertex: None,
+            offsets: &[compiled.params[0].offset],
+            uniform_size: compiled.uniform_size,
+            owns_coverage: false,
+            effect: false,
+            textures: &[],
+            data: &[],
+        })
         .expect("the generated WGSL compiles");
 }
 

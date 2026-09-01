@@ -2,7 +2,7 @@
 
 mod gpu;
 
-pub use gpu::{GpuError, GpuInfo, WgpuBackend};
+pub use gpu::{GpuError, GpuInfo, ShaderRegistration, WgpuBackend};
 
 mod commands;
 mod damage;

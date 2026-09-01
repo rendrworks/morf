@@ -26,6 +26,10 @@ pub struct Program {
     pub samples_behind: bool,
     /// Whether anything took a screen-space derivative.
     pub takes_derivative: bool,
+    /// Textures the shader declared, in binding order.
+    pub textures: Vec<String>,
+    /// Data blocks it declared: name, element type, length.
+    pub data: Vec<(String, Type, u32)>,
 }
 
 /// One named value the shader can read.

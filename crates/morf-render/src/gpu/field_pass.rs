@@ -75,19 +75,45 @@ pub(crate) fn create_field_layouts(
 /// `None` back means the generated WGSL did not compile, which is a bug in the
 /// compiler rather than in the configuration — the configuration's own mistakes
 /// were caught and reported before anything reached here.
+/// What one field pipeline is built from.
+///
+/// A struct rather than eight arguments: four of them are optional bind group
+/// layouts and two are booleans, which is a call site nobody can read.
+pub(crate) struct FieldPipeline<'a> {
+    pub(crate) layout: &'a wgpu::BindGroupLayout,
+    pub(crate) shader_layout: &'a wgpu::BindGroupLayout,
+    /// The fragment shader spliced into the hook, if there is one.
+    pub(crate) user: Option<&'a str>,
+    /// Whether that shader decides its own coverage.
+    pub(crate) owns_coverage: bool,
+    /// The vertex displacement, if there is one.
+    pub(crate) vertex: Option<&'a str>,
+    pub(crate) textures: Option<&'a wgpu::BindGroupLayout>,
+    pub(crate) data: Option<&'a wgpu::BindGroupLayout>,
+}
+
 pub(crate) fn build_field_pipeline(
     device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    shader_layout: &wgpu::BindGroupLayout,
-    user: Option<&str>,
-    owns_coverage: bool,
+    built: FieldPipeline<'_>,
 ) -> Option<wgpu::RenderPipeline> {
+    let FieldPipeline {
+        layout,
+        shader_layout,
+        user,
+        owns_coverage,
+        vertex,
+        textures,
+        data,
+    } = built;
+    // Group two is a shader's own textures and three its data blocks, both
+    // present only when it declared any — an empty group is still a group wgpu
+    // would want filled.
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("morf field pipeline layout"),
-        bind_group_layouts: &[Some(layout), Some(shader_layout)],
+        bind_group_layouts: &[Some(layout), Some(shader_layout), textures, data],
         immediate_size: 0,
     });
-    let source = field_shader_source(include_str!("../field.wgsl"), user, owns_coverage)?;
+    let source = field_shader_source(include_str!("../field.wgsl"), user, owns_coverage, vertex)?;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("morf field shader"),
         source: wgpu::ShaderSource::Wgsl(source.into()),

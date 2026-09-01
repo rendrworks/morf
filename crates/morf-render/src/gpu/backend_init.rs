@@ -113,9 +113,19 @@ impl WgpuBackend {
             "morf texture instances",
         );
         let (field_layout, field_shader_layout) = create_field_layouts(&device);
-        let field_pipeline =
-            build_field_pipeline(&device, &field_layout, &field_shader_layout, None, false)
-                .expect("the field shader carries its own hook");
+        let field_pipeline = build_field_pipeline(
+            &device,
+            FieldPipeline {
+                layout: &field_layout,
+                shader_layout: &field_shader_layout,
+                user: None,
+                owns_coverage: false,
+                vertex: None,
+                textures: None,
+                data: None,
+            },
+        )
+        .expect("the field shader carries its own hook");
         let field_shader_default = create_shader_bind_group(
             &device,
             &field_shader_layout,
@@ -205,7 +215,7 @@ impl WgpuBackend {
         (self.texture, self.view) = create_target(&self.device, self.width, self.height);
         // The pooled layer targets are surface-sized, so a resize retires them.
         self.layer_target_pool.clear();
-        let viewport = [self.width as f32, self.height as f32, 0.0, 0.0];
+        let viewport = [self.width as f32, self.height as f32, self.elapsed, 0.0];
         self.queue
             .write_buffer(&self.viewport_buffer, 0, bytemuck::cast_slice(&viewport));
         if let Some(surface) = &mut self.surface {
@@ -233,66 +243,6 @@ impl WgpuBackend {
     /// at paint time. Registering the same program twice is a no-op, so a
     /// configuration that attaches one shader to fifty nodes builds one
     /// pipeline.
-    pub fn register_shader(
-        &mut self,
-        program: u64,
-        wgsl: &str,
-        offsets: &[u32],
-        size: u32,
-        owns_coverage: bool,
-        effect: bool,
-    ) -> Result<(), GpuError> {
-        let registry = if effect {
-            &self.effect_shaders
-        } else {
-            &self.shaders
-        };
-        if registry.contains_key(&program) {
-            return Ok(());
-        }
-        let pipeline = if effect {
-            build_glyph_pipeline(
-                &self.device,
-                &self.glyph_layout,
-                Some(&self.field_shader_layout),
-                Some(wgsl),
-            )
-            .ok_or_else(|| {
-                GpuError("the glyph shader has no hook to splice an effect into".to_owned())
-            })?
-        } else {
-            build_field_pipeline(
-                &self.device,
-                &self.field_layout,
-                &self.field_shader_layout,
-                Some(wgsl),
-                owns_coverage,
-            )
-            .ok_or_else(|| {
-                GpuError("the field shader has no hook to splice a shader into".to_owned())
-            })?
-        };
-        let uniforms = create_shader_uniform_buffer(&self.device, size);
-        let bind_group =
-            create_shader_bind_group(&self.device, &self.field_shader_layout, &uniforms);
-        let registry = if effect {
-            &mut self.effect_shaders
-        } else {
-            &mut self.shaders
-        };
-        registry.insert(
-            program,
-            ShaderProgram {
-                pipeline,
-                uniforms,
-                bind_group,
-                offsets: offsets.to_vec(),
-                size,
-            },
-        );
-        Ok(())
-    }
-
     /// Advances the clock shaders read.
     ///
     /// Called once per frame by the host, which owns the frame clock; the

@@ -131,6 +131,7 @@ impl Lowerer<'_> {
         }
         let Some(ty) = source
             .element()
+            .or_else(|| source.data_shape().map(|(element, _)| element))
             .or_else(|| source.column())
             .or_else(|| source.is_vector().then_some(Type::F32))
         else {

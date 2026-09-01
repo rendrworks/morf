@@ -39,6 +39,7 @@ use luna::compiler::{interning::BasicInterner, parser::parse_chunk};
 
 mod builtin_names;
 mod builtins;
+mod compound;
 mod diagnostics;
 mod emit;
 mod emit_expr;
@@ -74,11 +75,43 @@ pub struct ShaderSpec {
     pub inputs: Vec<Binding>,
     /// Values the configuration declares, animatable as node properties.
     pub params: Vec<Binding>,
+    /// Textures the configuration declared, bound by the host in order.
+    pub textures: Vec<String>,
+    /// Read-only data blocks the host fills each frame, with their lengths.
+    pub data: Vec<(String, Type, u32)>,
     /// The function to compile. Conventionally `fragment`.
     pub entry: String,
+    /// Compile a vertex displacement instead of a fragment colour.
+    ///
+    /// The signature differs — `(corner, size, time) -> vec2` — and so does
+    /// what it may reach: a vertex runs once per corner, before there is a
+    /// fragment, so it has no coverage and nothing underneath to sample.
+    pub vertex: bool,
 }
 
 impl ShaderSpec {
+    /// What a vertex shader is handed.
+    ///
+    /// A corner of the node's own quad, the node's size, and the clock. Not
+    /// `uv` — there is no fragment yet to have one — and not `coverage`, for
+    /// the same reason.
+    pub fn vertex_inputs() -> Vec<Binding> {
+        vec![
+            Binding {
+                name: "corner".to_owned(),
+                ty: Type::Vec2,
+            },
+            Binding {
+                name: "size".to_owned(),
+                ty: Type::Vec2,
+            },
+            Binding {
+                name: "time".to_owned(),
+                ty: Type::F32,
+            },
+        ]
+    }
+
     /// The inputs every mode provides.
     pub fn default_inputs(kind: ShaderKind) -> Vec<Binding> {
         let mut inputs = vec![
@@ -111,6 +144,10 @@ impl ShaderSpec {
 /// A shader, ready for a pipeline.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Compiled {
+    /// The textures this shader declared, in binding order.
+    pub textures: Vec<String>,
+    /// The data blocks it declared, with element counts.
+    pub data: Vec<(String, u32)>,
     /// The generated module: a `morf_shader_main` function and its uniforms,
     /// meant to be concatenated into a host shader, not compiled alone.
     pub wgsl: String,
@@ -162,6 +199,8 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
     };
 
     let mut lowerer = lower::Lowerer::new(&spec.inputs, &spec.params);
+    lowerer.textures = spec.textures.clone();
+    lowerer.data = spec.data.clone();
     lowerer.helpers = functions.helpers;
     lowerer.diagnostics = diagnostics;
     bind_parameters(&mut lowerer, definition, spec);
@@ -170,7 +209,7 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
 
     let program = ir::Program {
         entry: ir::Function {
-            returns: Type::Vec4,
+            returns: if spec.vertex { Type::Vec2 } else { Type::Vec4 },
             body,
         },
         // Helpers come out in the order they were first needed, which is also
@@ -183,9 +222,27 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
         reads_time: lowerer.reads_time,
         samples_behind: lowerer.samples_behind,
         takes_derivative: lowerer.takes_derivative,
+        textures: spec.textures.clone(),
+        data: spec.data.clone(),
     };
     let mut diagnostics = lowerer.diagnostics;
     validate::check(&program, spec, &mut diagnostics);
+    if spec.vertex {
+        // A vertex shader runs before there is a fragment, so a derivative or
+        // a sample of what is underneath has nothing to read.
+        if program.takes_derivative {
+            diagnostics.push(
+                Diagnostic::new(1, "a vertex shader cannot take a derivative")
+                    .note("there are no neighbouring pixels yet; it runs once per corner"),
+            );
+        }
+        if program.samples_behind {
+            diagnostics.push(
+                Diagnostic::new(1, "a vertex shader cannot sample what is underneath")
+                    .note("nothing has been drawn yet when it runs"),
+            );
+        }
+    }
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -194,6 +251,12 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
     let wgsl = emit::emit(&program, &params, uniform_size);
     let hash = hash(&wgsl);
     Ok(Compiled {
+        textures: spec.textures.clone(),
+        data: spec
+            .data
+            .iter()
+            .map(|(name, _, length)| (name.clone(), *length))
+            .collect(),
         wgsl,
         params,
         uniform_size,

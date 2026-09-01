@@ -1,5 +1,7 @@
 use std::fmt;
 
+pub use crate::compound::{ArrayType, StructType};
+
 /// Every type a shader value can have.
 ///
 /// Deliberately small. There is no `nil`, no string, no table and no function
@@ -48,6 +50,18 @@ pub enum Type {
     /// `array<f32, 5>` are different types, and a shader has no way to ask how
     /// long one is at run time.
     Array(&'static ArrayType),
+    /// A texture a configuration declared and the host bound.
+    ///
+    /// Not a value: it cannot be added, stored or returned. The only thing a
+    /// shader does with one is sample it, which is the only thing a texture
+    /// binding *is* — a name for something the host put in a bind group.
+    Texture,
+    /// A read-only block of numbers the host fills each frame.
+    ///
+    /// Larger than a uniform can hold — a spectrum, a lookup table, a history
+    /// — and read-only on purpose: a fragment shader writing shared storage is
+    /// a race between every pixel, and offering one would be offering a bug.
+    Data(&'static ArrayType),
     /// A record: named fields, from a Lua table with named keys.
     ///
     /// Structurally typed and interned, so two tables with the same field names
@@ -121,6 +135,8 @@ impl Type {
             Self::Split => "f32",
             // A record prints its own name through `wgsl_owned`.
             Self::Struct(_) => "struct",
+            Self::Texture => "texture_2d<f32>",
+            Self::Data(_) => "array",
             // Poison never reaches emission: lowering fails first, and the
             // emitter only ever runs on a program that type-checked.
             Self::Poison => "f32",
@@ -225,6 +241,7 @@ impl Type {
                 format!("array<{}, {}>", array.element.wgsl_owned(), array.length)
             }
             Self::Struct(record) => record.name.clone(),
+            Self::Data(array) => format!("array<{}>", array.element.wgsl_owned()),
             other => other.wgsl().to_owned(),
         }
     }
@@ -279,6 +296,9 @@ impl Type {
             | Self::Bool
             | Self::Split
             | Self::Poison => (4, 4),
+            // Neither lives in the uniform block: a texture is a binding and
+            // data is its own buffer.
+            Self::Texture | Self::Data(_) => (0, 4),
             Self::Vec2 | Self::Vec2I | Self::Vec2U => (8, 8),
             Self::Vec3 | Self::Vec3I | Self::Vec3U => (12, 16),
             Self::Vec4 | Self::Vec4I | Self::Vec4U => (16, 16),
@@ -335,6 +355,10 @@ impl fmt::Display for Type {
             Self::AbstractInt => "integer",
             Self::Split => "a split result",
             Self::Struct(record) => return formatter.write_str(&record.name),
+            Self::Texture => "texture",
+            Self::Data(array) => {
+                return write!(formatter, "data of {} {}", array.length, array.element);
+            }
             Self::Array(array) => {
                 return write!(formatter, "array of {} {}", array.length, array.element);
             }
@@ -342,95 +366,6 @@ impl fmt::Display for Type {
         })
     }
 }
-
-/// An array's element type and length.
-///
-/// Leaked rather than boxed. A shader declares a handful of arrays at compile
-/// time and the compiler is a short-lived process; giving `Type` a lifetime or
-/// an `Rc` to carry this would touch every signature in the crate to save a few
-/// dozen bytes that are freed when the process ends anyway.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ArrayType {
-    pub element: Type,
-    pub length: u32,
-}
-
-impl Type {
-    /// Interns an array type.
-    pub fn array(element: Type, length: u32) -> Self {
-        Self::Array(Box::leak(Box::new(ArrayType { element, length })))
-    }
-
-    /// The element type, if this is an array.
-    pub fn element(self) -> Option<Type> {
-        match self {
-            Self::Array(array) => Some(array.element),
-            _ => None,
-        }
-    }
-
-    pub fn is_array(self) -> bool {
-        matches!(self, Self::Array(_))
-    }
-}
-
-/// A record's fields, sorted by name.
-///
-/// Sorted so that `{a = 1, b = 2}` and `{b = 2, a = 1}` are one type: a Lua
-/// table has no order of its own, and two records that differ only in the order
-/// they happened to be written are the same record.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct StructType {
-    pub fields: Vec<(String, Type)>,
-    /// The name this struct is emitted under.
-    pub name: String,
-}
-
-impl Type {
-    /// Interns a record type, reusing one already seen with the same shape.
-    pub fn record(mut fields: Vec<(String, Type)>) -> Self {
-        fields.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut seen = RECORDS.lock().expect("the record table is not poisoned");
-        if let Some(found) = seen.iter().find(|known| known.fields == fields) {
-            return Self::Struct(found);
-        }
-        let name = format!("MorfRecord{}", seen.len());
-        let interned: &'static StructType = Box::leak(Box::new(StructType { fields, name }));
-        seen.push(interned);
-        Self::Struct(interned)
-    }
-
-    /// Every record type interned so far, in the order they must be declared.
-    pub fn records() -> Vec<&'static StructType> {
-        RECORDS
-            .lock()
-            .expect("the record table is not poisoned")
-            .clone()
-    }
-
-    pub fn is_record(self) -> bool {
-        matches!(self, Self::Struct(_))
-    }
-
-    /// The type of a named field, if this is a record with one.
-    pub fn field(self, name: &str) -> Option<Type> {
-        match self {
-            Self::Struct(record) => record
-                .fields
-                .iter()
-                .find(|(field, _)| field == name)
-                .map(|(_, ty)| *ty),
-            _ => None,
-        }
-    }
-}
-
-/// Records interned for the life of the process.
-///
-/// A shader declares a handful and the compiler is short-lived, so leaking is
-/// the cheap answer — the same trade as [`ArrayType`], and for the same reason:
-/// giving `Type` a lifetime would touch every signature in the crate.
-static RECORDS: std::sync::Mutex<Vec<&'static StructType>> = std::sync::Mutex::new(Vec::new());
 
 /// A compile-time constant.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -104,6 +104,23 @@ impl Scene {
         self.shaders.get(&node.0)
     }
 
+    /// Fills one of an attached shader's data blocks.
+    ///
+    /// The values are copied, truncated or zero-padded to the length the
+    /// shader declared — a configuration handing over the wrong number of them
+    /// is a mistake worth surviving, because the alternative is a frame that
+    /// reads past the end of a buffer.
+    pub fn set_shader_data(&mut self, node: NodeHandle, index: usize, values: &[f32]) {
+        if let Some(shader) = self.shaders.get_mut(&node.0)
+            && let Some(block) = shader.data.get_mut(index)
+        {
+            let length = block.len();
+            block.clear();
+            block.extend(values.iter().take(length).copied());
+            block.resize(length, 0.0);
+        }
+    }
+
     /// Sets one parameter of an attached shader.
     ///
     /// Out-of-range indices are ignored rather than panicking: the index comes

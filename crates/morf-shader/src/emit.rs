@@ -11,7 +11,42 @@ use crate::types::*;
 /// undone.
 pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String {
     let mut out = String::with_capacity(2048);
-    emit_uniforms(&mut out, slots, size);
+    // A vertex displacement declares no uniform block. It takes the clock as an
+    // argument and has no parameters of its own, and when both stages are
+    // spliced into one module two blocks of the same name is a redefinition.
+    let vertex = program.entry.returns == Type::Vec2;
+    if !vertex {
+        emit_uniforms(&mut out, slots, size);
+    }
+    // Textures and data first: a declaration has to be in scope before the
+    // function that names it, and both can appear inside a helper.
+    for (slot, name) in program.textures.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "// {name}\n@group(2) @binding({}) var morf_tex{slot}: texture_2d<f32>;",
+            slot * 2
+        );
+        let _ = writeln!(
+            out,
+            "@group(2) @binding({}) var morf_tex_sampler{slot}: sampler;",
+            slot * 2 + 1
+        );
+    }
+    if !program.textures.is_empty() {
+        out.push('\n');
+    }
+    for (slot, (name, element, _)) in program.data.iter().enumerate() {
+        // Read-only on purpose: a fragment shader writing shared storage is a
+        // race between every pixel of the node.
+        let _ = writeln!(
+            out,
+            "// {name}\n@group(3) @binding({slot}) var<storage, read> morf_data{slot}: array<{}>;",
+            element.wgsl_owned()
+        );
+    }
+    if !program.data.is_empty() {
+        out.push('\n');
+    }
     // Record declarations first: WGSL needs a struct in scope before the
     // function that names it, and a record can appear in a helper's signature.
     //
@@ -55,19 +90,35 @@ pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String 
     // One fixed signature, whatever the shader declared, so the host's call
     // site never varies. The declared inputs are bound inside from wherever
     // they actually come from — the fragment stage, or the uniform header.
-    out.push_str(
-        "fn morf_shader_main(\n    \
-         uv: vec2<f32>,\n    \
-         local: vec2<f32>,\n    \
-         coverage: f32,\n    \
-         base: vec4<f32>,\n\
-         ) -> vec4<f32> {\n",
-    );
+    if program.entry.returns == Type::Vec2 {
+        // A vertex displacement: one corner in, one corner out.
+        out.push_str(
+            "fn morf_shader_main(\n    \
+             corner: vec2<f32>,\n    \
+             size: vec2<f32>,\n    \
+             time: f32,\n\
+             ) -> vec2<f32> {\n",
+        );
+    } else {
+        out.push_str(
+            "fn morf_shader_main(\n    \
+             uv: vec2<f32>,\n    \
+             local: vec2<f32>,\n    \
+             coverage: f32,\n    \
+             base: vec4<f32>,\n\
+             ) -> vec4<f32> {\n",
+        );
+    }
     for (index, input) in program.inputs.iter().enumerate() {
         let source = match input.name.as_str() {
+            "corner" => "corner".to_owned(),
+            "size" => "size".to_owned(),
             "uv" => "uv".to_owned(),
             "coverage" => "coverage".to_owned(),
             "local" => "local".to_owned(),
+            // A vertex shader has no uniform block of its own: it runs before
+            // the material is looked up, so the clock comes in as an argument.
+            "time" if program.entry.returns == Type::Vec2 => "time".to_owned(),
             "time" => "morf_u.morf_time".to_owned(),
             "resolution" => "morf_u.morf_resolution".to_owned(),
             // An input the host does not supply is still bound, so a shader

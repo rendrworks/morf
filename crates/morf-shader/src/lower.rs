@@ -56,6 +56,10 @@ pub(crate) struct Lowerer<'a> {
     pub(crate) scopes: Vec<HashMap<Vec<u8>, Local>>,
     pub(crate) inputs: &'a [Binding],
     pub(crate) params: &'a [Binding],
+    /// Declared texture names, in binding order.
+    pub(crate) textures: Vec<String>,
+    /// Declared data blocks, with element type and length.
+    pub(crate) data: Vec<(String, Type, u32)>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) loop_depth: u32,
     pub(crate) nodes: u32,
@@ -77,6 +81,8 @@ impl<'a> Lowerer<'a> {
             scopes: vec![HashMap::new()],
             inputs,
             params,
+            textures: Vec::new(),
+            data: Vec::new(),
             diagnostics: Vec::new(),
             loop_depth: 0,
             nodes: 0,

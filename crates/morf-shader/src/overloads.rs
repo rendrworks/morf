@@ -252,11 +252,21 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
                 .then_some(incident)
                 .ok_or_else(|| format!("refract's ratio must be an f32, not {eta}"))
         }
-        Shape::Texture => {
-            let ty = args[0];
-            (ty == Type::Vec2)
+        Shape::Texture => match args {
+            [coordinate] => (*coordinate == Type::Vec2)
                 .then_some(Type::Vec4)
-                .ok_or_else(|| format!("texture takes a vec2 coordinate, not {ty}"))
-        }
+                .ok_or_else(|| format!("texture takes a vec2 coordinate, not {coordinate}")),
+            [source, coordinate] => {
+                if *source != Type::Texture {
+                    return Err(format!(
+                        "`{source}` is not a texture; declare one in the shader's `textures`"
+                    ));
+                }
+                (*coordinate == Type::Vec2)
+                    .then_some(Type::Vec4)
+                    .ok_or_else(|| format!("texture takes a vec2 coordinate, not {coordinate}"))
+            }
+            _ => Err("texture takes a coordinate, or a texture and a coordinate".to_owned()),
+        },
     }
 }

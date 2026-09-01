@@ -32,6 +32,31 @@ impl fmt::Display for GpuError {
 impl StdError for GpuError {}
 
 /// wgpu SDF renderer targeting a persistent texture.
+/// Everything the host knows about one shader when it registers it.
+///
+/// A struct rather than nine arguments: the surface grew a field per section of
+/// the coverage plan, and a call site with nine positional booleans and slices
+/// is a call site nobody can read.
+pub struct ShaderRegistration<'a> {
+    /// Hash of the generated WGSL, which is what a node carries.
+    pub program: u64,
+    /// The fragment or material shader, if there is one.
+    pub wgsl: Option<&'a str>,
+    /// The vertex displacement, if there is one.
+    pub vertex: Option<&'a str>,
+    /// Byte offset of each parameter in the uniform block.
+    pub offsets: &'a [u32],
+    pub uniform_size: u32,
+    /// Whether the shader decides its own coverage.
+    pub owns_coverage: bool,
+    /// Whether it reads what is underneath, and so runs in the composite pass.
+    pub effect: bool,
+    /// Image paths for the textures it declared, in binding order.
+    pub textures: &'a [String],
+    /// Element counts for the data blocks it declared, in binding order.
+    pub data: &'a [(String, u32)],
+}
+
 /// One registered shader: its pipeline, and the buffer its parameters go in.
 pub(crate) struct ShaderProgram {
     pub(crate) pipeline: wgpu::RenderPipeline,
@@ -41,6 +66,10 @@ pub(crate) struct ShaderProgram {
     /// shader cannot disagree about the layout.
     pub(crate) offsets: Vec<u32>,
     pub(crate) size: u32,
+    /// The shader's own textures, if it declared any.
+    pub(crate) textures: Option<wgpu::BindGroup>,
+    /// Its data blocks: the buffers to write and the group to bind.
+    pub(crate) data: Option<(Vec<wgpu::Buffer>, wgpu::BindGroup)>,
 }
 
 pub struct WgpuBackend {

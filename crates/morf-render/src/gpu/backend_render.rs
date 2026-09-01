@@ -162,6 +162,17 @@ impl RenderBackend for WgpuBackend {
                             Some(program) => {
                                 $pass.set_pipeline(&program.pipeline);
                                 $pass.set_bind_group(1, &program.bind_group, &[]);
+                                // Groups two and three exist only when the
+                                // shader declared textures or data blocks, and
+                                // the pipeline layout matches — so binding them
+                                // is conditional on the same thing the layout
+                                // was built from.
+                                if let Some(textures) = &program.textures {
+                                    $pass.set_bind_group(2, textures, &[]);
+                                }
+                                if let Some((_, data)) = &program.data {
+                                    $pass.set_bind_group(3, data, &[]);
+                                }
                             }
                             None => {
                                 $pass.set_pipeline(&self.field_pipeline);

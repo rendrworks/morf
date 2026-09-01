@@ -39,7 +39,9 @@ relational functions.
 | math builtins | **79 of 79** | — | §3 |
 | derivatives | `dpdx` `dpdy` `fwidth` | the coarse/fine variants, deliberately | §4.4 |
 | relational | `all` `any` `isNan` `isInf` | bool vectors to fold | §4.4 |
-| textures | one implicit source via `texture(uv)` | everything else | §5 |
+| textures | the layer beneath, plus any a configuration declares | `textureLoad`, explicit LOD | §5.1 |
+| stages | fragment, and vertex displacement | — | §5.2 |
+| storage | read-only data blocks the host fills | writable, deliberately | §5.3 |
 
 Every one of naga's 79 `MathFunction` variants is now reachable by name, plus
 `select`, `texture`, the conversions and the bitcasts. `outer` is the only one
@@ -252,32 +254,86 @@ silently is how a shader goes subtly wrong and nobody finds out.
 
 ---
 
-## 5. Host-side surface
+## 5. Host-side surface — **done**
 
-These are not compiler work. Each needs a decision about what the *renderer*
-offers before the language can name it.
+These were not compiler work: each needed a decision about what the *renderer*
+offers before the language could name it. All three are implemented.
 
-### 5.1 More than one texture
+### 5.1 Named textures
 
-`texture(uv)` samples one implicit source — the layer underneath, in Effect
-mode. A shader that wants a mask, a lookup table or a second layer has no way to
-ask for one.
+A configuration declares them and the host binds them:
 
-- [ ] Named samplers a configuration declares, bound by the host
-- [ ] `textureDimensions`, `textureLoad`, explicit-LOD sampling
+```lua
+morf.shader("tinted", {
+  textures = { mask = "~/wall.png", ramp = "~/ramp.png" },
+  fragment = [[
+    function fragment(uv, time, resolution, coverage)
+      local m = texture(mask, uv)
+      return texture(ramp, vec2(m.r, 0.5))
+    end
+  ]],
+})
+```
 
-### 5.2 Vertex shaders
+- [x] Named samplers a configuration declares, bound by the host
+- [x] `texture(name, uv)` beside the existing `texture(uv)`, which still means
+      what is underneath in effect mode. Arity decides which, and sampling a
+      *named* texture does not make a node into a layer — there is nothing
+      being read from beneath it.
+- [ ] `textureDimensions`, `textureLoad`, explicit-LOD sampling. Deliberately
+      not built: each is a different *kind* of read, and none has anything
+      asking for it. Sampling is what a shader does with a texture.
 
-Nothing in the design assumes fragment. A configuration that could displace
-geometry would be a different feature, and a larger one.
+A texture is not a value — it cannot be added, stored or returned, and trying
+says so. The only thing a shader does with one is sample it, because that is the
+only thing a binding *is*.
 
-### 5.3 Storage buffers
+### 5.2 Vertex displacement
 
-The thing that would make §3.4 worth having. Also the thing that makes a shader
-able to keep state between frames, which is a much bigger design question than
-it looks — and the reason it is not simply "next".
+```lua
+morf.shader("wave", {
+  vertex = [[
+    function vertex(corner, size, time)
+      return corner + vec2(0.0, sin(time + corner.x * 0.05) * 6.0)
+    end
+  ]],
+  fragment = [[ ... ]],
+})
+```
 
----
+- [x] A second stage, compiled separately — a different signature, and a shader
+      may have one without the other.
+
+**It moves the quad, not the shape inside it.** The fragment stage still walks
+the field in the node's own space, so a displaced node keeps its geometry and
+takes it somewhere else. The first attempt displaced both, which cancelled out
+exactly, and the GPU test is what noticed.
+
+A vertex shader has no `uv` and no `coverage` — it runs once per corner, before
+there is a fragment — and it cannot take a derivative or sample what is
+underneath, both refused by name. It also declares no uniform block: it takes
+the clock as an argument, and two blocks of one name in a module is a
+redefinition.
+
+### 5.3 Data blocks
+
+```lua
+morf.shader("bars", { data = { spectrum = 64 }, fragment = [[ ... ]] })
+morf.shader_data(node, "spectrum", levels)
+```
+
+- [x] Read-only storage the host fills each frame. Larger than a uniform can
+      hold — a spectrum, a lookup table, a history.
+
+**Read-only on purpose, and this is the design decision.** Every pixel of a node
+runs the fragment shader, so a writable shared block would be a race between all
+of them: offering one would be offering a bug. A shader that needs to *keep*
+state between frames needs ping-pong targets and a defined update order, which
+is a different feature from this one and should be planned as such.
+
+The values are copied at the declared length — truncated or zero-padded — so a
+configuration handing over the wrong number of them is a mistake that survives
+rather than a frame reading past the end of a buffer.
 
 ## 6. Out of scope, and why
 
@@ -351,11 +407,12 @@ actually caught anything:
 
 ## 9. Status
 
-**Everything in this document is implemented except §5, and one deliberate no.**
+**Everything in this document is implemented.**
 
-`- [ ]` boxes remaining: `switch` (§4.3 — permanent, Lua has no syntax for it
-and an `if` chain says the same thing), and §5's two host-side items, which this
-document has said from the start are renderer design rather than compiler work.
+Three `- [ ]` boxes remain and all three are deliberate refusals rather than
+outstanding work, each with its reason beside it: `switch` (§4.3 — Lua has no
+syntax for one), and `textureLoad`/explicit-LOD sampling (§5.1 — a different
+kind of read, with nothing asking for it).
 
 - [x] **W1 — the ordinary builtins.** 42 of 79 math functions, from 34.
 - [x] **W2 — matrices.** 45 of 79, and rotation is writable.
@@ -367,6 +424,7 @@ document has said from the start are renderer design rather than compiler work.
       derivatives, integer vector types, and all eighteen packing builtins.
       **79 of 79.**
 - [x] **W8 — records, `modf` and `frexp`.** The last compiler-side boxes.
+- [x] **W9 — §5.** Named textures, vertex displacement, read-only data blocks.
 
 W7 and W8 were not in the original order. They exist because the first six
 steps deferred eleven items with reasons, and a reason is not the same as being

@@ -8,7 +8,7 @@ use crate::{ShaderKind, ShaderSpec};
 /// Two things need the whole program in view: that every path returns, and that
 /// no texture is sampled under non-uniform control flow.
 pub(crate) fn check(program: &Program, spec: &ShaderSpec, diagnostics: &mut Vec<Diagnostic>) {
-    returned_types(&program.entry.body, diagnostics);
+    returned_types(&program.entry.body, program.entry.returns, diagnostics);
     if !returns(&program.entry.body) {
         diagnostics.push(
             Diagnostic::new(1, "this shader can finish without returning a colour")
@@ -119,27 +119,36 @@ fn non_uniform(expression: &Expr) -> Option<&'static str> {
 ///
 /// Checked over the finished program rather than at each return, so a shader
 /// with three branches gets three messages instead of stopping at the first.
-fn returned_types(block: &Block, diagnostics: &mut Vec<Diagnostic>) {
+fn returned_types(block: &Block, wanted: Type, diagnostics: &mut Vec<Diagnostic>) {
     for statement in &block.0 {
         match statement {
             Stmt::Return(value) => {
                 let ty = value.ty();
-                if ty != Type::Vec4 && !ty.is_poison() {
-                    diagnostics.push(
+                if ty != wanted && !ty.is_poison() {
+                    // A fragment returns a colour and a vertex returns a
+                    // position, so the message has to say which this is.
+                    let diagnostic = if wanted == Type::Vec2 {
+                        Diagnostic::new(
+                            1,
+                            format!("a vertex shader returns a vec2 position, not {ty}"),
+                        )
+                        .note("it moves a corner; the colour comes from the fragment shader")
+                    } else {
                         Diagnostic::new(1, format!("a shader returns a vec4 colour, not {ty}"))
-                            .note("widen it: `vec4(value, 1.0)`"),
-                    );
+                            .note("widen it: `vec4(value, 1.0)`")
+                    };
+                    diagnostics.push(diagnostic);
                 }
             }
             Stmt::If { arms, otherwise } => {
                 for (_, body) in arms {
-                    returned_types(body, diagnostics);
+                    returned_types(body, wanted, diagnostics);
                 }
                 if let Some(body) = otherwise {
-                    returned_types(body, diagnostics);
+                    returned_types(body, wanted, diagnostics);
                 }
             }
-            Stmt::Loop { body, .. } => returned_types(body, diagnostics),
+            Stmt::Loop { body, .. } => returned_types(body, wanted, diagnostics),
             Stmt::Let { .. }
             | Stmt::Assign { .. }
             | Stmt::Break

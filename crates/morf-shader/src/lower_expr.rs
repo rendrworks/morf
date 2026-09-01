@@ -8,6 +8,14 @@ use crate::ir::*;
 use crate::lower::{Lowerer, Name, text};
 use crate::types::*;
 
+/// Where texture and data bindings start in the input index space.
+///
+/// They share `Expr::Input` with the frame's own values because they are the
+/// same kind of thing — something the host supplies — and separating them into
+/// their own expression would mean four more match arms saying nothing.
+pub(crate) const TEXTURE_BASE: usize = 1000;
+pub(crate) const DATA_BASE: usize = 2000;
+
 impl Lowerer<'_> {
     /// Lowers an expression.
     ///
@@ -163,6 +171,19 @@ impl Lowerer<'_> {
                 ty: self.inputs[index].ty,
             };
         }
+        if let Some(index) = self.textures.iter().position(|texture| texture == name) {
+            return Expr::Input {
+                index: TEXTURE_BASE + index,
+                ty: Type::Texture,
+            };
+        }
+        if let Some(index) = self.data.iter().position(|(block, ..)| block == name) {
+            let (_, element, length) = self.data[index];
+            return Expr::Input {
+                index: DATA_BASE + index,
+                ty: Type::data(element, length),
+            };
+        }
         if let Some(index) = self.params.iter().position(|param| param.name == name) {
             return Expr::Param {
                 index,
@@ -223,7 +244,14 @@ impl Lowerer<'_> {
             return Expr::poison();
         };
         let arity = builtins::arity(shape);
-        if lowered.len() != arity {
+        // `texture` is the one builtin whose arity varies: one argument samples
+        // what is underneath, two sample a declared texture.
+        let arity_ok = if builtin == Builtin::Texture {
+            lowered.len() == 1 || lowered.len() == 2
+        } else {
+            lowered.len() == arity
+        };
+        if !arity_ok {
             self.error(
                 line,
                 format!(
@@ -234,7 +262,9 @@ impl Lowerer<'_> {
             );
             return Expr::poison();
         }
-        if builtin == Builtin::Texture {
+        // Only the one-argument form reads what is underneath; sampling a
+        // declared texture does not make a node into a layer.
+        if builtin == Builtin::Texture && lowered.len() == 1 {
             self.samples_behind = true;
         }
         if matches!(
@@ -274,6 +304,17 @@ impl Lowerer<'_> {
         }
         // The only thing anybody does with a `modf` or `frexp` result is read
         // one of its two parts, so that is the only thing the type supports.
+        // A data block is read by index, not by name, and a texture is not a
+        // value at all — both are worth saying plainly rather than falling
+        // through to "has no components".
+        if source == Type::Texture {
+            self.error_note(
+                line,
+                "a texture is not a value",
+                "sample it: `texture(name, uv)`",
+            );
+            return Expr::poison();
+        }
         if let Some(element) = source.field(field) {
             return Expr::Call {
                 builtin: Builtin::ResultField,

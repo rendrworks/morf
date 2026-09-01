@@ -66,7 +66,8 @@ pub(crate) enum Shape {
     Matrix1,
     /// One matrix in, a scalar out: `determinant`.
     MatrixFold,
-    /// `texture(uv)` — vec2 in, vec4 out.
+    /// `texture(uv)` samples what is underneath; `texture(name, uv)` samples a
+    /// declared one. Arity decides which.
     Texture,
 }
 

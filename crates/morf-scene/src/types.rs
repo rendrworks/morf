@@ -258,6 +258,9 @@ pub struct NodeShader {
     pub program: u64,
     /// Parameter values, flattened in declaration order.
     pub params: Vec<f32>,
+    /// Values for the shader's data blocks, one run per block in binding
+    /// order. Read-only to the shader; the configuration owns them.
+    pub data: Vec<Vec<f32>>,
     /// Whether the shader reads what is rendered underneath, and so runs in
     /// the composite pass over a layer rather than in the field pass.
     pub samples_behind: bool,

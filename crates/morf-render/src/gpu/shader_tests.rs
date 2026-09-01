@@ -1,3 +1,4 @@
+use crate::gpu::backend_types::ShaderRegistration;
 use crate::gpu::field_tests::{alpha_at, field_command, field_layer, read_frame};
 use crate::*;
 use morf_shader::{ShaderKind, ShaderSpec};
@@ -16,6 +17,9 @@ fn compile(body: &str) -> morf_shader::Compiled {
         inputs: ShaderSpec::default_inputs(ShaderKind::Material),
         params: Vec::new(),
         entry: "fragment".to_owned(),
+        textures: Vec::new(),
+        data: Vec::new(),
+        vertex: false,
     };
     morf_shader::compile(body, &spec)
         .unwrap_or_else(|errors| panic!("{}", morf_shader::report("test", &errors)))
@@ -27,14 +31,17 @@ pub(super) fn shaded(body: &str) -> Vec<u8> {
     let mut backend = pollster::block_on(WgpuBackend::new(SIZE, SIZE)).unwrap();
     let offsets: Vec<u32> = compiled.params.iter().map(|slot| slot.offset).collect();
     backend
-        .register_shader(
-            compiled.hash,
-            &compiled.wgsl,
-            &offsets,
-            compiled.uniform_size,
-            false,
-            false,
-        )
+        .register_shader(ShaderRegistration {
+            program: compiled.hash,
+            wgsl: Some(&compiled.wgsl),
+            vertex: None,
+            offsets: &offsets,
+            uniform_size: compiled.uniform_size,
+            owns_coverage: false,
+            effect: false,
+            textures: &[],
+            data: &[],
+        })
         .expect("the generated WGSL compiles");
 
     let mut scene = morf_scene::Scene::new();
@@ -44,6 +51,7 @@ pub(super) fn shaded(body: &str) -> Vec<u8> {
         *shader = Some(ShaderBinding {
             program: compiled.hash,
             params: Vec::new(),
+            data: Vec::new(),
             samples_behind: false,
             owns_coverage: false,
         });
@@ -187,6 +195,9 @@ pub(crate) fn a_parameter_reaches_the_shader() {
             ty: morf_shader::Type::F32,
         }],
         entry: "fragment".to_owned(),
+        textures: Vec::new(),
+        data: Vec::new(),
+        vertex: false,
     };
     let compiled = morf_shader::compile(
         "function fragment(uv, time, resolution, coverage, level)
@@ -199,14 +210,17 @@ pub(crate) fn a_parameter_reaches_the_shader() {
     let mut backend = pollster::block_on(WgpuBackend::new(SIZE, SIZE)).unwrap();
     let offsets: Vec<u32> = compiled.params.iter().map(|slot| slot.offset).collect();
     backend
-        .register_shader(
-            compiled.hash,
-            &compiled.wgsl,
-            &offsets,
-            compiled.uniform_size,
-            false,
-            false,
-        )
+        .register_shader(ShaderRegistration {
+            program: compiled.hash,
+            wgsl: Some(&compiled.wgsl),
+            vertex: None,
+            offsets: &offsets,
+            uniform_size: compiled.uniform_size,
+            owns_coverage: false,
+            effect: false,
+            textures: &[],
+            data: &[],
+        })
         .expect("compiles");
 
     let mut scene = morf_scene::Scene::new();
@@ -216,6 +230,7 @@ pub(crate) fn a_parameter_reaches_the_shader() {
         *shader = Some(ShaderBinding {
             program: compiled.hash,
             params: vec![0.5],
+            data: Vec::new(),
             samples_behind: false,
             owns_coverage: false,
         });

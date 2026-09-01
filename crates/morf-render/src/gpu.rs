@@ -11,6 +11,7 @@ mod glyph_batch;
 mod glyphs;
 mod layer_targets;
 mod pipelines;
+mod shader_registry;
 mod shaders;
 mod targets;
 mod textures;
@@ -24,6 +25,8 @@ mod field_color_tests;
 mod field_shape_tests;
 #[cfg(test)]
 mod field_tests;
+#[cfg(test)]
+mod shader_host_tests;
 #[cfg(test)]
 mod shader_language_tests;
 #[cfg(test)]

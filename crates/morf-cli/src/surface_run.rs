@@ -1,5 +1,5 @@
 use morf_lua::{Limits, Runtime, Screen};
-use morf_render::{RenderEngine, WgpuBackend};
+use morf_render::{RenderEngine, ShaderRegistration, WgpuBackend};
 use morf_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, ScreenInfo};
 use std::collections::HashMap;
 use std::path::Path;
@@ -319,14 +319,17 @@ fn register_shaders(
     for shader in runtime.shaders() {
         renderer
             .backend_mut()
-            .register_shader(
-                shader.program,
-                &shader.wgsl,
-                &shader.offsets,
-                shader.uniform_size,
-                shader.owns_coverage,
-                shader.samples_behind,
-            )
+            .register_shader(ShaderRegistration {
+                program: shader.program,
+                wgsl: Some(&shader.wgsl),
+                vertex: shader.vertex.as_deref(),
+                offsets: &shader.offsets,
+                uniform_size: shader.uniform_size,
+                owns_coverage: shader.owns_coverage,
+                effect: shader.samples_behind,
+                textures: &shader.textures,
+                data: &shader.data,
+            })
             .map_err(|error| format!("shader pipeline: {error}"))?;
     }
     Ok(())

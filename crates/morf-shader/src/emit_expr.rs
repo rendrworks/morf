@@ -34,9 +34,21 @@ impl Emitter {
             Expr::Param { index, .. } => {
                 let _ = write!(self.out, "morf_u.morf_param{index}");
             }
-            Expr::Input { index, .. } => {
-                let _ = write!(self.out, "morf_in{index}");
-            }
+            Expr::Input { index, .. } => match *index {
+                slot if slot >= crate::lower_expr::DATA_BASE => {
+                    let _ = write!(self.out, "morf_data{}", slot - crate::lower_expr::DATA_BASE);
+                }
+                slot if slot >= crate::lower_expr::TEXTURE_BASE => {
+                    let _ = write!(
+                        self.out,
+                        "morf_tex{}",
+                        slot - crate::lower_expr::TEXTURE_BASE
+                    );
+                }
+                slot => {
+                    let _ = write!(self.out, "morf_in{slot}");
+                }
+            },
             Expr::Unary { op, value, .. } => {
                 self.out.push_str(match op {
                     UnOp::Negate => "-(",
@@ -196,12 +208,27 @@ impl Emitter {
             return;
         }
         if builtin == Builtin::Texture {
-            // A function the host shader provides, rather than a binding this
-            // crate declares. Which texture is underneath, and in which bind
-            // group, is the renderer's business: a compiler that named one
-            // would have to know how every pass is wired.
-            self.out.push_str("morf_sample(");
-            self.raw(&args[0]);
+            match args {
+                // What is underneath, through a function the host shader
+                // provides rather than a binding this crate declares. Which
+                // texture is underneath, and in which bind group, is the
+                // renderer's business: a compiler that named one would have to
+                // know how every pass is wired.
+                [coordinate] => {
+                    self.out.push_str("morf_sample(");
+                    self.raw(coordinate);
+                }
+                // A texture the configuration declared, by its own binding.
+                [Expr::Input { index, .. }, coordinate] => {
+                    let slot = index - crate::lower_expr::TEXTURE_BASE;
+                    let _ = write!(
+                        self.out,
+                        "textureSample(morf_tex{slot}, morf_tex_sampler{slot}, "
+                    );
+                    self.raw(coordinate);
+                }
+                _ => unreachable!("a texture call is checked before it is printed"),
+            }
             self.out.push(')');
             return;
         }

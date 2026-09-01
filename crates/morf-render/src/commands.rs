@@ -166,6 +166,8 @@ pub struct ShaderBinding {
     /// Parameter values, flattened in declaration order. The backend places
     /// them using the layout the compiler computed, so the two cannot disagree.
     pub params: Vec<f32>,
+    /// Values for the shader's data blocks, in binding order.
+    pub data: Vec<Vec<f32>>,
     /// Whether the shader reads what is rendered underneath it.
     pub samples_behind: bool,
     /// Whether the shader decides coverage, and so needs the node's whole

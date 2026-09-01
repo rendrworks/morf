@@ -24,6 +24,7 @@ pub(crate) const SHARED_SHAPES: &str = include_str!("../shape.wgsl");
 /// The default hook bodies, replaced when a configuration attaches a shader.
 const FILL_HOOK: &str = "    return base;";
 const COVERAGE_HOOK: &str = "    return filled;";
+const VERTEX_HOOK: &str = "    return corner;";
 
 /// Builds the field shader with a configuration's own shader spliced in.
 ///
@@ -39,8 +40,31 @@ pub(crate) fn field_shader_source(
     body: &str,
     shader: Option<&str>,
     owns_coverage: bool,
+    vertex: Option<&str>,
 ) -> Option<String> {
     let base = shader_source(body);
+    // A vertex displacement is spliced whether or not there is also a fragment
+    // shader: moving a node and colouring it are separate things a
+    // configuration may want either of.
+    let base = match vertex {
+        None => base,
+        Some(vertex) => {
+            if !base.contains(VERTEX_HOOK) {
+                return None;
+            }
+            // Both stages compile to a function called `morf_shader_main`, and
+            // a module cannot hold two. The vertex one is renamed on the way
+            // in, which is cheaper than teaching the compiler which stage it is
+            // emitting for a second time.
+            let vertex = vertex.replace("morf_shader_main", "morf_vertex_main");
+            let hooked = base.replacen(
+                VERTEX_HOOK,
+                "    return morf_vertex_main(corner, size, time);",
+                1,
+            );
+            format!("{vertex}\n{hooked}")
+        }
+    };
     let Some(shader) = shader else {
         return Some(base);
     };
@@ -109,6 +133,12 @@ impl WgpuBackend {
         bindings: &[Option<ShaderBinding>],
         scale_120: u32,
     ) {
+        // The clock rides in the viewport uniform's third slot so the *vertex*
+        // stage can read it: a shader that displaces a corner needs the time
+        // before there is a fragment to hand it to.
+        let viewport = [self.width as f32, self.height as f32, self.elapsed, 0.0];
+        self.queue
+            .write_buffer(&self.viewport_buffer, 0, bytemuck::cast_slice(&viewport));
         if self.shaders.is_empty() {
             return;
         }
@@ -135,6 +165,17 @@ impl WgpuBackend {
                 }
             }
             self.queue.write_buffer(&program.uniforms, 0, &block);
+            // Data blocks are the configuration's own numbers, written whole
+            // each frame: they are small, and a diff would cost more to track
+            // than the write costs to do.
+            if let Some((buffers, _)) = &program.data {
+                for (buffer, values) in buffers.iter().zip(&binding.data) {
+                    if !values.is_empty() {
+                        self.queue
+                            .write_buffer(buffer, 0, bytemuck::cast_slice(values));
+                    }
+                }
+            }
         }
     }
 }

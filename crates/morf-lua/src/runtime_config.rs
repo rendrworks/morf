@@ -279,6 +279,12 @@ pub struct ShaderProgram {
     /// Whether the shader reads what is rendered underneath, and so belongs to
     /// the composite pass rather than the field pass.
     pub samples_behind: bool,
+    /// The vertex displacement's WGSL, if it has one.
+    pub vertex: Option<String>,
+    /// Image paths for its declared textures, in binding order.
+    pub textures: Vec<String>,
+    /// Its data blocks: name and element count, in binding order.
+    pub data: Vec<(String, u32)>,
 }
 
 impl Runtime {
@@ -304,6 +310,9 @@ impl Runtime {
                 reads_time: shader.compiled.reads_time,
                 owns_coverage: shader.kind == morf_shader::ShaderKind::Surface,
                 samples_behind: shader.kind == morf_shader::ShaderKind::Effect,
+                vertex: shader.vertex.as_ref().map(|compiled| compiled.wgsl.clone()),
+                textures: shader.texture_paths.clone(),
+                data: shader.compiled.data.clone(),
             })
             .collect()
     }
@@ -314,10 +323,12 @@ impl Runtime {
     /// not costs nothing after the first. Derived from the compiler rather than
     /// declared, so it cannot be forgotten.
     pub fn shaders_animate(&self) -> bool {
-        self.reactive
-            .borrow()
-            .shaders
-            .values()
-            .any(|shader| shader.compiled.reads_time)
+        self.reactive.borrow().shaders.values().any(|shader| {
+            shader.compiled.reads_time
+                || shader
+                    .vertex
+                    .as_ref()
+                    .is_some_and(|vertex| vertex.reads_time)
+        })
     }
 }

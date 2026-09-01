@@ -1,6 +1,7 @@
 mod caps;
 mod coverage;
 mod coverage_arrays;
+mod coverage_host;
 mod coverage_rest;
 mod coverage_types;
 mod diagnostics;
@@ -19,13 +20,43 @@ pub(crate) fn compile_with(
     kind: ShaderKind,
     params: Vec<Binding>,
 ) -> Result<Compiled, Vec<Diagnostic>> {
+    compile_bound(body, kind, params, Vec::new(), Vec::new())
+}
+
+/// Compiles with declared textures and data blocks as well as parameters.
+pub(crate) fn compile_bound(
+    body: &str,
+    kind: ShaderKind,
+    params: Vec<Binding>,
+    textures: Vec<String>,
+    data: Vec<(String, Type, u32)>,
+) -> Result<Compiled, Vec<Diagnostic>> {
     let spec = ShaderSpec {
         kind,
         inputs: ShaderSpec::default_inputs(kind),
         params,
+        textures,
+        data,
         entry: "fragment".to_owned(),
+        vertex: false,
     };
     compile(body, &spec)
+}
+
+/// Compiles a vertex displacement.
+pub(crate) fn compile_vertex(body: &str) -> Result<Compiled, Vec<Diagnostic>> {
+    compile(
+        body,
+        &ShaderSpec {
+            kind: ShaderKind::Material,
+            inputs: ShaderSpec::vertex_inputs(),
+            params: Vec::new(),
+            textures: Vec::new(),
+            data: Vec::new(),
+            entry: "vertex".to_owned(),
+            vertex: true,
+        },
+    )
 }
 
 /// The WGSL for a body that is expected to compile.
