@@ -126,8 +126,8 @@ local EXAMPLE = os.getenv("EXAMPLE") or "examples/quickshell/init.lua"
 
 make.recipe{ name = "build", desc = "the workspace",
              run = function()
-               sh.cargo("build", "--workspace")
-               report("target/debug/morf")
+               sh.cargo("build", "--release", "--workspace")
+               report("target/release/morf")
              end }
 make.alias("b", "build")
 
@@ -137,8 +137,8 @@ make.recipe{
   params = { { "--example", desc = "path to the Lua configuration", default = EXAMPLE } },
   run = function(a)
     local script = a.example or EXAMPLE
-    sh.cargo("build", "--package", "morf-cli")
-    local command = { "target/debug/morf", script }
+    sh.cargo("build", "--release", "--package", "morf-cli")
+    local command = { "target/release/morf", script }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
       command = { (wrapper.out or ""):match("[^\n]+"), command[1], command[2] }
@@ -156,8 +156,8 @@ make.recipe{
   name = "gpu-smoke",
   desc = "initialize the GPU and submit an SDF frame",
   run = function()
-    sh.cargo("build", "--package", "morf-render", "--example", "gpu_smoke")
-    local command = { "target/debug/examples/gpu_smoke" }
+    sh.cargo("build", "--release", "--package", "morf-render", "--example", "gpu_smoke")
+    local command = { "target/release/examples/gpu_smoke" }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
       command = { (wrapper.out or ""):match("[^\n]+"), command[1] }
@@ -175,14 +175,14 @@ make.recipe{
     -- fails validation looks identical from the CPU side, and the first sign
     -- of it is a black screen or a panic in front of whoever ran it. This
     -- builds the pipelines and draws, for every example there is.
-    sh.cargo("build", "--package", "morf-cli", "--example", "frame_bench")
+    sh.cargo("build", "--release", "--package", "morf-cli", "--example", "frame_bench")
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     local prefix = wrapper.ok and (wrapper.out or ""):match("[^\n]+") or nil
     local listed = oslo.run{ "sh", "-c", "ls examples/*.lua", capture = true }
     assert(listed.ok, "no examples to check")
     local checked = 0
     for path in (listed.out or ""):gmatch("[^\n]+") do
-      local command = { "target/debug/examples/frame_bench", path, "gpu" }
+      local command = { "target/release/examples/frame_bench", path, "gpu" }
       if prefix then
         command = { prefix, command[1], command[2], command[3] }
       end
@@ -197,8 +197,8 @@ make.recipe{
   name = "wayland-smoke",
   desc = "present a layer surface and receive its frame callback",
   run = function()
-    sh.cargo("build", "--package", "morf-wayland", "--example", "layer_smoke")
-    local command = { "target/debug/examples/layer_smoke" }
+    sh.cargo("build", "--release", "--package", "morf-wayland", "--example", "layer_smoke")
+    local command = { "target/release/examples/layer_smoke" }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
       command = { (wrapper.out or ""):match("[^\n]+"), command[1] }
@@ -211,8 +211,8 @@ make.recipe{
   name = "popup-smoke",
   desc = "present an xdg popup anchored to a layer-surface click",
   run = function()
-    sh.cargo("build", "--package", "morf-wayland", "--example", "popup_smoke")
-    local command = { "target/debug/examples/popup_smoke" }
+    sh.cargo("build", "--release", "--package", "morf-wayland", "--example", "popup_smoke")
+    local command = { "target/release/examples/popup_smoke" }
     local wrapper = oslo.run{ "sh", "-c", "command -v nixVulkan", capture = true }
     if wrapper.ok then
       command = { (wrapper.out or ""):match("[^\n]+"), command[1] }
@@ -225,7 +225,7 @@ make.recipe{
   name = "io-smoke",
   desc = "exchange bytes through a Unix-domain socket",
   run = function()
-    sh.cargo("run", "--package", "morf-io", "--example", "socket_smoke")
+    sh.cargo("run", "--release", "--package", "morf-io", "--example", "socket_smoke")
   end,
 }
 
@@ -233,8 +233,8 @@ make.recipe{
   name = "dbus-smoke",
   desc = "call and introspect the session message bus",
   run = function()
-    sh.cargo("run", "--package", "morf-io", "--example", "dbus_smoke")
-    sh.cargo("run", "--package", "morf-lua", "--example", "dbus_smoke")
+    sh.cargo("run", "--release", "--package", "morf-io", "--example", "dbus_smoke")
+    sh.cargo("run", "--release", "--package", "morf-lua", "--example", "dbus_smoke")
   end,
 }
 
@@ -242,7 +242,7 @@ make.recipe{
   name = "pam-smoke",
   desc = "load PAM and reject invalid credentials",
   run = function()
-    sh.cargo("run", "--package", "morf-services", "--example", "pam_smoke")
+    sh.cargo("run", "--release", "--package", "morf-services", "--example", "pam_smoke")
   end,
 }
 
@@ -250,7 +250,7 @@ make.recipe{
   name = "udev-smoke",
   desc = "open the native kernel uevent monitor",
   run = function()
-    sh.cargo("run", "--package", "morf-services", "--example", "udev_smoke")
+    sh.cargo("run", "--release", "--package", "morf-services", "--example", "udev_smoke")
   end,
 }
 
