@@ -6,9 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use morf_services::{
-    GreetdClient, PamAuthenticator, PipeWire, StatusNotifierHost, UdevMonitor, XkbKeymap,
-};
+use morf_services::{GreetdClient, PamAuthenticator, StatusNotifierHost, UdevMonitor, XkbKeymap};
 
 use crate::{lua_values::*, scene_bindings::*, serialization::*, state::*, table_menu::*};
 
@@ -104,85 +102,6 @@ pub(crate) fn install_system_service_api<'gc>(
     let dbus = Table::new(&ctx);
     dbus.set_field(ctx, "proxy", dbus_proxy);
     morf.set_field(ctx, "dbus", dbus);
-
-    let pipewire_nodes = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let pipewire: UserRef<PipeWireToken> = stack.consume(ctx)?;
-        let nodes = Table::new(&ctx);
-        for (index, node) in pipewire.service.nodes().into_iter().enumerate() {
-            let value = Table::new(&ctx);
-            value.set_field(ctx, "id", node.id as i64);
-            value.set_field(
-                ctx,
-                "serial",
-                node.serial
-                    .and_then(|value| i64::try_from(value).ok())
-                    .map_or(LuaValue::Nil, LuaValue::Integer),
-            );
-            value.set_field(ctx, "name", node.name.as_str());
-            value.set_field(ctx, "description", node.description.as_str());
-            value.set_field(ctx, "media_class", node.media_class.as_str());
-            nodes
-                .set(ctx, index as i64 + 1, value)
-                .expect("PipeWire node table accepts integer keys");
-        }
-        stack.replace(ctx, nodes);
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire_volume = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (pipewire, id): (UserRef<PipeWireToken>, i64) = stack.consume(ctx)?;
-        let id = u32::try_from(id).map_err(|_| HostError("invalid PipeWire node id".into()))?;
-        let volume = pipewire
-            .service
-            .volume(id)
-            .map_err(|error| HostError(error.to_string()))?;
-        let value = Table::new(&ctx);
-        let channels = Table::new(&ctx);
-        for (index, channel) in volume.channels.iter().enumerate() {
-            channels
-                .set(ctx, index as i64 + 1, *channel as f64)
-                .expect("PipeWire channel table accepts integer keys");
-        }
-        value.set_field(ctx, "channels", channels);
-        value.set_field(ctx, "level", volume.average() as f64);
-        value.set_field(ctx, "muted", volume.muted);
-        stack.replace(ctx, value);
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire_set_volume = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (pipewire, id, level, muted): (UserRef<PipeWireToken>, i64, f64, bool) =
-            stack.consume(ctx)?;
-        let id = u32::try_from(id).map_err(|_| HostError("invalid PipeWire node id".into()))?;
-        if !level.is_finite() || level < 0.0 || level > f32::MAX as f64 {
-            return Err(HostError("PipeWire volume must be finite and non-negative".into()).into());
-        }
-        let current = pipewire
-            .service
-            .volume(id)
-            .map_err(|error| HostError(error.to_string()))?;
-        let channels = vec![level as f32; current.channels.len().max(1)];
-        pipewire
-            .service
-            .set_volume(id, &channels, muted)
-            .map_err(|error| HostError(error.to_string()))?;
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire_methods = Table::new(&ctx);
-    pipewire_methods.set_field(ctx, "nodes", pipewire_nodes);
-    pipewire_methods.set_field(ctx, "volume", pipewire_volume);
-    pipewire_methods.set_field(ctx, "set_volume", pipewire_set_volume);
-    let pipewire_metatable = Table::new(&ctx);
-    pipewire_metatable.set_field(ctx, "__index", pipewire_methods);
-    let pipewire_metatable = ctx.stash(pipewire_metatable);
-    let pipewire_connect = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let service = PipeWire::connect().map_err(|error| HostError(error.to_string()))?;
-        let userdata = UserData::new_static(&ctx, PipeWireToken { service });
-        userdata.set_metatable(ctx, Some(ctx.fetch(&pipewire_metatable)));
-        stack.replace(ctx, userdata);
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire = Table::new(&ctx);
-    pipewire.set_field(ctx, "connect", pipewire_connect);
-    morf.set_field(ctx, "pipewire", pipewire);
 
     let udev_state = Rc::clone(&state);
     let udev_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {

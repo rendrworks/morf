@@ -247,15 +247,6 @@ make.recipe{
 }
 
 make.recipe{
-  name = "pipewire-smoke",
-  desc = "enumerate the native PipeWire graph and round-trip sink volume",
-  run = function()
-    sh.cargo("run", "--package", "morf-services", "--example", "pipewire_smoke")
-    sh.cargo("run", "--package", "morf-lua", "--example", "pipewire_smoke")
-  end,
-}
-
-make.recipe{
   name = "udev-smoke",
   desc = "open the native kernel uevent monitor",
   run = function()

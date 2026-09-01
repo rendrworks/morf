@@ -311,10 +311,12 @@ local poll_brightness = runner({ BRIGHT_COMMAND, "get" }, function(out)
 end)
 
 -- The original's one-liner: read the default sink's active port and decide
--- whether it is a headset. `pactl` has no direct query for it, and
--- `morf.pipewire` reports no port information at all
--- (`crates/morf-services/src/pipewire/runtime.rs:282,287-310`), so the shell
--- pipeline is kept as-is.
+-- whether it is a headset. `pactl` has no direct query for it, so the shell
+-- pipeline is kept as-is — which is now the only way audio is reached at all:
+-- the engine has no sound API, deliberately. `pactl subscribe` is a process
+-- that emits a line per change, so `morf.io.process_view` and a line parser
+-- give a configuration live audio events without the engine linking to
+-- anything.
 local PORT_SCRIPT = "default_sink=$(pactl get-default-sink | tr -d '\\n'); "
   .. "pactl list sinks | awk -v target=\"$default_sink\" "
   .. "'/^\\s*Name: /{enabled = ($2 == target)} /^\\s*Active Port:/ {if (enabled){print; exit}}' "

@@ -12,7 +12,7 @@ use morf_lifecycle::Retention;
 use morf_menu::Menu;
 use morf_reactive::{Graph, SignalId};
 use morf_scene::{Easing, GroupId, ListModel, ModelId, NodeHandle, Scene, VirtualList};
-use morf_services::{GreetdClient, PamTask, PipeWire, StatusNotifierHost, UdevMonitor};
+use morf_services::{GreetdClient, PamTask, StatusNotifierHost, UdevMonitor};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -96,10 +96,6 @@ pub(crate) struct GroupToken {
 #[derive(Debug)]
 pub(crate) struct DbusToken {
     pub(crate) proxy: DbusProxy,
-}
-
-pub(crate) struct PipeWireToken {
-    pub(crate) service: PipeWire,
 }
 
 pub(crate) struct GreetdToken {
