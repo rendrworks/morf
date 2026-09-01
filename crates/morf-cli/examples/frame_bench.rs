@@ -367,9 +367,21 @@ fn main() {
         })
         .collect();
 
+    // Nodes asking the compositor to blur behind them. Reported because the
+    // failure is silent from up here: the region is derived on the CPU and
+    // handed to the compositor, so a configuration that never sets the property
+    // and one whose compositor ignores it look exactly alike on screen.
+    let backdrops = computed
+        .backdrop_geometry(&scene)
+        .map(|regions| regions.len())
+        .unwrap_or(0);
+
     let frame = layout + draw + region;
     println!("{config}");
     println!("  scene nodes        {nodes}");
+    if backdrops > 0 {
+        println!("  backdrop regions   {backdrops}");
+    }
     if material > 0 || !effects.is_empty() {
         println!("  shaded commands    {material}");
         for covered in &effects {

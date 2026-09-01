@@ -60,10 +60,31 @@ pub struct StatusNotifierHost {
 }
 
 impl StatusNotifierHost {
-    /// Registers a host with an available freedesktop or KDE watcher.
+    /// The bus namespace this engine will look under on its own.
+    ///
+    /// One, and it is the vendor-neutral one. The tray specification has a
+    /// second well-known name carrying a desktop environment's own prefix, and
+    /// most implementations answer to that one instead — but which watcher to
+    /// talk to is a fact about the machine a configuration is running on, not
+    /// about this engine, and hard-coding somebody's desktop into a Wayland
+    /// engine is how a Wayland engine stops being one. A configuration that
+    /// needs another name passes it; see [`Self::connect_to`].
+    pub const DEFAULT_NAMESPACE: &str = "org.freedesktop";
+
+    /// Registers a host with the vendor-neutral watcher.
     pub fn connect() -> Result<Self, StatusNotifierError> {
+        Self::connect_to(&[Self::DEFAULT_NAMESPACE])
+    }
+
+    /// Registers a host with the first of `namespaces` that answers.
+    ///
+    /// The order is the configuration's, because it is the configuration that
+    /// knows what is running: on a session whose tray answers to a vendor
+    /// prefix, naming it here is a one-line fact about that session rather than
+    /// a permanent assumption baked into the engine.
+    pub fn connect_to(namespaces: &[&str]) -> Result<Self, StatusNotifierError> {
         let mut last_error = None;
-        for namespace in ["org.freedesktop", "org.kde"] {
+        for namespace in namespaces {
             match Self::connect_namespace(namespace) {
                 Ok(host) => return Ok(host),
                 Err(error) => last_error = Some(error),
@@ -186,6 +207,21 @@ mod tests {
                 service: ":1.42".to_owned(),
                 path: "/Tray".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn the_engine_names_no_desktop_environment() {
+        // A Wayland engine that hard-codes one desktop's bus prefix has taken a
+        // side, and every configuration built on it inherits that. The default
+        // is the vendor-neutral name and nothing else; anything with somebody's
+        // project in it is a fact about a particular session, which is the
+        // configuration's to supply.
+        assert_eq!(StatusNotifierHost::DEFAULT_NAMESPACE, "org.freedesktop");
+        assert!(
+            !StatusNotifierHost::DEFAULT_NAMESPACE.contains("kde")
+                && !StatusNotifierHost::DEFAULT_NAMESPACE.contains("gnome"),
+            "the default watcher name belongs to no desktop environment",
         );
     }
 }

@@ -1,7 +1,11 @@
 //! Asking the compositor to blur what is behind a surface.
 //!
-//! `ext-background-effect-v1`, the staging protocol that generalised KDE's
-//! `org_kde_kwin_blur`. A client never receives the pixels behind it — Wayland
+//! `ext-background-effect-v1`: a cross-desktop staging protocol, in the `ext`
+//! namespace rather than a vendor one, which is the whole reason it is worth
+//! having — it replaced a decade of per-compositor blur extensions with one
+//! request every compositor can answer.
+//!
+//! A client never receives the pixels behind it — Wayland
 //! does not offer them, and this protocol does not either. What it offers is a
 //! region: the compositor blurs its own already-composited result inside that
 //! region, and only then blends this surface over the top.

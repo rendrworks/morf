@@ -355,7 +355,10 @@ fn decode_svg(bytes: &[u8], width: u32, height: u32) -> Result<ImageData, ImageE
         let alpha = u32::from(pixel[3]);
         // Not `checked_div`: the guard skips the whole channel loop for a
         // fully transparent pixel, so checking once here is the point of it.
-        #[allow(clippy::manual_checked_ops)]
+        // `unknown_lints` because the lint below is newer than some toolchains
+        // this builds on, and an allow for a lint that does not exist yet is
+        // itself an error under `-D warnings`.
+        #[allow(unknown_lints, clippy::manual_checked_ops)]
         if alpha != 0 {
             for channel in &mut pixel[..3] {
                 *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;

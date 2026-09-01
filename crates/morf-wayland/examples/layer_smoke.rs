@@ -105,6 +105,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         client.scale_120(),
     )?;
+    // Ask for a blurred backdrop across the whole surface. Whether anything
+    // visibly blurs is the compositor's decision — Hyprland, for one, gates it
+    // behind `decoration:blur:enabled` — but the request either reaches it
+    // intact or raises a protocol error that kills this client, so getting a
+    // frame callback afterwards is what says our half of the exchange is well
+    // formed.
+    let backdrop = client.supports_backdrop_blur();
+    if backdrop {
+        client.set_layer_backdrop_region(
+            morf_wayland::PRIMARY_LAYER,
+            Some(&[morf_region::Rect {
+                x: 0,
+                y: 0,
+                width: width as i32,
+                height: height as i32,
+            }]),
+        )?;
+        client.surface().commit();
+    }
     'framed: loop {
         client.dispatch()?;
         while let Some(event) = client.next_event() {
@@ -133,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // configuration cannot work around: absent, the panel is
                     // translucent over a sharp desktop and there is nothing
                     // morf can do about it.
-                    client.supports_backdrop_blur(),
+                    backdrop,
                     time_ms,
                     backend.info().name,
                     backend.info().backend,

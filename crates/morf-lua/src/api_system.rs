@@ -200,8 +200,27 @@ pub(crate) fn install_system_service_api<'gc>(
 
     let status_notifier_state = Rc::clone(&state);
     let status_notifier_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let callback: Closure = stack.consume(ctx)?;
-        let host = StatusNotifierHost::connect().map_err(|error| HostError(error.to_string()))?;
+        // `subscribe(handler)` uses the vendor-neutral watcher name;
+        // `subscribe(handler, { "org.freedesktop", "..." })` names the ones this
+        // session actually has. The engine ships no desktop environment's
+        // prefix of its own — which watcher answers is a fact about the machine,
+        // and the configuration is the thing that knows it.
+        let (callback, watchers): (Closure, Option<Table>) = stack.consume(ctx)?;
+        let names: Vec<String> = match watchers {
+            Some(table) => (1..=table.length(&ctx))
+                .filter_map(|index| match table.get_value(ctx, index) {
+                    LuaValue::String(name) => Some(name.display_lossy().to_string()),
+                    _ => None,
+                })
+                .collect(),
+            None => vec![StatusNotifierHost::DEFAULT_NAMESPACE.to_owned()],
+        };
+        if names.is_empty() {
+            return Err(HostError("status notifier needs at least one watcher name".into()).into());
+        }
+        let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+        let host = StatusNotifierHost::connect_to(&borrowed)
+            .map_err(|error| HostError(error.to_string()))?;
         let mut state = status_notifier_state.borrow_mut();
         if state.status_notifiers.len() >= 4 {
             return Err(HostError("status notifier subscription limit reached".into()).into());
