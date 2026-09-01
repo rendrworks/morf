@@ -140,6 +140,7 @@ pub(crate) fn run_surface(
         popup_surfaces,
         floating_surfaces,
         layer_surfaces,
+        animating_shaders,
         last_frame: None,
         pacer: FramePacer::new(),
         // Until a callback says otherwise, assume the commonest refresh.
@@ -157,10 +158,7 @@ pub(crate) fn run_surface(
             .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
             .map_err(|error| error.to_string())?;
         let next_clock = clock_text();
-        // A shader that reads the clock has to be redrawn every frame; one
-        // that does not costs nothing after the first. The compiler worked out
-        // which this configuration has, so nothing here has to be told.
-        let mut repaint = runtime.poll_services() || animating_shaders;
+        let mut repaint = runtime.poll_services();
         let mut recreate_surface = false;
         while let Ok(command) = commands.try_recv() {
             let update = handle_worker_command(&mut runtime, &runtime_screen, policy, command);

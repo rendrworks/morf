@@ -51,7 +51,11 @@ pub(crate) fn handle_surface_event(
             if !delta.is_zero() {
                 state.refresh = delta;
             }
-            let advanced = frame.active || frame.changed > 0;
+            // A shader reading the clock is motion like any other: it makes
+            // the frame *advance*, and the pacer still decides which callbacks
+            // are painted on. Forcing a repaint outside this path would spin as
+            // fast as the event loop turns rather than at the output's rate.
+            let advanced = frame.active || frame.changed > 0 || state.animating_shaders;
             if advanced {
                 // A surface that cannot paint inside one refresh paints on
                 // every second callback instead, and keeps that cadence rather

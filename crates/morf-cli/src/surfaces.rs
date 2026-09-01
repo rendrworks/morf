@@ -71,6 +71,12 @@ pub(crate) struct SurfaceEventState {
     pub(crate) last_frame: Option<u32>,
     /// What this surface can afford, and when it last painted.
     pub(crate) pacer: FramePacer,
+    /// Whether any registered shader reads the clock.
+    ///
+    /// Such a shader has to be redrawn continuously, but *through* the frame
+    /// callback like everything else — treating it as a reason to repaint
+    /// outside the callback is a spin, not an animation.
+    pub(crate) animating_shaders: bool,
     /// The interval between the compositor's frame callbacks, as measured.
     pub(crate) refresh: Duration,
     pub(crate) hovered: Option<(SurfaceRole, Hit)>,
