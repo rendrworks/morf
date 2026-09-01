@@ -80,13 +80,14 @@ pub(crate) fn build_field_pipeline(
     layout: &wgpu::BindGroupLayout,
     shader_layout: &wgpu::BindGroupLayout,
     user: Option<&str>,
+    owns_coverage: bool,
 ) -> Option<wgpu::RenderPipeline> {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("morf field pipeline layout"),
         bind_group_layouts: &[Some(layout), Some(shader_layout)],
         immediate_size: 0,
     });
-    let source = field_shader_source(include_str!("../field.wgsl"), user)?;
+    let source = field_shader_source(include_str!("../field.wgsl"), user, owns_coverage)?;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("morf field shader"),
         source: wgpu::ShaderSource::Wgsl(source.into()),

@@ -324,6 +324,8 @@ fn register_shaders(
                 &shader.wgsl,
                 &shader.offsets,
                 shader.uniform_size,
+                shader.owns_coverage,
+                shader.samples_behind,
             )
             .map_err(|error| format!("shader pipeline: {error}"))?;
     }

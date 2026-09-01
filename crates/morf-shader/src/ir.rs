@@ -271,6 +271,11 @@ impl BinOp {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Builtin {
     Abs,
+    Acos,
+    Asin,
+    Atan,
+    /// `atan2(y, x)`: the angle of a vector, which is how a polar shader starts.
+    Atan2,
     Ceil,
     Clamp,
     Cos,
@@ -310,6 +315,10 @@ impl Builtin {
     pub fn wgsl(self) -> &'static str {
         match self {
             Self::Abs => "abs",
+            Self::Acos => "acos",
+            Self::Asin => "asin",
+            Self::Atan => "atan",
+            Self::Atan2 => "atan2",
             Self::Ceil => "ceil",
             Self::Clamp => "clamp",
             Self::Cos => "cos",

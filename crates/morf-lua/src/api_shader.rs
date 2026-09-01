@@ -8,6 +8,8 @@ use crate::{scene_bindings::*, state::*};
 /// A shader a configuration registered, ready for the renderer.
 pub(crate) struct RegisteredShader {
     pub(crate) compiled: morf_shader::Compiled,
+    /// What the shader is allowed to decide, which selects its pipeline.
+    pub(crate) kind: ShaderKind,
     /// Parameter names in the order the uniform block holds them.
     pub(crate) params: Vec<String>,
     /// The values a node gets when it does not override them.
@@ -75,6 +77,7 @@ fn register<'gc>(
         name.to_owned(),
         RegisteredShader {
             compiled,
+            kind,
             params,
             defaults,
         },
@@ -146,6 +149,8 @@ pub(crate) fn attach_shader<'gc>(
         ));
     };
     let program = shader.compiled.hash;
+    let owns_coverage = shader.kind == ShaderKind::Surface;
+    let samples_behind = shader.kind == ShaderKind::Effect;
     let mut params = shader.defaults.clone();
     let order = shader.params.clone();
     drop(borrowed);
@@ -166,9 +171,14 @@ pub(crate) fn attach_shader<'gc>(
             };
         }
     }
-    state
-        .borrow_mut()
-        .scene
-        .attach_shader(node, morf_scene::NodeShader { program, params });
+    state.borrow_mut().scene.attach_shader(
+        node,
+        morf_scene::NodeShader {
+            program,
+            params,
+            samples_behind,
+            owns_coverage,
+        },
+    );
     Ok(())
 }

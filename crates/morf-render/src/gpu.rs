@@ -9,6 +9,7 @@ mod clear_pipeline;
 mod field_pass;
 mod glyph_batch;
 mod glyphs;
+mod layer_targets;
 mod pipelines;
 mod shaders;
 mod targets;

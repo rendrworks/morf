@@ -44,16 +44,24 @@ pub(crate) fn append_node(
     let rounded_clip = clips
         && matches!(element, Element::Rect | Element::ClipRect)
         && radii.iter().any(|radius| *radius > 0.0);
+    // An effect shader composites the subtree rather than colouring one node,
+    // so it is taken off the node here and given to the layer below.
+    let effect = shader_binding(scene, node)?.filter(|shader| shader.samples_behind);
     let creates_layer = layer_config.enabled
         || node_opacity < 1.0
         || rotation != 0.0
         || rounded_clip
         || layer_blur > 0.0
-        || layer_config.shadow_color.alpha > 0.0;
+        || layer_config.shadow_color.alpha > 0.0
+        // An effect shader has nothing to read until its subtree has been
+        // rendered somewhere, so a node carrying one becomes a layer whether or
+        // not anything else would have made it into one.
+        || effect.is_some();
     let layer = creates_layer.then(|| {
         let index = list.layers.len();
         list.layers.push(Layer {
             node,
+            shader: effect.clone(),
             commands: list.commands.len()..list.commands.len(),
             parent: inherited.layer,
             opacity: node_opacity as f32,
@@ -222,7 +230,11 @@ pub(crate) fn append_node(
                     shadow_offset_x: scene.number(node, "shadow_offset_x")?,
                     shadow_offset_y: scene.number(node, "shadow_offset_y")?,
                     shadow_inner: scene.bool_value(node, "shadow_inner")?,
-                    shader: shader_binding(scene, node)?,
+                    // An effect shader belongs to the layer that composites
+                    // this node, not to the node's own fill: leaving it here
+                    // too would have the field pass look for a program that
+                    // was registered against the composite pass.
+                    shader: shader_binding(scene, node)?.filter(|shader| !shader.samples_behind),
                     layers,
                 });
             }
@@ -265,6 +277,7 @@ pub(crate) fn append_node(
             shadow_color: Color::rgba8(0, 0, 0, 0),
             shadow_blur: 0.0,
             shadow_offset: [0.0, 0.0],
+            shader: None,
             mask: Some(LayerMask {
                 bounds: inner,
                 transform,

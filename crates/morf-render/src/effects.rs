@@ -153,6 +153,8 @@ pub(crate) fn shader_binding(
     Ok(scene.node_shader(node).map(|shader| ShaderBinding {
         program: shader.program,
         params: shader.params.clone(),
+        samples_behind: shader.samples_behind,
+        owns_coverage: shader.owns_coverage,
     }))
 }
 

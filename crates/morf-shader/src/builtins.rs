@@ -32,6 +32,12 @@ pub(crate) enum Shape {
 /// more than the cleverness would have been.
 pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("abs", Builtin::Abs, Shape::Componentwise1),
+    ("acos", Builtin::Acos, Shape::Componentwise1),
+    ("asin", Builtin::Asin, Shape::Componentwise1),
+    ("atan", Builtin::Atan, Shape::Componentwise1),
+    // `atan2(y, x)` is where every polar shader starts, and there is no way to
+    // write it out of the other builtins.
+    ("atan2", Builtin::Atan2, Shape::Componentwise2),
     ("ceil", Builtin::Ceil, Shape::Componentwise1),
     ("clamp", Builtin::Clamp, Shape::Componentwise3),
     ("cos", Builtin::Cos, Shape::Componentwise1),

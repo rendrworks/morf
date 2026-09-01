@@ -82,6 +82,9 @@ pub struct WgpuBackend {
     /// pipeline takes tens of milliseconds, which a compositor cannot spend at
     /// paint time.
     pub(crate) shaders: HashMap<u64, ShaderProgram>,
+    /// Effect shaders, which splice into the composite pass rather than the
+    /// field pass and so need a pipeline built from a different shader.
+    pub(crate) effect_shaders: HashMap<u64, ShaderProgram>,
     /// Seconds since the shell started, as shaders read it.
     ///
     /// Held here rather than passed through `render`, because the render

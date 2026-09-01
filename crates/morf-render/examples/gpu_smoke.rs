@@ -101,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             node,
             commands: 0..3,
             parent: None,
+            shader: None,
             opacity: 0.8,
             blur: 6.0,
             shadow_color: Color::rgba8(0, 0, 0, 160),

@@ -53,12 +53,6 @@ pub(crate) fn pack(params: &[Binding]) -> (Vec<ParamSlot>, u32) {
 pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String {
     let mut out = String::with_capacity(2048);
     emit_uniforms(&mut out, slots, size);
-    if program.samples_behind {
-        out.push_str(
-            "@group(2) @binding(0) var morf_behind: texture_2d<f32>;\n\
-             @group(2) @binding(1) var morf_behind_sampler: sampler;\n\n",
-        );
-    }
     // One fixed signature, whatever the shader declared, so the host's call
     // site never varies. The declared inputs are bound inside from wherever
     // they actually come from — the fragment stage, or the uniform header.
@@ -346,8 +340,11 @@ impl Emitter {
 
     fn call(&mut self, builtin: Builtin, ty: Type, args: &[Expr]) {
         if builtin == Builtin::Texture {
-            self.out
-                .push_str("textureSample(morf_behind, morf_behind_sampler, ");
+            // A function the host shader provides, rather than a binding this
+            // crate declares. Which texture is underneath, and in which bind
+            // group, is the renderer's business: a compiler that named one
+            // would have to know how every pass is wired.
+            self.out.push_str("morf_sample(");
             self.raw(&args[0]);
             self.out.push(')');
             return;

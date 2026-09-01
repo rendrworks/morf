@@ -258,6 +258,17 @@ pub struct NodeShader {
     pub program: u64,
     /// Parameter values, flattened in declaration order.
     pub params: Vec<f32>,
+    /// Whether the shader reads what is rendered underneath, and so runs in
+    /// the composite pass over a layer rather than in the field pass.
+    pub samples_behind: bool,
+    /// Whether the shader decides its own coverage rather than colouring what
+    /// the node's own shape already covered.
+    ///
+    /// It travels with the attachment because it changes the *geometry* the
+    /// fragment stage walks, not just the colour: a shader that owns its
+    /// coverage has to be given the node's whole rectangle, or it paints only
+    /// where the shape it replaced would have been.
+    pub owns_coverage: bool,
 }
 
 pub(crate) struct Node {

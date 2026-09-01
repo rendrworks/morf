@@ -114,7 +114,7 @@ impl WgpuBackend {
         );
         let (field_layout, field_shader_layout) = create_field_layouts(&device);
         let field_pipeline =
-            build_field_pipeline(&device, &field_layout, &field_shader_layout, None)
+            build_field_pipeline(&device, &field_layout, &field_shader_layout, None, false)
                 .expect("the field shader carries its own hook");
         let field_shader_default = create_shader_bind_group(
             &device,
@@ -173,6 +173,7 @@ impl WgpuBackend {
             field_shader_layout,
             field_shader_default,
             shaders: HashMap::new(),
+            effect_shaders: HashMap::new(),
             elapsed: 0.0,
             images: ImageCache::default(),
             image_textures: HashMap::new(),
@@ -238,23 +239,48 @@ impl WgpuBackend {
         wgsl: &str,
         offsets: &[u32],
         size: u32,
+        owns_coverage: bool,
+        effect: bool,
     ) -> Result<(), GpuError> {
-        if self.shaders.contains_key(&program) {
+        let registry = if effect {
+            &self.effect_shaders
+        } else {
+            &self.shaders
+        };
+        if registry.contains_key(&program) {
             return Ok(());
         }
-        let pipeline = build_field_pipeline(
-            &self.device,
-            &self.field_layout,
-            &self.field_shader_layout,
-            Some(wgsl),
-        )
-        .ok_or_else(|| {
-            GpuError("the field shader has no hook to splice a shader into".to_owned())
-        })?;
+        let pipeline = if effect {
+            build_glyph_pipeline(
+                &self.device,
+                &self.glyph_layout,
+                Some(&self.field_shader_layout),
+                Some(wgsl),
+            )
+            .ok_or_else(|| {
+                GpuError("the glyph shader has no hook to splice an effect into".to_owned())
+            })?
+        } else {
+            build_field_pipeline(
+                &self.device,
+                &self.field_layout,
+                &self.field_shader_layout,
+                Some(wgsl),
+                owns_coverage,
+            )
+            .ok_or_else(|| {
+                GpuError("the field shader has no hook to splice a shader into".to_owned())
+            })?
+        };
         let uniforms = create_shader_uniform_buffer(&self.device, size);
         let bind_group =
             create_shader_bind_group(&self.device, &self.field_shader_layout, &uniforms);
-        self.shaders.insert(
+        let registry = if effect {
+            &mut self.effect_shaders
+        } else {
+            &mut self.shaders
+        };
+        registry.insert(
             program,
             ShaderProgram {
                 pipeline,
@@ -275,9 +301,9 @@ impl WgpuBackend {
         self.elapsed = seconds;
     }
 
-    /// Whether a program has been registered.
+    /// Whether a program has been registered, in either registry.
     pub fn has_shader(&self, program: u64) -> bool {
-        self.shaders.contains_key(&program)
+        self.shaders.contains_key(&program) || self.effect_shaders.contains_key(&program)
     }
 
     /// Grows the field instance, layer and material buffers, rebinding when

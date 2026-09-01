@@ -59,9 +59,28 @@ fn vs_main(
 }
 
 
+/// What a configuration's effect shader reads when it samples underneath.
+///
+/// The contract a compiled shader is built against: it calls `morf_sample` and
+/// this pass decides what that means. For a composited layer it is the layer's
+/// own rendered content, which is what makes a distortion or a custom blur
+/// possible at all.
+fn morf_sample(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(atlas, atlas_sampler, uv);
+}
+
+/// Where a configuration's effect shader gets to rework what was rendered.
+///
+/// The default hands the sample straight back, so an ordinary layer composite
+/// costs nothing. Attaching an effect shader replaces this body with a call
+/// into the compiled one.
+fn morf_effect_hook(uv: vec2<f32>, sampled: vec4<f32>) -> vec4<f32> {
+    return sampled;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    var sampled = textureSample(atlas, atlas_sampler, input.uv);
+    var sampled = morf_effect_hook(input.uv, morf_sample(input.uv));
 
     // A layer mask trims the quad. For a distance field the sampled red channel
     // carries distance rather than coverage, so the mask is applied to the final

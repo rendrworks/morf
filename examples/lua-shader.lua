@@ -78,6 +78,45 @@ morf.shader("orbit", {
   ]],
 })
 
+-- A surface shader decides its own coverage: the node's rounded rectangle is
+-- not consulted at all, so the shape here is whatever the shader returns alpha
+-- for. Geometry and shader stop composing in this mode, which is inherent to
+-- it rather than a gap.
+morf.shader("blades", {
+  kind = "surface",
+  params = { count = 6.0 },
+  fragment = [[
+    function fragment(uv, time, resolution, count)
+      local p = uv - vec2(0.5, 0.5)
+      local angle = atan2(p.y, p.x) + time * 0.5
+      local radius = length(p)
+      -- A rosette: the petal count comes from a parameter, so animating it
+      -- animates the shape itself rather than only its colour.
+      local petal = cos(angle * count) * 0.14 + 0.28
+      local inside = 1.0 - smoothstep(petal - 0.01, petal + 0.01, radius)
+      return vec4(0.95, 0.55 + radius, 0.2, inside)
+    end
+  ]],
+})
+
+-- An effect shader reads what is already rendered underneath it. That needs
+-- somewhere to read *from*, so a node carrying one becomes a compositing layer
+-- whether or not anything else about it would have made it into one — its
+-- subtree renders to a target first, and the shader reworks that.
+morf.shader("ripple", {
+  kind = "effect",
+  params = { amount = 0.012, rate = 2.0 },
+  fragment = [[
+    function fragment(uv, time, resolution, amount, rate)
+      -- Sampling somewhere other than this pixel is the whole point: a
+      -- distortion has to be able to reach sideways.
+      local wave = sin(uv.y * 24.0 + time * rate) * amount
+      local shifted = vec2(uv.x + wave, uv.y)
+      return texture(shifted)
+    end
+  ]],
+})
+
 local PANEL_W = 240
 local PANEL_H = 150
 local GAP = 32
@@ -86,6 +125,7 @@ local panels = {
   { "plasma", { speed = 1.4, warp = 9.0 }, "plasma — reads the clock" },
   { "sheen", { angle = 1.2 }, "sheen — static, never repaints" },
   { "orbit", { steps = 12.0 }, "orbit — a loop with a real exit" },
+  { "blades", { count = 7.0 }, "blades — surface: its own shape" },
 }
 
 local total = #panels * PANEL_W + (#panels - 1) * GAP
@@ -116,5 +156,17 @@ for index, panel in ipairs(panels) do
     color = MUTED,
   }
 end
+
+-- The ripple wraps the whole row, so what it samples is everything the panels
+-- above drew. Applying it to a leaf would give it nothing but that leaf.
+children[#children + 1] = ui.Rect {
+  x = left - 16,
+  y = top - 16,
+  width = total + 32,
+  height = PANEL_H + 32,
+  color = "#00000000",
+  shader = "ripple",
+  shader_params = { amount = 0.008, rate = 2.5 },
+}
 
 ui.Item(children)

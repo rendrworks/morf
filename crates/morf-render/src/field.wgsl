@@ -386,6 +386,17 @@ fn morf_shader_hook(
     return base;
 }
 
+/// Who decides how much of this pixel the node covers.
+///
+/// A material shader colours what the field already shaped, so the default
+/// hands back the field's own coverage. A surface shader decides for itself,
+/// and this body is replaced with one that returns the shader's alpha —
+/// geometry and shader stop composing there, which is inherent to the mode
+/// rather than a gap in it.
+fn morf_coverage_hook(shader_alpha: f32, filled: f32) -> f32 {
+    return filled;
+}
+
 /// The fill a gradient paints at this point, or the flat colour if there is none.
 fn gradient_fill(material: Material, local: vec2<f32>, flat_color: vec4<f32>) -> vec4<f32> {
     let kind = material.gradient_data.x;
@@ -453,7 +464,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // by `uv` and what makes one read the same at any size.
     let shader_uv = (input.local - material.shape.xy) / max(material.shape.zw, vec2<f32>(0.000001));
     fill_color = morf_shader_hook(shader_uv, input.local, coverage, fill_color);
-    let fill_alpha = fill_color.a * filled;
+    let fill_alpha = fill_color.a * morf_coverage_hook(fill_color.a, filled);
     let outline_alpha = input.outline.a * max(coverage - filled, 0.0);
     let shape = vec4<f32>(
         fill_color.rgb * fill_alpha + input.outline.rgb * outline_alpha,

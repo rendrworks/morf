@@ -1,5 +1,7 @@
 use crate::gpu::field_tests::{alpha_at, field_command, field_layer, read_frame};
 use crate::*;
+use morf_layout::Geometry;
+use morf_scene::Color;
 use morf_shader::{ShaderKind, ShaderSpec};
 
 // A configuration's own shader, compiled from Lua and painted on a GPU.
@@ -32,6 +34,8 @@ fn shaded(body: &str) -> Vec<u8> {
             &compiled.wgsl,
             &offsets,
             compiled.uniform_size,
+            false,
+            false,
         )
         .expect("the generated WGSL compiles");
 
@@ -42,6 +46,8 @@ fn shaded(body: &str) -> Vec<u8> {
         *shader = Some(ShaderBinding {
             program: compiled.hash,
             params: Vec::new(),
+            samples_behind: false,
+            owns_coverage: false,
         });
     }
     let list = DrawList {
@@ -200,6 +206,8 @@ pub(crate) fn a_parameter_reaches_the_shader() {
             &compiled.wgsl,
             &offsets,
             compiled.uniform_size,
+            false,
+            false,
         )
         .expect("compiles");
 
@@ -210,6 +218,8 @@ pub(crate) fn a_parameter_reaches_the_shader() {
         *shader = Some(ShaderBinding {
             program: compiled.hash,
             params: vec![0.5],
+            samples_behind: false,
+            owns_coverage: false,
         });
     }
     let list = DrawList {
@@ -222,4 +232,170 @@ pub(crate) fn a_parameter_reaches_the_shader() {
         red.abs_diff(188) <= 2,
         "the parameter arrived at its declared offset: {red}",
     );
+}
+
+/// Renders one surface-mode shader, where the shader decides its own coverage.
+fn surface(body: &str) -> Vec<u8> {
+    let spec = ShaderSpec {
+        kind: ShaderKind::Surface,
+        inputs: ShaderSpec::default_inputs(ShaderKind::Surface),
+        params: Vec::new(),
+        entry: "fragment".to_owned(),
+    };
+    let compiled = morf_shader::compile(body, &spec)
+        .unwrap_or_else(|errors| panic!("{}", morf_shader::report("test", &errors)));
+    let mut backend = pollster::block_on(WgpuBackend::new(SIZE, SIZE)).unwrap();
+    backend
+        .register_shader(
+            compiled.hash,
+            &compiled.wgsl,
+            &[],
+            compiled.uniform_size,
+            true,
+            false,
+        )
+        .expect("the generated WGSL compiles");
+
+    let mut scene = morf_scene::Scene::new();
+    let node = scene.create(morf_scene::Element::Sdf);
+    let mut command = field_command(node, vec![field_layer(8.0, 8.0, 48.0, Shape::Box)]);
+    if let DrawCommand::Field { shader, .. } = &mut command {
+        *shader = Some(ShaderBinding {
+            program: compiled.hash,
+            params: Vec::new(),
+            samples_behind: false,
+            owns_coverage: true,
+        });
+    }
+    let list = DrawList {
+        commands: vec![command],
+        layers: Vec::new(),
+    };
+    read_frame(&mut backend, &list, SIZE)
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_surface_shader_decides_its_own_coverage() {
+    // The difference between the two modes, in one test. The node's own shape
+    // is a plain box; the shader carves a disc out of it by returning alpha,
+    // and the corners the box would have filled are clear.
+    let pixels = surface(
+        "function fragment(uv)
+           local d = length(uv - vec2(0.5, 0.5))
+           local inside = 1.0 - step(0.3, d)
+           return vec4(1.0, 0.2, 0.2, inside)
+         end",
+    );
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 32, 32),
+        255,
+        "the middle of the disc is painted",
+    );
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 12, 12),
+        0,
+        "and the box corner the shader did not claim is clear",
+    );
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_material_shader_cannot_paint_outside_the_shape_but_a_surface_one_can() {
+    // The same body under both modes. A material shader is multiplied by the
+    // field's coverage, so its alpha of one is still nothing outside the box; a
+    // surface shader's is not, so it fills its whole rectangle.
+    let body = "function fragment(uv)
+                  return vec4(0.2, 0.9, 0.4, 1.0)
+                end";
+    let material = shaded(body);
+    let surfaced = surface(body);
+    // Well outside the eight-to-fifty-six box, inside the node's rectangle.
+    assert_eq!(alpha_at(&material, SIZE, 3, 3), 0, "the field clipped it");
+    assert_eq!(
+        alpha_at(&surfaced, SIZE, 3, 3),
+        255,
+        "and the surface shader was not clipped",
+    );
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn an_effect_shader_reads_what_is_underneath_it() {
+    // The mode that needs a layer: until the subtree has been rendered into its
+    // own target there is nothing to sample. A red square is drawn, and the
+    // effect swaps its channels — so what comes back is blue, which it could
+    // only know by reading what was already there.
+    let spec = ShaderSpec {
+        kind: ShaderKind::Effect,
+        inputs: ShaderSpec::default_inputs(ShaderKind::Effect),
+        params: Vec::new(),
+        entry: "fragment".to_owned(),
+    };
+    let compiled = morf_shader::compile(
+        "function fragment(uv)
+           local under = texture(uv)
+           return vec4(under.b, under.g, under.r, under.a)
+         end",
+        &spec,
+    )
+    .unwrap_or_else(|errors| panic!("{}", morf_shader::report("test", &errors)));
+    assert!(compiled.samples_behind, "the compiler saw the sample");
+
+    let mut backend = pollster::block_on(WgpuBackend::new(SIZE, SIZE)).unwrap();
+    backend
+        .register_shader(
+            compiled.hash,
+            &compiled.wgsl,
+            &[],
+            compiled.uniform_size,
+            false,
+            true,
+        )
+        .expect("the generated WGSL compiles");
+
+    let mut scene = morf_scene::Scene::new();
+    let node = scene.create(morf_scene::Element::Sdf);
+    let mut layer = field_layer(8.0, 8.0, 48.0, Shape::Box);
+    layer.color = Color::rgba8(255, 0, 0, 255);
+    let mut command = field_command(node, vec![layer]);
+    if let DrawCommand::Field { fill_color, .. } = &mut command {
+        *fill_color = Color::rgba8(255, 0, 0, 255);
+    }
+    let list = DrawList {
+        commands: vec![command],
+        layers: vec![Layer {
+            node,
+            commands: 0..1,
+            parent: None,
+            bounds: Geometry {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            opacity: 1.0,
+            blur: 0.0,
+            shadow_color: Color::rgba8(0, 0, 0, 0),
+            shadow_blur: 0.0,
+            shadow_offset: [0.0, 0.0],
+            mask: None,
+            shader: Some(ShaderBinding {
+                program: compiled.hash,
+                params: Vec::new(),
+                samples_behind: true,
+                owns_coverage: false,
+            }),
+        }],
+    };
+
+    let pixels = read_frame(&mut backend, &list, SIZE);
+
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 32, 32),
+        255,
+        "the layer was composited",
+    );
+    assert_eq!(channel(&pixels, 32, 32, 2), 255, "red arrived as blue");
+    assert_eq!(channel(&pixels, 32, 32, 0), 0, "and nothing stayed red");
 }

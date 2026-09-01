@@ -273,6 +273,12 @@ pub struct ShaderProgram {
     pub uniform_size: u32,
     /// Whether the shader reads the frame clock, and so repaints every frame.
     pub reads_time: bool,
+    /// Whether the shader decides its own coverage rather than colouring what
+    /// the field shaped.
+    pub owns_coverage: bool,
+    /// Whether the shader reads what is rendered underneath, and so belongs to
+    /// the composite pass rather than the field pass.
+    pub samples_behind: bool,
 }
 
 impl Runtime {
@@ -296,6 +302,8 @@ impl Runtime {
                     .collect(),
                 uniform_size: shader.compiled.uniform_size,
                 reads_time: shader.compiled.reads_time,
+                owns_coverage: shader.kind == morf_shader::ShaderKind::Surface,
+                samples_behind: shader.kind == morf_shader::ShaderKind::Effect,
             })
             .collect()
     }

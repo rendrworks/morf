@@ -166,6 +166,11 @@ pub struct ShaderBinding {
     /// Parameter values, flattened in declaration order. The backend places
     /// them using the layout the compiler computed, so the two cannot disagree.
     pub params: Vec<f32>,
+    /// Whether the shader reads what is rendered underneath it.
+    pub samples_behind: bool,
+    /// Whether the shader decides coverage, and so needs the node's whole
+    /// rectangle rather than the reach of the shape it replaced.
+    pub owns_coverage: bool,
 }
 
 /// Edge shaping applied when sampling a cached distance field.
@@ -350,6 +355,12 @@ pub struct Layer {
     pub shadow_offset: [f32; 2],
     /// Rounded owner geometry used to mask the composited subtree.
     pub mask: Option<LayerMask>,
+    /// An effect shader applied while compositing the subtree.
+    ///
+    /// It lives on the layer rather than on a command because there is nothing
+    /// to sample until the subtree has been rendered into its own target —
+    /// which is exactly what a layer is for.
+    pub shader: Option<ShaderBinding>,
     /// Logical bounds affected by this layer.
     pub bounds: Geometry,
 }

@@ -21,8 +21,9 @@ pub(crate) fn shader_source(body: &str) -> String {
 
 pub(crate) const SHARED_SHAPES: &str = include_str!("../shape.wgsl");
 
-/// The default hook body, replaced when a configuration attaches a shader.
-const SHADER_HOOK: &str = "    return base;";
+/// The default hook bodies, replaced when a configuration attaches a shader.
+const FILL_HOOK: &str = "    return base;";
+const COVERAGE_HOOK: &str = "    return filled;";
 
 /// Builds the field shader with a configuration's own shader spliced in.
 ///
@@ -34,19 +35,29 @@ const SHADER_HOOK: &str = "    return base;";
 /// Returns `None` when the hook is missing, which can only mean `field.wgsl`
 /// was edited without this — better a clear failure at startup than a shader
 /// that silently never runs.
-pub(crate) fn field_shader_source(body: &str, shader: Option<&str>) -> Option<String> {
+pub(crate) fn field_shader_source(
+    body: &str,
+    shader: Option<&str>,
+    owns_coverage: bool,
+) -> Option<String> {
     let base = shader_source(body);
     let Some(shader) = shader else {
         return Some(base);
     };
-    if !base.contains(SHADER_HOOK) {
+    if !base.contains(FILL_HOOK) || !base.contains(COVERAGE_HOOK) {
         return None;
     }
-    let hooked = base.replacen(
-        SHADER_HOOK,
+    let mut hooked = base.replacen(
+        FILL_HOOK,
         "    return morf_shader_main(uv, local, coverage, base);",
         1,
     );
+    if owns_coverage {
+        // A surface shader decides its own alpha, so the field's coverage is
+        // not consulted at all — which is what stops a shaped node and a
+        // surface shader from each half-deciding what is drawn.
+        hooked = hooked.replacen(COVERAGE_HOOK, "    return shader_alpha;", 1);
+    }
     Some(format!("{shader}\n{hooked}"))
 }
 
@@ -126,4 +137,28 @@ impl WgpuBackend {
             self.queue.write_buffer(&program.uniforms, 0, &block);
         }
     }
+}
+
+/// The default effect hook body, replaced when a layer carries a shader.
+const EFFECT_HOOK: &str = "    return sampled;";
+
+/// Builds the glyph shader with a configuration's effect shader spliced in.
+///
+/// The effect shader sees what the layer already rendered and returns what
+/// should be composited instead, so a distortion samples around the point it
+/// was asked about rather than only at it.
+pub(crate) fn effect_shader_source(body: &str, shader: Option<&str>) -> Option<String> {
+    let base = shader_source(body);
+    let Some(shader) = shader else {
+        return Some(base);
+    };
+    if !base.contains(EFFECT_HOOK) {
+        return None;
+    }
+    let hooked = base.replacen(
+        EFFECT_HOOK,
+        "    return morf_shader_main(uv, uv, sampled.a, sampled);",
+        1,
+    );
+    Some(format!("{shader}\n{hooked}"))
 }

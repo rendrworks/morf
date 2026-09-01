@@ -162,6 +162,7 @@ impl SdfFieldInstance {
             shadow_offset_x,
             shadow_offset_y,
             shadow_inner,
+            shader,
             layers: sources,
             ..
         } = command
@@ -263,20 +264,32 @@ impl SdfFieldInstance {
                 0.0,
                 0.0,
             ],
-            area: field_area(
-                *bounds,
-                *stroke_width,
-                *softness,
-                sources,
-                scale,
-                // An inner shadow falls inside the surface, so it needs no room.
-                (shadow_color.alpha > 0.0 && !*shadow_inner).then_some(ShadowReach {
-                    offset_x: *shadow_offset_x,
-                    offset_y: *shadow_offset_y,
-                    blur: *shadow_blur,
-                    spread: *shadow_spread,
-                }),
-            ),
+            // A shader that owns its coverage paints across the whole node,
+            // so it is handed the whole node: the layers only say where the
+            // shape it replaced would have reached.
+            area: if shader.as_ref().is_some_and(|shader| shader.owns_coverage) {
+                [
+                    0.0,
+                    0.0,
+                    (bounds.width * scale) as f32,
+                    (bounds.height * scale) as f32,
+                ]
+            } else {
+                field_area(
+                    *bounds,
+                    *stroke_width,
+                    *softness,
+                    sources,
+                    scale,
+                    // An inner shadow falls inside the surface, so it needs no room.
+                    (shadow_color.alpha > 0.0 && !*shadow_inner).then_some(ShadowReach {
+                        offset_x: *shadow_offset_x,
+                        offset_y: *shadow_offset_y,
+                        blur: *shadow_blur,
+                        spread: *shadow_spread,
+                    }),
+                )
+            },
         })
     }
 
