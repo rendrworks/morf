@@ -159,17 +159,59 @@ impl DesktopEntries {
 }
 
 pub fn desktop_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    data_paths(&["applications"])
+}
+
+/// Where the sessions a greeter can start are described.
+///
+/// The same entry format and the same search order as applications, in two
+/// other directories. A login screen's whole job is to list these and run the
+/// one that is picked, and until now the only directory this crate would look
+/// in was the one sessions are *not* in.
+///
+/// Wayland first, deliberately: where a desktop ships both, they name the same
+/// session and the Wayland one is the one to prefer.
+pub fn session_paths() -> Vec<PathBuf> {
+    const KINDS: [&str; 2] = ["wayland-sessions", "xsessions"];
+    let mut paths = data_paths(&KINDS);
+    // And the canonical system directories, whatever `XDG_DATA_DIRS` says.
+    //
+    // Not pedantry about the spec — the spec is honoured above. This is that a
+    // greeter has to work in whatever environment it is handed, and that
+    // environment is not the one that installed the sessions. `greetd` runs the
+    // greeter as its own user; a development shell may replace `XDG_DATA_DIRS`
+    // wholesale, which is exactly what the shell this was written in does, so
+    // that a machine with `/usr/share/wayland-sessions/hyprland.desktop` right
+    // there listed no sessions at all.
+    //
+    // Every display manager looks here for the same reason. Deduplicated, so
+    // naming it twice does not scan it twice.
+    for kind in KINDS {
+        let canonical = PathBuf::from("/usr/share").join(kind);
+        if !paths.contains(&canonical) {
+            paths.push(canonical);
+        }
+    }
+    paths
+}
+
+/// Every XDG data directory, suffixed by each of `kinds`, in search order.
+///
+/// The user's own first, then the system's, which is the order that lets
+/// somebody override a system entry by shadowing its file name.
+fn data_paths(kinds: &[&str]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
-    if let Some(path) = data_home {
-        paths.push(path.join("applications"));
-    }
+    roots.extend(data_home);
     let data_dirs =
         std::env::var_os("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    paths.extend(std::env::split_paths(&data_dirs).map(|path| path.join("applications")));
-    paths
+    roots.extend(std::env::split_paths(&data_dirs));
+    roots
+        .into_iter()
+        .flat_map(|root| kinds.iter().map(move |kind| root.join(kind)))
+        .collect()
 }
 
 pub fn parse_exec(source: &str) -> Vec<String> {
@@ -346,5 +388,63 @@ mod tests {
         assert!(entries.by_id("internal").is_none());
         assert_eq!(entries.heuristic_lookup("shown").unwrap().name, "Shown");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_session_entry_parses_into_something_runnable() {
+        // What a greeter needs from one of these: a name to show, and a command
+        // to hand to `greetd`. The file format is the same as an application's,
+        // which is the reason this crate can serve both — but it lives in a
+        // directory this crate did not look in until now, so a login screen
+        // built on it would have listed nothing at all.
+        let entry = DesktopEntry::parse(
+            "hyprland",
+            "[Desktop Entry]\n\
+             Name=Hyprland\n\
+             Comment=An intelligent dynamic tiling compositor\n\
+             Exec=Hyprland\n\
+             Type=Application\n",
+        )
+        .expect("a session entry is a desktop entry");
+
+        assert_eq!(entry.name, "Hyprland");
+        assert_eq!(
+            parse_exec(&entry.exec),
+            vec!["Hyprland".to_owned()],
+            "and the command survives the trip, which is the half greetd needs",
+        );
+    }
+
+    #[test]
+    fn sessions_are_looked_for_where_sessions_live() {
+        // Both kinds, and Wayland before X: where a desktop ships both, they
+        // name the same session and the Wayland one is the one to start.
+        let paths = session_paths();
+        let names: Vec<String> = paths
+            .iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+            })
+            .collect();
+        assert!(
+            names.contains(&"wayland-sessions".to_owned()),
+            "wayland sessions are searched: {paths:?}",
+        );
+        assert!(
+            names.contains(&"xsessions".to_owned()),
+            "and X ones too: {paths:?}",
+        );
+        let wayland = names.iter().position(|name| name == "wayland-sessions");
+        let x11 = names.iter().position(|name| name == "xsessions");
+        assert!(wayland < x11, "wayland first: {names:?}");
+
+        // And applications are still only looked for among applications.
+        assert!(
+            desktop_paths()
+                .iter()
+                .all(|path| path.file_name().is_some_and(|name| name == "applications")),
+            "the application search did not grow session directories",
+        );
     }
 }

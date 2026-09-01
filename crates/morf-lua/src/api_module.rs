@@ -61,6 +61,7 @@ pub(crate) fn install_module_api<'gc>(
         "flickable",
         "transition_parent",
         "desktop_entries",
+        "session_paths",
         "menu",
     ] {
         core.set(ctx, name, morf.get_value(ctx, name))
