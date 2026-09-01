@@ -245,3 +245,55 @@ pub(crate) fn a_switch_and_an_exact_texel_read_reach_the_driver() {
         "the switch picked each band in turn: {shades:?}",
     );
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_loop_can_walk_a_data_block_by_a_computed_index() {
+    // What `examples/sdf-blobs-crt.lua` is built on. A merged distance field is
+    // one draw and carries one shader, so the only way a shader can shade each
+    // blob in that blob's own coordinates is to be told where the blobs are and
+    // work it out per pixel. That means a loop whose index is computed, reading
+    // a block with a stride — and a uniform array indexed by a value the driver
+    // cannot see the bounds of is exactly the shape drivers are fussiest about.
+    //
+    // Two blobs, at a quarter and three quarters across, weighted by distance.
+    // Their hues are 0 and 1, so where the left one owns the pixel the answer is
+    // dark, where the right one does it is bright, and in between it crosses
+    // over smoothly — which is the merge the example needs to survive.
+    let blobs: Vec<f32> = vec![0.25, 0.5, 0.30, 0.0, 0.75, 0.5, 0.30, 1.0];
+    let pixels = bound(
+        "function fragment(uv, time, resolution, coverage)
+           local weight = 0.0
+           local hue = 0.0
+           local index = i32(0)
+           while index < i32(2) do
+             local base = index * i32(4)
+             local away = uv - vec2(blobs[base], blobs[base + 1])
+             local reach = blobs[base + 2]
+             local near = clamp(1.0 - dot(away, away) / (reach * reach), 0.0, 1.0)
+             local w = near * near
+             weight = weight + w
+             hue = hue + blobs[base + 3] * w
+             index = index + i32(1)
+           end
+           hue = hue / max(weight, 0.0001)
+           return vec4(hue, hue, hue, 1.0)
+         end",
+        &[],
+        &[("blobs", 8)],
+        &[blobs],
+    );
+    assert_eq!(alpha_at(&pixels, SIZE, 32, 32), 255, "the node painted");
+
+    let left = channel(&pixels, 16, 32, 0);
+    let middle = channel(&pixels, 32, 32, 0);
+    let right = channel(&pixels, 48, 32, 0);
+    assert!(
+        left < middle && middle < right,
+        "ownership crosses over between the two: {left}, {middle}, {right}",
+    );
+    assert!(
+        left < 40 && right > 215,
+        "and each blob owns its own side outright: {left} then {right}",
+    );
+}

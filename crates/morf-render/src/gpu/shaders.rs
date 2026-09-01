@@ -128,9 +128,17 @@ impl WgpuBackend {
     /// wrong for per-node parameters — the last node's values win. Making them
     /// per-node needs a dynamic offset into one buffer, which is the next step
     /// and not this one.
+    /// Layers are passed alongside the commands because an effect shader is a
+    /// different thing in two ways that both land here: its parameters live on
+    /// the layer it turned into rather than on any command, and it is
+    /// registered in its own table because it splices into a different
+    /// pipeline. Looking only at the commands and only at `shaders` left every
+    /// effect in the session reading zeros for everything it declared, which
+    /// looks exactly like an effect that does nothing.
     pub(crate) fn write_shader_uniforms(
         &mut self,
         bindings: &[Option<ShaderBinding>],
+        layers: &[crate::Layer],
         scale_120: u32,
     ) {
         // The clock rides in the viewport uniform's third slot so the *vertex*
@@ -139,7 +147,7 @@ impl WgpuBackend {
         let viewport = [self.width as f32, self.height as f32, self.elapsed, 0.0];
         self.queue
             .write_buffer(&self.viewport_buffer, 0, bytemuck::cast_slice(&viewport));
-        if self.shaders.is_empty() {
+        if self.shaders.is_empty() && self.effect_shaders.is_empty() {
             return;
         }
         let scale = scale_120.max(1) as f32 / 120.0;
@@ -150,30 +158,44 @@ impl WgpuBackend {
             0.0,
         ];
         for binding in bindings.iter().flatten() {
-            let Some(program) = self.shaders.get(&binding.program) else {
-                continue;
-            };
-            let mut block = vec![0u8; program.size as usize];
-            block[..16].copy_from_slice(bytemuck::cast_slice(&header));
-            for (index, offset) in program.offsets.iter().enumerate() {
-                let Some(value) = binding.params.get(index) else {
-                    break;
-                };
-                let start = *offset as usize;
-                if start + 4 <= block.len() {
-                    block[start..start + 4].copy_from_slice(&value.to_le_bytes());
-                }
+            if let Some(program) = self.shaders.get(&binding.program) {
+                Self::write_shader_block(&self.queue, program, binding, &header);
             }
-            self.queue.write_buffer(&program.uniforms, 0, &block);
-            // Data blocks are the configuration's own numbers, written whole
-            // each frame: they are small, and a diff would cost more to track
-            // than the write costs to do.
-            if let Some((buffers, _)) = &program.data {
-                for (buffer, values) in buffers.iter().zip(&binding.data) {
-                    if !values.is_empty() {
-                        self.queue
-                            .write_buffer(buffer, 0, bytemuck::cast_slice(values));
-                    }
+        }
+        for binding in layers.iter().filter_map(|layer| layer.shader.as_ref()) {
+            if let Some(program) = self.effect_shaders.get(&binding.program) {
+                Self::write_shader_block(&self.queue, program, binding, &header);
+            }
+        }
+    }
+
+    /// Fills one program's uniform block: the frame's own values, then whatever
+    /// the configuration declared, at the offsets the compiler computed.
+    fn write_shader_block(
+        queue: &wgpu::Queue,
+        program: &ShaderProgram,
+        binding: &ShaderBinding,
+        header: &[f32; 4],
+    ) {
+        let mut block = vec![0u8; program.size as usize];
+        block[..16].copy_from_slice(bytemuck::cast_slice(header));
+        for (index, offset) in program.offsets.iter().enumerate() {
+            let Some(value) = binding.params.get(index) else {
+                break;
+            };
+            let start = *offset as usize;
+            if start + 4 <= block.len() {
+                block[start..start + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        queue.write_buffer(&program.uniforms, 0, &block);
+        // Data blocks are the configuration's own numbers, written whole each
+        // frame: they are small, and a diff would cost more to track than the
+        // write costs to do.
+        if let Some((buffers, _)) = &program.data {
+            for (buffer, values) in buffers.iter().zip(&binding.data) {
+                if !values.is_empty() {
+                    queue.write_buffer(buffer, 0, bytemuck::cast_slice(values));
                 }
             }
         }

@@ -113,7 +113,7 @@ impl RenderBackend for WgpuBackend {
                 bytemuck::cast_slice(&field_materials),
             );
         }
-        self.write_shader_uniforms(&field_shaders, scale_120);
+        self.write_shader_uniforms(&field_shaders, &list.layers, scale_120);
         if let Some(batch) = &glyph_batch {
             self.queue.write_buffer(
                 &self.glyph_buffer,
@@ -230,6 +230,16 @@ impl RenderBackend for WgpuBackend {
                         Some(program) => {
                             $pass.set_pipeline(&program.pipeline);
                             $pass.set_bind_group(1, &program.bind_group, &[]);
+                            // As in the field pass: groups two and three exist
+                            // only when the shader declared textures or data
+                            // blocks, and the layout was built from the same
+                            // condition.
+                            if let Some(textures) = &program.textures {
+                                $pass.set_bind_group(2, textures, &[]);
+                            }
+                            if let Some((_, data)) = &program.data {
+                                $pass.set_bind_group(3, data, &[]);
+                            }
                         }
                         None => $pass.set_pipeline(&self.glyph_pipeline),
                     }

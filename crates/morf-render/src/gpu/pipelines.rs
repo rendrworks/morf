@@ -110,7 +110,7 @@ pub(crate) fn create_glyph_pipeline(
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
-    let pipeline = build_glyph_pipeline(device, &texture_layout, None, None)
+    let pipeline = build_glyph_pipeline(device, &texture_layout, None, None, None, None)
         .expect("the glyph shader carries its own hook");
     (pipeline, texture_layout, sampler)
 }
@@ -126,10 +126,19 @@ pub(crate) fn build_glyph_pipeline(
     texture_layout: &wgpu::BindGroupLayout,
     shader_layout: Option<&wgpu::BindGroupLayout>,
     user: Option<&str>,
+    textures: Option<&wgpu::BindGroupLayout>,
+    data: Option<&wgpu::BindGroupLayout>,
 ) -> Option<wgpu::RenderPipeline> {
+    // The same group numbers the field pipeline uses, because the compiler
+    // emits the same numbers whatever mode a shader is in: one for its
+    // uniforms, two for its textures, three for its data blocks. An effect
+    // declaring a data block was generating WGSL that named group three and a
+    // pipeline layout that stopped at one, and wgpu rejected the pair.
     let mut groups = vec![Some(texture_layout)];
     if let Some(shader_layout) = shader_layout {
         groups.push(Some(shader_layout));
+        groups.push(textures);
+        groups.push(data);
     }
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("morf glyph pipeline layout"),

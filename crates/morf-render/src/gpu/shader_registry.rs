@@ -29,6 +29,8 @@ impl WgpuBackend {
                 &self.glyph_layout,
                 Some(&self.field_shader_layout),
                 shader.wgsl,
+                textures.as_ref().map(|(_, layout)| layout),
+                data.as_ref().map(|(_, _, layout)| layout),
             )
             .ok_or_else(|| {
                 GpuError("the glyph shader has no hook to splice an effect into".to_owned())
