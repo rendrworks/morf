@@ -260,23 +260,43 @@ pub(crate) fn create_composite_bind_group(
     })
 }
 
+/// The next image to draw into, or `None` if this frame should be skipped.
+///
+/// Not every unsuccessful acquisition is a failure, and wgpu says as much for
+/// each one. A timeout means the compositor has not released a buffer yet, and
+/// occlusion means the surface is not on screen to draw to; the documented
+/// answer to both is to skip this frame and try the next. Treating them as
+/// errors instead took the whole surface down — which is how a shell died with
+/// `could not acquire GPU surface: Timeout` for what is, on a busy compositor
+/// driving three large outputs, an ordinary event.
+///
+/// The genuinely broken states still error. The difference is that they are now
+/// the ones wgpu describes that way.
 pub(crate) fn acquire_frame(
     device: &wgpu::Device,
     surface: &mut SurfaceState,
-) -> Result<wgpu::SurfaceTexture, GpuError> {
+) -> Result<Option<wgpu::SurfaceTexture>, GpuError> {
     match surface.surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(frame) => Ok(frame),
+        wgpu::CurrentSurfaceTexture::Success(frame) => Ok(Some(frame)),
         wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
             surface.surface.configure(device, &surface.config);
-            Ok(frame)
+            Ok(Some(frame))
         }
-        wgpu::CurrentSurfaceTexture::Outdated => {
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => Ok(None),
+        // Outdated wants a reconfigure; lost wants the surface recreated, which
+        // needs a window handle this layer does not hold — so it gets the
+        // reconfigure too, because attempting it and failing is no worse than
+        // failing immediately and is sometimes enough.
+        status @ (wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost) => {
             surface.surface.configure(device, &surface.config);
             match surface.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
-                status => Err(GpuError(format!(
-                    "could not acquire reconfigured GPU surface: {status:?}"
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(Some(frame)),
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    Ok(None)
+                }
+                after => Err(GpuError(format!(
+                    "could not acquire GPU surface after {status:?}: {after:?}"
                 ))),
             }
         }
