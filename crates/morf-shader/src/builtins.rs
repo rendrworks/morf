@@ -41,6 +41,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("ceil", Builtin::Ceil, Shape::Componentwise1),
     ("clamp", Builtin::Clamp, Shape::Componentwise3),
     ("cos", Builtin::Cos, Shape::Componentwise1),
+    ("cosh", Builtin::Cosh, Shape::Componentwise1),
     ("degrees", Builtin::Degrees, Shape::Componentwise1),
     ("distance", Builtin::Distance, Shape::Fold2),
     ("dot", Builtin::Dot, Shape::Fold2),
@@ -62,10 +63,14 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("select", Builtin::Select, Shape::Select),
     ("sign", Builtin::Sign, Shape::Componentwise1),
     ("sin", Builtin::Sin, Shape::Componentwise1),
+    ("sinh", Builtin::Sinh, Shape::Componentwise1),
     ("smoothstep", Builtin::Smoothstep, Shape::EdgeScalar),
     ("sqrt", Builtin::Sqrt, Shape::Componentwise1),
     ("step", Builtin::Step, Shape::Componentwise2),
     ("tan", Builtin::Tan, Shape::Componentwise1),
+    // Shadertoy tonemaps with `tanh` constantly, and it cannot be written out
+    // of the rest.
+    ("tanh", Builtin::Tanh, Shape::Componentwise1),
     ("texture", Builtin::Texture, Shape::Texture),
 ];
 

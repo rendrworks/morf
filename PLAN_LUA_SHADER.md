@@ -676,7 +676,36 @@ compiler buys over a tracer, so they are the proof the decision was right.
 
 ---
 
-## 11. Milestones
+## 11. Milestones — done
+
+**M1–M8 are implemented.** What follows is the plan as written; the notes below
+record where it held and where it did not.
+
+**What the plan got right.** Luna's parser carried the whole front end, the
+left-fold over `tail` was correct and a precedence climber would have been
+wrong, the loop guard cost nothing and cannot be defeated from Lua, and
+emitting text rather than naga IR paid for itself the first time a generated
+shader misbehaved — the bug was found by printing the WGSL and reading it.
+
+**What it got wrong.** The builtin list in §3.5 was short. Porting real shaders
+(§10) wanted `atan2` — which every polar shader starts with and which cannot be
+written out of the others — plus `tanh` for Shadertoy's tonemapping, and `asin`,
+`acos`, `sinh`, `cosh` alongside them. Each was added because a port asked for
+it, which is the argument for doing M8 early rather than last.
+
+**The signature question in §3.2 resolved differently.** Neither (a) nor (b)
+quite: the specification declares the inputs and parameters, as (b) proposed,
+but the *emitted* entry point has one fixed signature whatever a shader
+declared, and binds the declared inputs inside its own body. The host's call
+site cannot then vary per shader, which is what makes one hook in `field.wgsl`
+serve every material shader.
+
+**§13's main risk did not materialise.** "The subset is too small to be fun" was
+tested by M8 and the answer is no: Plasma ports, and so does a raymarcher with a
+real data-dependent `break` — the case a traced design could not have handled at
+all, and the reason this is a compiler.
+
+## 11a. Milestones as planned
 
 Each ends green on `oslo make verify`, and each is a commit.
 

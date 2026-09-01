@@ -1,6 +1,7 @@
 mod caps;
 mod diagnostics;
 mod golden;
+mod ports;
 
 use crate::*;
 
