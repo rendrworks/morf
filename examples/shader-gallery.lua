@@ -12,13 +12,26 @@
 local morf = require("morf")
 local ui = require("morf.ui")
 
+-- A floating panel rather than a full screen, so it sits over the corner of
+-- the desktop and leaves the terminal you launched it from visible. Set
+-- MORF_GALLERY_FULL=1 to have it take the whole output instead.
+local core = require("morf.core")
+local FULL = core.env("MORF_GALLERY_FULL") == "1"
+
 local screen = morf.screens[1]
-local W = (screen and screen.width) or 1280
-local H = (screen and screen.height) or 720
+local SW = (screen and screen.width) or 1280
+local SH = (screen and screen.height) or 720
+
+local W = FULL and SW or 900
+local H = FULL and SH or 520
 
 morf.surface.width = W
 morf.surface.height = H
-morf.surface.anchors = { top = true, left = true, right = true, bottom = true }
+morf.surface.layer = "overlay"
+morf.surface.anchors = FULL and { top = true, left = true, right = true, bottom = true }
+  or { top = true, right = true }
+morf.surface.margin_top = FULL and 0 or 40
+morf.surface.margin_right = FULL and 0 or 40
 
 local INK = "#0d0f14"
 local PANEL = "#161922"

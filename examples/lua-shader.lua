@@ -135,9 +135,24 @@ local top = (H - PANEL_H) / 2 - 20
 local children = { width = W, height = H }
 children[#children + 1] = ui.Rect { width = W, height = H, color = INK }
 
+-- The ripple has to *wrap* the row, not lie over it. An effect shader samples
+-- the layer its own node became, and a layer holds that node's subtree — so a
+-- transparent rectangle laid over its siblings samples nothing but itself, and
+-- returns exactly that. Applying one to a leaf would likewise give it nothing
+-- but that leaf.
+--
+-- It spans the whole surface so the panels below can keep the coordinates they
+-- were laid out with.
+local rippled = {
+  width = W,
+  height = H,
+  shader = "ripple",
+  shader_params = { amount = 0.008, rate = 2.5 },
+}
+
 for index, panel in ipairs(panels) do
   local x = left + (index - 1) * (PANEL_W + GAP)
-  children[#children + 1] = ui.Rect {
+  rippled[#rippled + 1] = ui.Rect {
     x = x,
     y = top,
     width = PANEL_W,
@@ -147,6 +162,7 @@ for index, panel in ipairs(panels) do
     shader = panel[1],
     shader_params = panel[2],
   }
+  -- The captions stay outside the ripple: they are there to be read.
   children[#children + 1] = ui.Text {
     x = x,
     y = top + PANEL_H + 12,
@@ -157,16 +173,6 @@ for index, panel in ipairs(panels) do
   }
 end
 
--- The ripple wraps the whole row, so what it samples is everything the panels
--- above drew. Applying it to a leaf would give it nothing but that leaf.
-children[#children + 1] = ui.Rect {
-  x = left - 16,
-  y = top - 16,
-  width = total + 32,
-  height = PANEL_H + 32,
-  color = "#00000000",
-  shader = "ripple",
-  shader_params = { amount = 0.008, rate = 2.5 },
-}
+table.insert(children, 2, ui.Item(rippled))
 
 ui.Item(children)
