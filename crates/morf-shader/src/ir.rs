@@ -8,6 +8,8 @@ use crate::types::*;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub entry: Function,
+    /// Helpers the shader declared, monomorphised, in emission order.
+    pub helpers: Vec<crate::lower::Instance>,
     /// Declared inputs, in the order the entry point takes them.
     pub inputs: Vec<Binding>,
     /// User parameters, in uniform-block order.
@@ -280,6 +282,8 @@ pub enum Builtin {
     Clamp,
     Cos,
     Cosh,
+    /// The one thing the RbxShader collection needed that was missing.
+    Cross,
     Degrees,
     Distance,
     Dot,
@@ -311,6 +315,12 @@ pub enum Builtin {
     FloorDiv,
     /// Samples what is rendered underneath. Effect shaders only.
     Texture,
+    /// A call to a helper the shader itself declared.
+    ///
+    /// The first argument carries the emitted function's name rather than a
+    /// value, because a call is the one place the emitter needs a name it did
+    /// not compute from a type.
+    Helper,
 }
 
 impl Builtin {
@@ -325,6 +335,7 @@ impl Builtin {
             Self::Ceil => "ceil",
             Self::Clamp => "clamp",
             Self::Cos => "cos",
+            Self::Cross => "cross",
             Self::Cosh => "cosh",
             Self::Degrees => "degrees",
             Self::Distance => "distance",
@@ -355,6 +366,7 @@ impl Builtin {
             Self::Tanh => "tanh",
             Self::FloorDiv => "floor",
             Self::Texture => "textureSample",
+            Self::Helper => "",
         }
     }
 }

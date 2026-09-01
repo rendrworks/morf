@@ -452,3 +452,27 @@ pub(crate) fn a_ported_shadertoy_shader_compiles_and_paints() {
         "and it varies across the surface: {samples:?}"
     );
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_helper_function_survives_to_the_gpu() {
+    // iq's palette, the most-copied helper in shader writing. Emitted as a real
+    // WGSL function ahead of the entry point, with its parameter type taken
+    // from the call because Lua had nowhere to declare one.
+    let pixels = shaded(
+        "function palette(t)
+           local a = vec3(0.5, 0.5, 0.5)
+           local d = vec3(0.263, 0.416, 0.557)
+           return a + a * cos(6.28318 * (t + d))
+         end
+
+         function fragment(uv, time, resolution)
+           return vec4(palette(uv.x), 1.0)
+         end",
+    );
+    assert_eq!(alpha_at(&pixels, SIZE, 32, 32), 255, "the node is painted");
+    // A palette sweeps: two points across it cannot be the same colour.
+    let left = channel(&pixels, 14, 32, 0);
+    let right = channel(&pixels, 50, 32, 0);
+    assert_ne!(left, right, "and the helper's gradient came through");
+}

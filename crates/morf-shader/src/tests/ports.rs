@@ -183,3 +183,156 @@ fn value_noise_ports() {
         "#,
     );
 }
+
+#[test]
+fn shader_art_ports_with_its_palette_helper() {
+    // "ShaderArt" from the RbxShader collection, which uses iq's palette
+    // function — `a + b*cos(6.28318*(c*t+d))`. A helper is the single most
+    // common idiom in the shaders people want to port, and a language without
+    // one makes every port a rewrite. The helper's parameter type comes from
+    // the call, because Lua has nowhere to declare it.
+    let compiled = port(
+        "shader-art",
+        r#"
+        function palette(t)
+          local a = vec3(0.5, 0.5, 0.5)
+          local b = vec3(0.5, 0.5, 0.5)
+          local c = vec3(1.0, 1.0, 1.0)
+          local d = vec3(0.263, 0.416, 0.557)
+          return a + b * cos(6.28318 * (c * t + d))
+        end
+
+        function fragment(uv, time, resolution)
+          local coords = uv * resolution
+          local p = (coords * 2.0 - resolution) / resolution.y
+          local p0 = p
+          local total = vec3(0.0, 0.0, 0.0)
+          for i = 0, 3 do
+            p = fract(p * 1.5) - vec2(0.5, 0.5)
+            local d = length(p) * exp(0.0 - length(p0))
+            local col = palette(length(p0) + i * 0.4 + time * 0.4)
+            d = sin(d * 8.0 + time) / 8.0
+            d = abs(d)
+            d = pow(0.01 / d, 1.2)
+            total = total + col * d
+          end
+          return vec4(total, 1.0)
+        end
+        "#,
+    );
+    assert!(
+        compiled.wgsl.contains("fn morf_fn_palette_0("),
+        "{}",
+        compiled.wgsl
+    );
+    assert!(
+        compiled.wgsl.contains("morf_fn_palette_0("),
+        "and it is called"
+    );
+}
+
+#[test]
+fn a_helper_is_monomorphised_per_argument_type() {
+    // The honest reading of an untyped signature: one helper called at two
+    // types is two functions, not one that tries to be both. Inferring a single
+    // type would have to pick a loser.
+    let compiled = port(
+        "twice",
+        r#"
+        function double(x)
+          return x + x
+        end
+
+        function fragment(uv, time, resolution)
+          local a = double(uv.x)
+          local b = double(vec3(0.1, 0.2, 0.3))
+          return vec4(b * a, 1.0)
+        end
+        "#,
+    );
+    assert!(
+        compiled.wgsl.contains("morf_fn_double_0"),
+        "{}",
+        compiled.wgsl
+    );
+    assert!(compiled.wgsl.contains("morf_fn_double_1"), "two instances");
+    assert!(compiled.wgsl.contains("x_1: f32"), "one at f32");
+    assert!(compiled.wgsl.contains("x_2: vec3<f32>"), "one at vec3");
+}
+
+#[test]
+fn a_helper_that_calls_itself_is_refused() {
+    // Recursion has no bottom to monomorphise towards, and a shader has no
+    // stack to run it on. Caught rather than looping forever in the compiler.
+    let found = errors(
+        r#"
+        function spiral(x)
+          return spiral(x - 1.0)
+        end
+
+        function fragment(uv)
+          return vec4(spiral(4.0), 0.0, 0.0, 1.0)
+        end
+        "#,
+    );
+    assert!(mentions(&found, "calls itself"), "{found:?}");
+    assert!(
+        mentions(&found, "write the repetition as a loop"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_helper_cannot_reach_the_callers_locals() {
+    // A helper sees its own parameters and nothing else. Leaking the caller's
+    // scope would make a shader's meaning depend on where it was called from.
+    let found = errors(
+        r#"
+        function helper(x)
+          return x * secret
+        end
+
+        function fragment(uv)
+          local secret = 2.0
+          return vec4(helper(1.0), 0.0, 0.0, 1.0)
+        end
+        "#,
+    );
+    assert!(mentions(&found, "not defined here"), "{found:?}");
+}
+
+#[test]
+fn a_helper_cannot_shadow_a_builtin() {
+    // Shadowing `sin` would be a trap rather than a feature: a reader has no
+    // way to tell which one a call means.
+    let compiled = port(
+        "shadow",
+        r#"
+        function sin(x)
+          return x * 100.0
+        end
+
+        function fragment(uv)
+          return vec4(sin(0.5), 0.0, 0.0, 1.0)
+        end
+        "#,
+    );
+    assert!(compiled.wgsl.contains("sin(0.5)"), "the builtin won");
+    assert!(!compiled.wgsl.contains("100.0"), "the helper was not used");
+}
+
+#[test]
+fn cross_products_work_now() {
+    // The one builtin the whole RbxShader collection needed that was missing.
+    let compiled = port(
+        "cross",
+        r#"
+        function fragment(uv, time, resolution)
+          local a = vec3(1.0, 0.0, 0.0)
+          local b = vec3(0.0, 1.0, 0.0)
+          return vec4(cross(a, b), 1.0)
+        end
+        "#,
+    );
+    assert!(compiled.wgsl.contains("cross("));
+}

@@ -149,11 +149,13 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
         .map_err(|error| vec![Diagnostic::new(1, error.to_string())])?;
 
     let mut diagnostics = Vec::new();
-    let Some(definition) = lower::entry_function(&chunk, &spec.entry, &mut diagnostics) else {
+    let functions = lower::functions(&chunk, &spec.entry, &mut diagnostics);
+    let Some(definition) = functions.entry else {
         return Err(diagnostics);
     };
 
     let mut lowerer = lower::Lowerer::new(&spec.inputs, &spec.params);
+    lowerer.helpers = functions.helpers;
     lowerer.diagnostics = diagnostics;
     bind_parameters(&mut lowerer, definition, spec);
     let mut body = lowerer.block(&definition.body);
@@ -164,6 +166,11 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
             returns: Type::Vec4,
             body,
         },
+        // Helpers come out in the order they were first needed, which is also
+        // an order WGSL accepts: a helper cannot call one declared after it,
+        // because recursion is refused and a later helper is only lowered when
+        // an earlier one reaches it.
+        helpers: lowerer.lowered,
         inputs: spec.inputs.clone(),
         params: spec.params.clone(),
         reads_time: lowerer.reads_time,

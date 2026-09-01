@@ -20,6 +20,8 @@ pub(crate) enum Shape {
     EdgeScalar,
     /// `select(a, b, cond)` — a bool third argument, result is the first two.
     Select,
+    /// `cross(a, b)` — two vec3 in, vec3 out. Only defined in three dimensions.
+    Cross,
     /// `texture(uv)` — vec2 in, vec4 out.
     Texture,
 }
@@ -42,6 +44,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("clamp", Builtin::Clamp, Shape::Componentwise3),
     ("cos", Builtin::Cos, Shape::Componentwise1),
     ("cosh", Builtin::Cosh, Shape::Componentwise1),
+    ("cross", Builtin::Cross, Shape::Cross),
     ("degrees", Builtin::Degrees, Shape::Componentwise1),
     ("distance", Builtin::Distance, Shape::Fold2),
     ("dot", Builtin::Dot, Shape::Fold2),
@@ -98,7 +101,7 @@ pub(crate) fn available() -> String {
 pub(crate) fn arity(shape: Shape) -> usize {
     match shape {
         Shape::Componentwise1 | Shape::Fold1 | Shape::Texture => 1,
-        Shape::Componentwise2 | Shape::Fold2 => 2,
+        Shape::Componentwise2 | Shape::Fold2 | Shape::Cross => 2,
         Shape::Componentwise3 | Shape::MixScalar | Shape::EdgeScalar | Shape::Select => 3,
     }
 }
@@ -188,6 +191,12 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
                 ));
             }
             Ok(a)
+        }
+        Shape::Cross => {
+            let (left, right) = (args[0], args[1]);
+            (left == Type::Vec3 && right == Type::Vec3)
+                .then_some(Type::Vec3)
+                .ok_or_else(|| format!("cross takes two vec3, not {left} and {right}"))
         }
         Shape::Texture => {
             let ty = args[0];

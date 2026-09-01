@@ -53,6 +53,28 @@ pub(crate) fn pack(params: &[Binding]) -> (Vec<ParamSlot>, u32) {
 pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String {
     let mut out = String::with_capacity(2048);
     emit_uniforms(&mut out, slots, size);
+    for helper in &program.helpers {
+        let signature = helper
+            .params
+            .iter()
+            .map(|(name, ty)| format!("{name}: {}", ty.wgsl()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            out,
+            "fn {}({signature}) -> {} {{",
+            helper.name,
+            helper.returns.wgsl()
+        );
+        let mut state = Emitter {
+            out,
+            depth: 1,
+            loops: 0,
+        };
+        state.block(&helper.body);
+        out = state.out;
+        out.push_str("}\n\n");
+    }
     // One fixed signature, whatever the shader declared, so the host's call
     // site never varies. The declared inputs are bound inside from wherever
     // they actually come from — the fragment stage, or the uniform header.
@@ -339,6 +361,21 @@ impl Emitter {
     }
 
     fn call(&mut self, builtin: Builtin, ty: Type, args: &[Expr]) {
+        if builtin == Builtin::Helper {
+            // The first argument is the emitted function's name, not a value.
+            let Some(Expr::Local { name, .. }) = args.first() else {
+                unreachable!("a helper call carries its own name");
+            };
+            let _ = write!(self.out, "{name}(");
+            for (index, arg) in args[1..].iter().enumerate() {
+                if index > 0 {
+                    self.out.push_str(", ");
+                }
+                self.raw(arg);
+            }
+            self.out.push(')');
+            return;
+        }
         if builtin == Builtin::Texture {
             // A function the host shader provides, rather than a binding this
             // crate declares. Which texture is underneath, and in which bind

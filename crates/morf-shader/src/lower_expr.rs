@@ -207,6 +207,13 @@ impl Lowerer<'_> {
         if let Some(ty) = Type::parse(name).filter(|ty| ty.is_vector()) {
             return self.construct(ty, lowered, line);
         }
+        // A helper the shader declared wins over nothing at all, but never over
+        // a builtin: shadowing `sin` would be a trap, not a feature.
+        if builtins::lookup(name).is_none()
+            && let Some(call) = self.helper_call(name, lowered.clone(), line)
+        {
+            return call;
+        }
         let Some((builtin, shape)) = builtins::lookup(name) else {
             self.error_note(
                 line,

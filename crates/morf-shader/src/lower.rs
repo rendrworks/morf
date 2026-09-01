@@ -29,7 +29,30 @@ pub(crate) struct Local {
     pub(crate) mutable: bool,
 }
 
+/// One helper, lowered for one set of argument types.
+///
+/// A helper has no declared parameter types, so the types come from the call.
+/// Two calls with different argument types are two different functions —
+/// monomorphised rather than inferred into one — which is what lets
+/// `palette(t)` be written once and used at whatever type it is handed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Instance {
+    pub(crate) name: String,
+    pub(crate) params: Vec<(String, Type)>,
+    pub(crate) returns: Type,
+    pub(crate) body: Block,
+}
+
 pub(crate) struct Lowerer<'a> {
+    /// Helper definitions, by name.
+    pub(crate) helpers: Vec<(String, &'a FunctionDefinition<Name>)>,
+    /// Helpers already lowered, keyed by name and argument types.
+    pub(crate) instances: Vec<((String, Vec<Type>), String)>,
+    /// The lowered bodies, in the order they must be emitted.
+    pub(crate) lowered: Vec<Instance>,
+    /// Helpers currently being lowered, so recursion is caught rather than
+    /// looping forever in the compiler.
+    pub(crate) in_progress: Vec<String>,
     pub(crate) scopes: Vec<HashMap<Vec<u8>, Local>>,
     pub(crate) inputs: &'a [Binding],
     pub(crate) params: &'a [Binding],
@@ -44,6 +67,10 @@ pub(crate) struct Lowerer<'a> {
 impl<'a> Lowerer<'a> {
     pub(crate) fn new(inputs: &'a [Binding], params: &'a [Binding]) -> Self {
         Self {
+            helpers: Vec::new(),
+            instances: Vec::new(),
+            lowered: Vec::new(),
+            in_progress: Vec::new(),
             scopes: vec![HashMap::new()],
             inputs,
             params,
@@ -142,37 +169,50 @@ fn sanitize(name: &Name) -> String {
     out
 }
 
-/// Finds the entry function in a parsed chunk.
+/// Every function a shader declares: the entry point, and the helpers.
+pub(crate) struct Functions<'c> {
+    pub(crate) entry: Option<&'c FunctionDefinition<Name>>,
+    /// Helpers by name, in declaration order.
+    pub(crate) helpers: Vec<(String, &'c FunctionDefinition<Name>)>,
+}
+
+/// Finds the entry point and the helpers beside it.
 ///
-/// A shader is one function. The chunk may declare it as `function name(...)`
-/// or `local function name(...)`; anything else at the top level is a
-/// diagnostic, because a shader has no host to run statements against.
-pub(crate) fn entry_function<'c>(
+/// A shader is a set of functions and nothing else — no statements at the top
+/// level, because there is no host to run them against. Helpers matter more
+/// than they look: `palette(t)` is the single most common idiom in the shaders
+/// people actually want to port, and a language without it makes every port a
+/// rewrite rather than a translation.
+pub(crate) fn functions<'c>(
     chunk: &'c Chunk<Name>,
     wanted: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<&'c FunctionDefinition<Name>> {
-    let mut found = None;
+) -> Functions<'c> {
+    let mut found = Functions {
+        entry: None,
+        helpers: Vec::new(),
+    };
     for statement in &chunk.block.statements {
         let line = line_of(statement.line_number);
-        match &statement.inner {
+        let named = match &statement.inner {
             Statement::Function(function) if function.fields.is_empty() => {
-                if text(&function.name) == wanted {
-                    found = Some(&function.definition);
-                }
+                Some((text(&function.name), &function.definition))
             }
             Statement::LocalFunction(function) => {
-                if text(&function.name) == wanted {
-                    found = Some(&function.definition);
-                }
+                Some((text(&function.name), &function.definition))
             }
-            _ => diagnostics.push(
-                Diagnostic::new(line, "a shader holds one function and nothing else")
+            _ => None,
+        };
+        match named {
+            Some((name, definition)) if name == wanted => found.entry = Some(definition),
+            Some((name, definition)) => found.helpers.push((name, definition)),
+            None => diagnostics.push(
+                Diagnostic::new(line, "a shader holds functions and nothing else")
                     .note(format!("move this inside `function {wanted}(...)`")),
             ),
         }
     }
-    if found.is_none() {
+    if found.entry.is_none() {
         diagnostics.push(Diagnostic::new(
             1,
             format!("no `function {wanted}(...)` in this shader"),
