@@ -1,7 +1,7 @@
 use crate::effects::color_array;
 use crate::{DrawCommand, DrawList, VerticalAlignment};
 use morf_layout::{Geometry, TextMeasurer, TextOptions};
-use morf_text::{RasterContent, TextSystem};
+use morf_text::{GLYPH_FIELD_REFERENCE_PX, RasterContent, TextSystem};
 
 use super::{backend_types::*, glyphs::*, textures::*};
 
@@ -71,6 +71,20 @@ pub(crate) fn create_glyph_batch(
             VerticalAlignment::Center => spare_height / 2.0,
             VerticalAlignment::Bottom => spare_height,
         };
+        // A distance field is wanted only when it buys something. A style that
+        // moves the edge, feathers it or draws an outline needs one; so does a
+        // glyph drawn at or above the size the field was measured at, where a
+        // direct rasterization would want its own cache entry per size.
+        //
+        // Below that it is a straight loss: an eleven-pixel label built from a
+        // sixty-four-pixel field has no hinting and a soft edge, which is how
+        // every label in the shell got worse when fields were switched on for
+        // all text rather than for the text that asked.
+        let styled = field_style.thickness != 0.0
+            || field_style.softness != 0.0
+            || field_style.outline_width != 0.0;
+        let large = (*size as f32) * scale >= GLYPH_FIELD_REFERENCE_PX;
+        let wants_field = styled || large;
         for glyph in text_system.rasterize(
             *node,
             (
@@ -78,6 +92,7 @@ pub(crate) fn create_glyph_batch(
                 (bounds.y + vertical_offset) as f32 * scale,
             ),
             scale,
+            wants_field,
         ) {
             if glyph.width > 0 && glyph.height > 0 {
                 glyphs.push(PreparedGlyph {

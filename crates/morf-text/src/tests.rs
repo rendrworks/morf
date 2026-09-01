@@ -204,8 +204,8 @@ fn rasterizes_cached_text_at_fractional_scale() {
     let mut text = TextSystem::new();
     text.measure(node, "morf", "sans-serif", 16.0, TextOptions::default());
 
-    let glyphs = text.rasterize(node, (5.0, 7.0), 1.25);
-    let cached = text.rasterize(node, (5.0, 7.0), 1.25);
+    let glyphs = text.rasterize(node, (5.0, 7.0), 1.25, false);
+    let cached = text.rasterize(node, (5.0, 7.0), 1.25, false);
 
     assert!(!glyphs.is_empty());
     assert!(
@@ -255,4 +255,50 @@ fn eliding_places_ellipsis_and_constrains_width() {
             TextElide::None => unreachable!(),
         }
     }
+}
+
+#[test]
+fn ordinary_text_is_rasterized_at_its_own_size() {
+    // A distance field is measured once at a reference size and scaled, which
+    // is right for a glyph being animated through sizes and wrong for a label.
+    // Sixteen-pixel text built from a sixty-four-pixel field arrives with no
+    // hinting and a soft edge — worse than what it replaced, at the size most
+    // text is actually drawn.
+    let mut scene = Scene::new();
+    let node = scene.create(Element::Text);
+    let mut text = TextSystem::new();
+    text.measure(node, "morf", "sans-serif", 16.0, TextOptions::default());
+
+    let direct = text.rasterize(node, (0.0, 0.0), 1.0, false);
+    assert!(!direct.is_empty());
+    assert!(
+        direct
+            .iter()
+            .all(|glyph| glyph.content != RasterContent::Field),
+        "no field where none was asked for",
+    );
+    // Drawn at the size it was measured, so the quad is the ink itself rather
+    // than a scaled copy of a reference.
+    assert!(
+        direct
+            .iter()
+            .all(|glyph| glyph.draw_width == glyph.width && glyph.draw_height == glyph.height),
+    );
+}
+
+#[test]
+fn a_field_is_still_available_when_it_is_asked_for() {
+    let mut scene = Scene::new();
+    let node = scene.create(Element::Text);
+    let mut text = TextSystem::new();
+    text.measure(node, "morf", "sans-serif", 16.0, TextOptions::default());
+
+    let fields = text.rasterize(node, (0.0, 0.0), 1.0, true);
+    assert!(!fields.is_empty());
+    assert!(
+        fields
+            .iter()
+            .any(|glyph| glyph.content == RasterContent::Field),
+        "asking for a field gets one",
+    );
 }

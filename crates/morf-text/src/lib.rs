@@ -209,11 +209,17 @@ impl TextSystem {
     }
 
     /// Rasterizes one cached text node at a physical origin and scale.
+    /// The glyphs of a laid-out node, positioned.
+    ///
+    /// `field` asks for distance-field glyphs rather than direct
+    /// rasterizations. See [`raster_glyph`](Self::raster_glyph) for when that
+    /// is the right thing to want; for ordinary text at its own size it is not.
     pub fn rasterize(
         &mut self,
         node: NodeHandle,
         origin: (f32, f32),
         scale: f32,
+        field: bool,
     ) -> Vec<RasterGlyph> {
         let Some(buffer) = self.buffers.get(&node) else {
             return Vec::new();
@@ -229,7 +235,7 @@ impl TextSystem {
             .collect();
         physical
             .into_iter()
-            .filter_map(|glyph| self.raster_glyph(&glyph))
+            .filter_map(|glyph| self.raster_glyph(&glyph, field))
             .collect()
     }
 }

@@ -19,7 +19,24 @@ impl TextSystem {
     ///
     /// Colour glyphs stay as they were. An emoji is a picture, not a shape, and
     /// there is no edge in it to measure a distance from.
-    pub(crate) fn raster_glyph(&mut self, glyph: &PhysicalGlyph) -> Option<RasterGlyph> {
+    /// One glyph, as a distance field or as a direct rasterization.
+    ///
+    /// `field` says whether a field is *wanted*. It is not free: the field is
+    /// measured once at [`FIELD_REFERENCE_PX`] and scaled to whatever size is
+    /// asked for, so an eleven-pixel label drawn from a sixty-four-pixel field
+    /// arrives with no hinting and a soft edge — which is worse than the
+    /// direct rasterization it replaced, at the size most text is actually
+    /// drawn. The field earns its keep above the reference size, where a
+    /// direct raster would need its own cache entry per size, and whenever a
+    /// style asks for something only a field can do.
+    pub(crate) fn raster_glyph(
+        &mut self,
+        glyph: &PhysicalGlyph,
+        field: bool,
+    ) -> Option<RasterGlyph> {
+        if !field {
+            return self.mask_glyph(glyph);
+        }
         let mut reference = glyph.cache_key;
         reference.font_size_bits = FIELD_REFERENCE_PX.to_bits();
         reference.x_bin = SubpixelBin::Zero;
@@ -65,8 +82,15 @@ impl TextSystem {
             });
         }
 
-        // A colour glyph, or one with no ink to measure: rasterized at the size
-        // it is drawn, the way everything used to be.
+        self.mask_glyph(glyph)
+    }
+
+    /// A glyph rasterized at the size it is drawn.
+    ///
+    /// Hinted, crisp, and one cache entry per size — which is the right trade
+    /// for body text, and the wrong one for a glyph being animated through a
+    /// range of sizes.
+    fn mask_glyph(&mut self, glyph: &PhysicalGlyph) -> Option<RasterGlyph> {
         let mut hasher = DefaultHasher::new();
         glyph.cache_key.hash(&mut hasher);
         let cache_key = hasher.finish();
