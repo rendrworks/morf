@@ -744,6 +744,12 @@ M1–M4 is the useful spine. If the project stops after M4 it is still a feature
 
 ## 12. Deferred
 
+**The language surface is tracked separately now.** What a Lua shader can
+express against what WGSL can — the missing 43 builtins, matrices, integers,
+derivatives, arrays — is enumerated and ordered in
+[PLAN_WGSL_COVERAGE.md](PLAN_WGSL_COVERAGE.md). The list below is what this
+plan itself deferred.
+
 - `mat2`/`mat3` and matrix multiply. Wanted for rotation; `vec2` rotation by
   hand covers most of it until then.
 - Multiple functions per shader. One entry point only at first; user-defined
