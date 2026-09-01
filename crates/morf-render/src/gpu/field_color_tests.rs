@@ -117,6 +117,7 @@ pub(crate) fn a_smooth_seam_may_bulge_outside_the_node_without_being_clipped() {
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
             shadow_inner: false,
+            shader: None,
             softness: 0.0,
             layers: vec![filled, joined],
         }

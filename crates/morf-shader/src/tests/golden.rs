@@ -202,10 +202,13 @@ fn params_are_packed_with_wgsl_alignment() {
         params,
     )
     .expect("this compiles");
-    assert_eq!(compiled.params[0].offset, 0);
+    // Parameters start after the frame's own values, which sit at a fixed
+    // offset so a host writing the clock never has to know what a particular
+    // shader declared after it.
+    assert_eq!(compiled.params[0].offset, HEADER_BYTES);
     // A vec4 aligns to sixteen, so the f32 before it cannot simply be followed.
-    assert_eq!(compiled.params[1].offset, 16);
-    assert_eq!(compiled.uniform_size, 32);
+    assert_eq!(compiled.params[1].offset, HEADER_BYTES + 16);
+    assert_eq!(compiled.uniform_size, 48);
 }
 
 #[test]

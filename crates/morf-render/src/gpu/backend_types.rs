@@ -32,6 +32,17 @@ impl fmt::Display for GpuError {
 impl StdError for GpuError {}
 
 /// wgpu SDF renderer targeting a persistent texture.
+/// One registered shader: its pipeline, and the buffer its parameters go in.
+pub(crate) struct ShaderProgram {
+    pub(crate) pipeline: wgpu::RenderPipeline,
+    pub(crate) uniforms: wgpu::Buffer,
+    pub(crate) bind_group: wgpu::BindGroup,
+    /// Byte offsets of each parameter, from the compiler, so the host and the
+    /// shader cannot disagree about the layout.
+    pub(crate) offsets: Vec<u32>,
+    pub(crate) size: u32,
+}
+
 pub struct WgpuBackend {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
@@ -59,6 +70,24 @@ pub struct WgpuBackend {
     pub(crate) field_material_capacity: usize,
     pub(crate) field_layer_capacity: usize,
     pub(crate) field_bind_group: wgpu::BindGroup,
+    /// Layout for a shader's own uniform block, group one of every field
+    /// pipeline whether or not it has a shader.
+    pub(crate) field_shader_layout: wgpu::BindGroupLayout,
+    /// The empty block bound when a node has no shader, so the base pipeline
+    /// still has something at group one.
+    pub(crate) field_shader_default: wgpu::BindGroup,
+    /// Configuration shaders, by the hash of their generated WGSL.
+    ///
+    /// Filled at configuration load and never during a frame: building a
+    /// pipeline takes tens of milliseconds, which a compositor cannot spend at
+    /// paint time.
+    pub(crate) shaders: HashMap<u64, ShaderProgram>,
+    /// Seconds since the shell started, as shaders read it.
+    ///
+    /// Held here rather than passed through `render`, because the render
+    /// signature belongs to the backend trait and every other backend would
+    /// have to carry a clock it does not use.
+    pub(crate) elapsed: f32,
     pub(crate) images: ImageCache,
     pub(crate) image_textures: HashMap<TextureKey, TextureImage>,
     /// Full-surface render targets, one per offscreen layer, kept between

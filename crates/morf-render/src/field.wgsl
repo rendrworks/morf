@@ -366,6 +366,26 @@ fn compose(local: vec2<f32>, base: vec4<f32>, first: u32, count: u32) -> Compose
     return out;
 }
 
+/// Where a configuration's own shader gets to decide the colour.
+///
+/// The default hands back what the field already resolved, so the base pipeline
+/// costs nothing. When a node carries a shader, this body is replaced at
+/// pipeline creation with a call into the compiled `morf_shader_main` — a
+/// distinct pipeline per shader, because WGSL has no way to swap a function at
+/// run time and a branch on a uniform would pay for a shader on every node that
+/// does not have one.
+///
+/// The shape still comes from the field, so clipping, damage, hit testing and
+/// the input region are untouched by anything a shader does.
+fn morf_shader_hook(
+    uv: vec2<f32>,
+    local: vec2<f32>,
+    coverage: f32,
+    base: vec4<f32>,
+) -> vec4<f32> {
+    return base;
+}
+
 /// The fill a gradient paints at this point, or the flat colour if there is none.
 fn gradient_fill(material: Material, local: vec2<f32>, flat_color: vec4<f32>) -> vec4<f32> {
     let kind = material.gradient_data.x;
@@ -429,6 +449,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let filled = smoothstep(ramp, -ramp, distance + inset);
 
     var fill_color = gradient_fill(material, input.local, surface.fill);
+    // Normalised across the node's own rectangle, which is what a shader means
+    // by `uv` and what makes one read the same at any size.
+    let shader_uv = (input.local - material.shape.xy) / max(material.shape.zw, vec2<f32>(0.000001));
+    fill_color = morf_shader_hook(shader_uv, input.local, coverage, fill_color);
     let fill_alpha = fill_color.a * filled;
     let outline_alpha = input.outline.a * max(coverage - filled, 0.0);
     let shape = vec4<f32>(

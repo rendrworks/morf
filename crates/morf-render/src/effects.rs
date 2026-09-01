@@ -141,6 +141,21 @@ pub(crate) fn intersect_geometry(left: Geometry, right: Geometry) -> Geometry {
     }
 }
 
+/// Reads the shader attached to a node, and the values it was given.
+///
+/// Resolution happened at configuration load, where the registry is; the scene
+/// carries only the program's hash and its numbers, so painting never compiles
+/// anything and never looks a name up.
+pub(crate) fn shader_binding(
+    scene: &Scene,
+    node: NodeHandle,
+) -> Result<Option<ShaderBinding>, RenderError> {
+    Ok(scene.node_shader(node).map(|shader| ShaderBinding {
+        program: shader.program,
+        params: shader.params.clone(),
+    }))
+}
+
 /// Parses where a stroke sits against the edge.
 pub(crate) fn stroke_alignment(name: &str) -> Result<BorderAlignment, RenderError> {
     Ok(match name {

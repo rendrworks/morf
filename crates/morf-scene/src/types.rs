@@ -207,6 +207,14 @@ impl From<String> for Value {
 /// Scene arena and its property signal graph.
 pub struct Scene {
     pub(crate) nodes: SlotMap<NodeId, Node>,
+    /// Shaders attached to nodes, by node.
+    ///
+    /// A side table rather than node properties: property names are `&'static
+    /// str`, so a per-shader parameter name would have to be leaked, and giving
+    /// every element a fixed set of numbered slots would make every rectangle
+    /// in the scene carry two signals per slot whether or not it has a shader.
+    /// A shader is rare; it should cost nothing when absent.
+    pub(crate) shaders: FastMap<NodeId, NodeShader>,
     pub(crate) properties: Graph<Value>,
     pub(crate) behaviors: FastMap<PropertyKey, Behavior>,
     pub(crate) animations: FastMap<PropertyKey, Animation>,
@@ -241,6 +249,15 @@ pub struct Scene {
 pub(crate) struct PropertyKey {
     pub(crate) node: NodeId,
     pub(crate) property: &'static str,
+}
+
+/// A compiled shader attached to a node, and the values it was given.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeShader {
+    /// Which registered program, by the hash of its generated WGSL.
+    pub program: u64,
+    /// Parameter values, flattened in declaration order.
+    pub params: Vec<f32>,
 }
 
 pub(crate) struct Node {

@@ -24,6 +24,8 @@ mod field_shape_tests;
 #[cfg(test)]
 mod field_tests;
 #[cfg(test)]
+mod shader_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod text_field_tests;

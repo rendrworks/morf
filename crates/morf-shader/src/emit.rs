@@ -3,6 +3,13 @@ use std::fmt::Write as _;
 use crate::ir::*;
 use crate::types::*;
 
+/// How many bytes the built-in header occupies before the first parameter.
+///
+/// `resolution` then `time`, padded to sixteen. Fixed rather than packed with
+/// the rest so a host writing the clock does not have to know what a particular
+/// shader declared.
+pub const HEADER_BYTES: u32 = 16;
+
 /// Where one parameter sits in the uniform block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParamSlot {
@@ -19,7 +26,10 @@ pub struct ParamSlot {
 /// shader rather than being recomputed on the other side.
 pub(crate) fn pack(params: &[Binding]) -> (Vec<ParamSlot>, u32) {
     let mut slots = Vec::with_capacity(params.len());
-    let mut offset = 0u32;
+    // The frame's own values come first, at a fixed offset, so the host can
+    // write them without consulting the layout of whatever the configuration
+    // declared after them.
+    let mut offset = HEADER_BYTES;
     for param in params {
         let (size, alignment) = param.ty.layout();
         offset = offset.next_multiple_of(alignment);
@@ -42,25 +52,42 @@ pub(crate) fn pack(params: &[Binding]) -> (Vec<ParamSlot>, u32) {
 /// undone.
 pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String {
     let mut out = String::with_capacity(2048);
-    emit_uniforms(&mut out, program, slots, size);
+    emit_uniforms(&mut out, slots, size);
     if program.samples_behind {
         out.push_str(
             "@group(2) @binding(0) var morf_behind: texture_2d<f32>;\n\
              @group(2) @binding(1) var morf_behind_sampler: sampler;\n\n",
         );
     }
-    let signature = program
-        .entry
-        .params
-        .iter()
-        .map(|(name, ty)| format!("{name}: {}", ty.wgsl()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let _ = writeln!(
-        out,
-        "fn morf_shader_main({signature}) -> {} {{",
-        program.entry.returns.wgsl()
+    // One fixed signature, whatever the shader declared, so the host's call
+    // site never varies. The declared inputs are bound inside from wherever
+    // they actually come from — the fragment stage, or the uniform header.
+    out.push_str(
+        "fn morf_shader_main(\n    \
+         uv: vec2<f32>,\n    \
+         local: vec2<f32>,\n    \
+         coverage: f32,\n    \
+         base: vec4<f32>,\n\
+         ) -> vec4<f32> {\n",
     );
+    for (index, input) in program.inputs.iter().enumerate() {
+        let source = match input.name.as_str() {
+            "uv" => "uv".to_owned(),
+            "coverage" => "coverage".to_owned(),
+            "local" => "local".to_owned(),
+            "time" => "morf_u.morf_time".to_owned(),
+            "resolution" => "morf_u.morf_resolution".to_owned(),
+            // An input the host does not supply is still bound, so a shader
+            // naming one gets zero rather than a WGSL compile error the author
+            // has no way to read.
+            _ => format!("{}()", zero(input.ty)),
+        };
+        let _ = writeln!(
+            out,
+            "    let morf_in{index}: {} = {source};",
+            input.ty.wgsl()
+        );
+    }
     let mut state = Emitter {
         out,
         depth: 1,
@@ -71,31 +98,52 @@ pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String 
     state.out
 }
 
-fn emit_uniforms(out: &mut String, program: &Program, slots: &[ParamSlot], size: u32) {
-    out.push_str("struct MorfShaderUniforms {\n");
-    if slots.is_empty() {
-        // A uniform block cannot be empty, and an unused member costs nothing.
-        out.push_str("    morf_unused: vec4<f32>,\n");
+/// The zero constructor for a type, for an input nothing supplies.
+fn zero(ty: Type) -> &'static str {
+    match ty {
+        Type::Vec2 => "vec2<f32>",
+        Type::Vec3 => "vec3<f32>",
+        Type::Vec4 => "vec4<f32>",
+        _ => "f32",
     }
-    let mut offset = 0u32;
-    for slot in slots {
+}
+
+fn emit_uniforms(out: &mut String, slots: &[ParamSlot], size: u32) {
+    out.push_str(
+        "struct MorfShaderUniforms {\n    \
+         morf_resolution: vec2<f32>,\n    \
+         morf_time: f32,\n    \
+         morf_header_pad: f32,\n",
+    );
+    let mut offset = HEADER_BYTES;
+    for (index, slot) in slots.iter().enumerate() {
         let (slot_size, alignment) = slot.ty.layout();
         let aligned = offset.next_multiple_of(alignment);
-        if aligned > offset {
-            let _ = writeln!(
-                out,
-                "    morf_pad{offset}: array<f32, {}>,",
-                (aligned - offset) / 4
-            );
-        }
-        let _ = writeln!(out, "    {}: {},", slot.name, slot.ty.wgsl());
+        pad(out, offset, aligned);
+        // Named by index rather than by what the configuration called it: a
+        // parameter called `sin` or `let` would not be a legal WGSL member, and
+        // the author's own name is no help inside generated code anyway.
+        let _ = writeln!(
+            out,
+            "    morf_param{index}: {}, // {}",
+            slot.ty.wgsl(),
+            slot.name
+        );
         offset = aligned + slot_size;
     }
-    if !slots.is_empty() && offset < size {
-        let _ = writeln!(out, "    morf_tail: array<f32, {}>,", (size - offset) / 4);
-    }
+    pad(out, offset, size);
     out.push_str("};\n@group(1) @binding(0) var<uniform> morf_u: MorfShaderUniforms;\n\n");
-    let _ = program;
+}
+
+/// Emits padding members between two offsets.
+///
+/// One `f32` per four bytes rather than an `array<f32, n>`: in the uniform
+/// address space an array's stride has to be a multiple of sixteen, so the
+/// obvious spelling is rejected outright by the validator.
+fn pad(out: &mut String, from: u32, to: u32) {
+    for slot in (from..to).step_by(4) {
+        let _ = writeln!(out, "    morf_pad{slot}: f32,");
+    }
 }
 
 struct Emitter {

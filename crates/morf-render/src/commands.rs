@@ -146,9 +146,26 @@ pub enum DrawCommand {
         shadow_offset_y: f64,
         /// Whether the shadow falls inside the shape rather than behind it.
         shadow_inner: bool,
+        /// A configuration's own shader, if this node carries one.
+        shader: Option<ShaderBinding>,
         /// Layers in composition order; the first establishes the field.
         layers: Vec<SdfLayer>,
     },
+}
+
+/// A compiled shader attached to a node, and the values it was given.
+///
+/// The WGSL itself is not here: it was compiled and registered with the backend
+/// once, at configuration load, and this only says which one and with what. A
+/// draw command is compared every frame to decide damage, so it holds the
+/// cheap half.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShaderBinding {
+    /// Which registered program, by the hash of its generated WGSL.
+    pub program: u64,
+    /// Parameter values, flattened in declaration order. The backend places
+    /// them using the layout the compiler computed, so the two cannot disagree.
+    pub params: Vec<f32>,
 }
 
 /// Edge shaping applied when sampling a cached distance field.

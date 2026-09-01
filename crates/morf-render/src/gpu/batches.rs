@@ -1,4 +1,16 @@
-use crate::{DrawList, SdfFieldInstance, SdfFieldLayer, SdfFieldMaterial};
+use crate::{DrawList, SdfFieldInstance, SdfFieldLayer, SdfFieldMaterial, ShaderBinding};
+
+/// Everything one frame's fields need, gathered in one walk of the list.
+pub(crate) struct FieldBatch {
+    /// Instance index per draw command, or `None` if the command is not a field.
+    pub(crate) indices: Vec<Option<u32>>,
+    pub(crate) instances: Vec<SdfFieldInstance>,
+    pub(crate) layers: Vec<SdfFieldLayer>,
+    pub(crate) materials: Vec<SdfFieldMaterial>,
+    /// Parallel to `instances`: which pipeline draws each, which is not
+    /// instance data because it selects the pipeline rather than riding in it.
+    pub(crate) shaders: Vec<Option<ShaderBinding>>,
+}
 
 /// Groups every field and quad command, and the layers and materials they
 /// carry, into one set of buffers.
@@ -6,25 +18,24 @@ use crate::{DrawList, SdfFieldInstance, SdfFieldLayer, SdfFieldMaterial};
 /// A rectangle is a field of one layer, so there is one collector rather than
 /// two: each instance records where its own run of layers begins, and its
 /// material is found by its own instance index.
-pub(crate) fn collect_field_instances(
-    list: &DrawList,
-    scale_120: u32,
-) -> (
-    Vec<Option<u32>>,
-    Vec<SdfFieldInstance>,
-    Vec<SdfFieldLayer>,
-    Vec<SdfFieldMaterial>,
-) {
+pub(crate) fn collect_field_instances(list: &DrawList, scale_120: u32) -> FieldBatch {
     let mut indices = vec![None; list.commands.len()];
     let mut instances = Vec::new();
     let mut layers = Vec::new();
     let mut materials = Vec::new();
+    // Parallel to `instances`, because which pipeline draws an instance is not
+    // instance data: it selects the pipeline itself.
+    let mut shaders = Vec::new();
     for (command_index, command) in list.commands.iter().enumerate() {
         if let Some(instance) =
             SdfFieldInstance::from_command(command, scale_120, &mut layers, &mut materials)
         {
             indices[command_index] = Some(instances.len() as u32);
             instances.push(instance);
+            shaders.push(match command {
+                crate::DrawCommand::Field { shader, .. } => shader.clone(),
+                _ => None,
+            });
         }
     }
     debug_assert_eq!(
@@ -32,5 +43,11 @@ pub(crate) fn collect_field_instances(
         materials.len(),
         "the shader finds a material by instance index, so they march together",
     );
-    (indices, instances, layers, materials)
+    FieldBatch {
+        indices,
+        instances,
+        layers,
+        materials,
+        shaders,
+    }
 }

@@ -222,6 +222,7 @@ pub(crate) fn append_node(
                     shadow_offset_x: scene.number(node, "shadow_offset_x")?,
                     shadow_offset_y: scene.number(node, "shadow_offset_y")?,
                     shadow_inner: scene.bool_value(node, "shadow_inner")?,
+                    shader: shader_binding(scene, node)?,
                     layers,
                 });
             }

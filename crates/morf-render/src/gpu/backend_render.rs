@@ -52,8 +52,13 @@ impl RenderBackend for WgpuBackend {
         damage: &[DamageRect],
         scale_120: u32,
     ) -> Result<(), Self::Error> {
-        let (field_indices, field_instances, field_layers, field_materials) =
-            collect_field_instances(list, scale_120);
+        let FieldBatch {
+            indices: field_indices,
+            instances: field_instances,
+            layers: field_layers,
+            materials: field_materials,
+            shaders: field_shaders,
+        } = collect_field_instances(list, scale_120);
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
                 queue: &self.queue,
@@ -236,6 +241,7 @@ impl RenderBackend for WgpuBackend {
                 bytemuck::cast_slice(&field_materials),
             );
         }
+        self.write_shader_uniforms(&field_shaders, scale_120);
         if let Some(batch) = &glyph_batch {
             self.queue.write_buffer(
                 &self.glyph_buffer,
@@ -273,7 +279,23 @@ impl RenderBackend for WgpuBackend {
                 {
                     $pass.set_scissor_rect(x, y, width, height);
                     if let Some(instance) = field_indices[command_index] {
-                        $pass.set_pipeline(&self.field_pipeline);
+                        // A shader replaces the pipeline rather than switching
+                        // inside it: WGSL cannot swap a function at run time,
+                        // and a uniform branch would make every node without a
+                        // shader pay for the ones that have one.
+                        let program = field_shaders[instance as usize]
+                            .as_ref()
+                            .and_then(|binding| self.shaders.get(&binding.program));
+                        match program {
+                            Some(program) => {
+                                $pass.set_pipeline(&program.pipeline);
+                                $pass.set_bind_group(1, &program.bind_group, &[]);
+                            }
+                            None => {
+                                $pass.set_pipeline(&self.field_pipeline);
+                                $pass.set_bind_group(1, &self.field_shader_default, &[]);
+                            }
+                        }
                         $pass.set_bind_group(0, &self.field_bind_group, &[]);
                         $pass.set_vertex_buffer(0, self.field_buffer.slice(..));
                         // Four vertices as a strip: the shader expands the quad

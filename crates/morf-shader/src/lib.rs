@@ -50,7 +50,7 @@ mod types;
 mod validate;
 
 pub use diagnostics::{Diagnostic, report};
-pub use emit::ParamSlot;
+pub use emit::{HEADER_BYTES, ParamSlot};
 pub use ir::Binding;
 pub use limits::*;
 pub use types::{ShaderKind, Type, Value};
@@ -155,13 +155,12 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
 
     let mut lowerer = lower::Lowerer::new(&spec.inputs, &spec.params);
     lowerer.diagnostics = diagnostics;
-    let signature = bind_parameters(&mut lowerer, definition, spec);
+    bind_parameters(&mut lowerer, definition, spec);
     let mut body = lowerer.block(&definition.body);
     body.resolve_mutability();
 
     let program = ir::Program {
         entry: ir::Function {
-            params: signature,
             returns: Type::Vec4,
             body,
         },
@@ -199,7 +198,7 @@ fn bind_parameters(
     lowerer: &mut lower::Lowerer<'_>,
     definition: &luna::compiler::parser::FunctionDefinition<lower::Name>,
     spec: &ShaderSpec,
-) -> Vec<(String, Type)> {
+) {
     let declared: Vec<&Binding> = spec.inputs.iter().chain(spec.params.iter()).collect();
     if definition.has_varargs {
         lowerer.error(1, "a shader entry point cannot take `...`");
@@ -216,7 +215,10 @@ fn bind_parameters(
             "add them to the shader's `inputs` or `params`",
         );
     }
-    let mut signature = Vec::new();
+    // Only the names are checked. Every input is bound inside the emitted
+    // function whether or not the Lua named it, so the host's call site is the
+    // same shape for every shader — a shader that ignores `resolution` still
+    // gets called with one.
     for (index, name) in definition.parameters.iter().enumerate() {
         let Some(binding) = declared.get(index) else {
             break;
@@ -233,26 +235,7 @@ fn bind_parameters(
                 "arguments come in declaration order: inputs first, then params",
             );
         }
-        // The entry point reads its arguments by the declared name, whichever
-        // spelling the Lua used, so the body resolves against one vocabulary.
-        let emitted = if index < spec.inputs.len() {
-            format!("morf_in{index}")
-        } else {
-            format!("morf_u.morf_param{}", index - spec.inputs.len())
-        };
-        if index < spec.inputs.len() {
-            signature.push((emitted, binding.ty));
-        }
-        let _ = binding;
     }
-    // Inputs the Lua did not name are still passed, so the host's call site is
-    // the same shape whatever the shader chose to read.
-    for (index, input) in spec.inputs.iter().enumerate() {
-        if index >= definition.parameters.len() {
-            signature.push((format!("morf_in{index}"), input.ty));
-        }
-    }
-    signature
 }
 
 /// FNV-1a over the emitted source.

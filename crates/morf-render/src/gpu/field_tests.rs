@@ -127,6 +127,7 @@ pub(super) fn field_command(node: NodeHandle, layers: Vec<SdfLayer>) -> DrawComm
         shadow_offset_x: 0.0,
         shadow_offset_y: 0.0,
         shadow_inner: false,
+        shader: None,
         layers,
     }
 }
@@ -412,6 +413,7 @@ pub(crate) fn a_layer_reaching_outside_its_node_is_drawn_whole() {
         shadow_offset_x: 0.0,
         shadow_offset_y: 0.0,
         shadow_inner: false,
+        shader: None,
         layers: vec![layer],
     };
     let pixels = render_readback(

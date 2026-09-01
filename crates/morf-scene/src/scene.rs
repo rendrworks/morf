@@ -23,6 +23,7 @@ impl Scene {
             next_group: 0,
             layout_revision: 0,
             removed: Vec::new(),
+            shaders: FastMap::default(),
         }
     }
 

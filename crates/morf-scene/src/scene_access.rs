@@ -83,3 +83,37 @@ impl Scene {
         self.nodes.get(node.id()).ok_or(SceneError::StaleNode)
     }
 }
+
+impl Scene {
+    /// Attaches a compiled shader to a node.
+    ///
+    /// The program is named by the hash of its generated WGSL, which is what
+    /// the renderer registered it under: the scene never holds shader source
+    /// and never compiles anything.
+    pub fn attach_shader(&mut self, node: NodeHandle, shader: NodeShader) {
+        self.shaders.insert(node.0, shader);
+    }
+
+    /// Removes a node's shader, if it had one.
+    pub fn detach_shader(&mut self, node: NodeHandle) {
+        self.shaders.remove(&node.0);
+    }
+
+    /// The shader attached to a node.
+    pub fn node_shader(&self, node: NodeHandle) -> Option<&NodeShader> {
+        self.shaders.get(&node.0)
+    }
+
+    /// Sets one parameter of an attached shader.
+    ///
+    /// Out-of-range indices are ignored rather than panicking: the index comes
+    /// from a configuration, and a shader can be swapped for one with fewer
+    /// parameters between the write and the read.
+    pub fn set_shader_param(&mut self, node: NodeHandle, index: usize, value: f32) {
+        if let Some(shader) = self.shaders.get_mut(&node.0)
+            && let Some(slot) = shader.params.get_mut(index)
+        {
+            *slot = value;
+        }
+    }
+}

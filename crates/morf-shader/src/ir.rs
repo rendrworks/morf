@@ -30,8 +30,12 @@ pub struct Binding {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// The entry point.
+///
+/// It has no parameter list of its own: the emitted signature is fixed so the
+/// host's call site never varies with what a shader happened to declare, and
+/// the declared inputs are bound inside the body from wherever they come from.
 pub struct Function {
-    pub params: Vec<(String, Type)>,
     pub returns: Type,
     pub body: Block,
 }

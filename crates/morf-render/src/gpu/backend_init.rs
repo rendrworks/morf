@@ -112,7 +112,15 @@ impl WgpuBackend {
             texture_capacity,
             "morf texture instances",
         );
-        let (field_pipeline, field_layout) = create_field_pipeline(&device);
+        let (field_layout, field_shader_layout) = create_field_layouts(&device);
+        let field_pipeline =
+            build_field_pipeline(&device, &field_layout, &field_shader_layout, None)
+                .expect("the field shader carries its own hook");
+        let field_shader_default = create_shader_bind_group(
+            &device,
+            &field_shader_layout,
+            &create_shader_uniform_buffer(&device, morf_shader::HEADER_BYTES),
+        );
         let field_capacity = 1;
         let field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
             &device,
@@ -162,6 +170,10 @@ impl WgpuBackend {
             field_material_buffer,
             field_material_capacity,
             field_bind_group,
+            field_shader_layout,
+            field_shader_default,
+            shaders: HashMap::new(),
+            elapsed: 0.0,
             images: ImageCache::default(),
             image_textures: HashMap::new(),
             layer_target_pool: Vec::new(),
@@ -211,6 +223,61 @@ impl WgpuBackend {
     /// Returns the persistent target for copying or diagnostics.
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    /// Registers a compiled shader, building its pipeline.
+    ///
+    /// Called when a configuration loads, never while rendering: compiling a
+    /// pipeline costs tens of milliseconds, and a compositor cannot spend that
+    /// at paint time. Registering the same program twice is a no-op, so a
+    /// configuration that attaches one shader to fifty nodes builds one
+    /// pipeline.
+    pub fn register_shader(
+        &mut self,
+        program: u64,
+        wgsl: &str,
+        offsets: &[u32],
+        size: u32,
+    ) -> Result<(), GpuError> {
+        if self.shaders.contains_key(&program) {
+            return Ok(());
+        }
+        let pipeline = build_field_pipeline(
+            &self.device,
+            &self.field_layout,
+            &self.field_shader_layout,
+            Some(wgsl),
+        )
+        .ok_or_else(|| {
+            GpuError("the field shader has no hook to splice a shader into".to_owned())
+        })?;
+        let uniforms = create_shader_uniform_buffer(&self.device, size);
+        let bind_group =
+            create_shader_bind_group(&self.device, &self.field_shader_layout, &uniforms);
+        self.shaders.insert(
+            program,
+            ShaderProgram {
+                pipeline,
+                uniforms,
+                bind_group,
+                offsets: offsets.to_vec(),
+                size,
+            },
+        );
+        Ok(())
+    }
+
+    /// Advances the clock shaders read.
+    ///
+    /// Called once per frame by the host, which owns the frame clock; the
+    /// backend only needs the number a shader will see.
+    pub fn set_elapsed(&mut self, seconds: f32) {
+        self.elapsed = seconds;
+    }
+
+    /// Whether a program has been registered.
+    pub fn has_shader(&self, program: u64) -> bool {
+        self.shaders.contains_key(&program)
     }
 
     /// Grows the field instance, layer and material buffers, rebinding when
