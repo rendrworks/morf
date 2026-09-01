@@ -349,6 +349,14 @@ pub(crate) fn install_host_service_api<'gc>(
             .expect("screen table accepts integer keys");
     }
     morf.set_field(ctx, "screens", screens);
+
+    // Every window the compositor reports, filled by `Runtime::set_windows` and
+    // updated in place. Empty here rather than absent so a configuration can
+    // hold it and watch it from the first line, before any compositor has said
+    // anything — and so `#morf.windows` is a number rather than an error on a
+    // compositor that does not report them at all.
+    let windows = Table::new(&ctx);
+    morf.set_field(ctx, "windows", windows);
 }
 
 /// Builds the Lua table describing one output.

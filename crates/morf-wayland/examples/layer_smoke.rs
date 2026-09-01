@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, screencopy {}, backdrop-blur {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, screencopy {}, backdrop-blur {}, windows {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
@@ -153,6 +153,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // translucent over a sharp desktop and there is nothing
                     // morf can do about it.
                     backdrop,
+                    // How many windows the compositor reported. Worth printing
+                    // rather than just whether the protocol is there: the
+                    // global being advertised and the list actually arriving
+                    // are different claims, and only the second is useful.
+                    if client.supports_toplevels() {
+                        format!("{}", client.toplevels().len())
+                    } else {
+                        "unsupported".to_owned()
+                    },
                     time_ms,
                     backend.info().name,
                     backend.info().backend,

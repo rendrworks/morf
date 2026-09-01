@@ -23,6 +23,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 use wayland_client::Proxy;
+use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{
     wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface, wl_touch,
 };
@@ -30,6 +31,7 @@ use wayland_protocols::ext::background_effect::v1::client::{
     ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
     ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
 };
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1;
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::ExtIdleNotificationV1, ext_idle_notifier_v1::ExtIdleNotifierV1,
 };
@@ -188,6 +190,17 @@ pub(crate) struct LayerState {
     pub(crate) blur_capable: bool,
     pub(crate) screencopies: Vec<PendingScreencopy>,
     pub(crate) screens: Vec<ScreenInfo>,
+    /// `ext-foreign-toplevel-list-v1`, when the compositor offers it.
+    pub(crate) toplevel_list: Option<ExtForeignToplevelListV1>,
+    /// Every window the compositor has told us about, keyed by its handle.
+    ///
+    /// Held as a map because the protocol describes a window over several
+    /// events and finishes with `done`: a handle arrives bare, then its title,
+    /// app id and identifier follow, and only after `done` is it worth showing
+    /// anybody.
+    pub(crate) toplevels: HashMap<ObjectId, ToplevelInfo>,
+    /// Whether the list changed since a caller last looked.
+    pub(crate) toplevels_changed: bool,
     pub(crate) session_locks: SessionLockState,
     pub(crate) session_lock: Option<SessionLock>,
     pub(crate) lock_surfaces: Vec<LockSurface>,

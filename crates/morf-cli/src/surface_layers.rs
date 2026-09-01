@@ -1,4 +1,4 @@
-use morf_lua::{LayerSurfaceConfig, Runtime, WindowSurfaceConfig, WindowSurfaceKind};
+use morf_lua::{LayerSurfaceConfig, Runtime, Toplevel, WindowSurfaceConfig, WindowSurfaceKind};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
 use morf_wayland::{
@@ -24,6 +24,29 @@ pub(crate) fn apply_service_requests(runtime: &mut Runtime, client: &mut LayerCl
     apply_virtual_keyboard_requests(runtime, client);
     apply_input_method_requests(runtime, client);
     apply_text_input_requests(runtime, client);
+    publish_windows(runtime, client);
+}
+
+/// Hands the compositor's window list to the configuration, when it changed.
+///
+/// Only when it changed. The list is rebuilt from scratch each time — cheap for
+/// a dozen windows, and cheaper than a diff that would have to decide what
+/// identity means for a renamed window — but doing it every frame would rebuild
+/// a dozen Lua tables sixty times a second to say nothing new.
+fn publish_windows(runtime: &mut Runtime, client: &mut LayerClient) {
+    if !client.take_toplevels_changed() {
+        return;
+    }
+    let windows: Vec<Toplevel> = client
+        .toplevels()
+        .into_iter()
+        .map(|window| Toplevel {
+            identifier: window.identifier,
+            title: window.title,
+            app_id: window.app_id,
+        })
+        .collect();
+    runtime.set_windows(&windows);
 }
 
 /// First identifier of the four internal edge reservers.

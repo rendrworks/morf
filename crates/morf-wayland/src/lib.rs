@@ -16,6 +16,7 @@ mod state_methods;
 mod state_types;
 mod surface_handlers;
 mod surface_types;
+mod toplevel_handlers;
 mod types;
 
 pub use client_layer::*;

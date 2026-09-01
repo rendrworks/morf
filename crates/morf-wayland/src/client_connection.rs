@@ -15,6 +15,7 @@ use std::time::Instant;
 use wayland_client::Connection;
 use wayland_client::globals::registry_queue_init;
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1;
 use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
@@ -74,6 +75,12 @@ impl LayerClient {
         let background_effect = globals
             .bind::<ExtBackgroundEffectManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
+        // Every window the compositor knows about, and it tells us as they come
+        // and go. A task switcher or an overview needs this list before it can
+        // ask for a capture of anything in it.
+        let toplevel_list = globals
+            .bind::<ExtForeignToplevelListV1, _, _>(&qh, 1..=1, ())
+            .ok();
         let screencopy_manager = globals
             .bind::<ZwlrScreencopyManagerV1, _, _>(&qh, 1..=3, ())
             .ok();
@@ -131,6 +138,9 @@ impl LayerClient {
             output_power_mode: None,
             shm,
             screencopy_manager,
+            toplevel_list,
+            toplevels: HashMap::new(),
+            toplevels_changed: false,
             background_effect,
             // Assumed absent until the manager says otherwise: the capability
             // arrives as an event, so anything sent before it would be a guess.

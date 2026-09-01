@@ -69,6 +69,17 @@ pub struct Runtime {
     pub(crate) module_roots: Rc<RefCell<Vec<PathBuf>>>,
 }
 
+/// One window the compositor reports, as handed to a configuration.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Toplevel {
+    /// Stable for the window's life, and the field to key on.
+    pub identifier: String,
+    /// What the window calls itself.
+    pub title: String,
+    /// Which application it belongs to.
+    pub app_id: String,
+}
+
 /// Output metadata exposed to one per-screen Lua configuration instance.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Screen {

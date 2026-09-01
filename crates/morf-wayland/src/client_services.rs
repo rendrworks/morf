@@ -2,7 +2,7 @@ use rustix::event::{PollFd, PollFlags, poll};
 use rustix::time::Timespec;
 use std::time::Duration;
 
-use crate::{state_types::*, surface_types::*};
+use crate::{state_types::*, surface_types::*, types::*};
 
 impl LayerClient {
     /// Blocks until at least one Wayland event is dispatched.
@@ -118,6 +118,40 @@ impl LayerClient {
     }
 
     /// Returns whether shared-memory output capture is available.
+    /// Every window the compositor currently knows about.
+    ///
+    /// Sorted by identifier so the order is the same on two consecutive calls:
+    /// the protocol makes no promise about it, and a list that reshuffles under
+    /// a person's cursor is worse than one in an arbitrary but stable order.
+    ///
+    /// Windows still being described are left out. A handle arrives before its
+    /// title does, and a task switcher showing a blank row for half a frame is
+    /// a worse answer than showing nothing for that frame.
+    pub fn toplevels(&self) -> Vec<ToplevelInfo> {
+        let mut toplevels: Vec<ToplevelInfo> = self
+            .state
+            .toplevels
+            .values()
+            .filter(|toplevel| !toplevel.identifier.is_empty())
+            .cloned()
+            .collect();
+        toplevels.sort_by(|a, b| a.identifier.cmp(&b.identifier));
+        toplevels
+    }
+
+    /// Whether the window list changed since this was last called.
+    ///
+    /// Taking the flag rather than reading it, so a caller that acts on a
+    /// change cannot act on it twice.
+    pub fn take_toplevels_changed(&mut self) -> bool {
+        std::mem::take(&mut self.state.toplevels_changed)
+    }
+
+    /// Whether the compositor reports its windows at all.
+    pub fn supports_toplevels(&self) -> bool {
+        self.state.toplevel_list.is_some()
+    }
+
     pub fn supports_screencopy(&self) -> bool {
         self.state.screencopy_manager.is_some() && self.state.shm.is_some()
     }

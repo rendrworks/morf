@@ -262,3 +262,24 @@ pub(crate) fn popup_constraints(
     }
     value
 }
+
+/// One window on the compositor, as `ext-foreign-toplevel-list-v1` describes it.
+///
+/// Deliberately thin. The protocol reports what a window *is* — a title, an
+/// application, a stable name — and nothing about where it is or what it is
+/// doing, because that is the compositor's business and not a client's. An
+/// overview or a task switcher wants exactly this list, plus a capture of each,
+/// and no more.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ToplevelInfo {
+    /// Stable for the life of the window, and unique on this compositor.
+    ///
+    /// The one field to key on. Titles change while you read them and two
+    /// windows of the same application share an app id.
+    pub identifier: String,
+    /// What the window calls itself, which is usually what to show a person.
+    pub title: String,
+    /// Which application it belongs to, matching a desktop entry's id where the
+    /// application sets it — which is how an overview finds an icon.
+    pub app_id: String,
+}

@@ -419,3 +419,65 @@ fn virtual_keyboard_requests_preserve_protocol_order() {
         ]
     );
 }
+
+#[test]
+fn the_window_list_is_there_before_any_compositor_speaks() {
+    // `morf.windows` exists from the first line of a configuration, empty, and
+    // is filled in place when the compositor reports something. Empty rather
+    // than absent so `#morf.windows` is a number on a compositor that does not
+    // report windows at all, and so a configuration can capture the table and
+    // watch it rather than having to ask for it again.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "windows.lua",
+            br#"
+                morf.ipc["count"] = function() return #morf.windows end
+                morf.ipc["first"] = function()
+                    local window = morf.windows[1]
+                    return window and (window.app_id .. ":" .. window.title) or "none"
+                end
+            "#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        runtime.call_ipc("count", &[]).unwrap(),
+        [IpcValue::Integer(0)],
+        "the table is there before any compositor has said anything",
+    );
+
+    runtime.set_windows(&[
+        Toplevel {
+            identifier: "b".to_owned(),
+            title: "second".to_owned(),
+            app_id: "kitty".to_owned(),
+        },
+        Toplevel {
+            identifier: "a".to_owned(),
+            title: "first".to_owned(),
+            app_id: "zen".to_owned(),
+        },
+    ]);
+    assert_eq!(
+        runtime.call_ipc("count", &[]).unwrap(),
+        [IpcValue::Integer(2)]
+    );
+    assert_eq!(
+        runtime.call_ipc("first", &[]).unwrap(),
+        [IpcValue::String("kitty:second".to_owned())],
+        "the order handed in is the order seen",
+    );
+
+    // And a shorter list does not leave the tail of a longer one behind.
+    runtime.set_windows(&[Toplevel {
+        identifier: "a".to_owned(),
+        title: "only".to_owned(),
+        app_id: "zen".to_owned(),
+    }]);
+    assert_eq!(
+        runtime.call_ipc("count", &[]).unwrap(),
+        [IpcValue::Integer(1)],
+        "the table is replaced, not appended to",
+    );
+}
