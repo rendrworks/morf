@@ -32,17 +32,17 @@ relational functions.
 
 | area | have | missing | note |
 |---|---|---|---|
-| scalar & vector types | `f32` `vec2` `vec3` `vec4` `bool` | `i32` `u32` `f16`, matrices, arrays, structs | §4.1, §4.2, §4.5 |
+| scalar, vector & matrix types | `f32` `vec2` `vec3` `vec4` `bool` `mat2` `mat3` `mat4` | `i32` `u32` `f16`, arrays, structs | §4.2, §4.5 |
 | operators | `+ - * / % ^ // == ~= < <= > >= and or not` unary `-` | bitwise, shifts | §4.2 |
 | statements | `local` assign `if` `while` `for` `repeat` `break` `return` | `continue`, `discard` | §4.3 |
 | functions | entry point, helpers (monomorphised) | — | done |
-| math builtins | **44 of 79** | 35 | §3 |
+| math builtins | **47 of 79** | 32 | §3 |
 | derivatives | none | `dpdx` `dpdy` `fwidth` (+ coarse/fine) | §4.4 |
 | relational | none | `all` `any` `isNan` `isInf` | §4.4 |
 | textures | one implicit source via `texture(uv)` | everything else | §5 |
 
-Two of the 44 are `select` and `texture`, which are not `MathFunction`s — the
-math count proper is 42 of 79 after W1.
+Two of the 47 are `select` and `texture`, which are not `MathFunction`s — the
+math count proper is 45 of 79 after W2.
 
 ---
 
@@ -73,14 +73,14 @@ number; the fix was to list the arguments that are *meant* to be a different
 type beside `select`'s condition. The GPU test in §8.3 is what found it, which
 is the argument for that test existing at all.
 
-### 3.2 Worth adding — matrix (4)
+### 3.2 Worth adding — matrix (4) — **W2 done**
 
-Blocked on the matrix type, §4.1.
-
-- [ ] `transpose`
-- [ ] `determinant`
-- [ ] `inverse`
-- [ ] `outer` — outer product, `vecN * vecM` to a matrix
+- [x] `transpose`
+- [x] `determinant`
+- [x] `inverse`
+- [ ] `outer` — outer product, `vecN * vecM` to a matrix. Left out: it is the
+      one matrix operation nobody writes by hand, and it needs a non-square
+      result the type set does not have.
 
 ### 3.3 Worth adding — integer and bitwise (8)
 
@@ -109,20 +109,30 @@ for "overlooked", and each becomes worth having the day §5.3 lands.
 
 ## 4. Language features
 
-### 4.1 Matrices — `mat2x2` … `mat4x4`
+### 4.1 Matrices — `mat2x2` … `mat4x4` — **W2 done**
 
 **The single highest-value gap.** Rotation is the first thing anyone reaches
-for in a shader, and today it can only be written by expanding the arithmetic by
-hand. Every Shadertoy port that turns anything wants this.
+for in a shader, and before this it could only be written by expanding the
+arithmetic by hand.
 
-- [ ] `Type::Mat2`, `Mat3`, `Mat4` (square only to begin with; `matCxR` after)
-- [ ] Constructors `mat2(...)` from columns or from scalars
-- [ ] `matrix * vector`, `matrix * matrix`, `matrix * scalar`
+- [x] `Type::Mat2`, `Mat3`, `Mat4` (square only; `matCxR` still unbuilt)
+- [x] Constructors from columns *and* from every component at once — WGSL
+      accepts both, and both get written: columns are how a rotation is
+      composed, the flat form is how one gets pasted out of somebody else's
+      shader
+- [x] `matrix * vector`, `vector * matrix` (the row form, which WGSL defines
+      and which is not a mistake), `matrix * matrix`, `matrix * scalar`
+- [x] `transpose` `determinant` `inverse`
+- [x] Uniform layout: a `mat3x3` is three `vec4`-aligned columns — forty-eight
+      bytes, not thirty-six — asserted by a test on both sides
 - [ ] Column indexing `m[0]`, which needs §4.6
-- [ ] `transpose` `determinant` `inverse` `outer` (§3.2)
-- [ ] Uniform layout: a `mat3x3` is three `vec4`-aligned columns, not nine
-      floats — the packer in `emit.rs` has to know that, and a test has to say
-      what the offsets are
+
+**Two rules that had to be stated rather than inherited.** A matrix is
+deliberately *not* "numeric": `m * v` is a linear map applied to a vector, not a
+componentwise multiply, so routing it through the same path would make `m + v`
+silently mean something. And a scalar never widens into a matrix — the emitter
+widens scalars against vector calls, which is right almost everywhere and would
+produce `mat2x2<f32>(0.5)` here, which is not even legal WGSL.
 
 Non-square types can wait; nobody writes `mat2x3` by hand.
 
@@ -279,7 +289,7 @@ actually caught anything:
 ## 9. Status
 
 - [x] **W1 — the ordinary builtins.** 42 of 79 math functions, from 34.
-- [ ] W2 — matrices
+- [x] **W2 — matrices.** 45 of 79, and rotation is writable.
 - [ ] W3 — integers and bitwise
 - [ ] W4 — derivatives and relational
 - [ ] W5 — arrays, indexing, structs

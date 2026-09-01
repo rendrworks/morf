@@ -185,13 +185,37 @@ impl Lowerer<'_> {
     }
 }
 
-/// The result type of componentwise arithmetic, with scalar broadcast.
+/// The result type of arithmetic, with scalar broadcast and matrix products.
 ///
 /// A scalar rides along with a vector for every operator, not just `*` and `/`.
 /// WGSL only defines the multiplicative pair that way, so `v + 1.0` is widened
 /// during emission — but a configuration author means the obvious thing by it,
 /// and refusing would be pedantry.
-fn arithmetic_result(_op: BinOp, left: Type, right: Type) -> Option<Type> {
+///
+/// A matrix is different in kind. `m * v` is a linear map applied to a vector,
+/// not a componentwise multiply, so it is only defined for `*` and only for the
+/// shapes that line up — and `m + v` has no meaning worth guessing at.
+fn arithmetic_result(op: BinOp, left: Type, right: Type) -> Option<Type> {
+    if left.is_matrix() || right.is_matrix() {
+        if op != BinOp::Mul {
+            return None;
+        }
+        return match (left, right) {
+            // A square matrix times a matching one is a matrix.
+            (a, b) if a == b => Some(a),
+            // Applied to a vector, from either side: WGSL defines both, and
+            // `v * m` is the row-vector form rather than a mistake.
+            (matrix, vector) if matrix.is_matrix() && Some(vector) == matrix.column() => {
+                Some(vector)
+            }
+            (vector, matrix) if matrix.is_matrix() && Some(vector) == matrix.column() => {
+                Some(vector)
+            }
+            // Scaled.
+            (matrix, Type::F32) | (Type::F32, matrix) if matrix.is_matrix() => Some(matrix),
+            _ => None,
+        };
+    }
     if !left.is_numeric() || !right.is_numeric() {
         return None;
     }

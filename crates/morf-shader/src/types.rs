@@ -12,6 +12,12 @@ pub enum Type {
     Vec3,
     Vec4,
     Bool,
+    /// Square matrices. Rotation is the first thing anyone reaches for in a
+    /// shader, and without these it can only be written by expanding the
+    /// arithmetic by hand.
+    Mat2,
+    Mat3,
+    Mat4,
     /// Loop counters only. A configuration never writes this type by name; it
     /// exists so a numeric `for` can count without floating-point drift.
     I32,
@@ -30,6 +36,9 @@ impl Type {
             "vec2" => Self::Vec2,
             "vec3" => Self::Vec3,
             "vec4" | "color" | "colour" => Self::Vec4,
+            "mat2" | "mat2x2" => Self::Mat2,
+            "mat3" | "mat3x3" => Self::Mat3,
+            "mat4" | "mat4x4" => Self::Mat4,
             "bool" => Self::Bool,
             "i32" | "int" => Self::I32,
             _ => return None,
@@ -43,6 +52,9 @@ impl Type {
             Self::Vec2 => "vec2<f32>",
             Self::Vec3 => "vec3<f32>",
             Self::Vec4 => "vec4<f32>",
+            Self::Mat2 => "mat2x2<f32>",
+            Self::Mat3 => "mat3x3<f32>",
+            Self::Mat4 => "mat4x4<f32>",
             Self::Bool => "bool",
             Self::I32 => "i32",
             // Poison never reaches emission: lowering fails first, and the
@@ -76,7 +88,45 @@ impl Type {
         matches!(self, Self::Vec2 | Self::Vec3 | Self::Vec4)
     }
 
-    /// Whether arithmetic is defined on the type at all.
+    pub fn is_matrix(self) -> bool {
+        matches!(self, Self::Mat2 | Self::Mat3 | Self::Mat4)
+    }
+
+    /// The square matrix of this many columns.
+    pub fn matrix(columns: u8) -> Option<Self> {
+        Some(match columns {
+            2 => Self::Mat2,
+            3 => Self::Mat3,
+            4 => Self::Mat4,
+            _ => return None,
+        })
+    }
+
+    /// The column type of a matrix, which is also what it multiplies.
+    pub fn column(self) -> Option<Self> {
+        match self {
+            Self::Mat2 => Some(Self::Vec2),
+            Self::Mat3 => Some(Self::Vec3),
+            Self::Mat4 => Some(Self::Vec4),
+            _ => None,
+        }
+    }
+
+    /// How many columns a matrix has.
+    pub fn columns(self) -> u8 {
+        match self {
+            Self::Mat2 => 2,
+            Self::Mat3 => 3,
+            Self::Mat4 => 4,
+            _ => 0,
+        }
+    }
+
+    /// Whether componentwise arithmetic is defined on the type.
+    ///
+    /// A matrix is deliberately not numeric by this test: `matrix * vector` is
+    /// a product, not a componentwise operation, and letting it through the
+    /// same path would make `m * v` mean the wrong thing silently.
     pub fn is_numeric(self) -> bool {
         matches!(
             self,
@@ -101,6 +151,13 @@ impl Type {
             Self::Vec2 => (8, 8),
             Self::Vec3 => (12, 16),
             Self::Vec4 => (16, 16),
+            // A matrix is its columns, each aligned as a vector of that width.
+            // A `mat3x3` is therefore three sixteen-byte columns — forty-eight
+            // bytes, not thirty-six — which is the layout rule that surprises
+            // everybody and the reason the packer computes rather than assumes.
+            Self::Mat2 => (16, 8),
+            Self::Mat3 => (48, 16),
+            Self::Mat4 => (64, 16),
         }
     }
 }
@@ -112,6 +169,9 @@ impl fmt::Display for Type {
             Self::Vec2 => "vec2",
             Self::Vec3 => "vec3",
             Self::Vec4 => "vec4",
+            Self::Mat2 => "mat2",
+            Self::Mat3 => "mat3",
+            Self::Mat4 => "mat4",
             Self::Bool => "bool",
             Self::I32 => "i32",
             Self::Poison => "?",

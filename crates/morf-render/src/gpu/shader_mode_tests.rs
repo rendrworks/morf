@@ -287,3 +287,79 @@ pub(crate) fn the_new_builtins_are_accepted_by_a_driver() {
     let right = channel(&pixels, 50, 32, 0);
     assert_ne!(left, right, "and the arithmetic varies across the node");
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_rotation_matrix_paints_a_turned_shape() {
+    // W2 against an adapter. A matrix that compiles and is laid out wrongly is
+    // the failure worth catching here: the uniform block's alignment rules are
+    // where matrices actually go wrong, and a wrong layout reads back as a
+    // shape in the wrong place rather than as an error.
+    let pixels = shaded(
+        "function fragment(uv, time, resolution)
+           local p = uv - vec2(0.5, 0.5)
+           -- An eighth turn, written the way anybody would write it.
+           local a = 0.7853981
+           local turn = mat2(vec2(cos(a), sin(a)), vec2(0.0 - sin(a), cos(a)))
+           local q = turn * p
+           -- A bar along one axis: if the rotation did nothing, it stays
+           -- horizontal, and the corner samples below would not change.
+           local bar = 1.0 - step(0.08, abs(q.y))
+           return vec4(bar, bar * 0.4, 0.2, 1.0)
+         end",
+    );
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 32, 32),
+        255,
+        "the bar crosses the middle"
+    );
+    // Rotated by an eighth turn the bar runs corner to corner, so it covers a
+    // point up and to the right of centre that a horizontal bar would miss.
+    let turned = channel(&pixels, 44, 20, 0);
+    assert!(turned > 128, "the bar was actually turned: {turned}");
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_matrix_parameter_arrives_with_its_columns_intact() {
+    // The uniform layout rule: a `mat3x3` is three sixteen-byte columns, not
+    // nine floats. If the host and the shader disagree, the columns arrive
+    // shuffled — which looks like a shear rather than an error.
+    let spec = ShaderSpec {
+        kind: ShaderKind::Material,
+        inputs: ShaderSpec::default_inputs(ShaderKind::Material),
+        params: vec![morf_shader::Binding {
+            name: "turn".to_owned(),
+            ty: morf_shader::Type::Mat3,
+        }],
+        entry: "fragment".to_owned(),
+    };
+    let compiled = morf_shader::compile(
+        "function fragment(uv, time, resolution, coverage, turn)
+           local v = turn * vec3(uv.x, uv.y, 1.0)
+           return vec4(v.x, v.y, v.z, 1.0)
+         end",
+        &spec,
+    )
+    .unwrap_or_else(|errors| panic!("{}", morf_shader::report("test", &errors)));
+
+    // Three columns at sixteen-byte stride, after the frame's own header.
+    assert_eq!(compiled.params[0].offset, morf_shader::HEADER_BYTES);
+    assert_eq!(
+        compiled.uniform_size,
+        morf_shader::HEADER_BYTES + 48,
+        "three sixteen-byte columns, not nine floats",
+    );
+
+    let mut backend = pollster::block_on(WgpuBackend::new(SIZE, SIZE)).unwrap();
+    backend
+        .register_shader(
+            compiled.hash,
+            &compiled.wgsl,
+            &[compiled.params[0].offset],
+            compiled.uniform_size,
+            false,
+            false,
+        )
+        .expect("the generated WGSL compiles");
+}

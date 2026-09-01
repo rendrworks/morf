@@ -207,6 +207,9 @@ impl Lowerer<'_> {
         if let Some(ty) = Type::parse(name).filter(|ty| ty.is_vector()) {
             return self.construct(ty, lowered, line);
         }
+        if let Some(ty) = Type::parse(name).filter(|ty| ty.is_matrix()) {
+            return self.construct_matrix(ty, lowered, line);
+        }
         // A helper the shader declared wins over nothing at all, but never over
         // a builtin: shadowing `sin` would be a trap, not a feature.
         if builtins::lookup(name).is_none()
@@ -285,6 +288,39 @@ impl Lowerer<'_> {
             return Expr::poison();
         }
         Expr::Construct { ty, args }
+    }
+
+    /// `mat3(c0, c1, c2)`, from columns or from every component at once.
+    ///
+    /// WGSL accepts both spellings and so does this: columns are how a rotation
+    /// is usually written, and the flat form is how one gets pasted out of
+    /// somebody else's shader.
+    fn construct_matrix(&mut self, ty: Type, args: Vec<Expr>, line: u32) -> Expr {
+        if args.iter().any(|arg| arg.ty().is_poison()) {
+            return Expr::Construct { ty, args };
+        }
+        let columns = usize::from(ty.columns());
+        let column = ty.column().expect("a matrix has a column type");
+        if args.len() == columns && args.iter().all(|arg| arg.ty() == column) {
+            return Expr::Construct { ty, args };
+        }
+        if args.len() == columns * columns && args.iter().all(|arg| arg.ty() == Type::F32) {
+            return Expr::Construct { ty, args };
+        }
+        let given = args
+            .iter()
+            .map(|arg| arg.ty().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.error_note(
+            line,
+            format!("{ty} cannot be built from ({given})"),
+            format!(
+                "give it {columns} {column} columns, or {} numbers",
+                columns * columns
+            ),
+        );
+        Expr::poison()
     }
 
     /// `v.x`, `v.xy`, `v.rgb` — component selection.

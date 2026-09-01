@@ -263,6 +263,13 @@ impl Emitter {
     /// Prints an expression, widening a scalar where the context wants a vector.
     fn expression(&mut self, expression: &Expr, wanted: Type) {
         let actual = expression.ty();
+        // A scalar never widens into a matrix. `m * 2.0` is a scaled matrix in
+        // WGSL already, and `mat3x3<f32>(2.0)` is not the same thing — it is
+        // not even legal.
+        if wanted.is_matrix() && actual != wanted {
+            self.raw(expression);
+            return;
+        }
         if wanted.is_vector() && actual == Type::F32 && !matches!(expression, Expr::Literal(_)) {
             let _ = write!(self.out, "{}(", wanted.wgsl());
             self.raw(expression);
@@ -314,14 +321,18 @@ impl Emitter {
                 self.out.push('(');
                 // A comparison keeps its operands' own type; arithmetic widens
                 // a scalar to the result so WGSL sees two matching sides.
-                let context = if op.is_comparison() || op.is_logical() {
+                // A matrix product's operands keep their own types: the
+                // result of `m * v` is a vector, and widening `m` to it would
+                // be nonsense.
+                let matrix = left.ty().is_matrix() || right.ty().is_matrix();
+                let context = if op.is_comparison() || op.is_logical() || matrix {
                     left.ty()
                 } else {
                     *ty
                 };
                 self.expression(left, context);
                 let _ = write!(self.out, " {} ", op.wgsl());
-                let right_context = if op.is_comparison() || op.is_logical() {
+                let right_context = if op.is_comparison() || op.is_logical() || matrix {
                     right.ty()
                 } else {
                     *ty

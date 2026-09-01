@@ -24,6 +24,10 @@ pub(crate) enum Shape {
     Cross,
     /// `refract(incident, normal, eta)` — two vectors and a scalar ratio.
     Refract,
+    /// One matrix in, the same matrix out: `transpose`, `inverse`.
+    Matrix1,
+    /// One matrix in, a scalar out: `determinant`.
+    MatrixFold,
     /// `texture(uv)` — vec2 in, vec4 out.
     Texture,
 }
@@ -51,6 +55,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("cosh", Builtin::Cosh, Shape::Componentwise1),
     ("cross", Builtin::Cross, Shape::Cross),
     ("degrees", Builtin::Degrees, Shape::Componentwise1),
+    ("determinant", Builtin::Determinant, Shape::MatrixFold),
     ("distance", Builtin::Distance, Shape::Fold2),
     ("dot", Builtin::Dot, Shape::Fold2),
     ("exp", Builtin::Exp, Shape::Componentwise1),
@@ -62,6 +67,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("fract", Builtin::Fract, Shape::Componentwise1),
     // Both spellings: WGSL writes it one way and GLSL, which is what a shader
     // author has read more of, writes it the other.
+    ("inverse", Builtin::Inverse, Shape::Matrix1),
     ("inversesqrt", Builtin::InverseSqrt, Shape::Componentwise1),
     ("inverse_sqrt", Builtin::InverseSqrt, Shape::Componentwise1),
     ("length", Builtin::Length, Shape::Fold1),
@@ -94,6 +100,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     // Shadertoy tonemaps with `tanh` constantly, and it cannot be written out
     // of the rest.
     ("tanh", Builtin::Tanh, Shape::Componentwise1),
+    ("transpose", Builtin::Transpose, Shape::Matrix1),
     ("trunc", Builtin::Trunc, Shape::Componentwise1),
     ("texture", Builtin::Texture, Shape::Texture),
 ];
@@ -121,7 +128,11 @@ pub(crate) fn available() -> String {
 /// How many arguments a shape takes.
 pub(crate) fn arity(shape: Shape) -> usize {
     match shape {
-        Shape::Componentwise1 | Shape::Fold1 | Shape::Texture => 1,
+        Shape::Componentwise1
+        | Shape::Fold1
+        | Shape::Texture
+        | Shape::Matrix1
+        | Shape::MatrixFold => 1,
         Shape::Componentwise2 | Shape::Fold2 | Shape::Cross => 2,
         Shape::Componentwise3
         | Shape::MixScalar
@@ -222,6 +233,18 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
             (left == Type::Vec3 && right == Type::Vec3)
                 .then_some(Type::Vec3)
                 .ok_or_else(|| format!("cross takes two vec3, not {left} and {right}"))
+        }
+        Shape::Matrix1 => {
+            let ty = args[0];
+            ty.is_matrix()
+                .then_some(ty)
+                .ok_or_else(|| format!("{name} takes a matrix, not {ty}"))
+        }
+        Shape::MatrixFold => {
+            let ty = args[0];
+            ty.is_matrix()
+                .then_some(Type::F32)
+                .ok_or_else(|| format!("{name} takes a matrix, not {ty}"))
         }
         Shape::Refract => {
             let (incident, normal, eta) = (args[0], args[1], args[2]);
