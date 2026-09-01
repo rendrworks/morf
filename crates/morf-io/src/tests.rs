@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value as JsonValue;
 use zbus::zvariant::{ObjectPath, OwnedValue, Signature, StructureBuilder, Value};
@@ -368,5 +368,113 @@ fn splitting_on_newlines_drops_the_carriage_return_that_comes_with_them() {
     assert_eq!(
         dashes.push(b"one\r--two--"),
         vec![b"one\r".to_vec(), b"two".to_vec()]
+    );
+}
+
+#[test]
+fn a_call_to_a_service_that_never_answers_gives_up() {
+    // The bound is the point of this: a configuration calls out from a Lua
+    // handler, and a Lua handler runs on the thread that paints. Before, a
+    // service that never replied held that thread for zbus's default of
+    // twenty-five seconds — no repaints, no input, and nothing on screen to say
+    // why. It has to come back, and it has to come back quickly.
+    //
+    // A name nobody owns is the reliable way to be ignored: the bus has nowhere
+    // to route the call, so the reply never arrives.
+    let Ok(proxy) = DbusProxy::connect_with_timeout(
+        Bus::Session,
+        "org.morf.NobodyIsListening",
+        "/org/morf/NobodyIsListening",
+        "org.morf.NobodyIsListening",
+        Duration::from_millis(250),
+    ) else {
+        // No session bus here — the thing under test cannot run, and failing
+        // would only report the environment.
+        return;
+    };
+
+    // The bound is on the connection, so that is where it is checked. Waiting
+    // for a real timeout would need a peer that accepts a call and never
+    // answers, which is harder to arrange than the bug is to prevent — an
+    // unowned name is refused by the bus immediately and never reaches it.
+    assert_eq!(
+        proxy.call_timeout(),
+        Some(Duration::from_millis(250)),
+        "the bound reached the connection",
+    );
+
+    let started = Instant::now();
+    let answer = proxy.call_value("Whatever");
+    let waited = started.elapsed();
+
+    assert!(answer.is_err(), "an unowned name cannot answer");
+    assert!(
+        waited < Duration::from_secs(5),
+        "and it came back rather than hanging: {waited:?}",
+    );
+}
+
+#[test]
+fn an_ordinary_proxy_carries_the_default_bound() {
+    let Ok(proxy) = DbusProxy::connect(
+        Bus::Session,
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+    ) else {
+        return;
+    };
+    assert_eq!(proxy.call_timeout(), Some(DEFAULT_CALL_TIMEOUT));
+}
+
+#[test]
+fn the_default_bound_is_short_enough_to_be_a_stutter() {
+    // A second is far longer than any healthy reply on a session bus, and short
+    // enough that a bad one costs a frame or two rather than the session. If
+    // this ever grows, it should be because somebody decided to hold the paint
+    // thread for that long, deliberately.
+    assert!(
+        DEFAULT_CALL_TIMEOUT <= Duration::from_secs(2),
+        "the default call bound is {DEFAULT_CALL_TIMEOUT:?}",
+    );
+}
+
+#[test]
+fn many_subscriptions_share_one_connection() {
+    // A connection is a socket, an authentication handshake and a name on the
+    // bus. Every subscription used to open its own, so a shell watching
+    // battery, network, a player and a tray paid four of each to do work one
+    // connection does — and the match rule, which is what actually separates
+    // them, was being carried by a socket rather than by the bus.
+    //
+    // The unique name is the observable part: one connection has one, and four
+    // connections have four different ones.
+    let Ok(proxy) = DbusProxy::connect(
+        Bus::Session,
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+    ) else {
+        return;
+    };
+
+    let mut names = Vec::new();
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let Ok(signal) = proxy.subscribe("NameOwnerChanged") else {
+            return;
+        };
+        if let Some(connection) = signal.connection_name() {
+            names.push(connection);
+        }
+        held.push(signal);
+    }
+
+    assert_eq!(names.len(), 4, "four subscriptions were made");
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        1,
+        "and they went over one connection, not four: {names:?}",
     );
 }

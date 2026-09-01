@@ -72,6 +72,17 @@ pub struct DbusSignal {
 }
 
 impl DbusSignal {
+    /// The unique bus name of the connection this subscription rides on.
+    ///
+    /// Exposed so that "these share a connection" is a thing a test can assert
+    /// rather than a thing a comment claims: one connection has one unique
+    /// name, and four have four.
+    pub fn connection_name(&self) -> Option<String> {
+        self.connection
+            .as_ref()
+            .and_then(|connection| connection.unique_name().map(ToString::to_string))
+    }
+
     /// Waits for the next signal message.
     pub fn next(&self, timeout: Duration) -> Option<zbus::Message> {
         self.events.recv_timeout(timeout).ok()
