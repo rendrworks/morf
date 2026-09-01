@@ -397,3 +397,45 @@ fn a_derivative_outside_control_flow_is_fine() {
     );
     assert!(out.contains("fwidth("), "{out}");
 }
+
+#[test]
+fn an_undecided_literal_compared_with_an_integer_stays_an_integer() {
+    // `stripe == 0` is a comparison of two `i32`. The literal has no type of
+    // its own, so before it took the float default and printed `0.0` — which a
+    // driver reads as an `i32` against an abstract float and rejects outright.
+    // The shader compiled, and then failed on the GPU, which is the worst place
+    // for it to fail.
+    let out = compile_material(
+        "function fragment(uv, time, resolution, coverage)
+           local stripe = i32(floor(uv.x * resolution.x)) % 3
+           local tint = vec3(1.0, 1.0, 1.0)
+           if stripe == 0 then
+             tint = vec3(1.0, 0.0, 0.0)
+           end
+           return vec4(tint, 1.0)
+         end",
+    )
+    .unwrap()
+    .wgsl;
+    assert!(out.contains("== 0)"), "{out}");
+    assert!(!out.contains("== 0.0)"), "{out}");
+}
+
+#[test]
+fn an_undecided_literal_compared_with_an_unsigned_takes_that_type() {
+    // The same rule, the other way: `u32` needs the `u` suffix, and a bare `0`
+    // would be an abstract integer that WGSL will not compare against one.
+    let out = compile_material(
+        "function fragment(uv, time, resolution, coverage)
+           local bits = u32(floor(uv.x * 16.0)) & u32(3)
+           local lit = 0.0
+           if bits > 1 then
+             lit = 1.0
+           end
+           return vec4(lit, lit, lit, 1.0)
+         end",
+    )
+    .unwrap()
+    .wgsl;
+    assert!(out.contains("> 1u)"), "{out}");
+}

@@ -71,18 +71,21 @@ impl Emitter {
                 // result of `m * v` is a vector, and widening `m` to it would
                 // be nonsense.
                 let matrix = left.ty().is_matrix() || right.ty().is_matrix();
-                let context = if op.is_comparison() || op.is_logical() || matrix {
-                    left.ty()
+                let paired = op.is_comparison() || op.is_logical() || matrix;
+                // An undecided literal has no type of its own to keep, so it
+                // takes the other side's: `stripe == 0` is two `i32`, and
+                // printing the literal as `0.0` would hand the driver an `i32`
+                // against an abstract float, which is not a comparison at all.
+                let (left_context, right_context) = if paired {
+                    (
+                        left.ty().decided_or(right.ty()),
+                        right.ty().decided_or(left.ty()),
+                    )
                 } else {
-                    *ty
+                    (*ty, *ty)
                 };
-                self.expression(left, context);
+                self.expression(left, left_context);
                 let _ = write!(self.out, " {} ", op.wgsl());
-                let right_context = if op.is_comparison() || op.is_logical() || matrix {
-                    right.ty()
-                } else {
-                    *ty
-                };
                 self.expression(right, right_context);
                 self.out.push(')');
             }

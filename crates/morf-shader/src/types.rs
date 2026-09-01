@@ -276,6 +276,19 @@ impl Type {
             || (self == Self::AbstractInt && (wanted.is_numeric() || wanted.is_integer()))
     }
 
+    /// The type this one should be treated as when it has not decided.
+    ///
+    /// An abstract integer has no type of its own to keep, so where it is used
+    /// alongside something concrete it takes that instead. Anything else
+    /// already knows what it is and ignores the suggestion.
+    pub fn decided_or(self, other: Self) -> Self {
+        if matches!(self, Self::AbstractInt) {
+            other
+        } else {
+            self
+        }
+    }
+
     /// Whether a diagnostic about this type would be noise.
     pub fn is_poison(self) -> bool {
         matches!(self, Self::Poison)
