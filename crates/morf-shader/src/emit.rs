@@ -263,6 +263,26 @@ impl Emitter {
     /// Prints an expression, widening a scalar where the context wants a vector.
     fn expression(&mut self, expression: &Expr, wanted: Type) {
         let actual = expression.ty();
+        // An abstract integer prints as whatever the surrounding code wanted.
+        // This is the only place that knows, which is why it is the only place
+        // that decides.
+        if let Expr::Literal(Value::Int(value)) = expression {
+            match wanted {
+                Type::U32 => {
+                    let _ = write!(self.out, "{}u", *value as u32);
+                }
+                Type::I32 => {
+                    let _ = write!(self.out, "{}", *value as i32);
+                }
+                other if other.is_vector() => {
+                    let _ = write!(self.out, "{}({})", other.wgsl(), float(*value as f32));
+                }
+                _ => {
+                    let _ = write!(self.out, "{}", float(*value as f32));
+                }
+            }
+            return;
+        }
         // A scalar never widens into a matrix. `m * 2.0` is a scaled matrix in
         // WGSL already, and `mat3x3<f32>(2.0)` is not the same thing — it is
         // not even legal.
@@ -294,6 +314,12 @@ impl Emitter {
             Expr::Literal(Value::I32(value)) => {
                 let _ = write!(self.out, "{value}");
             }
+            // Reached only when nothing decided what the literal was, which
+            // means `f32` — `expression` prints the other cases, because only
+            // it knows what the surrounding code wanted.
+            Expr::Literal(Value::Int(value)) => {
+                let _ = write!(self.out, "{}", float(*value as f32));
+            }
             Expr::Literal(Value::Bool(value)) => {
                 self.out.push_str(if *value { "true" } else { "false" });
             }
@@ -308,6 +334,7 @@ impl Emitter {
                 self.out.push_str(match op {
                     UnOp::Negate => "-(",
                     UnOp::Not => "!(",
+                    UnOp::BitNot => "~(",
                 });
                 self.raw(value);
                 self.out.push(')');
@@ -384,6 +411,27 @@ impl Emitter {
                 }
                 self.raw(arg);
             }
+            self.out.push(')');
+            return;
+        }
+        if builtin == Builtin::Convert {
+            // A literal that had not decided what it was simply becomes the
+            // target type. Wrapping it would emit `u32(2654435769u)`, which is
+            // legal and silly, and going through `f32` on the way would lose
+            // the constant — twenty-four bits of mantissa cannot hold a
+            // thirty-two-bit hash multiplier.
+            if matches!(args[0], Expr::Literal(Value::Int(_))) {
+                self.expression(&args[0], ty);
+                return;
+            }
+            let _ = write!(self.out, "{}(", ty.wgsl());
+            self.expression(&args[0], args[0].ty());
+            self.out.push(')');
+            return;
+        }
+        if builtin == Builtin::Bitcast {
+            let _ = write!(self.out, "bitcast<{}>(", ty.wgsl());
+            self.expression(&args[0], args[0].ty());
             self.out.push(')');
             return;
         }

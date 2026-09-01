@@ -18,9 +18,22 @@ pub enum Type {
     Mat2,
     Mat3,
     Mat4,
-    /// Loop counters only. A configuration never writes this type by name; it
-    /// exists so a numeric `for` can count without floating-point drift.
     I32,
+    U32,
+    /// The type of an integer literal before anything has said what it is.
+    ///
+    /// WGSL calls this an abstract int and so does this compiler, for the same
+    /// reason: `1 / 2` has to be `0.5` as it is in Lua, while `1 << 2` has to
+    /// be four. A literal cannot be both until something decides, so it is
+    /// neither until then, and [`Self::defaulted`] commits it to `f32` at the
+    /// points where a concrete type is finally needed.
+    ///
+    /// This is not a convenience. A hash constant like `2654435769` does not
+    /// survive as an `f32` — twenty-four bits of mantissa cannot hold
+    /// thirty-two bits of constant — so without it there is no way to write a
+    /// hash at all, and no way to write noise that is not the
+    /// `sin(dot(p, k)) * 43758.5453` trick.
+    AbstractInt,
     /// The type of an expression that already produced a diagnostic.
     ///
     /// It unifies with everything and reports nothing, so one mistake yields
@@ -41,6 +54,7 @@ impl Type {
             "mat4" | "mat4x4" => Self::Mat4,
             "bool" => Self::Bool,
             "i32" | "int" => Self::I32,
+            "u32" | "uint" => Self::U32,
             _ => return None,
         })
     }
@@ -57,6 +71,9 @@ impl Type {
             Self::Mat4 => "mat4x4<f32>",
             Self::Bool => "bool",
             Self::I32 => "i32",
+            Self::U32 => "u32",
+            // An abstract int that reached emission was committed first.
+            Self::AbstractInt => "i32",
             // Poison never reaches emission: lowering fails first, and the
             // emitter only ever runs on a program that type-checked.
             Self::Poison => "f32",
@@ -130,8 +147,44 @@ impl Type {
     pub fn is_numeric(self) -> bool {
         matches!(
             self,
-            Self::F32 | Self::Vec2 | Self::Vec3 | Self::Vec4 | Self::I32
+            Self::F32
+                | Self::Vec2
+                | Self::Vec3
+                | Self::Vec4
+                | Self::I32
+                | Self::U32
+                | Self::AbstractInt
         )
+    }
+
+    /// Whether the type holds whole numbers and can be shifted and masked.
+    pub fn is_integer(self) -> bool {
+        matches!(self, Self::I32 | Self::U32 | Self::AbstractInt)
+    }
+
+    /// Commits an abstract integer literal to a concrete type.
+    ///
+    /// Called wherever a type must finally be one thing: a local's declared
+    /// type, a return, a constructor argument. Defaulting to `f32` rather than
+    /// `i32` is what keeps `local half = 1 / 2` equal to `0.5`, which is what
+    /// Lua does and what a configuration author means.
+    pub fn defaulted(self) -> Self {
+        match self {
+            Self::AbstractInt => Self::F32,
+            other => other,
+        }
+    }
+
+    /// Whether a value of this type can be used where `wanted` is expected.
+    ///
+    /// Only an abstract integer converts, and only because it has not decided
+    /// what it is yet. Nothing else coerces silently: an `f32` where a `u32`
+    /// belongs is a mistake worth a message.
+    pub fn fits(self, wanted: Self) -> bool {
+        self == wanted
+            || self.is_poison()
+            || wanted.is_poison()
+            || (self == Self::AbstractInt && (wanted.is_numeric() || wanted.is_integer()))
     }
 
     /// Whether a diagnostic about this type would be noise.
@@ -147,7 +200,9 @@ impl Type {
     /// `emit` computes offsets rather than assuming them.
     pub fn layout(self) -> (u32, u32) {
         match self {
-            Self::F32 | Self::I32 | Self::Bool | Self::Poison => (4, 4),
+            Self::F32 | Self::I32 | Self::U32 | Self::AbstractInt | Self::Bool | Self::Poison => {
+                (4, 4)
+            }
             Self::Vec2 => (8, 8),
             Self::Vec3 => (12, 16),
             Self::Vec4 => (16, 16),
@@ -174,6 +229,8 @@ impl fmt::Display for Type {
             Self::Mat4 => "mat4",
             Self::Bool => "bool",
             Self::I32 => "i32",
+            Self::U32 => "u32",
+            Self::AbstractInt => "integer",
             Self::Poison => "?",
         })
     }
@@ -183,6 +240,12 @@ impl fmt::Display for Type {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     F32(f32),
+    /// An integer literal that has not been told what it is yet.
+    ///
+    /// Held as `i64` so a `u32` constant near the top of the range survives the
+    /// trip: `2654435769` does not fit an `i32` and is perfectly ordinary in a
+    /// hash.
+    Int(i64),
     I32(i32),
     Bool(bool),
 }
@@ -191,6 +254,7 @@ impl Value {
     pub fn ty(self) -> Type {
         match self {
             Self::F32(_) => Type::F32,
+            Self::Int(_) => Type::AbstractInt,
             Self::I32(_) => Type::I32,
             Self::Bool(_) => Type::Bool,
         }

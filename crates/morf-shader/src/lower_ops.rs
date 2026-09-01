@@ -1,14 +1,15 @@
-//! Operators, constructors and constant folding.
+//! Operators and constructors: what may be combined with what.
 //!
-//! Where the type rules live: what may be added to what, how a scalar rides
-//! along with a vector, and which spellings of a comparison a shader is allowed
-//! to write at all.
+//! The type rules for arithmetic and comparison, and how a scalar rides along
+//! with a vector. Bitwise operators live in `lower_bits`, because whole numbers
+//! follow different rules and the two together crossed the line gate.
 
-use luna::compiler::parser::{BinaryOperator, Expression, UnaryOperator};
+use luna::compiler::parser::{BinaryOperator, UnaryOperator};
 
 use crate::builtins;
 use crate::ir::*;
-use crate::lower::{Instance, Lowerer, Name};
+use crate::lower::Lowerer;
+use crate::lower_bits::arithmetic_result;
 use crate::types::*;
 
 impl Lowerer<'_> {
@@ -46,8 +47,24 @@ impl Lowerer<'_> {
                 Expr::poison()
             }
             UnaryOperator::BitNot => {
-                self.error(line, "a shader has no bitwise operators");
-                Expr::poison()
+                if !ty.is_integer() && !ty.is_poison() {
+                    self.error_note(
+                        line,
+                        format!("`~` works on whole numbers, not {ty}"),
+                        "convert first: `~u32(x)`",
+                    );
+                    return Expr::poison();
+                }
+                let ty = if ty == Type::AbstractInt {
+                    Type::I32
+                } else {
+                    ty
+                };
+                Expr::Unary {
+                    op: UnOp::BitNot,
+                    ty,
+                    value: Box::new(value),
+                }
             }
         }
     }
@@ -86,14 +103,11 @@ impl Lowerer<'_> {
                 self.error(line, "a shader has no string concatenation");
                 return Expr::poison();
             }
-            BinaryOperator::BitAnd
-            | BinaryOperator::BitOr
-            | BinaryOperator::BitXor
-            | BinaryOperator::ShiftLeft
-            | BinaryOperator::ShiftRight => {
-                self.error(line, "a shader has no bitwise operators");
-                return Expr::poison();
-            }
+            BinaryOperator::BitAnd => BinOp::BitAnd,
+            BinaryOperator::BitOr => BinOp::BitOr,
+            BinaryOperator::BitXor => BinOp::BitXor,
+            BinaryOperator::ShiftLeft => BinOp::ShiftLeft,
+            BinaryOperator::ShiftRight => BinOp::ShiftRight,
         };
         let (left_ty, right_ty) = (left.ty(), right.ty());
         if left_ty.is_poison() || right_ty.is_poison() {
@@ -114,6 +128,9 @@ impl Lowerer<'_> {
                 left: Box::new(left),
                 right: Box::new(right),
             };
+        }
+        if op.is_bitwise() {
+            return self.bitwise(op, left, right, line);
         }
         if op.is_comparison() {
             if left_ty != right_ty || left_ty.is_vector() {
@@ -183,245 +200,4 @@ impl Lowerer<'_> {
             }],
         }
     }
-}
-
-/// The result type of arithmetic, with scalar broadcast and matrix products.
-///
-/// A scalar rides along with a vector for every operator, not just `*` and `/`.
-/// WGSL only defines the multiplicative pair that way, so `v + 1.0` is widened
-/// during emission — but a configuration author means the obvious thing by it,
-/// and refusing would be pedantry.
-///
-/// A matrix is different in kind. `m * v` is a linear map applied to a vector,
-/// not a componentwise multiply, so it is only defined for `*` and only for the
-/// shapes that line up — and `m + v` has no meaning worth guessing at.
-fn arithmetic_result(op: BinOp, left: Type, right: Type) -> Option<Type> {
-    if left.is_matrix() || right.is_matrix() {
-        if op != BinOp::Mul {
-            return None;
-        }
-        return match (left, right) {
-            // A square matrix times a matching one is a matrix.
-            (a, b) if a == b => Some(a),
-            // Applied to a vector, from either side: WGSL defines both, and
-            // `v * m` is the row-vector form rather than a mistake.
-            (matrix, vector) if matrix.is_matrix() && Some(vector) == matrix.column() => {
-                Some(vector)
-            }
-            (vector, matrix) if matrix.is_matrix() && Some(vector) == matrix.column() => {
-                Some(vector)
-            }
-            // Scaled.
-            (matrix, Type::F32) | (Type::F32, matrix) if matrix.is_matrix() => Some(matrix),
-            _ => None,
-        };
-    }
-    if !left.is_numeric() || !right.is_numeric() {
-        return None;
-    }
-    if left == right {
-        return Some(left);
-    }
-    match (left, right) {
-        (Type::F32, other) | (other, Type::F32) if other.is_vector() => Some(other),
-        _ => None,
-    }
-}
-
-impl Lowerer<'_> {
-    /// Folds an expression the compiler needs to know at compile time.
-    ///
-    /// Only a loop step needs this. Lua evaluates the step once and its sign
-    /// decides which way the comparison runs; reproducing that faithfully at
-    /// runtime would need a branch inside every loop, so the language asks for
-    /// a constant instead and says so when it does not get one.
-    pub(crate) fn constant(&mut self, expression: &Expression<Name>, line: u32) -> Option<f32> {
-        let lowered = self.expression(expression, line);
-        fold(&lowered)
-    }
-}
-
-fn fold(expression: &Expr) -> Option<f32> {
-    match expression {
-        Expr::Literal(Value::F32(value)) => Some(*value),
-        Expr::Literal(Value::I32(value)) => Some(*value as f32),
-        Expr::Unary {
-            op: UnOp::Negate,
-            value,
-            ..
-        } => fold(value).map(|value| -value),
-        Expr::Binary {
-            op, left, right, ..
-        } => {
-            let (left, right) = (fold(left)?, fold(right)?);
-            Some(match op {
-                BinOp::Add => left + right,
-                BinOp::Sub => left - right,
-                BinOp::Mul => left * right,
-                BinOp::Div => left / right,
-                _ => return None,
-            })
-        }
-        _ => None,
-    }
-}
-
-impl Lowerer<'_> {
-    /// Lowers a call to a helper the shader declared.
-    ///
-    /// The helper's parameter types come from the call, because Lua has nowhere
-    /// to declare them. Two calls with different argument types produce two
-    /// functions rather than one that tries to be both: monomorphising is the
-    /// only honest reading of an untyped signature, and it costs a little
-    /// generated code in exchange for exact types and exact diagnostics.
-    pub(crate) fn helper_call(&mut self, name: &str, args: Vec<Expr>, line: u32) -> Option<Expr> {
-        let definition = *self
-            .helpers
-            .iter()
-            .find(|(candidate, _)| candidate == name)
-            .map(|(_, definition)| definition)?;
-        if args.iter().any(|arg| arg.ty().is_poison()) {
-            return Some(Expr::poison());
-        }
-        if definition.parameters.len() != args.len() {
-            self.error(
-                line,
-                format!(
-                    "`{name}` takes {} argument{}, not {}",
-                    definition.parameters.len(),
-                    if definition.parameters.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                    args.len()
-                ),
-            );
-            return Some(Expr::poison());
-        }
-        if definition.has_varargs {
-            self.error(line, format!("`{name}` cannot take `...`"));
-            return Some(Expr::poison());
-        }
-        // Recursion has no bottom to monomorphise towards, and a shader has no
-        // stack to run it on either.
-        if self.in_progress.iter().any(|active| active == name) {
-            self.error_note(
-                line,
-                format!("`{name}` calls itself"),
-                "a shader has no call stack; write the repetition as a loop",
-            );
-            return Some(Expr::poison());
-        }
-
-        let types: Vec<Type> = args.iter().map(Expr::ty).collect();
-        let key = (name.to_owned(), types.clone());
-        let (emitted, returns) = match self
-            .instances
-            .iter()
-            .find(|(candidate, _)| *candidate == key)
-            .map(|(_, emitted)| emitted.clone())
-        {
-            Some(emitted) => {
-                let returns = self
-                    .lowered
-                    .iter()
-                    .find(|instance| instance.name == emitted)
-                    .map_or(Type::Poison, |instance| instance.returns);
-                (emitted, returns)
-            }
-            None => self.lower_helper(name, definition, &types, line)?,
-        };
-        Some(Expr::Call {
-            builtin: Builtin::Helper,
-            ty: returns,
-            args: std::iter::once(Expr::Local {
-                name: emitted,
-                ty: returns,
-            })
-            .chain(args)
-            .collect(),
-        })
-    }
-
-    /// Lowers one helper for one set of argument types.
-    fn lower_helper(
-        &mut self,
-        name: &str,
-        definition: &luna::compiler::parser::FunctionDefinition<Name>,
-        types: &[Type],
-        line: u32,
-    ) -> Option<(String, Type)> {
-        let emitted = format!("morf_fn_{}_{}", sanitized(name), self.lowered.len());
-        self.in_progress.push(name.to_owned());
-        // A helper sees its own parameters and nothing else: no locals from the
-        // caller, and no inputs the entry point happened to bind. Swapping the
-        // scope stack out is what enforces that.
-        let outer = std::mem::replace(&mut self.scopes, vec![std::collections::HashMap::new()]);
-        let mut params = Vec::new();
-        for (index, parameter) in definition.parameters.iter().enumerate() {
-            let bound = self.declare(parameter, types[index]);
-            params.push((bound, types[index]));
-        }
-        let mut body = self.block(&definition.body);
-        body.resolve_mutability();
-        self.scopes = outer;
-        self.in_progress.pop();
-
-        let returns = returned_type(&body).unwrap_or_else(|| {
-            self.error(line, format!("`{name}` never returns a value"));
-            Type::Poison
-        });
-        self.instances
-            .push(((name.to_owned(), types.to_vec()), emitted.clone()));
-        self.lowered.push(Instance {
-            name: emitted.clone(),
-            params,
-            returns,
-            body,
-        });
-        Some((emitted, returns))
-    }
-}
-
-/// The type a body returns, if every `return` in it agrees.
-fn returned_type(block: &Block) -> Option<Type> {
-    let mut found = None;
-    walk_returns(block, &mut found);
-    found
-}
-
-fn walk_returns(block: &Block, found: &mut Option<Type>) {
-    for statement in &block.0 {
-        match statement {
-            Stmt::Return(value) => {
-                if found.is_none() {
-                    *found = Some(value.ty());
-                }
-            }
-            Stmt::If { arms, otherwise } => {
-                for (_, body) in arms {
-                    walk_returns(body, found);
-                }
-                if let Some(body) = otherwise {
-                    walk_returns(body, found);
-                }
-            }
-            Stmt::Loop { body, .. } => walk_returns(body, found),
-            Stmt::Let { .. } | Stmt::Assign { .. } | Stmt::Break => {}
-        }
-    }
-}
-
-/// A helper's name, made safe to build an identifier from.
-fn sanitized(name: &str) -> String {
-    name.chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }

@@ -363,3 +363,39 @@ pub(crate) fn a_matrix_parameter_arrives_with_its_columns_intact() {
         )
         .expect("the generated WGSL compiles");
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn integer_hash_noise_paints() {
+    // W3 against an adapter. Integer arithmetic is where a compiler most easily
+    // emits something plausible that a driver refuses — a mixed-width shift, a
+    // literal that went through a float on the way — so the hash goes through a
+    // real pipeline rather than only through the type checker.
+    let pixels = shaded(
+        "function hash(seed)
+           local h = seed * u32(747796405) + u32(2891336453)
+           local word = ((h >> ((h >> u32(28)) + u32(4))) ~ h) * u32(277803737)
+           return (word >> u32(22)) ~ word
+         end
+
+         function fragment(uv, time, resolution)
+           local cell = floor(uv * 12.0)
+           local seed = u32(cell.x) * u32(374761393) + u32(cell.y) * u32(668265263)
+           local noise = f32(hash(seed) & u32(65535)) / 65535.0
+           return vec4(noise, noise, noise, 1.0)
+         end",
+    );
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 32, 32),
+        255,
+        "the driver accepted it"
+    );
+    // Noise is noise: sampling a spread of cells has to give a spread of
+    // values. A hash that collapsed to one number would paint a flat grey and
+    // pass every weaker assertion.
+    let samples: std::collections::HashSet<u8> = [(8, 8), (20, 14), (32, 30), (44, 40), (54, 52)]
+        .into_iter()
+        .map(|(x, y)| channel(&pixels, x, y, 0))
+        .collect();
+    assert!(samples.len() >= 3, "the hash actually varies: {samples:?}");
+}

@@ -83,6 +83,18 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Commits an abstract integer to a concrete type.
+    ///
+    /// Called where a type has to stop being undecided: a local's declared
+    /// type, a loop bound, a constructor argument. Everywhere else a literal
+    /// stays abstract so that the surrounding code can still decide.
+    pub(crate) fn commit(value: Expr) -> Expr {
+        match value {
+            Expr::Literal(Value::Int(number)) => Expr::Literal(Value::F32(number as f32)),
+            other => other,
+        }
+    }
+
     pub(crate) fn error(&mut self, line: u32, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic::new(line, message));
     }

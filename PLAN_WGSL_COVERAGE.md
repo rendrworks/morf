@@ -32,17 +32,18 @@ relational functions.
 
 | area | have | missing | note |
 |---|---|---|---|
-| scalar, vector & matrix types | `f32` `vec2` `vec3` `vec4` `bool` `mat2` `mat3` `mat4` | `i32` `u32` `f16`, arrays, structs | §4.2, §4.5 |
-| operators | `+ - * / % ^ // == ~= < <= > >= and or not` unary `-` | bitwise, shifts | §4.2 |
+| types | `f32` `i32` `u32` `vec2` `vec3` `vec4` `bool` `mat2` `mat3` `mat4` | `f16`, arrays, structs | §4.5 |
+| operators | everything Lua has except `..` | — | done |
 | statements | `local` assign `if` `while` `for` `repeat` `break` `return` | `continue`, `discard` | §4.3 |
 | functions | entry point, helpers (monomorphised) | — | done |
-| math builtins | **47 of 79** | 32 | §3 |
+| math builtins | **55 of 79** | 24 | §3 |
 | derivatives | none | `dpdx` `dpdy` `fwidth` (+ coarse/fine) | §4.4 |
 | relational | none | `all` `any` `isNan` `isInf` | §4.4 |
 | textures | one implicit source via `texture(uv)` | everything else | §5 |
 
-Two of the 47 are `select` and `texture`, which are not `MathFunction`s — the
-math count proper is 45 of 79 after W2.
+Two of the 55 are `select` and `texture`, which are not `MathFunction`s — the
+math count proper is 53 of 79 after W3. Of the 26 still missing, 18 are the
+packing family in §3.4, which has nothing here to pack for.
 
 ---
 
@@ -82,15 +83,12 @@ is the argument for that test existing at all.
       one matrix operation nobody writes by hand, and it needs a non-square
       result the type set does not have.
 
-### 3.3 Worth adding — integer and bitwise (8)
+### 3.3 Worth adding — integer and bitwise (8) — **W3 done**
 
-Blocked on integer types, §4.2. These are what make a *good* hash possible;
-without them the only noise available is the `sin(dot(p, k)) * 43758.5453`
-trick, which is what the port suite currently uses because it has no choice.
-
-- [ ] `countTrailingZeros` `countLeadingZeros` `countOneBits` `reverseBits`
-- [ ] `extractBits` `insertBits`
-- [ ] `firstTrailingBit` `firstLeadingBit`
+- [x] `countTrailingZeros` `countLeadingZeros` `countOneBits` `reverseBits`
+- [x] `extractBits` `insertBits` — the latter is the one builtin in this
+      language taking four arguments, which the first attempt got wrong
+- [x] `firstTrailingBit` `firstLeadingBit`
 
 ### 3.4 Low value here (18)
 
@@ -136,20 +134,28 @@ produce `mat2x2<f32>(0.5)` here, which is not even legal WGSL.
 
 Non-square types can wait; nobody writes `mat2x3` by hand.
 
-### 4.2 Integers and bitwise
+### 4.2 Integers and bitwise — **W3 done**
 
-Needed for hashing, which is needed for noise, which is most procedural
-texturing. Also `u32` for bit twiddling that does not want a sign.
+- [x] `Type::U32`, and `i32` promoted from loop-counter-only to a real type
+- [x] **Abstract integer literals.** The interesting part, and it went the way
+      WGSL itself does it: an integer literal has no type until something asks.
+      `1 / 2` is `0.5` because nothing in it asks for a whole number, and
+      `1 << 2` is four because a shift does. `Type::defaulted` commits an
+      undecided literal to `f32` at the points where a type has to stop being
+      undecided — a local's declared type, a loop bound, a constructor argument.
+- [x] `& | ~ << >>`
+- [x] `bitcast_f32` / `bitcast_i32` / `bitcast_u32` — spelled with the target in
+      the name, because Lua has no `bitcast<T>` syntax to put it in
+- [x] Conversions: `f32(x)`, `i32(x)`, `u32(x)`
+- [x] §3.3's eight builtins
 
-- [ ] `Type::U32`, and `i32` promoted from loop-counter-only to a real type
-- [ ] Integer literals that stay integers in an integer context, while
-      `1 / 2` in a float context stays `0.5` — the interesting part, and where
-      the diagnostics have to be good
-- [ ] `& | ~ << >>` — currently rejected wholesale with "a shader has no
-      bitwise operators", which becomes wrong the moment this lands
-- [ ] `bitcast<T>(x)`, the float-to-bits reinterpretation every hash starts with
-- [ ] Conversions: `f32(x)`, `i32(x)`, `u32(x)`
-- [ ] §3.3's eight builtins
+**Why abstract literals were not optional.** A hash multiplier like
+`2654435769` needs thirty-two bits and an `f32` has twenty-four of mantissa. Had
+literals stayed floats, there would have been no way to write a hash at all —
+and therefore no noise except the `sin(dot(p, k)) * 43758.5453` trick, which is
+what the port suite used because it had no choice. `integer_hash_noise_ports`
+is the port that could not be written before this, and
+`integer_hash_noise_paints` is the same thing through a real adapter.
 
 ### 4.3 Statements
 
@@ -290,7 +296,7 @@ actually caught anything:
 
 - [x] **W1 — the ordinary builtins.** 42 of 79 math functions, from 34.
 - [x] **W2 — matrices.** 45 of 79, and rotation is writable.
-- [ ] W3 — integers and bitwise
+- [x] **W3 — integers and bitwise.** 53 of 79, and a real hash is writable.
 - [ ] W4 — derivatives and relational
 - [ ] W5 — arrays, indexing, structs
 - [ ] W6 — `continue` and `discard`

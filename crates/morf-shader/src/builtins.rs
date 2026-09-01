@@ -24,6 +24,13 @@ pub(crate) enum Shape {
     Cross,
     /// `refract(incident, normal, eta)` — two vectors and a scalar ratio.
     Refract,
+    /// One integer in, the same integer type out.
+    Integer1,
+    /// `extractBits(value, offset, count)` — three whole numbers.
+    IntegerBits,
+    /// `insertBits(value, newbits, offset, count)` — four, which is the one
+    /// builtin in this language that takes that many.
+    IntegerInsert,
     /// One matrix in, the same matrix out: `transpose`, `inverse`.
     Matrix1,
     /// One matrix in, a scalar out: `determinant`.
@@ -53,6 +60,17 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("clamp", Builtin::Clamp, Shape::Componentwise3),
     ("cos", Builtin::Cos, Shape::Componentwise1),
     ("cosh", Builtin::Cosh, Shape::Componentwise1),
+    (
+        "count_leading_zeros",
+        Builtin::CountLeadingZeros,
+        Shape::Integer1,
+    ),
+    ("count_one_bits", Builtin::CountOneBits, Shape::Integer1),
+    (
+        "count_trailing_zeros",
+        Builtin::CountTrailingZeros,
+        Shape::Integer1,
+    ),
     ("cross", Builtin::Cross, Shape::Cross),
     ("degrees", Builtin::Degrees, Shape::Componentwise1),
     ("determinant", Builtin::Determinant, Shape::MatrixFold),
@@ -60,13 +78,25 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("dot", Builtin::Dot, Shape::Fold2),
     ("exp", Builtin::Exp, Shape::Componentwise1),
     ("exp2", Builtin::Exp2, Shape::Componentwise1),
+    ("extract_bits", Builtin::ExtractBits, Shape::IntegerBits),
     ("faceforward", Builtin::FaceForward, Shape::Componentwise3),
     ("face_forward", Builtin::FaceForward, Shape::Componentwise3),
     ("fma", Builtin::Fma, Shape::Componentwise3),
+    (
+        "first_leading_bit",
+        Builtin::FirstLeadingBit,
+        Shape::Integer1,
+    ),
+    (
+        "first_trailing_bit",
+        Builtin::FirstTrailingBit,
+        Shape::Integer1,
+    ),
     ("floor", Builtin::Floor, Shape::Componentwise1),
     ("fract", Builtin::Fract, Shape::Componentwise1),
     // Both spellings: WGSL writes it one way and GLSL, which is what a shader
     // author has read more of, writes it the other.
+    ("insert_bits", Builtin::InsertBits, Shape::IntegerInsert),
     ("inverse", Builtin::Inverse, Shape::Matrix1),
     ("inversesqrt", Builtin::InverseSqrt, Shape::Componentwise1),
     ("inverse_sqrt", Builtin::InverseSqrt, Shape::Componentwise1),
@@ -86,6 +116,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("radians", Builtin::Radians, Shape::Componentwise1),
     ("reflect", Builtin::Reflect, Shape::Componentwise2),
     ("refract", Builtin::Refract, Shape::Refract),
+    ("reverse_bits", Builtin::ReverseBits, Shape::Integer1),
     ("round", Builtin::Round, Shape::Componentwise1),
     // `clamp(x, 0, 1)`, which is written often enough to have its own name.
     ("saturate", Builtin::Saturate, Shape::Componentwise1),
@@ -132,13 +163,16 @@ pub(crate) fn arity(shape: Shape) -> usize {
         | Shape::Fold1
         | Shape::Texture
         | Shape::Matrix1
+        | Shape::Integer1
         | Shape::MatrixFold => 1,
         Shape::Componentwise2 | Shape::Fold2 | Shape::Cross => 2,
         Shape::Componentwise3
         | Shape::MixScalar
         | Shape::EdgeScalar
         | Shape::Select
-        | Shape::Refract => 3,
+        | Shape::Refract
+        | Shape::IntegerBits => 3,
+        Shape::IntegerInsert => 4,
     }
 }
 
@@ -233,6 +267,33 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
             (left == Type::Vec3 && right == Type::Vec3)
                 .then_some(Type::Vec3)
                 .ok_or_else(|| format!("cross takes two vec3, not {left} and {right}"))
+        }
+        Shape::Integer1 => {
+            let ty = args[0];
+            if ty == Type::AbstractInt {
+                return Ok(Type::I32);
+            }
+            ty.is_integer()
+                .then_some(ty)
+                .ok_or_else(|| format!("{name} takes a whole number, not {ty}"))
+        }
+        Shape::IntegerInsert | Shape::IntegerBits => {
+            let ty = args[0];
+            if !ty.is_integer() {
+                return Err(format!("{name} takes a whole number, not {ty}"));
+            }
+            for count in &args[1..] {
+                if !count.is_integer() {
+                    return Err(format!(
+                        "{name}'s bit counts must be whole numbers, not {count}"
+                    ));
+                }
+            }
+            Ok(if ty == Type::AbstractInt {
+                Type::I32
+            } else {
+                ty
+            })
         }
         Shape::Matrix1 => {
             let ty = args[0];

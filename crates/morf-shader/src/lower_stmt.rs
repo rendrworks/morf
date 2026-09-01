@@ -91,7 +91,8 @@ impl Lowerer<'_> {
             return;
         }
         for (index, (name, _)) in local.names.iter().enumerate() {
-            let value = self.expression(&local.values[index], line);
+            // A local has to have a type, so an abstract literal decides here.
+            let value = Lowerer::commit(self.expression(&local.values[index], line));
             let ty = value.ty();
             // Matrices are not "numeric" — `m * v` is a product, not a
             // componentwise multiply — but they are perfectly good values to
@@ -336,7 +337,7 @@ impl Lowerer<'_> {
     }
 
     fn numeric(&mut self, expression: &Expression<Name>, line: u32, what: &str) -> Expr {
-        let value = self.expression(expression, line);
+        let value = Lowerer::commit(self.expression(expression, line));
         let ty = value.ty();
         if ty == Type::F32 || ty == Type::I32 || ty.is_poison() {
             return value;

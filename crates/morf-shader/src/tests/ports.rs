@@ -336,3 +336,47 @@ fn cross_products_work_now() {
     );
     assert!(compiled.wgsl.contains("cross("));
 }
+
+#[test]
+fn integer_hash_noise_ports() {
+    // W3's measure. Before integers, the only noise available was
+    // `fract(sin(dot(p, k)) * 43758.5453)` — a trick every shader author knows
+    // is a workaround for exactly this gap, and which the `value_noise_ports`
+    // test above still uses because it was written when there was no choice.
+    //
+    // This is the real thing: PCG-style bit mixing, with constants that do not
+    // survive as floats.
+    let compiled = port(
+        "integer-noise",
+        r#"
+        function hash(seed)
+          local h = seed * u32(747796405) + u32(2891336453)
+          local word = ((h >> ((h >> u32(28)) + u32(4))) ~ h) * u32(277803737)
+          return (word >> u32(22)) ~ word
+        end
+
+        function fragment(uv, time, resolution)
+          local cell = floor(uv * 16.0)
+          local seed = u32(cell.x) * u32(374761393) + u32(cell.y) * u32(668265263)
+          local noise = f32(hash(seed) & u32(65535)) / 65535.0
+          return vec4(noise, noise, noise, 1.0)
+        end
+        "#,
+    );
+    // The constants are in the output as whole numbers, not rounded through a
+    // float on the way.
+    for constant in ["747796405u", "2891336453u", "277803737u"] {
+        assert!(
+            compiled.wgsl.contains(constant),
+            "{constant} lost:\n{}",
+            compiled.wgsl
+        );
+    }
+    // And the helper was monomorphised at `u32`, which W2's machinery got for
+    // free the moment there was a `u32` to monomorphise at.
+    assert!(
+        compiled.wgsl.contains("morf_fn_hash_0(seed_1: u32)"),
+        "{}",
+        compiled.wgsl
+    );
+}

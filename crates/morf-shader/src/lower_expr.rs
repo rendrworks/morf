@@ -41,9 +41,10 @@ impl Lowerer<'_> {
         }
         match simple {
             SimpleExpression::Float(value) => Expr::Literal(Value::F32(*value as f32)),
-            // Every integer literal is a float: a shader has no integer
-            // arithmetic to speak of, and `1 / 2` must be 0.5 as it is in Lua.
-            SimpleExpression::Integer(value) => Expr::Literal(Value::F32(*value as f32)),
+            // An integer literal is abstract until something decides. `1 / 2`
+            // still ends up `0.5`, because nothing in it asks for an integer
+            // and the default is `f32` — but `1 << 2` can now be four.
+            SimpleExpression::Integer(value) => Expr::Literal(Value::Int(*value)),
             SimpleExpression::True => Expr::Literal(Value::Bool(true)),
             SimpleExpression::False => Expr::Literal(Value::Bool(false)),
             SimpleExpression::Suffixed(suffixed) => self.suffixed(suffixed, line),
@@ -210,6 +211,11 @@ impl Lowerer<'_> {
         if let Some(ty) = Type::parse(name).filter(|ty| ty.is_matrix()) {
             return self.construct_matrix(ty, lowered, line);
         }
+        // `f32(x)`, `i32(x)`, `u32(x)` convert the value; `bitcast_u32(x)` and
+        // friends reinterpret the bits, which is where every hash starts.
+        if let Some(converted) = self.conversion(name, &lowered, line) {
+            return converted;
+        }
         // A helper the shader declared wins over nothing at all, but never over
         // a builtin: shadowing `sin` would be a trap, not a feature.
         if builtins::lookup(name).is_none()
@@ -264,9 +270,13 @@ impl Lowerer<'_> {
         if args.iter().any(|arg| arg.ty().is_poison()) {
             return Expr::Construct { ty, args };
         }
-        // One scalar fills every component: `vec3(0.5)` is grey.
-        if args.len() == 1 && args[0].ty() == Type::F32 {
-            return Expr::Construct { ty, args };
+        // One scalar fills every component: `vec3(0.5)` is grey, and so is
+        // `vec3(1)` — an abstract literal is a scalar like any other.
+        if args.len() == 1 && (args[0].ty() == Type::F32 || args[0].ty() == Type::AbstractInt) {
+            return Expr::Construct {
+                ty,
+                args: args.into_iter().map(Lowerer::commit).collect(),
+            };
         }
         let mut supplied = 0;
         for arg in &args {
@@ -287,7 +297,49 @@ impl Lowerer<'_> {
             );
             return Expr::poison();
         }
-        Expr::Construct { ty, args }
+        Expr::Construct {
+            ty,
+            args: args.into_iter().map(Lowerer::commit).collect(),
+        }
+    }
+
+    /// A scalar conversion or a bitcast, if the name is one.
+    fn conversion(&mut self, name: &str, args: &[Expr], line: u32) -> Option<Expr> {
+        let (builtin, target) = match name {
+            "f32" | "float" => (Builtin::Convert, Type::F32),
+            "i32" | "int" => (Builtin::Convert, Type::I32),
+            "u32" | "uint" => (Builtin::Convert, Type::U32),
+            "bitcast_f32" => (Builtin::Bitcast, Type::F32),
+            "bitcast_i32" => (Builtin::Bitcast, Type::I32),
+            "bitcast_u32" => (Builtin::Bitcast, Type::U32),
+            _ => return None,
+        };
+        if args.len() != 1 {
+            self.error(
+                line,
+                format!("{name} takes one argument, not {}", args.len()),
+            );
+            return Some(Expr::poison());
+        }
+        let from = args[0].ty();
+        if from.is_poison() {
+            return Some(Expr::poison());
+        }
+        if from.is_vector() || from.is_matrix() {
+            self.error(line, format!("{name} converts a single number, not {from}"));
+            return Some(Expr::poison());
+        }
+        // A bitcast only makes sense between things of the same width, which
+        // for this language means the four-byte scalars and nothing else.
+        if builtin == Builtin::Bitcast && from == Type::Bool {
+            self.error(line, "a bool has no bits to reinterpret");
+            return Some(Expr::poison());
+        }
+        Some(Expr::Call {
+            builtin,
+            ty: target,
+            args: vec![args[0].clone()],
+        })
     }
 
     /// `mat3(c0, c1, c2)`, from columns or from every component at once.

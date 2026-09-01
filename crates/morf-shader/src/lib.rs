@@ -43,6 +43,7 @@ mod emit;
 mod ir;
 mod limits;
 mod lower;
+mod lower_bits;
 mod lower_expr;
 mod lower_ops;
 mod lower_stmt;

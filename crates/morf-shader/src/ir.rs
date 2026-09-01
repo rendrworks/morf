@@ -208,6 +208,8 @@ impl Expr {
 pub enum UnOp {
     Negate,
     Not,
+    /// `~x`, the bitwise complement. Lua spells it the same way.
+    BitNot,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,6 +227,11 @@ pub enum BinOp {
     NotEqual,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 impl BinOp {
@@ -244,6 +251,11 @@ impl BinOp {
             Self::NotEqual => "!=",
             Self::And => "&&",
             Self::Or => "||",
+            Self::BitAnd => "&",
+            Self::BitOr => "|",
+            Self::BitXor => "^",
+            Self::ShiftLeft => "<<",
+            Self::ShiftRight => ">>",
         }
     }
 
@@ -262,6 +274,22 @@ impl BinOp {
 
     pub fn is_logical(self) -> bool {
         matches!(self, Self::And | Self::Or)
+    }
+
+    /// Whether the operator works on the bits rather than the value.
+    pub fn is_bitwise(self) -> bool {
+        matches!(
+            self,
+            Self::BitAnd | Self::BitOr | Self::BitXor | Self::ShiftLeft | Self::ShiftRight
+        )
+    }
+
+    /// Whether the right operand is a shift count rather than a second value.
+    ///
+    /// WGSL wants a `u32` there whatever is being shifted, which is the one
+    /// place an integer operator does not simply take two of the same thing.
+    pub fn is_shift(self) -> bool {
+        matches!(self, Self::ShiftLeft | Self::ShiftRight)
     }
 }
 
@@ -286,6 +314,9 @@ pub enum Builtin {
     Cos,
     Cosh,
     /// The one thing the RbxShader collection needed that was missing.
+    CountLeadingZeros,
+    CountOneBits,
+    CountTrailingZeros,
     Cross,
     Degrees,
     Determinant,
@@ -293,10 +324,14 @@ pub enum Builtin {
     Dot,
     Exp,
     Exp2,
+    ExtractBits,
     FaceForward,
     Fma,
+    FirstLeadingBit,
+    FirstTrailingBit,
     Floor,
     Fract,
+    InsertBits,
     Inverse,
     InverseSqrt,
     Length,
@@ -311,6 +346,7 @@ pub enum Builtin {
     Radians,
     Reflect,
     Refract,
+    ReverseBits,
     Round,
     Saturate,
     Select,
@@ -328,6 +364,14 @@ pub enum Builtin {
     FloorDiv,
     /// Samples what is rendered underneath. Effect shaders only.
     Texture,
+    /// A conversion between scalar types: `f32(x)`, `i32(x)`, `u32(x)`.
+    ///
+    /// The result type is on the `Call`, so the emitter prints the type's own
+    /// name and nothing else has to carry it.
+    Convert,
+    /// Reinterprets the bits rather than the value, which is where every hash
+    /// starts. The result type is on the `Call`.
+    Bitcast,
     /// A call to a helper the shader itself declared.
     ///
     /// The first argument carries the emitted function's name rather than a
@@ -351,6 +395,9 @@ impl Builtin {
             Self::Ceil => "ceil",
             Self::Clamp => "clamp",
             Self::Cos => "cos",
+            Self::CountLeadingZeros => "countLeadingZeros",
+            Self::CountOneBits => "countOneBits",
+            Self::CountTrailingZeros => "countTrailingZeros",
             Self::Cross => "cross",
             Self::Cosh => "cosh",
             Self::Degrees => "degrees",
@@ -358,11 +405,15 @@ impl Builtin {
             Self::Distance => "distance",
             Self::Dot => "dot",
             Self::Exp => "exp",
+            Self::ExtractBits => "extractBits",
             Self::Exp2 => "exp2",
             Self::FaceForward => "faceForward",
             Self::Fma => "fma",
             Self::Floor => "floor",
+            Self::FirstLeadingBit => "firstLeadingBit",
+            Self::FirstTrailingBit => "firstTrailingBit",
             Self::Fract => "fract",
+            Self::InsertBits => "insertBits",
             Self::Inverse => "inverse",
             Self::InverseSqrt => "inverseSqrt",
             Self::Length => "length",
@@ -377,6 +428,7 @@ impl Builtin {
             Self::Radians => "radians",
             Self::Reflect => "reflect",
             Self::Refract => "refract",
+            Self::ReverseBits => "reverseBits",
             Self::Round => "round",
             Self::Saturate => "saturate",
             Self::Select => "select",
@@ -392,6 +444,8 @@ impl Builtin {
             Self::Trunc => "trunc",
             Self::FloorDiv => "floor",
             Self::Texture => "textureSample",
+            Self::Convert => "",
+            Self::Bitcast => "bitcast",
             Self::Helper => "",
         }
     }
