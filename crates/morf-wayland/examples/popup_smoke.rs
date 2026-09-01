@@ -182,5 +182,6 @@ fn quad(
         shadow_offset_x: 0.0,
         shadow_offset_y: 3.0,
         shadow_inner: false,
+        shader: None,
     }
 }

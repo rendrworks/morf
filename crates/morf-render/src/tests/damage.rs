@@ -134,6 +134,7 @@ fn changed_command_damages_old_and_new_bounds() {
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
             shadow_inner: false,
+            shader: None,
         }],
         layers: Vec::new(),
     };
@@ -179,6 +180,7 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
         shadow_offset_x: 3.0,
         shadow_offset_y: 4.0,
         shadow_inner: false,
+        shader: None,
     };
 
     assert_eq!(

@@ -32,8 +32,12 @@ pub(crate) fn collect_field_instances(list: &DrawList, scale_120: u32) -> FieldB
         {
             indices[command_index] = Some(instances.len() as u32);
             instances.push(instance);
+            // Both a field and a rectangle can carry one: a rectangle is a
+            // field of one layer, and that is the shape most configurations
+            // reach for first.
             shaders.push(match command {
-                crate::DrawCommand::Field { shader, .. } => shader.clone(),
+                crate::DrawCommand::Field { shader, .. }
+                | crate::DrawCommand::Quad { shader, .. } => shader.clone(),
                 _ => None,
             });
         }

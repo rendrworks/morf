@@ -51,6 +51,13 @@ pub enum DrawCommand {
         shadow_offset_y: f64,
         /// Draw the shadow inside the rectangle edge.
         shadow_inner: bool,
+        /// A configuration's own shader, if this node carries one.
+        ///
+        /// A rectangle is a field of one layer, so it wears a shader the same
+        /// way — and `ui.Rect { shader = ... }` is how anybody first reaches
+        /// for one, which is why leaving it off here made the feature look
+        /// broken rather than absent.
+        shader: Option<ShaderBinding>,
     },
     /// Shaped glyph run owned by the text subsystem.
     Text {
@@ -261,7 +268,12 @@ pub enum Gradient {
 }
 
 impl DrawCommand {
-    pub(crate) fn node(&self) -> NodeHandle {
+    /// The scene node this command was painted for.
+    ///
+    /// Public because telling a layer's own drawing apart from its subtree's is
+    /// how a tool outside this crate can see that an effect shader wraps
+    /// nothing — a mistake that otherwise renders as silence.
+    pub fn node(&self) -> NodeHandle {
         match self {
             Self::Quad { node, .. }
             | Self::Text { node, .. }

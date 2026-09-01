@@ -322,6 +322,7 @@ impl SdfFieldInstance {
             shadow_offset_x,
             shadow_offset_y,
             shadow_inner,
+            shader,
             ..
         } = command
         else {
@@ -413,12 +414,19 @@ impl SdfFieldInstance {
                 0.0,
                 0.0,
             ],
-            area: [
-                ((expanded.x - bounds.x) * scale) as f32,
-                ((expanded.y - bounds.y) * scale) as f32,
-                ((expanded.x + expanded.width - bounds.x) * scale) as f32,
-                ((expanded.y + expanded.height - bounds.y) * scale) as f32,
-            ],
+            // A surface shader on a rectangle owns the whole node, exactly as
+            // it does on a field: it is deciding coverage, so the effect
+            // expansion is not what bounds it.
+            area: if shader.as_ref().is_some_and(|shader| shader.owns_coverage) {
+                [0.0, 0.0, width, height]
+            } else {
+                [
+                    ((expanded.x - bounds.x) * scale) as f32,
+                    ((expanded.y - bounds.y) * scale) as f32,
+                    ((expanded.x + expanded.width - bounds.x) * scale) as f32,
+                    ((expanded.y + expanded.height - bounds.y) * scale) as f32,
+                ]
+            },
         })
     }
 }

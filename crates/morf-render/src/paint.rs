@@ -143,6 +143,10 @@ pub(crate) fn append_node(
             shadow_offset_x: shadow.offset_x,
             shadow_offset_y: shadow.offset_y,
             shadow_inner: shadow.inner,
+            // A rectangle wears a shader the same way a field does, because it
+            // *is* a field of one layer. An effect shader belongs to the layer
+            // that composites the node, not to its own fill.
+            shader: shader_binding(scene, node)?.filter(|shader| !shader.samples_behind),
         }),
         Element::Text => list.commands.push(DrawCommand::Text {
             node,
@@ -339,6 +343,9 @@ pub(crate) fn append_node(
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
             shadow_inner: false,
+            // The border a ClipRect overlays is not the node's own fill, so it
+            // carries no shader: the shader belongs to what is inside.
+            shader: None,
         });
     }
     if let Some(layer) = layer {
