@@ -85,6 +85,12 @@ pub enum Builtin {
     FloorDiv,
     /// Samples what is rendered underneath. Effect shaders only.
     Texture,
+    /// `textureDimensions(t)` — how big a declared texture is.
+    TextureDimensions,
+    /// `textureLoad(t, coords, level)` — one exact texel, unfiltered.
+    TextureLoad,
+    /// `textureSampleLevel(t, s, uv, level)` — sampling at a chosen mip.
+    TextureSampleLevel,
     /// A conversion between scalar types: `f32(x)`, `i32(x)`, `u32(x)`.
     ///
     /// The result type is on the `Call`, so the emitter prints the type's own
@@ -204,6 +210,9 @@ impl Builtin {
             Self::Trunc => "trunc",
             Self::FloorDiv => "floor",
             Self::Texture => "textureSample",
+            Self::TextureDimensions => "textureDimensions",
+            Self::TextureLoad => "textureLoad",
+            Self::TextureSampleLevel => "textureSampleLevel",
             Self::Convert => "",
             Self::Bitcast => "bitcast",
             Self::DpdxCoarse => "dpdxCoarse",

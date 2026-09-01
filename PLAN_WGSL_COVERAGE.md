@@ -172,11 +172,15 @@ is the port that could not be written before this, and
       available.
 - [x] `discard`, spelled as a call — Lua has no keyword to spare, and it is the
       one call whose entire point is its effect rather than its value.
-- [ ] `switch` — **not implemented, and not planned.** Lua has no `switch` and
-      no syntax to spell one, so supporting it would mean inventing some. An
-      `if`/`elseif` chain says the same thing and compiles to the same
-      branching; this is the one item in this document that is a deliberate
-      permanent no rather than a deferral.
+- [x] `switch` — **recognised, not spelled.** Lua has no `switch` and no syntax
+      to spell one, so it comes from the shape instead: an `if`/`elseif` chain
+      testing one whole number against distinct constants, with an `else` to
+      land in, is emitted as a WGSL `switch`. The author writes what they would
+      have written anyway and the driver gets a jump table rather than a ladder
+      of comparisons. The recognition is narrow on purpose — different subjects,
+      a float subject, a repeated case or a missing `else` all stay an `if`
+      chain, because in an `if` chain the first matching arm wins and in a
+      `switch` a repeated case is an error.
 
 **The bug `continue` could have had.** A `continue` jumps past the tail of the
 loop body, so a numeric `for` whose counter advanced there would never advance
@@ -280,9 +284,14 @@ morf.shader("tinted", {
       what is underneath in effect mode. Arity decides which, and sampling a
       *named* texture does not make a node into a layer — there is nothing
       being read from beneath it.
-- [ ] `textureDimensions`, `textureLoad`, explicit-LOD sampling. Deliberately
-      not built: each is a different *kind* of read, and none has anything
-      asking for it. Sampling is what a shader does with a texture.
+- [x] `texture_size`, `texture_load`, `texture_level`.
+
+      "Sampling is what a shader does with a texture" was wrong, and the example
+      three paragraphs up is why: a `ramp` is a *palette*, and sampling a
+      palette interpolates between entries — so the colour halfway between two
+      swatches is a colour that is in neither. `texture_load` reads an exact
+      texel and is what a lookup table needs. `texture_size` is what indexing
+      one needs, and `texture_level` is sampling at a chosen mip.
 
 A texture is not a value — it cannot be added, stored or returned, and trying
 says so. The only thing a shader does with one is sample it, because that is the
@@ -407,12 +416,15 @@ actually caught anything:
 
 ## 9. Status
 
-**Everything in this document is implemented.**
+**Everything in this document is implemented. No `- [ ]` boxes remain.**
 
-Three `- [ ]` boxes remain and all three are deliberate refusals rather than
-outstanding work, each with its reason beside it: `switch` (§4.3 — Lua has no
-syntax for one), and `textureLoad`/explicit-LOD sampling (§5.1 — a different
-kind of read, with nothing asking for it).
+The last two were mine rather than the plan's, and both arguments were weaker
+than they looked. `switch` did not need syntax invented, only a shape
+recognised. And "nothing is asking for" the texture reads was contradicted by
+this document's own palette example, which is wrong without `texture_load`.
+
+§6 remains what it always was: things that cannot mean anything in a per-node
+fragment shader, listed so "out of scope" is never mistaken for "undone".
 
 - [x] **W1 — the ordinary builtins.** 42 of 79 math functions, from 34.
 - [x] **W2 — matrices.** 45 of 79, and rotation is writable.
@@ -425,6 +437,7 @@ kind of read, with nothing asking for it).
       **79 of 79.**
 - [x] **W8 — records, `modf` and `frexp`.** The last compiler-side boxes.
 - [x] **W9 — §5.** Named textures, vertex displacement, read-only data blocks.
+- [x] **W10 — the last two.** `switch` by recognition, and the texture reads.
 
 W7 and W8 were not in the original order. They exist because the first six
 steps deferred eleven items with reasons, and a reason is not the same as being

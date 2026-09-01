@@ -252,6 +252,41 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
                 .then_some(incident)
                 .ok_or_else(|| format!("refract's ratio must be an f32, not {eta}"))
         }
+        Shape::TextureSize => {
+            let ty = args[0];
+            (ty == Type::Texture)
+                .then_some(Type::Vec2U)
+                .ok_or_else(|| format!("texture_size takes a texture, not {ty}"))
+        }
+        Shape::TextureLoad => {
+            if args[0] != Type::Texture {
+                return Err(format!("texture_load takes a texture, not {}", args[0]));
+            }
+            if args[1] != Type::Vec2I && args[1] != Type::Vec2U {
+                return Err(format!(
+                    "texture_load takes whole-number coordinates, not {}",
+                    args[1]
+                ));
+            }
+            args[2]
+                .is_integer()
+                .then_some(Type::Vec4)
+                .ok_or_else(|| format!("texture_load's level is a whole number, not {}", args[2]))
+        }
+        Shape::TextureLevel => {
+            if args[0] != Type::Texture {
+                return Err(format!("texture_level takes a texture, not {}", args[0]));
+            }
+            if args[1] != Type::Vec2 {
+                return Err(format!(
+                    "texture_level takes a vec2 coordinate, not {}",
+                    args[1]
+                ));
+            }
+            (args[2] == Type::F32)
+                .then_some(Type::Vec4)
+                .ok_or_else(|| format!("texture_level's mip is an f32, not {}", args[2]))
+        }
         Shape::Texture => match args {
             [coordinate] => (*coordinate == Type::Vec2)
                 .then_some(Type::Vec4)

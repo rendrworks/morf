@@ -69,6 +69,12 @@ pub(crate) enum Shape {
     /// `texture(uv)` samples what is underneath; `texture(name, uv)` samples a
     /// declared one. Arity decides which.
     Texture,
+    /// `texture_size(t)` — a texture in, its size out.
+    TextureSize,
+    /// `texture_load(t, coords, level)` — a texture and two whole numbers.
+    TextureLoad,
+    /// `texture_level(t, uv, level)` — a texture, a coordinate and a mip.
+    TextureLevel,
 }
 
 /// Everything the language provides, by the name a shader writes.
@@ -228,6 +234,20 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("unpack4x_i8", Builtin::Unpack4xI8, Shape::UnpackInt(true)),
     ("unpack4x_u8", Builtin::Unpack4xU8, Shape::UnpackInt(false)),
     ("texture", Builtin::Texture, Shape::Texture),
+    // An exact texel, unfiltered. What a palette lookup wants: filtering one
+    // interpolates between entries, which is wrong for every table that is a
+    // table rather than an image.
+    ("texture_load", Builtin::TextureLoad, Shape::TextureLoad),
+    (
+        "texture_level",
+        Builtin::TextureSampleLevel,
+        Shape::TextureLevel,
+    ),
+    (
+        "texture_size",
+        Builtin::TextureDimensions,
+        Shape::TextureSize,
+    ),
 ];
 
 /// Resolves a call by name.
@@ -264,7 +284,8 @@ pub(crate) fn arity(shape: Shape) -> usize {
         | Shape::MatrixFold
         | Shape::Split
         | Shape::Pack
-        | Shape::PackInt => 1,
+        | Shape::PackInt
+        | Shape::TextureSize => 1,
         Shape::Componentwise2
         | Shape::Whole2
         | Shape::Fold2
@@ -280,6 +301,7 @@ pub(crate) fn arity(shape: Shape) -> usize {
         | Shape::Refract
         | Shape::IntegerBits => 3,
         Shape::IntegerInsert => 4,
+        Shape::TextureLoad | Shape::TextureLevel => 3,
         Shape::Unpack(_) | Shape::UnpackInt(_) => 1,
     }
 }

@@ -177,3 +177,127 @@ fn textures_and_data_both_reach_a_helper() {
     assert!(compiled.wgsl.contains("morf_tex0"), "{}", compiled.wgsl);
     assert!(compiled.wgsl.contains("morf_data0"), "{}", compiled.wgsl);
 }
+
+#[test]
+fn an_if_chain_on_one_number_becomes_a_switch() {
+    // Lua has no `switch` and no syntax to spell one, so this is where one can
+    // come from: the author writes the `if` chain they would have written
+    // anyway, and the emitter recognises the shape. Nothing new to learn, and
+    // the driver gets a jump table rather than a ladder of comparisons.
+    let compiled = compile_material(
+        "function fragment(uv)
+           local band = i32(uv.x * 4.0)
+           local shade = 0.0
+           if band == 0 then
+             shade = 0.1
+           elseif band == 1 then
+             shade = 0.4
+           elseif band == 2 then
+             shade = 0.7
+           else
+             shade = 1.0
+           end
+           return vec4(shade, shade, shade, 1.0)
+         end",
+    )
+    .expect("this compiles");
+    assert!(compiled.wgsl.contains("switch ("), "{}", compiled.wgsl);
+    assert!(compiled.wgsl.contains("case 0:"), "{}", compiled.wgsl);
+    assert!(compiled.wgsl.contains("default: {"), "{}", compiled.wgsl);
+}
+
+#[test]
+fn an_ordinary_if_chain_stays_an_if_chain() {
+    // The recognition has to be narrow. Arms testing different things, or
+    // testing a float, or with no `else` to land in, are a chain of questions
+    // that happens to be written as one — not a switch.
+    for body in [
+        // Different subjects.
+        "if uv.x > 0.5 then
+           shade = 0.2
+         elseif uv.y > 0.5 then
+           shade = 0.4
+         elseif uv.x > 0.9 then
+           shade = 0.6
+         else
+           shade = 0.8
+         end",
+        // No else to land in.
+        "if band == 0 then
+           shade = 0.2
+         elseif band == 1 then
+           shade = 0.4
+         elseif band == 2 then
+           shade = 0.6
+         end",
+    ] {
+        let compiled = compile_material(&format!(
+            "function fragment(uv)
+               local band = i32(uv.x * 4.0)
+               local shade = 0.0
+               {body}
+               return vec4(shade, shade, shade, 1.0)
+             end"
+        ))
+        .expect("this compiles");
+        assert!(
+            !compiled.wgsl.contains("switch ("),
+            "not a switch:\n{}",
+            compiled.wgsl
+        );
+    }
+}
+
+#[test]
+fn a_palette_is_read_without_filtering() {
+    // Why `texture_load` had to exist, and why "sampling is what a shader does
+    // with a texture" was wrong. A palette is a table, not an image: sampling
+    // one interpolates between entries, so the colour halfway between two
+    // swatches is a colour that is in neither.
+    let compiled = compile_bound(
+        "function fragment(uv, time, resolution, coverage)
+           local size = texture_size(palette)
+           local index = clamp(i32(uv.x * f32(size.x)), 0, i32(size.x) - 1)
+           local exact = texture_load(palette, vec2i(index, 0), 0)
+           local blurred = texture_level(palette, uv, 2.0)
+           return mix(exact, blurred, coverage * 0.0)
+         end",
+        ShaderKind::Material,
+        Vec::new(),
+        vec!["palette".to_owned()],
+        Vec::new(),
+    )
+    .expect("this compiles");
+    assert!(
+        compiled.wgsl.contains("textureDimensions(morf_tex0)"),
+        "{}",
+        compiled.wgsl
+    );
+    assert!(
+        compiled.wgsl.contains("textureLoad(morf_tex0,"),
+        "{}",
+        compiled.wgsl
+    );
+    assert!(
+        compiled
+            .wgsl
+            .contains("textureSampleLevel(morf_tex0, morf_tex_sampler0,"),
+        "{}",
+        compiled.wgsl
+    );
+}
+
+#[test]
+fn a_texture_read_says_what_its_arguments_have_to_be() {
+    let found = compile_bound(
+        "function fragment(uv, time, resolution, coverage)
+           return texture_load(palette, uv, 0)
+         end",
+        ShaderKind::Material,
+        Vec::new(),
+        vec!["palette".to_owned()],
+        Vec::new(),
+    )
+    .expect_err("a float coordinate is not a texel index");
+    assert!(mentions(&found, "whole-number coordinates"), "{found:?}");
+}

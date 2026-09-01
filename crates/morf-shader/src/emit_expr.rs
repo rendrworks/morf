@@ -207,6 +207,42 @@ impl Emitter {
             self.out.push(')');
             return;
         }
+        // The reads that name a binding rather than take one as a value. The
+        // sampler is ours, not the shader's, so it is supplied here.
+        if let Some(form) = match builtin {
+            Builtin::TextureDimensions => Some(TextureRead::Dimensions),
+            Builtin::TextureLoad => Some(TextureRead::Load),
+            Builtin::TextureSampleLevel => Some(TextureRead::Level),
+            _ => None,
+        } {
+            let Some(Expr::Input { index, .. }) = args.first() else {
+                unreachable!("a texture read is checked before it is printed");
+            };
+            let slot = index - crate::lower_expr::TEXTURE_BASE;
+            match form {
+                TextureRead::Dimensions => {
+                    let _ = write!(self.out, "textureDimensions(morf_tex{slot})");
+                    return;
+                }
+                TextureRead::Load => {
+                    let _ = write!(self.out, "textureLoad(morf_tex{slot}, ");
+                }
+                TextureRead::Level => {
+                    let _ = write!(
+                        self.out,
+                        "textureSampleLevel(morf_tex{slot}, morf_tex_sampler{slot}, "
+                    );
+                }
+            }
+            for (index, arg) in args[1..].iter().enumerate() {
+                if index > 0 {
+                    self.out.push_str(", ");
+                }
+                self.expression(arg, arg.ty());
+            }
+            self.out.push(')');
+            return;
+        }
         if builtin == Builtin::Texture {
             match args {
                 // What is underneath, through a function the host shader
@@ -254,4 +290,11 @@ impl Emitter {
         }
         self.out.push(')');
     }
+}
+
+/// Which of the reads that name a texture binding this is.
+enum TextureRead {
+    Dimensions,
+    Load,
+    Level,
 }

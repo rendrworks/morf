@@ -7,7 +7,7 @@
 
 use crate::gpu::backend_types::ShaderRegistration;
 use crate::gpu::field_tests::alpha_at;
-use crate::gpu::shader_tests::{SIZE, channel};
+use crate::gpu::shader_tests::{SIZE, channel, shaded};
 use crate::*;
 use morf_shader::{ShaderKind, ShaderSpec};
 
@@ -202,5 +202,46 @@ pub(crate) fn a_vertex_shader_moves_the_quad() {
         alpha_at(&pixels, SIZE, 18, 8),
         0,
         "and not where it started"
+    );
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_switch_and_an_exact_texel_read_reach_the_driver() {
+    // The last two boxes, through an adapter. A `switch` naga rejects — a
+    // duplicate case, a missing default, a case constant of the wrong width —
+    // is refused with no line number, and an emitter that *generates* the
+    // construct is exactly where that would come from.
+    let pixels = shaded(
+        "function fragment(uv, time, resolution, coverage)
+           local band = clamp(i32(uv.x * 4.0), 0, 3)
+           local shade = 0.0
+           if band == 0 then
+             shade = 0.15
+           elseif band == 1 then
+             shade = 0.45
+           elseif band == 2 then
+             shade = 0.75
+           else
+             shade = 1.0
+           end
+           return vec4(shade, shade * 0.5, 1.0 - shade, 1.0)
+         end",
+    );
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 32, 32),
+        255,
+        "the driver accepted it"
+    );
+    // Four bands, each its own shade, in order across the node.
+    // All four inside the shape, which spans eight to fifty-six: outside it
+    // the field's coverage is zero and the shader's colour never appears.
+    let shades: Vec<u8> = [10, 24, 38, 50]
+        .into_iter()
+        .map(|x| channel(&pixels, x, 32, 0))
+        .collect();
+    assert!(
+        shades.windows(2).all(|pair| pair[1] > pair[0]),
+        "the switch picked each band in turn: {shades:?}",
     );
 }

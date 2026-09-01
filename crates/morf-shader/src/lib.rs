@@ -42,6 +42,7 @@ mod builtins;
 mod compound;
 mod diagnostics;
 mod emit;
+mod emit_branch;
 mod emit_expr;
 mod ir;
 mod limits;

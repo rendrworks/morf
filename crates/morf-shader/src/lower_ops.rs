@@ -133,7 +133,13 @@ impl Lowerer<'_> {
             return self.bitwise(op, left, right, line);
         }
         if op.is_comparison() {
-            if left_ty != right_ty || left_ty.is_vector() {
+            // An undecided literal takes the other side's type, so `band == 0`
+            // compares an `i32` against an `i32` — which is what it plainly
+            // means, and what it used to be refused for.
+            let comparable = (left_ty.fits(right_ty) || right_ty.fits(left_ty))
+                && !left_ty.is_any_vector()
+                && !right_ty.is_any_vector();
+            if !comparable {
                 self.error(line, format!("cannot compare {left_ty} with {right_ty}"));
                 return Expr::poison();
             }

@@ -203,7 +203,7 @@ impl Emitter {
         }
     }
 
-    fn block(&mut self, block: &Block) {
+    pub(crate) fn block(&mut self, block: &Block) {
         for statement in &block.0 {
             self.statement(statement);
         }
@@ -263,28 +263,6 @@ impl Emitter {
                 self.out.push_str(";\n");
             }
         }
-    }
-
-    fn branch(&mut self, arms: &[(Expr, Block)], otherwise: Option<&Block>) {
-        for (index, (condition, body)) in arms.iter().enumerate() {
-            self.indent();
-            self.out
-                .push_str(if index == 0 { "if (" } else { "} else if (" });
-            self.expression(condition, Type::Bool);
-            self.out.push_str(") {\n");
-            self.depth += 1;
-            self.block(body);
-            self.depth -= 1;
-        }
-        if let Some(body) = otherwise {
-            self.indent();
-            self.out.push_str("} else {\n");
-            self.depth += 1;
-            self.block(body);
-            self.depth -= 1;
-        }
-        self.indent();
-        self.out.push_str("}\n");
     }
 
     /// A loop, with the guard that makes it terminate.
