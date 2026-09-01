@@ -371,16 +371,42 @@ fn main() {
     // failure is silent from up here: the region is derived on the CPU and
     // handed to the compositor, so a configuration that never sets the property
     // and one whose compositor ignores it look exactly alike on screen.
-    let backdrops = computed
-        .backdrop_geometry(&scene)
-        .map(|regions| regions.len())
-        .unwrap_or(0);
+    let backdrop_shapes = computed.backdrop_geometry(&scene).unwrap_or_default();
+    let backdrops = backdrop_shapes.len();
+    // How many rectangles the region rasterises to, which is the only way to
+    // see the shape from here: a square is one, and a circle is one span per
+    // scanline. A blur region that came out as a box when a circle was asked
+    // for looks identical from every other angle.
+    let backdrop_rects = if backdrop_shapes.is_empty() {
+        0
+    } else {
+        let shapes: Vec<morf_region::Region> = backdrop_shapes
+            .iter()
+            .map(|(geometry, radii)| morf_region::Region {
+                rect: morf_region::Rect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii: *radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..morf_region::Region::default()
+            })
+            .collect();
+        morf_region::build(width as u32, height as u32, &shapes)
+            .map(|rects| rects.len())
+            .unwrap_or(0)
+    };
 
     let frame = layout + draw + region;
     println!("{config}");
     println!("  scene nodes        {nodes}");
     if backdrops > 0 {
-        println!("  backdrop regions   {backdrops}");
+        println!("  backdrop regions   {backdrops}  ({backdrop_rects} rectangles)");
     }
     if material > 0 || !effects.is_empty() {
         println!("  shaded commands    {material}");
