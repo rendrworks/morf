@@ -33,17 +33,14 @@ pub(crate) fn paint(
 /// interactive items, recomputed here so it tracks the surface as it changes.
 /// A layout, and what it was computed from.
 ///
-/// The grid a blur region is rasterised on, in logical pixels.
+/// One coordinate on the grid a blur region is rasterised on.
 ///
-/// Rasterising is O(area), so four pixels is sixteen times less work than one.
-/// What it costs is a boundary accurate to four pixels — which sits under the
-/// antialiased edge the configuration paints over it, and is invisible.
-const BACKDROP_GRID: u32 = 4;
-
-/// One coordinate on that grid.
+/// Snapping here is what lets the cache do its job: geometry that has moved
+/// less than the grid compares equal to where it was, and the rebuild is
+/// skipped entirely rather than performed and discarded.
 fn snap(value: f64) -> i32 {
-    let grid = BACKDROP_GRID as f64;
-    ((value / grid).round() as i32) * BACKDROP_GRID as i32
+    let grid = morf_region::COVERED_EDGE_GRID as f64;
+    ((value / grid).round() as i32) * morf_region::COVERED_EDGE_GRID as i32
 }
 
 /// Layout is the most expensive thing a frame does, and most frames change
@@ -193,7 +190,7 @@ pub(crate) fn paint_layer(
             let rectangles = if shapes.is_empty() {
                 Vec::new()
             } else {
-                morf_region::build_scaled(width, height, &shapes, BACKDROP_GRID)
+                morf_region::build_scaled(width, height, &shapes, morf_region::COVERED_EDGE_GRID)
                     .map_err(|error| error.to_string())?
             };
             client

@@ -397,9 +397,14 @@ fn main() {
                 ..morf_region::Region::default()
             })
             .collect();
-        morf_region::build_scaled(width as u32, height as u32, &shapes, 4)
-            .map(|rects| rects.len())
-            .unwrap_or(0)
+        morf_region::build_scaled(
+            width as u32,
+            height as u32,
+            &shapes,
+            morf_region::COVERED_EDGE_GRID,
+        )
+        .map(|rects| rects.len())
+        .unwrap_or(0)
     };
     // Rasterising a blur region is CPU work, done per surface per frame, and it
     // scales with the surface — so on a full-screen overlay it is one of the
@@ -427,7 +432,13 @@ fn main() {
             .collect();
         best(5, 20, || {
             std::hint::black_box(
-                morf_region::build_scaled(width as u32, height as u32, &shapes, 4).ok(),
+                morf_region::build_scaled(
+                    width as u32,
+                    height as u32,
+                    &shapes,
+                    morf_region::COVERED_EDGE_GRID,
+                )
+                .ok(),
             );
         })
     };
