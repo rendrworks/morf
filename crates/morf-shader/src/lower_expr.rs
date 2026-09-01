@@ -56,14 +56,9 @@ impl Lowerer<'_> {
                 self.error(line, "a shader has no strings");
                 Expr::poison()
             }
-            SimpleExpression::TableConstructor(_) => {
-                self.error_note(
-                    line,
-                    "a shader has no tables",
-                    "use a vector: `vec3(x, y, z)`",
-                );
-                Expr::poison()
-            }
+            // A Lua list becomes a fixed-length array, which is what it looks
+            // like and what a palette or a convolution kernel wants to be.
+            SimpleExpression::TableConstructor(table) => self.array(table, line),
             SimpleExpression::Function(_) => {
                 self.error(line, "a shader cannot define functions inside itself");
                 Expr::poison()
@@ -138,13 +133,9 @@ impl Lowerer<'_> {
     fn suffix(&mut self, value: Expr, suffix: &SuffixPart<Name>, line: u32, what: &str) -> Expr {
         match suffix {
             SuffixPart::Field(FieldSuffix::Named(field)) => self.swizzle(value, &text(field), line),
-            SuffixPart::Field(FieldSuffix::Indexed(_)) => {
-                self.error_note(
-                    line,
-                    "a shader cannot index with brackets",
-                    "name the component instead: `v.x`",
-                );
-                Expr::poison()
+            SuffixPart::Field(FieldSuffix::Indexed(index)) => {
+                let index = self.expression(index, line);
+                self.index(value, index, line)
             }
             SuffixPart::Call(_) => {
                 self.error(line, format!("`{what}` is not a function"));

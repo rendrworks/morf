@@ -101,7 +101,10 @@ fn non_uniform(expression: &Expr) -> Option<&'static str> {
         }
         Expr::Unary { value, .. } | Expr::Swizzle { value, .. } => non_uniform(value),
         Expr::Binary { left, right, .. } => non_uniform(left).or_else(|| non_uniform(right)),
-        Expr::Construct { args, .. } => args.iter().find_map(non_uniform),
+        Expr::Construct { args, .. } | Expr::Array { elements: args, .. } => {
+            args.iter().find_map(non_uniform)
+        }
+        Expr::Index { value, index, .. } => non_uniform(value).or_else(|| non_uniform(index)),
         Expr::Literal(_) | Expr::Local { .. } | Expr::Param { .. } | Expr::Input { .. } => None,
     }
 }

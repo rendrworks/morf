@@ -429,3 +429,47 @@ pub(crate) fn a_shader_antialiases_its_own_edge_with_fwidth() {
         "the edge is antialiased, not stepped: {soft} soft pixels"
     );
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn an_array_palette_paints_its_bands() {
+    // W5 against an adapter. In the uniform address space an array's stride is
+    // a multiple of sixteen whatever the element is, and a shader that indexes
+    // one the host laid out differently reads the wrong band — which looks like
+    // a colour choice rather than an error.
+    let pixels = shaded(
+        "function fragment(uv, time, resolution)
+           local ramp = {
+             vec3(0.9, 0.2, 0.2),
+             vec3(0.2, 0.9, 0.2),
+             vec3(0.2, 0.2, 0.9),
+             vec3(0.9, 0.9, 0.2)
+           }
+           local band = clamp(i32(uv.x * 4.0), 0, 3)
+           return vec4(ramp[band], 1.0)
+         end",
+    );
+    // Four bands across the node, each a different colour.
+    let bands: Vec<[u8; 3]> = [10, 26, 40, 54]
+        .into_iter()
+        .map(|x| {
+            [
+                channel(&pixels, x, 32, 0),
+                channel(&pixels, x, 32, 1),
+                channel(&pixels, x, 32, 2),
+            ]
+        })
+        .collect();
+    let distinct = bands.iter().collect::<std::collections::HashSet<_>>().len();
+    assert_eq!(distinct, 4, "each band is its own colour: {bands:?}");
+    assert!(
+        bands[0][0] > bands[0][1],
+        "the first band is red: {:?}",
+        bands[0]
+    );
+    assert!(
+        bands[2][2] > bands[2][0],
+        "the third is blue: {:?}",
+        bands[2]
+    );
+}

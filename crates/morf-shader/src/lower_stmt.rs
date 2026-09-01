@@ -97,7 +97,12 @@ impl Lowerer<'_> {
             // Matrices are not "numeric" — `m * v` is a product, not a
             // componentwise multiply — but they are perfectly good values to
             // hold, which is a different question.
-            if ty == Type::Bool || ty.is_numeric() || ty.is_matrix() || ty.is_poison() {
+            if ty == Type::Bool
+                || ty.is_numeric()
+                || ty.is_matrix()
+                || ty.is_array()
+                || ty.is_poison()
+            {
                 let emitted = self.declare(name, ty);
                 out.push(Stmt::Let {
                     name: emitted,

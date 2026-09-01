@@ -118,6 +118,17 @@ pub enum Expr {
         ty: Type,
         args: Vec<Expr>,
     },
+    /// `a[i]` on an array, a vector or a matrix column.
+    Index {
+        ty: Type,
+        value: Box<Expr>,
+        index: Box<Expr>,
+    },
+    /// `array<f32, 3>(a, b, c)`, from a Lua table constructor.
+    Array {
+        ty: Type,
+        elements: Vec<Expr>,
+    },
     Swizzle {
         ty: Type,
         value: Box<Expr>,
@@ -196,6 +207,8 @@ impl Expr {
             | Self::Binary { ty, .. }
             | Self::Call { ty, .. }
             | Self::Construct { ty, .. }
+            | Self::Index { ty, .. }
+            | Self::Array { ty, .. }
             | Self::Swizzle { ty, .. } => *ty,
         }
     }

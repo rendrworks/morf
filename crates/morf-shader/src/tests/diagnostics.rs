@@ -38,15 +38,32 @@ fn mismatched_vector_arithmetic_names_both_types() {
 }
 
 #[test]
-fn tables_are_refused_with_the_alternative() {
+fn an_empty_table_has_no_type() {
+    // A list is an array now, but an empty one cannot be: a shader array's
+    // length and element type are part of what it *is*, and there is nothing
+    // in `{}` to read either from.
     let found = errors(
         "function fragment(uv)
            local t = {}
            return vec4(1.0)
          end",
     );
-    assert!(mentions(&found, "no tables"), "{found:?}");
-    assert!(mentions(&found, "vec3(x, y, z)"), "{found:?}");
+    assert!(mentions(&found, "no type"), "{found:?}");
+    assert!(mentions(&found, "part of what it is"), "{found:?}");
+}
+
+#[test]
+fn a_table_with_named_fields_says_it_would_need_a_struct() {
+    // Refused by name rather than silently treated as a list of its values in
+    // whatever order the table happened to iterate.
+    let found = errors(
+        "function fragment(uv)
+           local t = { red = 1.0, green = 0.5 }
+           return vec4(1.0)
+         end",
+    );
+    assert!(mentions(&found, "a list, not a record"), "{found:?}");
+    assert!(mentions(&found, "struct"), "{found:?}");
 }
 
 #[test]

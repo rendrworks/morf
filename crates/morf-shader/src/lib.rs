@@ -43,17 +43,19 @@ mod emit;
 mod ir;
 mod limits;
 mod lower;
+mod lower_array;
 mod lower_bits;
 mod lower_expr;
 mod lower_ops;
 mod lower_stmt;
+mod pack;
 mod types;
 mod validate;
 
 pub use diagnostics::{Diagnostic, report};
-pub use emit::{HEADER_BYTES, ParamSlot};
 pub use ir::Binding;
 pub use limits::*;
+pub use pack::{HEADER_BYTES, ParamSlot};
 pub use types::{ShaderKind, Type, Value};
 
 #[cfg(test)]
@@ -184,7 +186,7 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
         return Err(diagnostics);
     }
 
-    let (params, uniform_size) = emit::pack(&spec.params);
+    let (params, uniform_size) = pack::pack(&spec.params);
     let wgsl = emit::emit(&program, &params, uniform_size);
     let hash = hash(&wgsl);
     Ok(Compiled {

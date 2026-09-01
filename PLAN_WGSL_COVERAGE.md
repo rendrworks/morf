@@ -32,7 +32,7 @@ relational functions.
 
 | area | have | missing | note |
 |---|---|---|---|
-| types | `f32` `i32` `u32` `vec2` `vec3` `vec4` `bool` `mat2` `mat3` `mat4` | `f16`, arrays, structs | §4.5 |
+| types | `f32` `i32` `u32` `vec2` `vec3` `vec4` `bool` `mat2` `mat3` `mat4` `array<T, N>` | `f16`, structs | §4.5 |
 | operators | everything Lua has except `..` | — | done |
 | statements | `local` assign `if` `while` `for` `repeat` `break` `return` | `continue`, `discard` | §4.3 |
 | functions | entry point, helpers (monomorphised) | — | done |
@@ -189,19 +189,36 @@ exists — the call reads neighbouring pixels, which have to have taken the same
 path — and what to do instead, and there is a test proving the suggested fix
 actually compiles.
 
-### 4.5 Arrays and structs
+### 4.5 Arrays and structs — **W5 mostly done**
 
-- [ ] `array<T, N>` with a constant length, which Lua's `{1, 2, 3}` maps onto
-      naturally — palettes and convolution kernels are the use
-- [ ] Indexing `a[i]`, currently refused with "a shader cannot index with
-      brackets"
-- [ ] Structs, needed by `modf` and `frexp` before anything else wants them
+- [x] `array<T, N>` with a constant length, written as a Lua list — which is
+      what a palette or a convolution kernel wants to be, and what an author
+      will write without being told
+- [x] Indexing `a[i]`, on arrays, vectors and matrix columns
+- [ ] Structs, and with them `modf` and `frexp`. Left for now: nothing else
+      wants one, and the two builtins that do are the least-reached-for in the
+      language.
 
-### 4.6 Indexing
+**Uniform stride.** In the uniform address space an array's stride is a
+multiple of sixteen whatever the element is, so four `f32` occupy sixty-four
+bytes rather than sixteen. That is the same rule that rejected the first attempt
+at padding the parameter block back in M4, and it is asserted on both sides.
 
-`v[i]` on a vector and `m[i]` on a matrix. Rejected today with a note pointing
-at `v.x`, which is right until §4.1 and §4.5 land and then becomes a wrong
-answer.
+**A gap this step exposed.** `clamp(i32(...), 0, 3)` was refused, because the
+componentwise shapes excluded whole numbers — WGSL defines `abs`, `clamp`,
+`min`, `max` and `sign` for integers and this language did not. Those five have
+their own shape now, kept separate rather than flagged, because `sin` of an
+integer really is undefined and letting it through would mean a driver refusing
+it with no line number.
+
+### 4.6 Indexing — **W5 done**
+
+`v[i]`, `m[i]` and `a[i]` all work. The note that used to point at `v.x` was
+right until arrays existed and then became a wrong answer, which is what it was
+flagged as here.
+
+A float index is refused by name rather than rounded: reading the wrong element
+silently is how a shader goes subtly wrong and nobody finds out.
 
 ---
 
@@ -308,5 +325,5 @@ actually caught anything:
 - [x] **W2 — matrices.** 45 of 79, and rotation is writable.
 - [x] **W3 — integers and bitwise.** 53 of 79, and a real hash is writable.
 - [x] **W4 — derivatives and relational.** A shader can antialias its own edge.
-- [ ] W5 — arrays, indexing, structs
+- [x] **W5 — arrays and indexing.** Structs deferred; nothing wants one yet.
 - [ ] W6 — `continue` and `discard`

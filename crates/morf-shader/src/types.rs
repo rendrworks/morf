@@ -34,6 +34,12 @@ pub enum Type {
     /// hash at all, and no way to write noise that is not the
     /// `sin(dot(p, k)) * 43758.5453` trick.
     AbstractInt,
+    /// A fixed-length array of one element type.
+    ///
+    /// The length is part of the type because WGSL's is: `array<f32, 4>` and
+    /// `array<f32, 5>` are different types, and a shader has no way to ask how
+    /// long one is at run time.
+    Array(&'static ArrayType),
     /// The type of an expression that already produced a diagnostic.
     ///
     /// It unifies with everything and reports nothing, so one mistake yields
@@ -74,6 +80,10 @@ impl Type {
             Self::U32 => "u32",
             // An abstract int that reached emission was committed first.
             Self::AbstractInt => "i32",
+            // An array prints its own spelling through `Display`; `wgsl` is a
+            // `&'static str` and cannot build one, so array declarations go
+            // through `wgsl_owned` instead.
+            Self::Array(_) => "array",
             // Poison never reaches emission: lowering fails first, and the
             // emitter only ever runs on a program that type-checked.
             Self::Poison => "f32",
@@ -157,6 +167,16 @@ impl Type {
         )
     }
 
+    /// The WGSL spelling, for the types that need one built rather than named.
+    pub fn wgsl_owned(self) -> String {
+        match self {
+            Self::Array(array) => {
+                format!("array<{}, {}>", array.element.wgsl_owned(), array.length)
+            }
+            other => other.wgsl().to_owned(),
+        }
+    }
+
     /// Whether the type holds whole numbers and can be shifted and masked.
     pub fn is_integer(self) -> bool {
         matches!(self, Self::I32 | Self::U32 | Self::AbstractInt)
@@ -213,6 +233,14 @@ impl Type {
             Self::Mat2 => (16, 8),
             Self::Mat3 => (48, 16),
             Self::Mat4 => (64, 16),
+            // In the uniform address space an array's stride must be a multiple
+            // of sixteen, whatever the element is — the rule that rejected the
+            // first attempt at padding the parameter block.
+            Self::Array(array) => {
+                let (size, alignment) = array.element.layout();
+                let stride = size.next_multiple_of(alignment.max(16));
+                (stride * array.length, 16)
+            }
         }
     }
 }
@@ -231,8 +259,42 @@ impl fmt::Display for Type {
             Self::I32 => "i32",
             Self::U32 => "u32",
             Self::AbstractInt => "integer",
+            Self::Array(array) => {
+                return write!(formatter, "array of {} {}", array.length, array.element);
+            }
             Self::Poison => "?",
         })
+    }
+}
+
+/// An array's element type and length.
+///
+/// Leaked rather than boxed. A shader declares a handful of arrays at compile
+/// time and the compiler is a short-lived process; giving `Type` a lifetime or
+/// an `Rc` to carry this would touch every signature in the crate to save a few
+/// dozen bytes that are freed when the process ends anyway.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ArrayType {
+    pub element: Type,
+    pub length: u32,
+}
+
+impl Type {
+    /// Interns an array type.
+    pub fn array(element: Type, length: u32) -> Self {
+        Self::Array(Box::leak(Box::new(ArrayType { element, length })))
+    }
+
+    /// The element type, if this is an array.
+    pub fn element(self) -> Option<Type> {
+        match self {
+            Self::Array(array) => Some(array.element),
+            _ => None,
+        }
+    }
+
+    pub fn is_array(self) -> bool {
+        matches!(self, Self::Array(_))
     }
 }
 

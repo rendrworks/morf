@@ -4,8 +4,18 @@ use crate::types::Type;
 /// How a builtin's argument types decide its result type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Shape {
-    /// One argument, result is the argument's type: `sin`, `abs`, `floor`.
+    /// One argument, result is the argument's type: `sin`, `floor`.
     Componentwise1,
+    /// The same, but whole numbers are allowed: `abs`, `sign`.
+    ///
+    /// A separate shape rather than a flag, because the difference is real:
+    /// `sin` of an integer is not defined in WGSL and letting it through would
+    /// mean a driver refusing it with no line number.
+    Whole1,
+    /// Two arguments, whole numbers allowed: `min`, `max`.
+    Whole2,
+    /// Three, whole numbers allowed: `clamp`.
+    Whole3,
     /// Two arguments of one type, result is that type: `pow`, `min`, `max`.
     Componentwise2,
     /// Three arguments of one type: `clamp`, `mix` with a vector amount.
@@ -50,7 +60,7 @@ pub(crate) enum Shape {
 /// user gets on a mismatch can list exactly what was available — which is worth
 /// more than the cleverness would have been.
 pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
-    ("abs", Builtin::Abs, Shape::Componentwise1),
+    ("abs", Builtin::Abs, Shape::Whole1),
     ("acosh", Builtin::Acosh, Shape::Componentwise1),
     ("all", Builtin::All, Shape::BoolFold),
     ("any", Builtin::Any, Shape::BoolFold),
@@ -63,7 +73,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     // write it out of the other builtins.
     ("atan2", Builtin::Atan2, Shape::Componentwise2),
     ("ceil", Builtin::Ceil, Shape::Componentwise1),
-    ("clamp", Builtin::Clamp, Shape::Componentwise3),
+    ("clamp", Builtin::Clamp, Shape::Whole3),
     ("cos", Builtin::Cos, Shape::Componentwise1),
     ("cosh", Builtin::Cosh, Shape::Componentwise1),
     (
@@ -117,8 +127,8 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("length", Builtin::Length, Shape::Fold1),
     ("log", Builtin::Log, Shape::Componentwise1),
     ("log2", Builtin::Log2, Shape::Componentwise1),
-    ("max", Builtin::Max, Shape::Componentwise2),
-    ("min", Builtin::Min, Shape::Componentwise2),
+    ("max", Builtin::Max, Shape::Whole2),
+    ("min", Builtin::Min, Shape::Whole2),
     ("mix", Builtin::Mix, Shape::MixScalar),
     ("normalize", Builtin::Normalize, Shape::Componentwise1),
     ("pow", Builtin::Pow, Shape::Componentwise2),
@@ -135,7 +145,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     // `clamp(x, 0, 1)`, which is written often enough to have its own name.
     ("saturate", Builtin::Saturate, Shape::Componentwise1),
     ("select", Builtin::Select, Shape::Select),
-    ("sign", Builtin::Sign, Shape::Componentwise1),
+    ("sign", Builtin::Sign, Shape::Whole1),
     ("sin", Builtin::Sin, Shape::Componentwise1),
     ("sinh", Builtin::Sinh, Shape::Componentwise1),
     ("smoothstep", Builtin::Smoothstep, Shape::EdgeScalar),
@@ -174,6 +184,7 @@ pub(crate) fn available() -> String {
 pub(crate) fn arity(shape: Shape) -> usize {
     match shape {
         Shape::Componentwise1
+        | Shape::Whole1
         | Shape::Fold1
         | Shape::Texture
         | Shape::Matrix1
@@ -181,8 +192,9 @@ pub(crate) fn arity(shape: Shape) -> usize {
         | Shape::Predicate
         | Shape::BoolFold
         | Shape::MatrixFold => 1,
-        Shape::Componentwise2 | Shape::Fold2 | Shape::Cross => 2,
+        Shape::Componentwise2 | Shape::Whole2 | Shape::Fold2 | Shape::Cross => 2,
         Shape::Componentwise3
+        | Shape::Whole3
         | Shape::MixScalar
         | Shape::EdgeScalar
         | Shape::Select
@@ -209,6 +221,26 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
             numeric(ty)
                 .then_some(ty)
                 .ok_or_else(|| format!("{name} takes a number or vector, not {ty}"))
+        }
+        Shape::Whole1 => {
+            let ty = args[0];
+            (ty.is_numeric() && !ty.is_matrix())
+                .then(|| ty.defaulted())
+                .ok_or_else(|| format!("{name} takes a number or vector, not {ty}"))
+        }
+        Shape::Whole2 | Shape::Whole3 => {
+            let ty = args[0].defaulted();
+            if !ty.is_numeric() {
+                return Err(format!("{name} takes numbers or vectors, not {ty}"));
+            }
+            for other in &args[1..] {
+                // A scalar rides along with a vector, and an undecided literal
+                // takes whatever the first argument settled on.
+                if !other.fits(ty) && *other != Type::F32 {
+                    return Err(format!("{name} cannot mix {ty} and {other}"));
+                }
+            }
+            Ok(ty)
         }
         Shape::Componentwise2 | Shape::Componentwise3 => {
             let ty = args[0];

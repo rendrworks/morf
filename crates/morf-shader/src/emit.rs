@@ -1,49 +1,8 @@
 use std::fmt::Write as _;
 
 use crate::ir::*;
+use crate::pack::{HEADER_BYTES, ParamSlot};
 use crate::types::*;
-
-/// How many bytes the built-in header occupies before the first parameter.
-///
-/// `resolution` then `time`, padded to sixteen. Fixed rather than packed with
-/// the rest so a host writing the clock does not have to know what a particular
-/// shader declared.
-pub const HEADER_BYTES: u32 = 16;
-
-/// Where one parameter sits in the uniform block.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ParamSlot {
-    pub name: String,
-    pub ty: Type,
-    /// Byte offset from the start of the block.
-    pub offset: u32,
-}
-
-/// Computes the uniform block layout.
-///
-/// WGSL's alignment rules, applied once here so the host writing the buffer and
-/// the shader reading it cannot disagree: the offsets travel with the compiled
-/// shader rather than being recomputed on the other side.
-pub(crate) fn pack(params: &[Binding]) -> (Vec<ParamSlot>, u32) {
-    let mut slots = Vec::with_capacity(params.len());
-    // The frame's own values come first, at a fixed offset, so the host can
-    // write them without consulting the layout of whatever the configuration
-    // declared after them.
-    let mut offset = HEADER_BYTES;
-    for param in params {
-        let (size, alignment) = param.ty.layout();
-        offset = offset.next_multiple_of(alignment);
-        slots.push(ParamSlot {
-            name: param.name.clone(),
-            ty: param.ty,
-            offset,
-        });
-        offset += size;
-    }
-    // A uniform block is itself padded to sixteen, so a `vec3` at the end does
-    // not leave the buffer short of what the binding expects.
-    (slots, offset.next_multiple_of(16).max(16))
-}
 
 /// Prints a type-checked program as WGSL.
 ///
@@ -191,7 +150,7 @@ impl Emitter {
             } => {
                 self.indent();
                 let keyword = if *mutable { "var" } else { "let" };
-                let _ = write!(self.out, "{keyword} {name}: {} = ", ty.wgsl());
+                let _ = write!(self.out, "{keyword} {name}: {} = ", ty.wgsl_owned());
                 self.expression(value, *ty);
                 self.out.push_str(";\n");
             }
@@ -375,6 +334,23 @@ impl Emitter {
                         self.out.push_str(", ");
                     }
                     self.raw(arg);
+                }
+                self.out.push(')');
+            }
+            Expr::Index { value, index, .. } => {
+                self.raw(value);
+                self.out.push('[');
+                self.expression(index, Type::I32);
+                self.out.push(']');
+            }
+            Expr::Array { ty, elements } => {
+                let _ = write!(self.out, "{}(", ty.wgsl_owned());
+                let element = ty.element().unwrap_or(Type::F32);
+                for (index, value) in elements.iter().enumerate() {
+                    if index > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.expression(value, element);
                 }
                 self.out.push(')');
             }
