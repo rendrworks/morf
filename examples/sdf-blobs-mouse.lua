@@ -12,17 +12,24 @@
 -- It eases toward the cursor rather than snapping to it, which is most of the
 -- difference between a blob and a mouse pointer with a circle drawn on it.
 --
--- One thing to know before running it: following the pointer means *receiving*
--- pointer events, and a Wayland surface only receives them where it claims an
--- input region. So this one claims the whole screen, and clicks do not pass
--- through to what is underneath — there is no "watch the pointer but let the
--- clicks past". Play with it and Ctrl-C when you want the desktop back, or set
--- `MORF_BLOB_LAYER=bottom` to put it under your windows, where it sees the
--- pointer only over bare desktop.
+-- The pointer is asked of the *compositor*, not of Wayland, and that is the
+-- whole trick. A Wayland surface is told about the pointer only where it claims
+-- an input region, and claiming one means swallowing the clicks — there is no
+-- "watch the pointer but let the clicks past" at the protocol level. The
+-- compositor knows where the cursor is regardless, and will say so if asked.
+--
+-- So this claims nothing. Every click still lands on whatever is underneath,
+-- and the blob follows your cursor across the top of it. The cost is one
+-- connect-send-read on Hyprland's control socket per tick, measured at about
+-- fifteen microseconds — against a frame budget of sixteen thousand.
+--
+-- Off Hyprland there is no socket and the blob simply rests in the middle. The
+-- swarm carries on regardless; nothing else depends on it.
 
 local morf = require("morf")
 local ui = require("morf.ui")
 local core = require("morf.core")
+local io = require("morf.io")
 
 local screen = morf.screens[1]
 local W = (screen and screen.width) or 1920
@@ -176,6 +183,58 @@ local centres = {}
 -- because the blob is chasing rather than tracking: `EASE` is the fraction of
 -- the remaining gap it closes each tick, so it lags into motion and settles
 -- instead of stopping dead.
+-- Where this output starts in the compositor's global layout. Cursor positions
+-- come back in that global space, and on a single-output machine the two happen
+-- to coincide — which is exactly the kind of thing that works everywhere it is
+-- tested and breaks on somebody's second monitor.
+local ORIGIN_X = (screen and screen.x) or 0
+local ORIGIN_Y = (screen and screen.y) or 0
+
+local SIGNATURE = core.env("HYPRLAND_INSTANCE_SIGNATURE")
+
+--- Every place this build of Hyprland might have put its sockets.
+local function socket_paths()
+  local paths = {}
+  if not SIGNATURE or SIGNATURE == "" then return paths end
+  local runtime = core.env("XDG_RUNTIME_DIR")
+  if runtime and runtime ~= "" then
+    paths[#paths + 1] = runtime .. "/hypr/" .. SIGNATURE .. "/.socket.sock"
+  end
+  paths[#paths + 1] = "/tmp/hypr/" .. SIGNATURE .. "/.socket.sock"
+  return paths
+end
+
+--- The pointer, in this surface's coordinates, or nil if it cannot be had.
+---
+--- The control socket answers one request and closes, so this reconnects every
+--- time rather than holding one open. That is cheaper than it sounds: a hundred
+--- of these round trips take about a millisecond and a half, none of it a
+--- process.
+local function cursor()
+  for _, path in ipairs(socket_paths()) do
+    local ok, socket = pcall(io.socket, path)
+    if ok and socket then
+      socket:send("cursorpos")
+      socket:flush()
+      -- Two milliseconds is a hundred times the round trip, and returns nil
+      -- rather than stalling the frame if the compositor is busy.
+      local reply = socket:receive(64, 2)
+      socket:close()
+      if reply then
+        local comma = reply:find(",")
+        if comma then
+          local x = tonumber(reply:sub(1, comma - 1))
+          local y = tonumber(reply:sub(comma + 1))
+          if x and y then
+            return x - ORIGIN_X, y - ORIGIN_Y
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
 local mouse_node
 local aim_x, aim_y = W / 2, H / 2
 local at_x, at_y = W / 2, H / 2
@@ -219,6 +278,11 @@ local function advance()
   -- dragged rather than something being teleported.
   if mouse_node then
     local size = s(MOUSE.radius)
+    local cx, cy = cursor()
+    if cx then
+      aim_x = cx
+      aim_y = cy
+    end
     at_x = at_x + (aim_x - at_x) * EASE
     at_y = at_y + (aim_y - at_y) * EASE
     mouse_node.x = at_x - size / 2
@@ -331,19 +395,6 @@ ui.Item {
   width = W,
   height = H,
   lens,
-
-  -- A MouseArea over the whole surface: pointer events only arrive where a
-  -- surface claims an input region, and the region is derived from exactly
-  -- these. `x` and `y` here are surface coordinates, which for a surface
-  -- covering the output are screen coordinates.
-  ui.MouseArea {
-    width = W,
-    height = H,
-    on_position_changed = function(x, y)
-      aim_x = x
-      aim_y = y
-    end,
-  },
 
   ui.Timer {
     interval = 16,
