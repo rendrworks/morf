@@ -33,6 +33,19 @@ pub(crate) fn paint(
 /// interactive items, recomputed here so it tracks the surface as it changes.
 /// A layout, and what it was computed from.
 ///
+/// The grid a blur region is rasterised on, in logical pixels.
+///
+/// Rasterising is O(area), so four pixels is sixteen times less work than one.
+/// What it costs is a boundary accurate to four pixels — which sits under the
+/// antialiased edge the configuration paints over it, and is invisible.
+const BACKDROP_GRID: u32 = 4;
+
+/// One coordinate on that grid.
+fn snap(value: f64) -> i32 {
+    let grid = BACKDROP_GRID as f64;
+    ((value / grid).round() as i32) * BACKDROP_GRID as i32
+}
+
 /// Layout is the most expensive thing a frame does, and most frames change
 /// nothing it reads — a colour easing, a morph advancing, an opacity fading.
 /// Keeping what the last one was built from lets those frames reuse it.
@@ -49,10 +62,14 @@ pub(crate) struct CachedLayout {
     /// protocol traffic and the derivation that produced it, and changes
     /// nothing.
     pub(crate) input: Vec<InputRect>,
-    /// The backdrop-blur region last handed to the compositor, for the same
-    /// reason: it is double-buffered state, and re-sending an identical one
-    /// asks the compositor to rebuild a region it already has.
-    pub(crate) backdrop: Vec<RegionRect>,
+    /// The backdrop-blur shapes last handed to the compositor.
+    ///
+    /// The *shapes*, not the rectangles they rasterise to, because rasterising
+    /// is the expensive half — six milliseconds for a full-screen region in
+    /// release — and comparing first means a swarm that has drifted less than
+    /// the grid does no work at all rather than doing all of it and discovering
+    /// the answer was the same.
+    pub(crate) backdrop: Vec<Region>,
 }
 
 impl CachedLayout {
@@ -155,11 +172,14 @@ pub(crate) fn paint_layer(
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(|(geometry, radii)| Region {
+                // Snapped to the grid the region is rasterised on, so a blob
+                // drifting a third of a pixel compares equal to where it was
+                // and the whole rebuild is skipped.
                 rect: RegionRect {
-                    x: geometry.x.floor() as i32,
-                    y: geometry.y.floor() as i32,
-                    width: (geometry.width.ceil() as i32).max(0),
-                    height: (geometry.height.ceil() as i32).max(0),
+                    x: snap(geometry.x),
+                    y: snap(geometry.y),
+                    width: snap(geometry.width).max(0),
+                    height: snap(geometry.height).max(0),
                 },
                 shape: morf_region::Shape::Box,
                 params: morf_region::ShapeParams {
@@ -169,21 +189,18 @@ pub(crate) fn paint_layer(
                 ..Region::default()
             })
             .collect();
-        // Rasterised here rather than inside the client so the result can be
-        // compared against the last one: a rounded rectangle is a span per
-        // scanline, and rebuilding an identical few hundred of them every frame
-        // is exactly the kind of thing a compositor should not be asked to do.
-        let rectangles = if shapes.is_empty() {
-            Vec::new()
-        } else {
-            morf_region::build(width, height, &shapes).map_err(|error| error.to_string())?
-        };
-        if cache.is_none_or(|cached| cached.backdrop != rectangles) {
+        if cache.is_none_or(|cached| cached.backdrop != shapes) {
+            let rectangles = if shapes.is_empty() {
+                Vec::new()
+            } else {
+                morf_region::build_scaled(width, height, &shapes, BACKDROP_GRID)
+                    .map_err(|error| error.to_string())?
+            };
             client
                 .set_layer_backdrop_region(layer, Some(&rectangles))
                 .map_err(|error| error.to_string())?;
         }
-        backdrop = rectangles;
+        backdrop = shapes;
     }
 
     client.request_layer_frame(layer);

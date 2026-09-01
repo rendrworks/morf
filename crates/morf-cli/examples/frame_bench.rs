@@ -397,16 +397,48 @@ fn main() {
                 ..morf_region::Region::default()
             })
             .collect();
-        morf_region::build(width as u32, height as u32, &shapes)
+        morf_region::build_scaled(width as u32, height as u32, &shapes, 4)
             .map(|rects| rects.len())
             .unwrap_or(0)
+    };
+    // Rasterising a blur region is CPU work, done per surface per frame, and it
+    // scales with the surface — so on a full-screen overlay it is one of the
+    // largest single costs in the frame and none of the other numbers here
+    // would show it.
+    let backdrop_cost = if backdrop_shapes.is_empty() {
+        Duration::ZERO
+    } else {
+        let shapes: Vec<morf_region::Region> = backdrop_shapes
+            .iter()
+            .map(|(geometry, radii)| morf_region::Region {
+                rect: morf_region::Rect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii: *radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..morf_region::Region::default()
+            })
+            .collect();
+        best(5, 20, || {
+            std::hint::black_box(
+                morf_region::build_scaled(width as u32, height as u32, &shapes, 4).ok(),
+            );
+        })
     };
 
     let frame = layout + draw + region;
     println!("{config}");
     println!("  scene nodes        {nodes}");
     if backdrops > 0 {
-        println!("  backdrop regions   {backdrops}  ({backdrop_rects} rectangles)");
+        println!(
+            "  backdrop regions   {backdrops}  ({backdrop_rects} rectangles, {backdrop_cost:?} to rasterise)"
+        );
     }
     if material > 0 || !effects.is_empty() {
         println!("  shaded commands    {material}");
