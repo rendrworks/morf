@@ -10,10 +10,13 @@ use crate::{Rect, Region, RegionError, ShapeParams, build};
 /// The divisor to use when the caller paints its own antialiased edge over the
 /// region's boundary — a backdrop blur, a shadow.
 ///
-/// Eight pixels is sixty-four times less work than one, and the boundary it
-/// leaves is eight pixels coarse: invisible under a painted edge, and wrong
-/// anywhere the region's own edge is what gets seen.
-pub const COVERED_EDGE_GRID: u32 = 8;
+/// Four pixels is sixteen times less work than one. Eight was tried, and is
+/// four times cheaper again, but rectangles round outward — so a shape that
+/// moves gets a region up to a cell larger on its leading edge, and at eight
+/// that is visible: the blur appears to run ahead of the thing it belongs to.
+/// The cost of a coarse grid is not blur, it is *registration*, and that is
+/// what limits how coarse it can be.
+pub const COVERED_EDGE_GRID: u32 = 4;
 
 /// Builds a region on a grid `divisor` times coarser, and scales it back.
 ///

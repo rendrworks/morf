@@ -33,16 +33,6 @@ pub(crate) fn paint(
 /// interactive items, recomputed here so it tracks the surface as it changes.
 /// A layout, and what it was computed from.
 ///
-/// One coordinate on the grid a blur region is rasterised on.
-///
-/// Snapping here is what lets the cache do its job: geometry that has moved
-/// less than the grid compares equal to where it was, and the rebuild is
-/// skipped entirely rather than performed and discarded.
-fn snap(value: f64) -> i32 {
-    let grid = morf_region::COVERED_EDGE_GRID as f64;
-    ((value / grid).round() as i32) * morf_region::COVERED_EDGE_GRID as i32
-}
-
 /// Layout is the most expensive thing a frame does, and most frames change
 /// nothing it reads — a colour easing, a morph advancing, an opacity fading.
 /// Keeping what the last one was built from lets those frames reuse it.
@@ -169,14 +159,17 @@ pub(crate) fn paint_layer(
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(|(geometry, radii)| Region {
-                // Snapped to the grid the region is rasterised on, so a blob
-                // drifting a third of a pixel compares equal to where it was
-                // and the whole rebuild is skipped.
+                // Whole pixels, not grid cells. Quantising the *position*
+                // here was worth nothing — a moving shape never compares equal
+                // to its cached self whatever the grid, and a still one
+                // compares equal without any — and it cost up to half a cell of
+                // registration against the shape drawn over it, in a direction
+                // that changed every frame.
                 rect: RegionRect {
-                    x: snap(geometry.x),
-                    y: snap(geometry.y),
-                    width: snap(geometry.width).max(0),
-                    height: snap(geometry.height).max(0),
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
                 },
                 shape: morf_region::Shape::Box,
                 params: morf_region::ShapeParams {
