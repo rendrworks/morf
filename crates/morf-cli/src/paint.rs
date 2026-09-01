@@ -179,13 +179,26 @@ pub(crate) fn paint_layer(
                 ..Region::default()
             })
             .collect();
-        if cache.is_none_or(|cached| cached.backdrop != shapes) {
-            let rectangles = if shapes.is_empty() {
-                Vec::new()
-            } else {
-                morf_region::build_scaled(width, height, &shapes, morf_region::COVERED_EDGE_GRID)
-                    .map_err(|error| error.to_string())?
-            };
+        // What is *sent* is the previous frame's shapes, not this frame's.
+        //
+        // We do not own the commit. Mesa's Vulkan display queue attaches and
+        // commits the buffer on its own thread, at its own pace, and repeats a
+        // buffer when it has nothing newer — so a region set here lands on
+        // whichever commit happens next, which may carry a buffer older than
+        // the geometry it was derived from. There is no pairing to rely on.
+        //
+        // Which direction that error falls in is not symmetric. A blur that
+        // trails the shape by a frame is what a blur does; a blur that arrives
+        // before the thing casting it is wrong in a way that reads instantly as
+        // the effect predicting the motion. So the region is deliberately one
+        // frame behind: it can only ever lag, and lag is the physical answer.
+        let previous = cache
+            .map(|cached| cached.backdrop.clone())
+            .unwrap_or_default();
+        if previous != shapes && !previous.is_empty() {
+            let rectangles =
+                morf_region::build_scaled(width, height, &previous, morf_region::COVERED_EDGE_GRID)
+                    .map_err(|error| error.to_string())?;
             client
                 .set_layer_backdrop_region(layer, Some(&rectangles))
                 .map_err(|error| error.to_string())?;
