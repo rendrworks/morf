@@ -176,6 +176,7 @@ pub fn compile(source: &str, spec: &ShaderSpec) -> Result<Compiled, Vec<Diagnost
         params: spec.params.clone(),
         reads_time: lowerer.reads_time,
         samples_behind: lowerer.samples_behind,
+        takes_derivative: lowerer.takes_derivative,
     };
     let mut diagnostics = lowerer.diagnostics;
     validate::check(&program, spec, &mut diagnostics);

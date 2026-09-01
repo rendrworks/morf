@@ -24,6 +24,10 @@ pub(crate) enum Shape {
     Cross,
     /// `refract(incident, normal, eta)` — two vectors and a scalar ratio.
     Refract,
+    /// One number or vector in, a bool out: `isNan`, `isInf`.
+    Predicate,
+    /// A boolean vector in, a bool out: `all`, `any`.
+    BoolFold,
     /// One integer in, the same integer type out.
     Integer1,
     /// `extractBits(value, offset, count)` — three whole numbers.
@@ -48,6 +52,8 @@ pub(crate) enum Shape {
 pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("abs", Builtin::Abs, Shape::Componentwise1),
     ("acosh", Builtin::Acosh, Shape::Componentwise1),
+    ("all", Builtin::All, Shape::BoolFold),
+    ("any", Builtin::Any, Shape::BoolFold),
     ("asinh", Builtin::Asinh, Shape::Componentwise1),
     ("atanh", Builtin::Atanh, Shape::Componentwise1),
     ("acos", Builtin::Acos, Shape::Componentwise1),
@@ -75,6 +81,11 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("degrees", Builtin::Degrees, Shape::Componentwise1),
     ("determinant", Builtin::Determinant, Shape::MatrixFold),
     ("distance", Builtin::Distance, Shape::Fold2),
+    // Screen-space derivatives. `field.wgsl` softens its own edges with
+    // `fwidth`; without these a configuration's shader could not do the same,
+    // which is an odd thing for the engine to keep to itself.
+    ("dpdx", Builtin::Dpdx, Shape::Componentwise1),
+    ("dpdy", Builtin::Dpdy, Shape::Componentwise1),
     ("dot", Builtin::Dot, Shape::Fold2),
     ("exp", Builtin::Exp, Shape::Componentwise1),
     ("exp2", Builtin::Exp2, Shape::Componentwise1),
@@ -94,10 +105,13 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ),
     ("floor", Builtin::Floor, Shape::Componentwise1),
     ("fract", Builtin::Fract, Shape::Componentwise1),
+    ("fwidth", Builtin::Fwidth, Shape::Componentwise1),
     // Both spellings: WGSL writes it one way and GLSL, which is what a shader
     // author has read more of, writes it the other.
     ("insert_bits", Builtin::InsertBits, Shape::IntegerInsert),
     ("inverse", Builtin::Inverse, Shape::Matrix1),
+    ("is_inf", Builtin::IsInf, Shape::Predicate),
+    ("is_nan", Builtin::IsNan, Shape::Predicate),
     ("inversesqrt", Builtin::InverseSqrt, Shape::Componentwise1),
     ("inverse_sqrt", Builtin::InverseSqrt, Shape::Componentwise1),
     ("length", Builtin::Length, Shape::Fold1),
@@ -164,6 +178,8 @@ pub(crate) fn arity(shape: Shape) -> usize {
         | Shape::Texture
         | Shape::Matrix1
         | Shape::Integer1
+        | Shape::Predicate
+        | Shape::BoolFold
         | Shape::MatrixFold => 1,
         Shape::Componentwise2 | Shape::Fold2 | Shape::Cross => 2,
         Shape::Componentwise3
@@ -267,6 +283,18 @@ pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, S
             (left == Type::Vec3 && right == Type::Vec3)
                 .then_some(Type::Vec3)
                 .ok_or_else(|| format!("cross takes two vec3, not {left} and {right}"))
+        }
+        Shape::Predicate => {
+            let ty = args[0];
+            (ty == Type::F32)
+                .then_some(Type::Bool)
+                .ok_or_else(|| format!("{name} tests one number, not {ty}"))
+        }
+        Shape::BoolFold => {
+            let ty = args[0];
+            (ty == Type::Bool).then_some(Type::Bool).ok_or_else(|| {
+                format!("{name} folds a bool, not {ty}; this language has no bool vectors yet")
+            })
         }
         Shape::Integer1 => {
             let ty = args[0];

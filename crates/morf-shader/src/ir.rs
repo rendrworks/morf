@@ -22,6 +22,8 @@ pub struct Program {
     pub reads_time: bool,
     /// Whether anything sampled what is underneath.
     pub samples_behind: bool,
+    /// Whether anything took a screen-space derivative.
+    pub takes_derivative: bool,
 }
 
 /// One named value the shader can read.
@@ -302,6 +304,10 @@ impl BinOp {
 pub enum Builtin {
     Abs,
     Acos,
+    /// `all` and `any` fold a boolean vector; `isNan` and `isInf` test one
+    /// number. WGSL calls these relational rather than math functions.
+    All,
+    Any,
     Acosh,
     Asin,
     Asinh,
@@ -320,6 +326,11 @@ pub enum Builtin {
     Cross,
     Degrees,
     Determinant,
+    /// Screen-space derivatives. The engine's own shader antialiases with
+    /// `fwidth`; without these a configuration's shader cannot.
+    Dpdx,
+    Dpdy,
+    Fwidth,
     Distance,
     Dot,
     Exp,
@@ -333,6 +344,8 @@ pub enum Builtin {
     Fract,
     InsertBits,
     Inverse,
+    IsInf,
+    IsNan,
     InverseSqrt,
     Length,
     Log,
@@ -386,6 +399,8 @@ impl Builtin {
         match self {
             Self::Abs => "abs",
             Self::Acos => "acos",
+            Self::All => "all",
+            Self::Any => "any",
             Self::Acosh => "acosh",
             Self::Asin => "asin",
             Self::Asinh => "asinh",
@@ -402,6 +417,9 @@ impl Builtin {
             Self::Cosh => "cosh",
             Self::Degrees => "degrees",
             Self::Determinant => "determinant",
+            Self::Dpdx => "dpdx",
+            Self::Dpdy => "dpdy",
+            Self::Fwidth => "fwidth",
             Self::Distance => "distance",
             Self::Dot => "dot",
             Self::Exp => "exp",
@@ -415,6 +433,8 @@ impl Builtin {
             Self::Fract => "fract",
             Self::InsertBits => "insertBits",
             Self::Inverse => "inverse",
+            Self::IsInf => "isInf",
+            Self::IsNan => "isNan",
             Self::InverseSqrt => "inverseSqrt",
             Self::Length => "length",
             Self::Log => "log",

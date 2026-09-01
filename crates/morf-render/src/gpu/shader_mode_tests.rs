@@ -399,3 +399,33 @@ pub(crate) fn integer_hash_noise_paints() {
         .collect();
     assert!(samples.len() >= 3, "the hash actually varies: {samples:?}");
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_shader_antialiases_its_own_edge_with_fwidth() {
+    // W4 against an adapter. A derivative is the one builtin whose *value*
+    // depends on neighbouring pixels, so it cannot be checked by reading the
+    // generated WGSL — only by rendering and seeing a soft edge where a hard
+    // one would have stepped.
+    let pixels = shaded(
+        "function fragment(uv, time, resolution)
+           local d = length(uv - vec2(0.5, 0.5)) - 0.3
+           local edge = fwidth(d)
+           local coverage = 1.0 - smoothstep(0.0 - edge, edge, d)
+           return vec4(coverage, coverage, coverage, 1.0)
+         end",
+    );
+    // Inside the disc is white, outside is black, and the ring between them
+    // holds intermediate values — which is the whole point: without a
+    // derivative the edge would be one pixel of hard step.
+    let inside = channel(&pixels, 32, 32, 0);
+    assert!(inside > 200, "the middle is lit: {inside}");
+    let soft = (0..SIZE)
+        .map(|x| channel(&pixels, x, 32, 0))
+        .filter(|value| *value > 20 && *value < 235)
+        .count();
+    assert!(
+        soft >= 2,
+        "the edge is antialiased, not stepped: {soft} soft pixels"
+    );
+}

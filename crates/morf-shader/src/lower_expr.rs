@@ -246,6 +246,9 @@ impl Lowerer<'_> {
         if builtin == Builtin::Texture {
             self.samples_behind = true;
         }
+        if matches!(builtin, Builtin::Dpdx | Builtin::Dpdy | Builtin::Fwidth) {
+            self.takes_derivative = true;
+        }
         let types: Vec<Type> = lowered.iter().map(Expr::ty).collect();
         match builtins::resolve(name, shape, &types) {
             Ok(ty) => Expr::Call {

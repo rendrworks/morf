@@ -37,8 +37,8 @@ relational functions.
 | statements | `local` assign `if` `while` `for` `repeat` `break` `return` | `continue`, `discard` | §4.3 |
 | functions | entry point, helpers (monomorphised) | — | done |
 | math builtins | **55 of 79** | 24 | §3 |
-| derivatives | none | `dpdx` `dpdy` `fwidth` (+ coarse/fine) | §4.4 |
-| relational | none | `all` `any` `isNan` `isInf` | §4.4 |
+| derivatives | `dpdx` `dpdy` `fwidth` | the coarse/fine variants, deliberately | §4.4 |
+| relational | `all` `any` `isNan` `isInf` | bool vectors to fold | §4.4 |
 | textures | one implicit source via `texture(uv)` | everything else | §5 |
 
 Two of the 55 are `select` and `texture`, which are not `MathFunction`s — the
@@ -166,18 +166,28 @@ is the port that could not be written before this, and
 - [ ] `switch` — Lua has none; an `if` chain covers it and the emitter could
       recognise the shape. Low value.
 
-### 4.4 Derivatives and relational
+### 4.4 Derivatives and relational — **W4 done**
 
-- [ ] `dpdx` `dpdy` `fwidth`, plus the `Coarse`/`Fine` variants
-- [ ] `all` `any` `isNan` `isInf`
+- [x] `dpdx` `dpdy` `fwidth`
+- [ ] The `Coarse`/`Fine` variants. Left out: they are a precision hint, the
+      plain forms are what anybody writes, and three spellings of one idea is
+      three things to keep straight for no gain.
+- [x] `all` `any` `isNan` `isInf`. `all` and `any` fold a single bool for now —
+      WGSL folds a bool *vector*, and this language has no such type until
+      comparisons on vectors exist.
 
-Derivatives matter more than they look: `field.wgsl` antialiases its own edges
-with `fwidth`, and a user shader currently cannot do the same — so a shader that
-draws its own shape has no way to soften it at the resolution it is drawn at.
+Derivatives mattered more than they looked: `field.wgsl` antialiases its own
+edges with `fwidth`, and before this a configuration's shader could not — so a
+shader that drew its own shape had no way to soften it at the resolution it was
+actually being drawn at. That asymmetry is closed.
 
-**Uniformity.** WGSL forbids a derivative under non-uniform control flow, the
-same rule `texture` already lives under. The check in `validate.rs` generalises
-to cover both rather than being duplicated.
+**Uniformity — one check, not two.** WGSL forbids a derivative under non-uniform
+control flow, the same rule `texture` already lived under, and both are refused
+by the same walk in `validate.rs` naming whichever call it found. A check per
+builtin is how the two would have drifted. The diagnostic says why the rule
+exists — the call reads neighbouring pixels, which have to have taken the same
+path — and what to do instead, and there is a test proving the suggested fix
+actually compiles.
 
 ### 4.5 Arrays and structs
 
@@ -297,6 +307,6 @@ actually caught anything:
 - [x] **W1 — the ordinary builtins.** 42 of 79 math functions, from 34.
 - [x] **W2 — matrices.** 45 of 79, and rotation is writable.
 - [x] **W3 — integers and bitwise.** 53 of 79, and a real hash is writable.
-- [ ] W4 — derivatives and relational
+- [x] **W4 — derivatives and relational.** A shader can antialias its own edge.
 - [ ] W5 — arrays, indexing, structs
 - [ ] W6 — `continue` and `discard`

@@ -23,16 +23,25 @@ pub(crate) fn check(program: &Program, spec: &ShaderSpec, diagnostics: &mut Vec<
             )),
         );
     }
-    // WGSL forbids sampling under non-uniform control flow, and naga's own
-    // message for it is close to unreadable. Catching it here costs a walk and
-    // buys a diagnostic that names the rule.
-    if program.samples_behind {
-        let mut offender = false;
-        sampling_under_branch(&program.entry.body, false, &mut offender);
-        if offender {
+    // WGSL forbids both sampling and derivatives under non-uniform control
+    // flow — they read the neighbouring pixels, which have to have taken the
+    // same path — and naga's own message for it is close to unreadable.
+    // Catching it here costs a walk and buys a diagnostic that names the rule.
+    //
+    // One check for both, because it is one rule. A check per builtin is how
+    // the two would drift.
+    if program.samples_behind || program.takes_derivative {
+        let mut offender = None;
+        uniformity(&program.entry.body, false, &mut offender);
+        if let Some(name) = offender {
             diagnostics.push(
-                Diagnostic::new(1, "`texture` cannot be called inside an `if` or a loop")
-                    .note("sample first into a local, then branch on the result"),
+                Diagnostic::new(
+                    1,
+                    format!("`{name}` cannot be called inside an `if` or a loop"),
+                )
+                .note(
+                    "it reads the neighbouring pixels, which have to have taken the                      same path; compute it first, then branch on the result",
+                ),
             );
         }
     }
@@ -51,24 +60,24 @@ fn returns(block: &Block) -> bool {
     })
 }
 
-fn sampling_under_branch(block: &Block, inside: bool, offender: &mut bool) {
+fn uniformity(block: &Block, inside: bool, offender: &mut Option<&'static str>) {
     for statement in &block.0 {
         match statement {
             Stmt::If { arms, otherwise } => {
                 for (condition, body) in arms {
-                    if inside && samples(condition) {
-                        *offender = true;
+                    if inside && let Some(name) = non_uniform(condition) {
+                        *offender = Some(name);
                     }
-                    sampling_under_branch(body, true, offender);
+                    uniformity(body, true, offender);
                 }
                 if let Some(body) = otherwise {
-                    sampling_under_branch(body, true, offender);
+                    uniformity(body, true, offender);
                 }
             }
-            Stmt::Loop { body, .. } => sampling_under_branch(body, true, offender),
+            Stmt::Loop { body, .. } => uniformity(body, true, offender),
             Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Return(value) => {
-                if inside && samples(value) {
-                    *offender = true;
+                if inside && let Some(name) = non_uniform(value) {
+                    *offender = Some(name);
                 }
             }
             Stmt::Break => {}
@@ -76,15 +85,24 @@ fn sampling_under_branch(block: &Block, inside: bool, offender: &mut bool) {
     }
 }
 
-fn samples(expression: &Expr) -> bool {
+/// The name of the first call in this expression that needs uniform control
+/// flow, if there is one.
+fn non_uniform(expression: &Expr) -> Option<&'static str> {
     match expression {
         Expr::Call { builtin, args, .. } => {
-            *builtin == Builtin::Texture || args.iter().any(samples)
+            let own = match builtin {
+                Builtin::Texture => Some("texture"),
+                Builtin::Dpdx => Some("dpdx"),
+                Builtin::Dpdy => Some("dpdy"),
+                Builtin::Fwidth => Some("fwidth"),
+                _ => None,
+            };
+            own.or_else(|| args.iter().find_map(non_uniform))
         }
-        Expr::Unary { value, .. } | Expr::Swizzle { value, .. } => samples(value),
-        Expr::Binary { left, right, .. } => samples(left) || samples(right),
-        Expr::Construct { args, .. } => args.iter().any(samples),
-        Expr::Literal(_) | Expr::Local { .. } | Expr::Param { .. } | Expr::Input { .. } => false,
+        Expr::Unary { value, .. } | Expr::Swizzle { value, .. } => non_uniform(value),
+        Expr::Binary { left, right, .. } => non_uniform(left).or_else(|| non_uniform(right)),
+        Expr::Construct { args, .. } => args.iter().find_map(non_uniform),
+        Expr::Literal(_) | Expr::Local { .. } | Expr::Param { .. } | Expr::Input { .. } => None,
     }
 }
 

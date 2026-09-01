@@ -62,6 +62,9 @@ pub(crate) struct Lowerer<'a> {
     pub(crate) scope_id: u32,
     pub(crate) reads_time: bool,
     pub(crate) samples_behind: bool,
+    /// Whether anything took a screen-space derivative, which lives under the
+    /// same uniformity rule as sampling.
+    pub(crate) takes_derivative: bool,
 }
 
 impl<'a> Lowerer<'a> {
@@ -80,6 +83,7 @@ impl<'a> Lowerer<'a> {
             scope_id: 0,
             reads_time: false,
             samples_behind: false,
+            takes_derivative: false,
         }
     }
 
