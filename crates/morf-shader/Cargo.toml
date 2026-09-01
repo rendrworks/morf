@@ -1,0 +1,10 @@
+[package]
+name = "morf-shader"
+description = "Lua-syntax shaders compiled to WGSL, for morf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+luna.workspace = true

@@ -1310,6 +1310,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "morf-shader"
+version = "0.1.3"
+dependencies = [
+ "luna",
+]
+
+[[package]]
 name = "morf-text"
 version = "0.1.3"
 dependencies = [

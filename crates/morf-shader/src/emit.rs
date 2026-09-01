@@ -1,0 +1,341 @@
+use std::fmt::Write as _;
+
+use crate::ir::*;
+use crate::types::*;
+
+/// Where one parameter sits in the uniform block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParamSlot {
+    pub name: String,
+    pub ty: Type,
+    /// Byte offset from the start of the block.
+    pub offset: u32,
+}
+
+/// Computes the uniform block layout.
+///
+/// WGSL's alignment rules, applied once here so the host writing the buffer and
+/// the shader reading it cannot disagree: the offsets travel with the compiled
+/// shader rather than being recomputed on the other side.
+pub(crate) fn pack(params: &[Binding]) -> (Vec<ParamSlot>, u32) {
+    let mut slots = Vec::with_capacity(params.len());
+    let mut offset = 0u32;
+    for param in params {
+        let (size, alignment) = param.ty.layout();
+        offset = offset.next_multiple_of(alignment);
+        slots.push(ParamSlot {
+            name: param.name.clone(),
+            ty: param.ty,
+            offset,
+        });
+        offset += size;
+    }
+    // A uniform block is itself padded to sixteen, so a `vec3` at the end does
+    // not leave the buffer short of what the binding expects.
+    (slots, offset.next_multiple_of(16).max(16))
+}
+
+/// Prints a type-checked program as WGSL.
+///
+/// The emitter makes no decisions — every type is already resolved — so it is a
+/// direct print. Anything it would have to infer is a sign lowering left work
+/// undone.
+pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String {
+    let mut out = String::with_capacity(2048);
+    emit_uniforms(&mut out, program, slots, size);
+    if program.samples_behind {
+        out.push_str(
+            "@group(2) @binding(0) var morf_behind: texture_2d<f32>;\n\
+             @group(2) @binding(1) var morf_behind_sampler: sampler;\n\n",
+        );
+    }
+    let signature = program
+        .entry
+        .params
+        .iter()
+        .map(|(name, ty)| format!("{name}: {}", ty.wgsl()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(
+        out,
+        "fn morf_shader_main({signature}) -> {} {{",
+        program.entry.returns.wgsl()
+    );
+    let mut state = Emitter {
+        out,
+        depth: 1,
+        loops: 0,
+    };
+    state.block(&program.entry.body);
+    state.out.push_str("}\n");
+    state.out
+}
+
+fn emit_uniforms(out: &mut String, program: &Program, slots: &[ParamSlot], size: u32) {
+    out.push_str("struct MorfShaderUniforms {\n");
+    if slots.is_empty() {
+        // A uniform block cannot be empty, and an unused member costs nothing.
+        out.push_str("    morf_unused: vec4<f32>,\n");
+    }
+    let mut offset = 0u32;
+    for slot in slots {
+        let (slot_size, alignment) = slot.ty.layout();
+        let aligned = offset.next_multiple_of(alignment);
+        if aligned > offset {
+            let _ = writeln!(
+                out,
+                "    morf_pad{offset}: array<f32, {}>,",
+                (aligned - offset) / 4
+            );
+        }
+        let _ = writeln!(out, "    {}: {},", slot.name, slot.ty.wgsl());
+        offset = aligned + slot_size;
+    }
+    if !slots.is_empty() && offset < size {
+        let _ = writeln!(out, "    morf_tail: array<f32, {}>,", (size - offset) / 4);
+    }
+    out.push_str("};\n@group(1) @binding(0) var<uniform> morf_u: MorfShaderUniforms;\n\n");
+    let _ = program;
+}
+
+struct Emitter {
+    out: String,
+    depth: usize,
+    loops: u32,
+}
+
+impl Emitter {
+    fn indent(&mut self) {
+        for _ in 0..self.depth {
+            self.out.push_str("    ");
+        }
+    }
+
+    fn block(&mut self, block: &Block) {
+        for statement in &block.0 {
+            self.statement(statement);
+        }
+    }
+
+    fn statement(&mut self, statement: &Stmt) {
+        match statement {
+            Stmt::Let {
+                name,
+                ty,
+                value,
+                mutable,
+            } => {
+                self.indent();
+                let keyword = if *mutable { "var" } else { "let" };
+                let _ = write!(self.out, "{keyword} {name}: {} = ", ty.wgsl());
+                self.expression(value, *ty);
+                self.out.push_str(";\n");
+            }
+            Stmt::Assign { target, value } => {
+                self.indent();
+                let _ = write!(self.out, "{target} = ");
+                self.expression(value, value.ty());
+                self.out.push_str(";\n");
+            }
+            Stmt::If { arms, otherwise } => self.branch(arms, otherwise.as_ref()),
+            Stmt::Loop { guard, body } => self.loop_(*guard, body),
+            Stmt::Break => {
+                self.indent();
+                self.out.push_str("break;\n");
+            }
+            Stmt::Return(value) => {
+                self.indent();
+                self.out.push_str("return ");
+                self.expression(value, value.ty());
+                self.out.push_str(";\n");
+            }
+        }
+    }
+
+    fn branch(&mut self, arms: &[(Expr, Block)], otherwise: Option<&Block>) {
+        for (index, (condition, body)) in arms.iter().enumerate() {
+            self.indent();
+            self.out
+                .push_str(if index == 0 { "if (" } else { "} else if (" });
+            self.expression(condition, Type::Bool);
+            self.out.push_str(") {\n");
+            self.depth += 1;
+            self.block(body);
+            self.depth -= 1;
+        }
+        if let Some(body) = otherwise {
+            self.indent();
+            self.out.push_str("} else {\n");
+            self.depth += 1;
+            self.block(body);
+            self.depth -= 1;
+        }
+        self.indent();
+        self.out.push_str("}\n");
+    }
+
+    /// A loop, with the guard that makes it terminate.
+    ///
+    /// The counter is not an optimisation and not advice: it is the only reason
+    /// a configuration cannot take the compositor down with `while true do end`.
+    fn loop_(&mut self, guard: u32, body: &Block) {
+        let counter = format!("morf_guard{}", self.loops);
+        self.loops += 1;
+        self.indent();
+        let _ = writeln!(self.out, "var {counter}: u32 = 0u;");
+        self.indent();
+        self.out.push_str("loop {\n");
+        self.depth += 1;
+        self.indent();
+        let _ = writeln!(self.out, "if ({counter} >= {guard}u) {{ break; }}");
+        self.indent();
+        let _ = writeln!(self.out, "{counter} = {counter} + 1u;");
+        self.block(body);
+        self.depth -= 1;
+        self.indent();
+        self.out.push_str("}\n");
+    }
+
+    /// Prints an expression, widening a scalar where the context wants a vector.
+    fn expression(&mut self, expression: &Expr, wanted: Type) {
+        let actual = expression.ty();
+        if wanted.is_vector() && actual == Type::F32 && !matches!(expression, Expr::Literal(_)) {
+            let _ = write!(self.out, "{}(", wanted.wgsl());
+            self.raw(expression);
+            self.out.push(')');
+            return;
+        }
+        if wanted.is_vector()
+            && actual == Type::F32
+            && let Expr::Literal(Value::F32(value)) = expression
+        {
+            let _ = write!(self.out, "{}({})", wanted.wgsl(), float(*value));
+            return;
+        }
+        self.raw(expression);
+    }
+
+    fn raw(&mut self, expression: &Expr) {
+        match expression {
+            Expr::Literal(Value::F32(value)) => {
+                let _ = write!(self.out, "{}", float(*value));
+            }
+            Expr::Literal(Value::I32(value)) => {
+                let _ = write!(self.out, "{value}");
+            }
+            Expr::Literal(Value::Bool(value)) => {
+                self.out.push_str(if *value { "true" } else { "false" });
+            }
+            Expr::Local { name, .. } => self.out.push_str(name),
+            Expr::Param { index, .. } => {
+                let _ = write!(self.out, "morf_u.morf_param{index}");
+            }
+            Expr::Input { index, .. } => {
+                let _ = write!(self.out, "morf_in{index}");
+            }
+            Expr::Unary { op, value, .. } => {
+                self.out.push_str(match op {
+                    UnOp::Negate => "-(",
+                    UnOp::Not => "!(",
+                });
+                self.raw(value);
+                self.out.push(')');
+            }
+            Expr::Binary {
+                op,
+                ty,
+                left,
+                right,
+            } => {
+                self.out.push('(');
+                // A comparison keeps its operands' own type; arithmetic widens
+                // a scalar to the result so WGSL sees two matching sides.
+                let context = if op.is_comparison() || op.is_logical() {
+                    left.ty()
+                } else {
+                    *ty
+                };
+                self.expression(left, context);
+                let _ = write!(self.out, " {} ", op.wgsl());
+                let right_context = if op.is_comparison() || op.is_logical() {
+                    right.ty()
+                } else {
+                    *ty
+                };
+                self.expression(right, right_context);
+                self.out.push(')');
+            }
+            Expr::Call { builtin, ty, args } => self.call(*builtin, *ty, args),
+            Expr::Construct { ty, args } => {
+                let _ = write!(self.out, "{}(", ty.wgsl());
+                for (index, arg) in args.iter().enumerate() {
+                    if index > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.raw(arg);
+                }
+                self.out.push(')');
+            }
+            Expr::Swizzle {
+                value,
+                components,
+                len,
+                ..
+            } => {
+                self.raw(value);
+                self.out.push('.');
+                for slot in &components[..*len as usize] {
+                    self.out.push(match slot {
+                        0 => 'x',
+                        1 => 'y',
+                        2 => 'z',
+                        _ => 'w',
+                    });
+                }
+            }
+        }
+    }
+
+    fn call(&mut self, builtin: Builtin, ty: Type, args: &[Expr]) {
+        if builtin == Builtin::Texture {
+            self.out
+                .push_str("textureSample(morf_behind, morf_behind_sampler, ");
+            self.raw(&args[0]);
+            self.out.push(')');
+            return;
+        }
+        let _ = write!(self.out, "{}(", builtin.wgsl());
+        for (index, arg) in args.iter().enumerate() {
+            if index > 0 {
+                self.out.push_str(", ");
+            }
+            // `select`'s condition and the fold builtins keep their own types;
+            // everything else widens to the call's result.
+            let context = match (builtin, index) {
+                (Builtin::Select, 2) => Type::Bool,
+                (Builtin::Length | Builtin::Dot | Builtin::Distance, _) => arg.ty(),
+                _ => ty,
+            };
+            self.expression(arg, context);
+        }
+        self.out.push(')');
+    }
+}
+
+/// Prints a float WGSL will read back as a float.
+///
+/// `1` is an integer literal in WGSL and will not coerce, so every value needs
+/// a decimal point whether or not it has a fraction.
+fn float(value: f32) -> String {
+    if value.is_nan() || value.is_infinite() {
+        // Neither is expressible as a WGSL literal, and both come only from a
+        // configuration doing something it should be told about elsewhere.
+        return "0.0".to_owned();
+    }
+    let printed = format!("{value:?}");
+    if printed.contains(['.', 'e', 'E']) {
+        printed
+    } else {
+        format!("{printed}.0")
+    }
+}

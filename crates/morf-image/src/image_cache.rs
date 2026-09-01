@@ -351,8 +351,11 @@ fn decode_svg(bytes: &[u8], width: u32, height: u32) -> Result<ImageData, ImageE
     );
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     let mut rgba = pixmap.take();
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         let alpha = u32::from(pixel[3]);
+        // Not `checked_div`: the guard skips the whole channel loop for a
+        // fully transparent pixel, so checking once here is the point of it.
+        #[allow(clippy::manual_checked_ops)]
         if alpha != 0 {
             for channel in &mut pixel[..3] {
                 *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;

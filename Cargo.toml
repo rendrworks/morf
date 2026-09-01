@@ -44,6 +44,7 @@ morf-lua = { path = "crates/morf-lua" }
 morf-menu = { path = "crates/morf-menu" }
 morf-reactive = { path = "crates/morf-reactive" }
 morf-region = { path = "crates/morf-region" }
+morf-shader = { path = "crates/morf-shader" }
 morf-render = { path = "crates/morf-render" }
 morf-scene = { path = "crates/morf-scene" }
 morf-services = { path = "crates/morf-services" }
