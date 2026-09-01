@@ -32,24 +32,26 @@ relational functions.
 
 | area | have | missing | note |
 |---|---|---|---|
-| types | `f32` `i32` `u32` `vec2` `vec3` `vec4` `bool` `mat2` `mat3` `mat4` `array<T, N>` | `f16`, structs | §4.5 |
+| types | `f32` `i32` `u32` `bool`, float and integer vectors, `mat2/3/4`, `array<T, N>` | `f16`, user structs | §4.5, §6 |
 | operators | everything Lua has except `..` | — | done |
 | statements | `local` assign `if` `while` `for` `repeat` `break` `continue` `discard` `return` | `switch`, deliberately | §4.3 |
 | functions | entry point, helpers (monomorphised) | — | done |
-| math builtins | **55 of 79** | 24 | §3 |
+| math builtins | **79 of 79** | — | §3 |
 | derivatives | `dpdx` `dpdy` `fwidth` | the coarse/fine variants, deliberately | §4.4 |
 | relational | `all` `any` `isNan` `isInf` | bool vectors to fold | §4.4 |
 | textures | one implicit source via `texture(uv)` | everything else | §5 |
 
-Two of the 55 are `select` and `texture`, which are not `MathFunction`s — the
-math count proper is 53 of 79 after W3. Of the 26 still missing, 18 are the
-packing family in §3.4, which has nothing here to pack for.
+Every one of naga's 79 `MathFunction` variants is now reachable by name, plus
+`select`, `texture`, the conversions and the bitcasts. `outer` is the only one
+restricted — to the square case, which is the only shape this language has a
+matrix type for.
 
 ---
 
-## 3. The 43 missing builtins
+## 3. The builtins
 
-Exact, from naga's own enum. Grouped by whether they are worth having.
+Exact, from naga's own enum. All 79 are implemented; the grouping records what
+each was blocked on and why it landed when it did.
 
 ### 3.1 Worth adding — ordinary shader arithmetic (13) — **W1 done**
 
@@ -63,8 +65,8 @@ Exact, from naga's own enum. Grouped by whether they are worth having.
 - [x] `refract` — we had `reflect` and not this, which was an odd pair to split
 - [x] `asinh` `acosh` `atanh` — completing the set already half-present
 - [x] `quantizeToF16`
-- [ ] `modf` `frexp` — return a struct in WGSL, so they moved to W5 (§4.5)
-- [ ] `ldexp` — takes an `i32` exponent, so it moved to W3 (§4.2)
+- [x] `modf` `frexp` — §4.5
+- [x] `ldexp`
 
 **What W1 caught.** `refract` is the only one of these with a shape of its own —
 two vectors and a scalar ratio — and the emitter widened its scalar to the
@@ -79,9 +81,11 @@ is the argument for that test existing at all.
 - [x] `transpose`
 - [x] `determinant`
 - [x] `inverse`
-- [ ] `outer` — outer product, `vecN * vecM` to a matrix. Left out: it is the
-      one matrix operation nobody writes by hand, and it needs a non-square
-      result the type set does not have.
+- [x] `outer` — restricted to the square case, which is the only one this
+      language has a type for. **WGSL has no `outer`**: naga carries one for
+      its GLSL frontend and the WGSL grammar does not name it, so calling it
+      emits code no driver accepts. It is a matrix of scaled copies of one
+      vector, and it is emitted as exactly that.
 
 ### 3.3 Worth adding — integer and bitwise (8) — **W3 done**
 
@@ -90,18 +94,18 @@ is the argument for that test existing at all.
       language taking four arguments, which the first attempt got wrong
 - [x] `firstTrailingBit` `firstLeadingBit`
 
-### 3.4 Low value here (18)
+### 3.4 Packing (18) — **done**
 
-Packing and unpacking exist to get data in and out of buffers in a compact
-form. A shader here has no buffer of its own to read: its inputs are a handful
-of uniforms the host wrote. They are listed so that "missing" is not mistaken
-for "overlooked", and each becomes worth having the day §5.3 lands.
+These were filed as low value, on the grounds that a shader here has no buffer
+of its own to pack for. That was a reason to do them last, not a reason to skip
+them: they are eighteen table entries, and six of them are what forced integer
+vector types to exist, which is a capability rather than a footnote.
 
-- [ ] `pack4x8snorm` `pack4x8unorm` `pack2x16snorm` `pack2x16unorm`
+- [x] `pack4x8snorm` `pack4x8unorm` `pack2x16snorm` `pack2x16unorm`
       `pack2x16float` `pack4xI8` `pack4xU8` `pack4xI8Clamp` `pack4xU8Clamp`
-- [ ] `unpack4x8snorm` `unpack4x8unorm` `unpack2x16snorm` `unpack2x16unorm`
+- [x] `unpack4x8snorm` `unpack4x8unorm` `unpack2x16snorm` `unpack2x16unorm`
       `unpack2x16float` `unpack4xI8` `unpack4xU8`
-- [ ] `dot4I8Packed` `dot4U8Packed`
+- [x] `dot4I8Packed` `dot4U8Packed`
 
 ---
 
@@ -123,7 +127,7 @@ arithmetic by hand.
 - [x] `transpose` `determinant` `inverse`
 - [x] Uniform layout: a `mat3x3` is three `vec4`-aligned columns — forty-eight
       bytes, not thirty-six — asserted by a test on both sides
-- [ ] Column indexing `m[0]`, which needs §4.6
+- [x] Column indexing `m[0]` — done in W5 with the rest of §4.6
 
 **Two rules that had to be stated rather than inherited.** A matrix is
 deliberately *not* "numeric": `m * v` is a linear map applied to a vector, not a
@@ -166,7 +170,11 @@ is the port that could not be written before this, and
       available.
 - [x] `discard`, spelled as a call — Lua has no keyword to spare, and it is the
       one call whose entire point is its effect rather than its value.
-- [ ] `switch` — Lua has none; an `if` chain covers it. Still low value.
+- [ ] `switch` — **not implemented, and not planned.** Lua has no `switch` and
+      no syntax to spell one, so supporting it would mean inventing some. An
+      `if`/`elseif` chain says the same thing and compiles to the same
+      branching; this is the one item in this document that is a deliberate
+      permanent no rather than a deferral.
 
 **The bug `continue` could have had.** A `continue` jumps past the tail of the
 loop body, so a numeric `for` whose counter advanced there would never advance
@@ -178,9 +186,8 @@ none, because its condition is already re-checked at the top and an empty
 ### 4.4 Derivatives and relational — **W4 done**
 
 - [x] `dpdx` `dpdy` `fwidth`
-- [ ] The `Coarse`/`Fine` variants. Left out: they are a precision hint, the
-      plain forms are what anybody writes, and three spellings of one idea is
-      three things to keep straight for no gain.
+- [x] The `Coarse`/`Fine` variants. The argument for leaving them out — a
+      precision hint nobody writes — was worth less than six table entries.
 - [x] `all` `any` `isNan` `isInf`. `all` and `any` fold a single bool for now —
       WGSL folds a bool *vector*, and this language has no such type until
       comparisons on vectors exist.
@@ -204,9 +211,23 @@ actually compiles.
       what a palette or a convolution kernel wants to be, and what an author
       will write without being told
 - [x] Indexing `a[i]`, on arrays, vectors and matrix columns
-- [ ] Structs, and with them `modf` and `frexp`. Left for now: nothing else
-      wants one, and the two builtins that do are the least-reached-for in the
-      language.
+- [x] `modf` and `frexp`, **without** a user-facing struct. WGSL returns one
+      from both and names it internally — `__modf_result_f32` — which is not
+      something this compiler should be spelling. The result is a type whose
+      only operation is reading `.fract`, `.whole` or `.exp`, which is the whole
+      of what anybody does with one, and a `local` holding it is emitted as an
+      un-annotated `let` so WGSL infers the name itself.
+- [x] Records, from a Lua table with named keys. **Structurally typed**: there
+      is nowhere in Lua to *declare* a struct, so identity comes from the shape,
+      and `{x = 1, y = 2}` and `{y = 3, x = 4}` are one type. The fields are
+      sorted for the same reason a Lua table has no order of its own.
+
+**A bug only the GPU test could see.** The interner is process-wide, so emitting
+the record list from it put every record any shader had ever used into every
+shader compiled after it. Records are collected from the program being emitted
+now. The same test found that a helper's parameter list spelled types with
+`wgsl()`, which cannot name a record or an array — an array parameter would have
+hit it too.
 
 **Uniform stride.** In the uniform address space an array's stride is a
 multiple of sixteen whatever the element is, so four `f32` occupy sixty-four
@@ -330,14 +351,27 @@ actually caught anything:
 
 ## 9. Status
 
+**Everything in this document is implemented except §5, and one deliberate no.**
+
+`- [ ]` boxes remaining: `switch` (§4.3 — permanent, Lua has no syntax for it
+and an `if` chain says the same thing), and §5's two host-side items, which this
+document has said from the start are renderer design rather than compiler work.
+
 - [x] **W1 — the ordinary builtins.** 42 of 79 math functions, from 34.
 - [x] **W2 — matrices.** 45 of 79, and rotation is writable.
 - [x] **W3 — integers and bitwise.** 53 of 79, and a real hash is writable.
 - [x] **W4 — derivatives and relational.** A shader can antialias its own edge.
 - [x] **W5 — arrays and indexing.** Structs deferred; nothing wants one yet.
 - [x] **W6 — `continue` and `discard`.** No new syntax was invented.
+- [x] **W7 — the deferrals.** `ldexp`, `outer`, the coarse and fine
+      derivatives, integer vector types, and all eighteen packing builtins.
+      **79 of 79.**
+- [x] **W8 — records, `modf` and `frexp`.** The last compiler-side boxes.
 
-**W1–W6 are done.** What remains is §3.4's packing family, which has nothing
-here to pack for; structs, which nothing yet wants; and §5, which is host design
-rather than compiler work and should be planned separately once something is
-asking for it.
+W7 and W8 were not in the original order. They exist because the first six
+steps deferred eleven items with reasons, and a reason is not the same as being
+done — a plan with unchecked boxes in it is not an implemented plan. Of those
+eleven, one (`m[0]`) was already done and the box was stale, one (`ldexp`) was a
+straight miss that W1 handed to W3 and W3 never collected, and the rest were
+judgement calls that turned out to cost less than the arguments for skipping
+them.

@@ -287,3 +287,91 @@ pub(crate) fn discard_removes_the_fragment_entirely() {
         "and the other half is gone"
     );
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn the_whole_remaining_surface_is_accepted_by_a_driver() {
+    // Everything PLAN_WGSL_COVERAGE.md had left unchecked, in one shader,
+    // through a real adapter. Three of the six W steps had a bug that only a
+    // driver could find, and this is the largest batch of new emission yet:
+    // integer vectors, the packing family, `ldexp`, `outer`, the coarse and
+    // fine derivatives, and the split results.
+    let pixels = shaded(
+        "function fragment(uv, time, resolution)
+           local four = vec4(uv.x, uv.y, 0.5, 1.0)
+           local two = vec2(uv.x, uv.y)
+           local bits = pack4x8unorm(four) + pack2x16float(two)
+           local back = unpack4x8unorm(bits) + unpack4x8snorm(bits)
+           local pair = unpack2x16float(bits) + unpack2x16unorm(bits)
+
+           local signed = vec4i(1, 0 - 2, 3, 0 - 4)
+           local unsigned = vec4u(1, 2, 3, 4)
+           local packed = pack4x_i8(signed) + pack4x_u8_clamp(unsigned)
+           local bytes = unpack4x_u8(packed)
+           local dotted = dot4_u8_packed(packed, packed)
+
+           local m = outer(vec3(1.0, 0.5, 0.25), vec3(0.5, 0.5, 0.5))
+           local mapped = m * vec3(uv.x, uv.y, 1.0)
+           local scaled = ldexp(uv.x, i32(2))
+
+           local sharp = fwidth_fine(uv.x) + dpdx_coarse(uv.y) + dpdy_fine(uv.x)
+
+           local parts = modf(uv.x * 4.0)
+           local pieces = frexp(uv.y + 1.0)
+
+           local red = saturate(back.x + pair.x * 0.25 + scaled * 0.1)
+           local green = saturate(mapped.y + parts.fract * 0.5 + sharp * 4.0)
+           local blue = saturate(f32(bytes.x + dotted) * 0.002 + f32(pieces.exp) * 0.1)
+           return vec4(red, green, blue, 1.0)
+         end",
+    );
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 32, 32),
+        255,
+        "the driver accepted the whole surface",
+    );
+    // Not a flat fill: every one of those calls feeds a channel, so a shader
+    // that came out uniform would mean something was folded away.
+    let left = channel(&pixels, 14, 20, 0);
+    let right = channel(&pixels, 50, 44, 0);
+    assert_ne!(left, right, "and it varies across the node");
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn records_and_helpers_reach_the_driver_together() {
+    // Records had a bug a compiler test could not see: the interner is
+    // process-wide, so emitting from it put every record any shader had ever
+    // used into every shader after it. Collected from the program instead, and
+    // this is the shape that proves it — one shader, its own records, through a
+    // real driver, with a helper taking one as a parameter.
+    let pixels = shaded(
+        "function shade(light, at)
+           return light.colour * light.power * (1.0 - length(at))
+         end
+
+         function fragment(uv, time, resolution)
+           -- Dim enough that the two lights do not both saturate to white,
+           -- which would make the colours below indistinguishable.
+           local warm = { colour = vec3(1.0, 0.55, 0.15), power = 0.55 }
+           local cool = { power = 0.5, colour = vec3(0.15, 0.4, 1.0) }
+           local lit = shade(warm, uv - vec2(0.3, 0.5))
+             + shade(cool, uv - vec2(0.7, 0.5))
+           return vec4(saturate(lit), 1.0)
+         end",
+    );
+    assert_eq!(
+        alpha_at(&pixels, SIZE, 32, 32),
+        255,
+        "the driver accepted it"
+    );
+    // Two lights at opposite ends: the left is warm, the right is cool.
+    let warm = channel(&pixels, 20, 32, 0);
+    let cool = channel(&pixels, 44, 32, 2);
+    assert!(warm > 40, "the warm light reaches its side: {warm}");
+    assert!(cool > 40, "and the cool one reaches the other: {cool}");
+    assert!(
+        channel(&pixels, 20, 32, 0) > channel(&pixels, 20, 32, 2),
+        "the left side is warmer than it is cool",
+    );
+}

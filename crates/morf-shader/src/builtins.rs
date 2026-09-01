@@ -1,5 +1,5 @@
 use crate::ir::Builtin;
-use crate::types::Type;
+pub(crate) use crate::overloads::resolve;
 
 /// How a builtin's argument types decide its result type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +45,23 @@ pub(crate) enum Shape {
     /// `insertBits(value, newbits, offset, count)` — four, which is the one
     /// builtin in this language that takes that many.
     IntegerInsert,
+    /// `modf(x)` and `frexp(x)`, whose results are read through `.fract`,
+    /// `.whole` and `.exp` rather than being held as values.
+    Split,
+    /// `ldexp(fraction, exponent)` — a float and a whole number.
+    Ldexp,
+    /// `outer(a, b)` — two vectors to a matrix of their sizes.
+    Outer,
+    /// A float vector in, a `u32` out. The packing family.
+    Pack,
+    /// An integer vector in, a `u32` out.
+    PackInt,
+    /// A `u32` in, a float vector of a fixed width out.
+    Unpack(u8),
+    /// A `u32` in, an integer vector out.
+    UnpackInt(bool),
+    /// Two `u32` in, one packed dot product out.
+    DotPacked(bool),
     /// One matrix in, the same matrix out: `transpose`, `inverse`.
     Matrix1,
     /// One matrix in, a scalar out: `determinant`.
@@ -114,6 +131,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
         Shape::Integer1,
     ),
     ("floor", Builtin::Floor, Shape::Componentwise1),
+    ("frexp", Builtin::Frexp, Shape::Split),
     ("fract", Builtin::Fract, Shape::Componentwise1),
     ("fwidth", Builtin::Fwidth, Shape::Componentwise1),
     // Both spellings: WGSL writes it one way and GLSL, which is what a shader
@@ -130,6 +148,7 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("max", Builtin::Max, Shape::Whole2),
     ("min", Builtin::Min, Shape::Whole2),
     ("mix", Builtin::Mix, Shape::MixScalar),
+    ("modf", Builtin::Modf, Shape::Split),
     ("normalize", Builtin::Normalize, Shape::Componentwise1),
     ("pow", Builtin::Pow, Shape::Componentwise2),
     (
@@ -157,6 +176,56 @@ pub(crate) const BUILTINS: &[(&str, Builtin, Shape)] = &[
     ("tanh", Builtin::Tanh, Shape::Componentwise1),
     ("transpose", Builtin::Transpose, Shape::Matrix1),
     ("trunc", Builtin::Trunc, Shape::Componentwise1),
+    (
+        "dot4_i8_packed",
+        Builtin::Dot4I8Packed,
+        Shape::DotPacked(true),
+    ),
+    (
+        "dot4_u8_packed",
+        Builtin::Dot4U8Packed,
+        Shape::DotPacked(false),
+    ),
+    ("dpdx_coarse", Builtin::DpdxCoarse, Shape::Componentwise1),
+    ("dpdx_fine", Builtin::DpdxFine, Shape::Componentwise1),
+    ("dpdy_coarse", Builtin::DpdyCoarse, Shape::Componentwise1),
+    ("dpdy_fine", Builtin::DpdyFine, Shape::Componentwise1),
+    (
+        "fwidth_coarse",
+        Builtin::FwidthCoarse,
+        Shape::Componentwise1,
+    ),
+    ("fwidth_fine", Builtin::FwidthFine, Shape::Componentwise1),
+    ("ldexp", Builtin::Ldexp, Shape::Ldexp),
+    ("outer", Builtin::Outer, Shape::Outer),
+    ("pack2x16float", Builtin::Pack2x16float, Shape::Pack),
+    ("pack2x16snorm", Builtin::Pack2x16snorm, Shape::Pack),
+    ("pack2x16unorm", Builtin::Pack2x16unorm, Shape::Pack),
+    ("pack4x8snorm", Builtin::Pack4x8snorm, Shape::Pack),
+    ("pack4x8unorm", Builtin::Pack4x8unorm, Shape::Pack),
+    ("pack4x_i8", Builtin::Pack4xI8, Shape::PackInt),
+    ("pack4x_i8_clamp", Builtin::Pack4xI8Clamp, Shape::PackInt),
+    ("pack4x_u8", Builtin::Pack4xU8, Shape::PackInt),
+    ("pack4x_u8_clamp", Builtin::Pack4xU8Clamp, Shape::PackInt),
+    (
+        "unpack2x16float",
+        Builtin::Unpack2x16float,
+        Shape::Unpack(2),
+    ),
+    (
+        "unpack2x16snorm",
+        Builtin::Unpack2x16snorm,
+        Shape::Unpack(2),
+    ),
+    (
+        "unpack2x16unorm",
+        Builtin::Unpack2x16unorm,
+        Shape::Unpack(2),
+    ),
+    ("unpack4x8snorm", Builtin::Unpack4x8snorm, Shape::Unpack(4)),
+    ("unpack4x8unorm", Builtin::Unpack4x8unorm, Shape::Unpack(4)),
+    ("unpack4x_i8", Builtin::Unpack4xI8, Shape::UnpackInt(true)),
+    ("unpack4x_u8", Builtin::Unpack4xU8, Shape::UnpackInt(false)),
     ("texture", Builtin::Texture, Shape::Texture),
 ];
 
@@ -191,8 +260,17 @@ pub(crate) fn arity(shape: Shape) -> usize {
         | Shape::Integer1
         | Shape::Predicate
         | Shape::BoolFold
-        | Shape::MatrixFold => 1,
-        Shape::Componentwise2 | Shape::Whole2 | Shape::Fold2 | Shape::Cross => 2,
+        | Shape::MatrixFold
+        | Shape::Split
+        | Shape::Pack
+        | Shape::PackInt => 1,
+        Shape::Componentwise2
+        | Shape::Whole2
+        | Shape::Fold2
+        | Shape::Cross
+        | Shape::Ldexp
+        | Shape::Outer
+        | Shape::DotPacked(_) => 2,
         Shape::Componentwise3
         | Shape::Whole3
         | Shape::MixScalar
@@ -201,188 +279,6 @@ pub(crate) fn arity(shape: Shape) -> usize {
         | Shape::Refract
         | Shape::IntegerBits => 3,
         Shape::IntegerInsert => 4,
-    }
-}
-
-/// Checks argument types against a shape and returns the result type.
-///
-/// `Err` carries the message body; the caller supplies the line and the call's
-/// own name, so the wording stays in one place.
-pub(crate) fn resolve(name: &str, shape: Shape, args: &[Type]) -> Result<Type, String> {
-    // A poisoned argument already produced a diagnostic. Reporting a second
-    // one about its type would be blaming the user for our own placeholder.
-    if args.iter().any(|ty| ty.is_poison()) {
-        return Ok(Type::Poison);
-    }
-    let numeric = |ty: Type| ty.is_numeric() && ty != Type::I32;
-    match shape {
-        Shape::Componentwise1 => {
-            let ty = args[0];
-            numeric(ty)
-                .then_some(ty)
-                .ok_or_else(|| format!("{name} takes a number or vector, not {ty}"))
-        }
-        Shape::Whole1 => {
-            let ty = args[0];
-            (ty.is_numeric() && !ty.is_matrix())
-                .then(|| ty.defaulted())
-                .ok_or_else(|| format!("{name} takes a number or vector, not {ty}"))
-        }
-        Shape::Whole2 | Shape::Whole3 => {
-            let ty = args[0].defaulted();
-            if !ty.is_numeric() {
-                return Err(format!("{name} takes numbers or vectors, not {ty}"));
-            }
-            for other in &args[1..] {
-                // A scalar rides along with a vector, and an undecided literal
-                // takes whatever the first argument settled on.
-                if !other.fits(ty) && *other != Type::F32 {
-                    return Err(format!("{name} cannot mix {ty} and {other}"));
-                }
-            }
-            Ok(ty)
-        }
-        Shape::Componentwise2 | Shape::Componentwise3 => {
-            let ty = args[0];
-            if !numeric(ty) {
-                return Err(format!("{name} takes numbers or vectors, not {ty}"));
-            }
-            // A scalar rides along with a vector, as it does in WGSL, so
-            // `clamp(v, 0.0, 1.0)` means what it looks like.
-            for other in &args[1..] {
-                if *other != ty && *other != Type::F32 {
-                    return Err(format!("{name} cannot mix {ty} and {other}"));
-                }
-            }
-            Ok(ty)
-        }
-        Shape::Fold1 => {
-            let ty = args[0];
-            numeric(ty)
-                .then_some(Type::F32)
-                .ok_or_else(|| format!("{name} takes a vector, not {ty}"))
-        }
-        Shape::Fold2 => {
-            let (left, right) = (args[0], args[1]);
-            if left != right {
-                return Err(format!(
-                    "{name} takes two of one type, not {left} and {right}"
-                ));
-            }
-            numeric(left)
-                .then_some(Type::F32)
-                .ok_or_else(|| format!("{name} takes vectors, not {left}"))
-        }
-        Shape::MixScalar => {
-            let (a, b, t) = (args[0], args[1], args[2]);
-            if a != b {
-                return Err(format!("mix needs both ends to match, not {a} and {b}"));
-            }
-            if !numeric(a) {
-                return Err(format!("mix takes numbers or vectors, not {a}"));
-            }
-            if t != a && t != Type::F32 {
-                return Err(format!("mix's amount must be f32 or {a}, not {t}"));
-            }
-            Ok(a)
-        }
-        Shape::EdgeScalar => {
-            let (low, high, x) = (args[0], args[1], args[2]);
-            if !numeric(x) {
-                return Err(format!("{name} takes a number or vector, not {x}"));
-            }
-            for edge in [low, high] {
-                if edge != Type::F32 && edge != x {
-                    return Err(format!("{name}'s edges must be f32 or {x}, not {edge}"));
-                }
-            }
-            Ok(x)
-        }
-        Shape::Select => {
-            let (a, b, cond) = (args[0], args[1], args[2]);
-            if a != b {
-                return Err(format!("select needs both arms to match, not {a} and {b}"));
-            }
-            if cond != Type::Bool {
-                return Err(format!(
-                    "select's condition must be a bool, not {cond}; write a comparison"
-                ));
-            }
-            Ok(a)
-        }
-        Shape::Cross => {
-            let (left, right) = (args[0], args[1]);
-            (left == Type::Vec3 && right == Type::Vec3)
-                .then_some(Type::Vec3)
-                .ok_or_else(|| format!("cross takes two vec3, not {left} and {right}"))
-        }
-        Shape::Predicate => {
-            let ty = args[0];
-            (ty == Type::F32)
-                .then_some(Type::Bool)
-                .ok_or_else(|| format!("{name} tests one number, not {ty}"))
-        }
-        Shape::BoolFold => {
-            let ty = args[0];
-            (ty == Type::Bool).then_some(Type::Bool).ok_or_else(|| {
-                format!("{name} folds a bool, not {ty}; this language has no bool vectors yet")
-            })
-        }
-        Shape::Integer1 => {
-            let ty = args[0];
-            if ty == Type::AbstractInt {
-                return Ok(Type::I32);
-            }
-            ty.is_integer()
-                .then_some(ty)
-                .ok_or_else(|| format!("{name} takes a whole number, not {ty}"))
-        }
-        Shape::IntegerInsert | Shape::IntegerBits => {
-            let ty = args[0];
-            if !ty.is_integer() {
-                return Err(format!("{name} takes a whole number, not {ty}"));
-            }
-            for count in &args[1..] {
-                if !count.is_integer() {
-                    return Err(format!(
-                        "{name}'s bit counts must be whole numbers, not {count}"
-                    ));
-                }
-            }
-            Ok(if ty == Type::AbstractInt {
-                Type::I32
-            } else {
-                ty
-            })
-        }
-        Shape::Matrix1 => {
-            let ty = args[0];
-            ty.is_matrix()
-                .then_some(ty)
-                .ok_or_else(|| format!("{name} takes a matrix, not {ty}"))
-        }
-        Shape::MatrixFold => {
-            let ty = args[0];
-            ty.is_matrix()
-                .then_some(Type::F32)
-                .ok_or_else(|| format!("{name} takes a matrix, not {ty}"))
-        }
-        Shape::Refract => {
-            let (incident, normal, eta) = (args[0], args[1], args[2]);
-            if incident != normal || !incident.is_vector() {
-                return Err(format!(
-                    "refract takes two vectors of one type, not {incident} and {normal}"
-                ));
-            }
-            (eta == Type::F32)
-                .then_some(incident)
-                .ok_or_else(|| format!("refract's ratio must be an f32, not {eta}"))
-        }
-        Shape::Texture => {
-            let ty = args[0];
-            (ty == Type::Vec2)
-                .then_some(Type::Vec4)
-                .ok_or_else(|| format!("texture takes a vec2 coordinate, not {ty}"))
-        }
+        Shape::Unpack(_) | Shape::UnpackInt(_) => 1,
     }
 }

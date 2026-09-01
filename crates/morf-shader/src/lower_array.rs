@@ -7,7 +7,7 @@
 use luna::compiler::parser::TableConstructor;
 
 use crate::ir::*;
-use crate::lower::{Lowerer, Name};
+use crate::lower::{Lowerer, Name, text};
 use crate::types::*;
 
 impl Lowerer<'_> {
@@ -33,13 +33,18 @@ impl Lowerer<'_> {
                 ConstructorField::Array(value) => {
                     elements.push(Lowerer::commit(self.expression(value, line)));
                 }
+                // A named field means this is a record rather than a list, and
+                // the two cannot be mixed: `{1.0, x = 2.0}` has no shape.
                 ConstructorField::Record(..) => {
-                    self.error_note(
-                        line,
-                        "a shader table is a list, not a record",
-                        "write `{1.0, 2.0}`; named fields would need a struct",
-                    );
-                    return Expr::poison();
+                    if !elements.is_empty() {
+                        self.error_note(
+                            line,
+                            "this table mixes a list and named fields",
+                            "a shader table is one or the other",
+                        );
+                        return Expr::poison();
+                    }
+                    return self.record(table, line);
                 }
             }
         }
@@ -59,6 +64,56 @@ impl Lowerer<'_> {
         }
         let ty = Type::array(element, elements.len() as u32);
         Expr::Array { ty, elements }
+    }
+
+    /// `{red = 1.0, green = 0.5}` — a Lua record as a struct.
+    ///
+    /// Structurally typed: two tables with the same field names and types are
+    /// the same type, because there is nowhere in Lua to declare a struct and
+    /// so identity has to come from the shape.
+    fn record(&mut self, table: &TableConstructor<Name>, line: u32) -> Expr {
+        use luna::compiler::parser::{ConstructorField, RecordKey};
+        let mut fields = Vec::with_capacity(table.fields.len());
+        for field in &table.fields {
+            let ConstructorField::Record(key, value) = field else {
+                self.error_note(
+                    line,
+                    "this table mixes named fields and a list",
+                    "a shader table is one or the other",
+                );
+                return Expr::poison();
+            };
+            let RecordKey::Named(name) = key else {
+                self.error_note(
+                    line,
+                    "a shader record's keys are plain names",
+                    "write `{ red = 1.0 }`, not a computed key",
+                );
+                return Expr::poison();
+            };
+            let value = Lowerer::commit(self.expression(value, line));
+            if value.ty().is_poison() {
+                return Expr::poison();
+            }
+            fields.push((text(name), value));
+        }
+        if fields.is_empty() {
+            self.error(line, "an empty table has no type");
+            return Expr::poison();
+        }
+        // Sorted here as well as in the type, so the values line up with the
+        // fields the emitted struct declares.
+        fields.sort_by(|left, right| left.0.cmp(&right.0));
+        let ty = Type::record(
+            fields
+                .iter()
+                .map(|(name, value)| (name.clone(), value.ty()))
+                .collect(),
+        );
+        Expr::Array {
+            ty,
+            elements: fields.into_iter().map(|(_, value)| value).collect(),
+        }
     }
 
     /// `a[i]` — an array element, a vector component, or a matrix column.

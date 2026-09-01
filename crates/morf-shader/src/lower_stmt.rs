@@ -126,8 +126,11 @@ impl Lowerer<'_> {
             // hold, which is a different question.
             if ty == Type::Bool
                 || ty.is_numeric()
+                || ty.is_any_vector()
                 || ty.is_matrix()
                 || ty.is_array()
+                || ty == Type::Split
+                || ty.is_record()
                 || ty.is_poison()
             {
                 let emitted = self.declare(name, ty);

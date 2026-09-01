@@ -18,6 +18,14 @@ pub enum Type {
     Mat2,
     Mat3,
     Mat4,
+    /// Vectors of whole numbers. WGSL's `vecN<i32>` and `vecN<u32>`, which the
+    /// byte-packing builtins take and return and which nothing else needs.
+    Vec2I,
+    Vec3I,
+    Vec4I,
+    Vec2U,
+    Vec3U,
+    Vec4U,
     I32,
     U32,
     /// The type of an integer literal before anything has said what it is.
@@ -40,6 +48,19 @@ pub enum Type {
     /// `array<f32, 5>` are different types, and a shader has no way to ask how
     /// long one is at run time.
     Array(&'static ArrayType),
+    /// A record: named fields, from a Lua table with named keys.
+    ///
+    /// Structurally typed and interned, so two tables with the same field names
+    /// and types are the same type. There is nowhere in Lua to *declare* a
+    /// struct, so identity has to come from the shape rather than from a name.
+    Struct(&'static StructType),
+    /// The result of `modf` or `frexp`.
+    ///
+    /// WGSL returns a struct from both, and this language has no struct of its
+    /// own — so rather than inventing one, the result is a type whose only
+    /// operation is reading `.fract`, `.whole` or `.exp` off it. That is the
+    /// whole of what anybody does with one.
+    Split,
     /// The type of an expression that already produced a diagnostic.
     ///
     /// It unifies with everything and reports nothing, so one mistake yields
@@ -55,6 +76,12 @@ impl Type {
             "vec2" => Self::Vec2,
             "vec3" => Self::Vec3,
             "vec4" | "color" | "colour" => Self::Vec4,
+            "vec2i" => Self::Vec2I,
+            "vec3i" => Self::Vec3I,
+            "vec4i" => Self::Vec4I,
+            "vec2u" => Self::Vec2U,
+            "vec3u" => Self::Vec3U,
+            "vec4u" => Self::Vec4U,
             "mat2" | "mat2x2" => Self::Mat2,
             "mat3" | "mat3x3" => Self::Mat3,
             "mat4" | "mat4x4" => Self::Mat4,
@@ -72,6 +99,12 @@ impl Type {
             Self::Vec2 => "vec2<f32>",
             Self::Vec3 => "vec3<f32>",
             Self::Vec4 => "vec4<f32>",
+            Self::Vec2I => "vec2<i32>",
+            Self::Vec3I => "vec3<i32>",
+            Self::Vec4I => "vec4<i32>",
+            Self::Vec2U => "vec2<u32>",
+            Self::Vec3U => "vec3<u32>",
+            Self::Vec4U => "vec4<u32>",
             Self::Mat2 => "mat2x2<f32>",
             Self::Mat3 => "mat3x3<f32>",
             Self::Mat4 => "mat4x4<f32>",
@@ -84,6 +117,10 @@ impl Type {
             // `&'static str` and cannot build one, so array declarations go
             // through `wgsl_owned` instead.
             Self::Array(_) => "array",
+            // Never declared: a split result is read immediately.
+            Self::Split => "f32",
+            // A record prints its own name through `wgsl_owned`.
+            Self::Struct(_) => "struct",
             // Poison never reaches emission: lowering fails first, and the
             // emitter only ever runs on a program that type-checked.
             Self::Poison => "f32",
@@ -93,9 +130,9 @@ impl Type {
     /// How many components the type holds, or one for a scalar.
     pub fn components(self) -> u8 {
         match self {
-            Self::Vec2 => 2,
-            Self::Vec3 => 3,
-            Self::Vec4 => 4,
+            Self::Vec2 | Self::Vec2I | Self::Vec2U => 2,
+            Self::Vec3 | Self::Vec3I | Self::Vec3U => 3,
+            Self::Vec4 | Self::Vec4I | Self::Vec4U => 4,
             _ => 1,
         }
     }
@@ -111,8 +148,22 @@ impl Type {
         })
     }
 
+    /// Whether the type is a vector of floats.
+    ///
+    /// Integer vectors are deliberately excluded: everything that widens a
+    /// scalar, swizzles, or does componentwise float maths asks this question,
+    /// and none of it applies to a `vec4<u32>` that exists only to be packed.
     pub fn is_vector(self) -> bool {
         matches!(self, Self::Vec2 | Self::Vec3 | Self::Vec4)
+    }
+
+    /// Whether the type is a vector of any scalar.
+    pub fn is_any_vector(self) -> bool {
+        self.is_vector()
+            || matches!(
+                self,
+                Self::Vec2I | Self::Vec3I | Self::Vec4I | Self::Vec2U | Self::Vec3U | Self::Vec4U
+            )
     }
 
     pub fn is_matrix(self) -> bool {
@@ -173,6 +224,7 @@ impl Type {
             Self::Array(array) => {
                 format!("array<{}, {}>", array.element.wgsl_owned(), array.length)
             }
+            Self::Struct(record) => record.name.clone(),
             other => other.wgsl().to_owned(),
         }
     }
@@ -220,12 +272,16 @@ impl Type {
     /// `emit` computes offsets rather than assuming them.
     pub fn layout(self) -> (u32, u32) {
         match self {
-            Self::F32 | Self::I32 | Self::U32 | Self::AbstractInt | Self::Bool | Self::Poison => {
-                (4, 4)
-            }
-            Self::Vec2 => (8, 8),
-            Self::Vec3 => (12, 16),
-            Self::Vec4 => (16, 16),
+            Self::F32
+            | Self::I32
+            | Self::U32
+            | Self::AbstractInt
+            | Self::Bool
+            | Self::Split
+            | Self::Poison => (4, 4),
+            Self::Vec2 | Self::Vec2I | Self::Vec2U => (8, 8),
+            Self::Vec3 | Self::Vec3I | Self::Vec3U => (12, 16),
+            Self::Vec4 | Self::Vec4I | Self::Vec4U => (16, 16),
             // A matrix is its columns, each aligned as a vector of that width.
             // A `mat3x3` is therefore three sixteen-byte columns — forty-eight
             // bytes, not thirty-six — which is the layout rule that surprises
@@ -241,6 +297,18 @@ impl Type {
                 let stride = size.next_multiple_of(alignment.max(16));
                 (stride * array.length, 16)
             }
+            // A record is its fields, each at its own alignment, padded to the
+            // widest of them.
+            Self::Struct(record) => {
+                let mut offset = 0u32;
+                let mut alignment = 4u32;
+                for (_, field) in &record.fields {
+                    let (size, field_alignment) = field.layout();
+                    alignment = alignment.max(field_alignment);
+                    offset = offset.next_multiple_of(field_alignment) + size;
+                }
+                (offset.next_multiple_of(alignment), alignment)
+            }
         }
     }
 }
@@ -252,6 +320,12 @@ impl fmt::Display for Type {
             Self::Vec2 => "vec2",
             Self::Vec3 => "vec3",
             Self::Vec4 => "vec4",
+            Self::Vec2I => "vec2i",
+            Self::Vec3I => "vec3i",
+            Self::Vec4I => "vec4i",
+            Self::Vec2U => "vec2u",
+            Self::Vec3U => "vec3u",
+            Self::Vec4U => "vec4u",
             Self::Mat2 => "mat2",
             Self::Mat3 => "mat3",
             Self::Mat4 => "mat4",
@@ -259,6 +333,8 @@ impl fmt::Display for Type {
             Self::I32 => "i32",
             Self::U32 => "u32",
             Self::AbstractInt => "integer",
+            Self::Split => "a split result",
+            Self::Struct(record) => return formatter.write_str(&record.name),
             Self::Array(array) => {
                 return write!(formatter, "array of {} {}", array.length, array.element);
             }
@@ -297,6 +373,64 @@ impl Type {
         matches!(self, Self::Array(_))
     }
 }
+
+/// A record's fields, sorted by name.
+///
+/// Sorted so that `{a = 1, b = 2}` and `{b = 2, a = 1}` are one type: a Lua
+/// table has no order of its own, and two records that differ only in the order
+/// they happened to be written are the same record.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct StructType {
+    pub fields: Vec<(String, Type)>,
+    /// The name this struct is emitted under.
+    pub name: String,
+}
+
+impl Type {
+    /// Interns a record type, reusing one already seen with the same shape.
+    pub fn record(mut fields: Vec<(String, Type)>) -> Self {
+        fields.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut seen = RECORDS.lock().expect("the record table is not poisoned");
+        if let Some(found) = seen.iter().find(|known| known.fields == fields) {
+            return Self::Struct(found);
+        }
+        let name = format!("MorfRecord{}", seen.len());
+        let interned: &'static StructType = Box::leak(Box::new(StructType { fields, name }));
+        seen.push(interned);
+        Self::Struct(interned)
+    }
+
+    /// Every record type interned so far, in the order they must be declared.
+    pub fn records() -> Vec<&'static StructType> {
+        RECORDS
+            .lock()
+            .expect("the record table is not poisoned")
+            .clone()
+    }
+
+    pub fn is_record(self) -> bool {
+        matches!(self, Self::Struct(_))
+    }
+
+    /// The type of a named field, if this is a record with one.
+    pub fn field(self, name: &str) -> Option<Type> {
+        match self {
+            Self::Struct(record) => record
+                .fields
+                .iter()
+                .find(|(field, _)| field == name)
+                .map(|(_, ty)| *ty),
+            _ => None,
+        }
+    }
+}
+
+/// Records interned for the life of the process.
+///
+/// A shader declares a handful and the compiler is short-lived, so leaking is
+/// the cheap answer — the same trade as [`ArrayType`], and for the same reason:
+/// giving `Type` a lifetime would touch every signature in the crate.
+static RECORDS: std::sync::Mutex<Vec<&'static StructType>> = std::sync::Mutex::new(Vec::new());
 
 /// A compile-time constant.
 #[derive(Clone, Copy, Debug, PartialEq)]

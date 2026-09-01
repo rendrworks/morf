@@ -1,6 +1,7 @@
 mod caps;
 mod coverage;
 mod coverage_arrays;
+mod coverage_rest;
 mod coverage_types;
 mod diagnostics;
 mod golden;

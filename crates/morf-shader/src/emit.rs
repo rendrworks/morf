@@ -12,18 +12,36 @@ use crate::types::*;
 pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String {
     let mut out = String::with_capacity(2048);
     emit_uniforms(&mut out, slots, size);
+    // Record declarations first: WGSL needs a struct in scope before the
+    // function that names it, and a record can appear in a helper's signature.
+    //
+    // Collected from this program rather than from the interner: the interner
+    // is process-wide, so reading it would put every record any shader ever
+    // used into every shader after it.
+    let mut records = Vec::new();
+    for helper in &program.helpers {
+        collect_records(&helper.body, &mut records);
+    }
+    collect_records(&program.entry.body, &mut records);
+    for record in records {
+        let _ = writeln!(out, "struct {} {{", record.name);
+        for (field, ty) in &record.fields {
+            let _ = writeln!(out, "    {field}: {},", ty.wgsl_owned());
+        }
+        out.push_str("};\n\n");
+    }
     for helper in &program.helpers {
         let signature = helper
             .params
             .iter()
-            .map(|(name, ty)| format!("{name}: {}", ty.wgsl()))
+            .map(|(name, ty)| format!("{name}: {}", ty.wgsl_owned()))
             .collect::<Vec<_>>()
             .join(", ");
         let _ = writeln!(
             out,
             "fn {}({signature}) -> {} {{",
             helper.name,
-            helper.returns.wgsl()
+            helper.returns.wgsl_owned()
         );
         let mut state = Emitter {
             out,
@@ -60,7 +78,7 @@ pub(crate) fn emit(program: &Program, slots: &[ParamSlot], size: u32) -> String 
         let _ = writeln!(
             out,
             "    let morf_in{index}: {} = {source};",
-            input.ty.wgsl()
+            input.ty.wgsl_owned()
         );
     }
     let mut state = Emitter {
@@ -101,7 +119,7 @@ fn emit_uniforms(out: &mut String, slots: &[ParamSlot], size: u32) {
         let _ = writeln!(
             out,
             "    morf_param{index}: {}, // {}",
-            slot.ty.wgsl(),
+            slot.ty.wgsl_owned(),
             slot.name
         );
         offset = aligned + slot_size;
@@ -121,14 +139,14 @@ fn pad(out: &mut String, from: u32, to: u32) {
     }
 }
 
-struct Emitter {
-    out: String,
-    depth: usize,
-    loops: u32,
+pub(crate) struct Emitter {
+    pub(crate) out: String,
+    pub(crate) depth: usize,
+    pub(crate) loops: u32,
 }
 
 impl Emitter {
-    fn indent(&mut self) {
+    pub(crate) fn indent(&mut self) {
         for _ in 0..self.depth {
             self.out.push_str("    ");
         }
@@ -150,7 +168,16 @@ impl Emitter {
             } => {
                 self.indent();
                 let keyword = if *mutable { "var" } else { "let" };
-                let _ = write!(self.out, "{keyword} {name}: {} = ", ty.wgsl_owned());
+                // A `modf` or `frexp` result is a struct naga names itself, and
+                // the name is internal and version-specific. WGSL infers a
+                // `let`'s type, so the annotation is simply left off — which
+                // keeps `local parts = modf(x)` working without this compiler
+                // having to guess what the struct is called.
+                if *ty == Type::Split {
+                    let _ = write!(self.out, "let {name} = ");
+                } else {
+                    let _ = write!(self.out, "{keyword} {name}: {} = ", ty.wgsl_owned());
+                }
                 self.expression(value, *ty);
                 self.out.push_str(";\n");
             }
@@ -243,8 +270,37 @@ impl Emitter {
     }
 
     /// Prints an expression, widening a scalar where the context wants a vector.
-    fn expression(&mut self, expression: &Expr, wanted: Type) {
+    pub(crate) fn expression(&mut self, expression: &Expr, wanted: Type) {
         let actual = expression.ty();
+        // An abstract *expression* — arithmetic over literals that nothing has
+        // decided about — takes the wanted type all the way down. `0 - 2` in a
+        // `vec4u` has to print as `0u - 2u`, not as floats WGSL then refuses to
+        // convert.
+        if actual == Type::AbstractInt && wanted.is_integer() {
+            match expression {
+                Expr::Binary {
+                    op, left, right, ..
+                } => {
+                    self.out.push('(');
+                    self.expression(left, wanted);
+                    let _ = write!(self.out, " {} ", op.wgsl());
+                    self.expression(right, wanted);
+                    self.out.push(')');
+                    return;
+                }
+                Expr::Unary { op, value, .. } => {
+                    self.out.push_str(match op {
+                        UnOp::Negate => "-(",
+                        UnOp::Not => "!(",
+                        UnOp::BitNot => "~(",
+                    });
+                    self.expression(value, wanted);
+                    self.out.push(')');
+                    return;
+                }
+                _ => {}
+            }
+        }
         // An abstract integer prints as whatever the surrounding code wanted.
         // This is the only place that knows, which is why it is the only place
         // that decides.
@@ -287,184 +343,40 @@ impl Emitter {
         }
         self.raw(expression);
     }
+}
 
-    fn raw(&mut self, expression: &Expr) {
-        match expression {
-            Expr::Literal(Value::F32(value)) => {
-                let _ = write!(self.out, "{}", float(*value));
+/// Gathers the record types a block actually uses, in declaration order.
+fn collect_records(block: &Block, out: &mut Vec<&'static StructType>) {
+    let note = |ty: Type, out: &mut Vec<&'static StructType>| {
+        if let Type::Struct(record) = ty
+            && !out.iter().any(|known| std::ptr::eq(*known, record))
+        {
+            out.push(record);
+        }
+    };
+    for statement in &block.0 {
+        match statement {
+            Stmt::Let { ty, value, .. } => {
+                note(*ty, out);
+                note(value.ty(), out);
             }
-            Expr::Literal(Value::I32(value)) => {
-                let _ = write!(self.out, "{value}");
+            Stmt::Assign { value, .. } | Stmt::Return(value) => note(value.ty(), out),
+            Stmt::If { arms, otherwise } => {
+                for (_, body) in arms {
+                    collect_records(body, out);
+                }
+                if let Some(body) = otherwise {
+                    collect_records(body, out);
+                }
             }
-            // Reached only when nothing decided what the literal was, which
-            // means `f32` — `expression` prints the other cases, because only
-            // it knows what the surrounding code wanted.
-            Expr::Literal(Value::Int(value)) => {
-                let _ = write!(self.out, "{}", float(*value as f32));
-            }
-            Expr::Literal(Value::Bool(value)) => {
-                self.out.push_str(if *value { "true" } else { "false" });
-            }
-            Expr::Local { name, .. } => self.out.push_str(name),
-            Expr::Param { index, .. } => {
-                let _ = write!(self.out, "morf_u.morf_param{index}");
-            }
-            Expr::Input { index, .. } => {
-                let _ = write!(self.out, "morf_in{index}");
-            }
-            Expr::Unary { op, value, .. } => {
-                self.out.push_str(match op {
-                    UnOp::Negate => "-(",
-                    UnOp::Not => "!(",
-                    UnOp::BitNot => "~(",
-                });
-                self.raw(value);
-                self.out.push(')');
-            }
-            Expr::Binary {
-                op,
-                ty,
-                left,
-                right,
+            Stmt::Loop {
+                body, continuing, ..
             } => {
-                self.out.push('(');
-                // A comparison keeps its operands' own type; arithmetic widens
-                // a scalar to the result so WGSL sees two matching sides.
-                // A matrix product's operands keep their own types: the
-                // result of `m * v` is a vector, and widening `m` to it would
-                // be nonsense.
-                let matrix = left.ty().is_matrix() || right.ty().is_matrix();
-                let context = if op.is_comparison() || op.is_logical() || matrix {
-                    left.ty()
-                } else {
-                    *ty
-                };
-                self.expression(left, context);
-                let _ = write!(self.out, " {} ", op.wgsl());
-                let right_context = if op.is_comparison() || op.is_logical() || matrix {
-                    right.ty()
-                } else {
-                    *ty
-                };
-                self.expression(right, right_context);
-                self.out.push(')');
+                collect_records(body, out);
+                collect_records(continuing, out);
             }
-            Expr::Call { builtin, ty, args } => self.call(*builtin, *ty, args),
-            Expr::Construct { ty, args } => {
-                let _ = write!(self.out, "{}(", ty.wgsl());
-                for (index, arg) in args.iter().enumerate() {
-                    if index > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.raw(arg);
-                }
-                self.out.push(')');
-            }
-            Expr::Index { value, index, .. } => {
-                self.raw(value);
-                self.out.push('[');
-                self.expression(index, Type::I32);
-                self.out.push(']');
-            }
-            Expr::Array { ty, elements } => {
-                let _ = write!(self.out, "{}(", ty.wgsl_owned());
-                let element = ty.element().unwrap_or(Type::F32);
-                for (index, value) in elements.iter().enumerate() {
-                    if index > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.expression(value, element);
-                }
-                self.out.push(')');
-            }
-            Expr::Swizzle {
-                value,
-                components,
-                len,
-                ..
-            } => {
-                self.raw(value);
-                self.out.push('.');
-                for slot in &components[..*len as usize] {
-                    self.out.push(match slot {
-                        0 => 'x',
-                        1 => 'y',
-                        2 => 'z',
-                        _ => 'w',
-                    });
-                }
-            }
+            Stmt::Break | Stmt::Continue | Stmt::Discard => {}
         }
-    }
-
-    fn call(&mut self, builtin: Builtin, ty: Type, args: &[Expr]) {
-        if builtin == Builtin::Helper {
-            // The first argument is the emitted function's name, not a value.
-            let Some(Expr::Local { name, .. }) = args.first() else {
-                unreachable!("a helper call carries its own name");
-            };
-            let _ = write!(self.out, "{name}(");
-            for (index, arg) in args[1..].iter().enumerate() {
-                if index > 0 {
-                    self.out.push_str(", ");
-                }
-                self.raw(arg);
-            }
-            self.out.push(')');
-            return;
-        }
-        if builtin == Builtin::Convert {
-            // A literal that had not decided what it was simply becomes the
-            // target type. Wrapping it would emit `u32(2654435769u)`, which is
-            // legal and silly, and going through `f32` on the way would lose
-            // the constant — twenty-four bits of mantissa cannot hold a
-            // thirty-two-bit hash multiplier.
-            if matches!(args[0], Expr::Literal(Value::Int(_))) {
-                self.expression(&args[0], ty);
-                return;
-            }
-            let _ = write!(self.out, "{}(", ty.wgsl());
-            self.expression(&args[0], args[0].ty());
-            self.out.push(')');
-            return;
-        }
-        if builtin == Builtin::Bitcast {
-            let _ = write!(self.out, "bitcast<{}>(", ty.wgsl());
-            self.expression(&args[0], args[0].ty());
-            self.out.push(')');
-            return;
-        }
-        if builtin == Builtin::Texture {
-            // A function the host shader provides, rather than a binding this
-            // crate declares. Which texture is underneath, and in which bind
-            // group, is the renderer's business: a compiler that named one
-            // would have to know how every pass is wired.
-            self.out.push_str("morf_sample(");
-            self.raw(&args[0]);
-            self.out.push(')');
-            return;
-        }
-        let _ = write!(self.out, "{}(", builtin.wgsl());
-        for (index, arg) in args.iter().enumerate() {
-            if index > 0 {
-                self.out.push_str(", ");
-            }
-            // `select`'s condition and the fold builtins keep their own types;
-            // everything else widens to the call's result.
-            // Most builtins take their own result type, so a scalar written
-            // against a vector call widens. The exceptions are the arguments
-            // that are *meant* to be a different type: widening one of those
-            // produces WGSL a driver rejects with no line number, which is the
-            // worst failure this compiler can hand somebody.
-            let context = match (builtin, index) {
-                (Builtin::Select, 2) => Type::Bool,
-                (Builtin::Refract, 2) => Type::F32,
-                (Builtin::Length | Builtin::Dot | Builtin::Distance, _) => arg.ty(),
-                _ => ty,
-            };
-            self.expression(arg, context);
-        }
-        self.out.push(')');
     }
 }
 
@@ -472,7 +384,7 @@ impl Emitter {
 ///
 /// `1` is an integer literal in WGSL and will not coerce, so every value needs
 /// a decimal point whether or not it has a fraction.
-fn float(value: f32) -> String {
+pub(crate) fn float(value: f32) -> String {
     if value.is_nan() || value.is_infinite() {
         // Neither is expressible as a WGSL literal, and both come only from a
         // configuration doing something it should be told about elsewhere.
@@ -483,5 +395,14 @@ fn float(value: f32) -> String {
         printed
     } else {
         format!("{printed}.0")
+    }
+}
+
+/// The scalar a vector or matrix is built from.
+pub(crate) fn element_of(ty: Type) -> Type {
+    match ty {
+        Type::Vec2I | Type::Vec3I | Type::Vec4I => Type::I32,
+        Type::Vec2U | Type::Vec3U | Type::Vec4U => Type::U32,
+        _ => Type::F32,
     }
 }

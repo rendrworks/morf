@@ -53,17 +53,17 @@ fn an_empty_table_has_no_type() {
 }
 
 #[test]
-fn a_table_with_named_fields_says_it_would_need_a_struct() {
-    // Refused by name rather than silently treated as a list of its values in
-    // whatever order the table happened to iterate.
+fn a_table_cannot_be_a_list_and_a_record_at_once() {
+    // Named fields are a record now, and a list is an array. What has no shape
+    // is a table trying to be both.
     let found = errors(
         "function fragment(uv)
-           local t = { red = 1.0, green = 0.5 }
+           local t = { 1.0, red = 0.5 }
            return vec4(1.0)
          end",
     );
-    assert!(mentions(&found, "a list, not a record"), "{found:?}");
-    assert!(mentions(&found, "struct"), "{found:?}");
+    assert!(mentions(&found, "mixes"), "{found:?}");
+    assert!(mentions(&found, "one or the other"), "{found:?}");
 }
 
 #[test]

@@ -92,9 +92,15 @@ fn non_uniform(expression: &Expr) -> Option<&'static str> {
         Expr::Call { builtin, args, .. } => {
             let own = match builtin {
                 Builtin::Texture => Some("texture"),
-                Builtin::Dpdx => Some("dpdx"),
-                Builtin::Dpdy => Some("dpdy"),
-                Builtin::Fwidth => Some("fwidth"),
+                Builtin::Dpdx
+                | Builtin::DpdxCoarse
+                | Builtin::DpdxFine
+                | Builtin::Dpdy
+                | Builtin::DpdyCoarse
+                | Builtin::DpdyFine
+                | Builtin::Fwidth
+                | Builtin::FwidthCoarse
+                | Builtin::FwidthFine => Some(builtin.wgsl()),
                 _ => None,
             };
             own.or_else(|| args.iter().find_map(non_uniform))
