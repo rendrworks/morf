@@ -26,6 +26,10 @@ use wayland_client::Proxy;
 use wayland_client::protocol::{
     wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface, wl_touch,
 };
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+};
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::ExtIdleNotificationV1, ext_idle_notifier_v1::ExtIdleNotifierV1,
 };
@@ -93,6 +97,9 @@ pub(crate) struct LayerRecord {
     /// Whether a configure has been acknowledged, which the protocol requires
     /// before any buffer may be attached.
     pub(crate) configured: bool,
+    /// This surface's background-effect object, created the first time it asks
+    /// for a blurred backdrop. Kept because destroying it clears the region.
+    pub(crate) backdrop: Option<ExtBackgroundEffectSurfaceV1>,
     /// Backing store for a surface mapped with a blank buffer.
     ///
     /// A reserver has no renderer, but a layer surface that never attaches a
@@ -166,6 +173,19 @@ pub(crate) struct LayerState {
     pub(crate) output_power_mode: Option<OutputPowerMode>,
     pub(crate) shm: Option<Shm>,
     pub(crate) screencopy_manager: Option<ZwlrScreencopyManagerV1>,
+    /// `ext-background-effect-v1`, when the compositor offers it.
+    ///
+    /// The blur it asks for happens entirely on the compositor's side: it holds
+    /// every window's buffer and is the only thing that can see what is behind
+    /// this surface. A client never receives those pixels — it names a region
+    /// and paints over the result with alpha.
+    pub(crate) background_effect: Option<ExtBackgroundEffectManagerV1>,
+    /// Whether the compositor currently advertises the blur capability.
+    ///
+    /// Sent when the manager is bound and again whenever it changes, so a
+    /// compositor may withdraw it at run time — at which point it stops
+    /// applying blur even to regions already set.
+    pub(crate) blur_capable: bool,
     pub(crate) screencopies: Vec<PendingScreencopy>,
     pub(crate) screens: Vec<ScreenInfo>,
     pub(crate) session_locks: SessionLockState,

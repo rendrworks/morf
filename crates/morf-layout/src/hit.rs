@@ -85,6 +85,47 @@ impl Layout {
         Ok(transform)
     }
 
+    /// Every node asking for a blurred backdrop, with its corner radii.
+    ///
+    /// Separate from `input_geometry` because the two answer different
+    /// questions about the same tree — where a click lands, and where the
+    /// compositor should blur — and a node very often wants one without the
+    /// other. A frosted panel is usually not interactive; a button usually does
+    /// not want its own blur.
+    pub fn backdrop_geometry(
+        &self,
+        scene: &Scene,
+    ) -> Result<Vec<(Geometry, [f32; 4])>, LayoutError> {
+        let mut regions = Vec::new();
+        for root in scene.roots() {
+            self.collect_backdrop_geometry(scene, root, Transform2D::IDENTITY, &mut regions)?;
+        }
+        Ok(regions)
+    }
+
+    fn collect_backdrop_geometry(
+        &self,
+        scene: &Scene,
+        node: NodeHandle,
+        inherited: Transform2D,
+        regions: &mut Vec<(Geometry, [f32; 4])>,
+    ) -> Result<(), LayoutError> {
+        if !scene.bool_value(node, "visible")? {
+            return Ok(());
+        }
+        let Some(geometry) = self.geometry(node) else {
+            return Ok(());
+        };
+        let transform = inherited.then(node_transform(scene, node, geometry)?);
+        if scene.bool_value(node, "backdrop_blur")? {
+            regions.push((transform.bounds(geometry), corner_radii(scene, node)?));
+        }
+        for &child in scene.children(node)? {
+            self.collect_backdrop_geometry(scene, child, transform, regions)?;
+        }
+        Ok(())
+    }
+
     fn collect_input_geometry(
         &self,
         scene: &Scene,
@@ -151,4 +192,29 @@ impl Layout {
             }),
         )
     }
+}
+
+/// A node's four corner radii, falling back to the uniform one.
+///
+/// A negative per-corner radius means "unset", which is how the schema says it
+/// without needing a nil-able number.
+fn corner_radii(scene: &Scene, node: NodeHandle) -> Result<[f32; 4], LayoutError> {
+    let uniform = scene.number(node, "radius").unwrap_or(0.0);
+    let mut radii = [uniform as f32; 4];
+    for (index, name) in [
+        "top_left_radius",
+        "top_right_radius",
+        "bottom_right_radius",
+        "bottom_left_radius",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if let Ok(value) = scene.number(node, name)
+            && value >= 0.0
+        {
+            radii[index] = value as f32;
+        }
+    }
+    Ok(radii)
 }

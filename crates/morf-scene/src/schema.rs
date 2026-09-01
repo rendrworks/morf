@@ -17,6 +17,12 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         color("color_overlay", Color::rgba8(0, 0, 0, 0)),
         number("z", 0.0),
         boolean("clip", element == Element::ClipRect),
+        // Whether the compositor should blur what is behind this node.
+        //
+        // On every element rather than only the drawn ones, because what it
+        // marks is an area of the surface, not a way of painting: an `Item`
+        // wrapping a panel is often the honest place to say it.
+        boolean("backdrop_blur", false),
         number("rotation", 0.0),
         number("scale", 1.0),
         number("scale_x", 1.0),

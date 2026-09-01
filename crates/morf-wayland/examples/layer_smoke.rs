@@ -116,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, screencopy {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, screencopy {}, backdrop-blur {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
@@ -128,6 +128,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     input_method,
                     text_input,
                     screencopy,
+                    // Whether this compositor will blur behind a surface. Worth
+                    // reporting because it is the one capability here that a
+                    // configuration cannot work around: absent, the panel is
+                    // translucent over a sharp desktop and there is nothing
+                    // morf can do about it.
+                    client.supports_backdrop_blur(),
                     time_ms,
                     backend.info().name,
                     backend.info().backend,

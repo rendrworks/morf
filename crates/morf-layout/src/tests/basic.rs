@@ -187,3 +187,75 @@ fn inset_can_preserve_child_size_and_distribute_space() {
         })
     );
 }
+
+#[test]
+fn a_backdrop_region_is_only_the_nodes_that_asked_for_one() {
+    // The blur region and the input region answer different questions about
+    // the same tree, and a node very often wants one without the other: a
+    // frosted panel is usually not interactive, and a button usually does not
+    // want its own blur. So this walk is separate from `input_geometry`, and
+    // this test is what says the two do not drift into each other.
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let glass = scene.create(Element::Rect);
+    let plain = scene.create(Element::Rect);
+    for node in [glass, plain] {
+        scene.assign(node, "width", 120.0).unwrap();
+        scene.assign(node, "height", 40.0).unwrap();
+        scene.reparent(node, Some(root)).unwrap();
+    }
+    scene.assign(glass, "x", 10.0).unwrap();
+    scene.assign(glass, "y", 20.0).unwrap();
+    scene.assign(glass, "radius", 8.0).unwrap();
+    scene.assign(glass, "backdrop_blur", true).unwrap();
+
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 200.0,
+            height: 100.0,
+        },
+        &mut FixedText,
+    )
+    .unwrap();
+
+    let regions = layout.backdrop_geometry(&scene).unwrap();
+    assert_eq!(regions.len(), 1, "only the node that asked: {regions:?}");
+    let (geometry, radii) = regions[0];
+    assert_eq!((geometry.x, geometry.y), (10.0, 20.0));
+    assert_eq!((geometry.width, geometry.height), (120.0, 40.0));
+    assert_eq!(
+        radii, [8.0; 4],
+        "the corners travel with it, so the region the compositor blurs has the \
+         same rounding as the glass drawn over it",
+    );
+}
+
+#[test]
+fn a_hidden_node_asks_for_no_backdrop() {
+    // A region is double-buffered surface state that outlives the frame that
+    // set it, so a panel that hides itself and leaves its blur behind would
+    // leave a rounded rectangle of blurred desktop with nothing on it.
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    let glass = scene.create(Element::Rect);
+    scene.assign(glass, "width", 120.0).unwrap();
+    scene.assign(glass, "height", 40.0).unwrap();
+    scene.assign(glass, "backdrop_blur", true).unwrap();
+    scene.assign(glass, "visible", false).unwrap();
+    scene.reparent(glass, Some(root)).unwrap();
+
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 200.0,
+            height: 100.0,
+        },
+        &mut FixedText,
+    )
+    .unwrap();
+
+    assert!(layout.backdrop_geometry(&scene).unwrap().is_empty());
+}

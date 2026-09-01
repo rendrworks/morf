@@ -1,5 +1,6 @@
 use morf_layout::{Layout, Size};
 use morf_lua::{LayerSurfaceConfig, Runtime};
+use morf_region::{Rect as RegionRect, Region};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
 use morf_wayland::{InputRect, LayerClient, PRIMARY_LAYER, physical_size};
@@ -48,6 +49,10 @@ pub(crate) struct CachedLayout {
     /// protocol traffic and the derivation that produced it, and changes
     /// nothing.
     pub(crate) input: Vec<InputRect>,
+    /// The backdrop-blur region last handed to the compositor, for the same
+    /// reason: it is double-buffered state, and re-sending an identical one
+    /// asks the compositor to rebuild a region it already has.
+    pub(crate) backdrop: Vec<RegionRect>,
 }
 
 impl CachedLayout {
@@ -139,6 +144,48 @@ pub(crate) fn paint_layer(
         }
         input
     };
+    let mut backdrop = Vec::new();
+    // Where the compositor should blur what is behind this surface. Nothing is
+    // read back: the blur happens on the far side of this call, underneath a
+    // surface that is about to be composited over it, and the only thing that
+    // makes it visible is the alpha this configuration painted with.
+    if client.supports_backdrop_blur() {
+        let shapes: Vec<Region> = layout
+            .backdrop_geometry(&scene)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|(geometry, radii)| Region {
+                rect: RegionRect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..Region::default()
+            })
+            .collect();
+        // Rasterised here rather than inside the client so the result can be
+        // compared against the last one: a rounded rectangle is a span per
+        // scanline, and rebuilding an identical few hundred of them every frame
+        // is exactly the kind of thing a compositor should not be asked to do.
+        let rectangles = if shapes.is_empty() {
+            Vec::new()
+        } else {
+            morf_region::build(width, height, &shapes).map_err(|error| error.to_string())?
+        };
+        if cache.is_none_or(|cached| cached.backdrop != rectangles) {
+            client
+                .set_layer_backdrop_region(layer, Some(&rectangles))
+                .map_err(|error| error.to_string())?;
+        }
+        backdrop = rectangles;
+    }
+
     client.request_layer_frame(layer);
     let surface = client
         .layer_surface(layer)
@@ -170,6 +217,7 @@ pub(crate) fn paint_layer(
         size: (width, height),
         scale_120,
         input,
+        backdrop,
     })
 }
 
@@ -344,6 +392,7 @@ pub(crate) fn paint_auxiliary_surface(
         size,
         scale_120,
         input: Vec::new(),
+        backdrop: Vec::new(),
     });
     Ok(())
 }
