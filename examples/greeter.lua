@@ -220,9 +220,14 @@ local function attempt()
 
   local ok, session = pcall(morf.greetd.connect)
   if not (ok and session) then
-    say("no greetd here — run me under greetd", true)
+    -- Nested inside a session there is no `$GREETD_SOCK`, so there is nothing
+    -- to authenticate against and Return can do nothing. The password is left
+    -- where it is: nobody typed it in order to have it thrown away, and the
+    -- screen is otherwise perfectly usable to look at and to type in.
+    say("no greetd to ask — nested, so Return does nothing", true)
     write(working, false)
-    clear_password()
+    write(shake, 1)
+    if shake_rest then shake_rest.running = true end
     return
   end
 
@@ -408,18 +413,47 @@ local NAME_GAP = s(18)
 
 local function user_row(index, user)
   local hot = morf.signal("greeter.row." .. index, false)
+  local held = morf.signal("greeter.rowheld." .. index, false)
+  -- Under the pointer, or under the keyboard. Tab walks the list without a
+  -- pointer anywhere near it, and a row that only lights up for the mouse is a
+  -- list you cannot see yourself moving through.
+  local function live() return hot:get() or chosen_user:get() == index end
   return ui.Item {
     width = LIST_W,
     height = ITEM_H,
+    -- The row comes towards you rather than lighting up in place: a little
+    -- larger, and lifted, with the press putting it back down again.
+    scale = function()
+      if held:get() then return 0.985 end
+      return live() and 1.02 or 1.0
+    end,
+    translate_x = function() return live() and s(4) or 0 end,
+    behavior = {
+      scale = { kind = "spring", mass = 1, damping = 15, stiffness = 340, epsilon = 0.002 },
+      translate_x = { kind = "spring", mass = 1, damping = 15, stiffness = 340,
+                      epsilon = 0.05 },
+    },
     ui.Rect {
       anchors = { fill = true },
       radius = ITEM_RADIUS,
-      color = function() return hot:get() and CARD_HOT or CARD end,
-      behavior = { color = { duration = 150, easing = "out_quad" } },
+      color = function() return live() and CARD_HOT or CARD end,
+      -- The accent arrives on the edge before it arrives anywhere else, which
+      -- is how a list says which row is *the* row without shouting.
+      border_width = s(2),
+      border_color = function() return live() and ACCENT or "#00000000" end,
+      behavior = {
+        color = { duration = 150, easing = "out_quad" },
+        border_color = { duration = 200, easing = "out_quad" },
+      },
     },
     ui.Sdf {
       x = ITEM_PAD, y = ITEM_PAD, width = FACE_SM, height = FACE_SM,
-      fill_color = WELL,
+      fill_color = function() return live() and "#fafafb2e" or WELL end,
+      scale = function() return live() and 1.06 or 1.0 end,
+      behavior = {
+        fill_color = { duration = 180, easing = "out_quad" },
+        scale = { kind = "spring", mass = 1, damping = 12, stiffness = 400, epsilon = 0.002 },
+      },
       ui.SdfShape { width = FACE_SM, height = FACE_SM, shape = "circle" },
     },
     ui.Text {
@@ -445,8 +479,21 @@ local function user_row(index, user)
     },
     ui.MouseArea {
       anchors = { fill = true },
-      on_entered = function() write(hot, true) end,
-      on_exited = function() write(hot, false) end,
+      on_entered = function()
+        write(hot, true)
+        -- Hovering also *selects*, so the keyboard and the pointer never
+        -- disagree about which row is the one Return would take.
+        if not working:get() then
+          write(chosen_user, index)
+          morph_initial(index)
+        end
+      end,
+      on_exited = function()
+        write(hot, false)
+        write(held, false)
+      end,
+      on_pressed = function() write(held, true) end,
+      on_released = function() write(held, false) end,
       on_clicked = function() choose_user(index) end,
     },
   }
@@ -539,23 +586,48 @@ face_swap = ui.Timer {
 --- icon inside it is `$scalable_icon_size`.
 local function round_button(id, name, size, on_tap)
   local hot = morf.signal("greeter.button." .. id, false)
-  local mark = icon(name, math.floor(size * 0.42))
-  mark.x = math.floor((size - size * 0.42) / 2)
-  mark.y = mark.x
+  local held = morf.signal("greeter.held." .. id, false)
+  local mark_box = math.floor(size * 0.42)
+  -- The circle grows a little and the mark grows more, so the icon appears to
+  -- come forward out of the button rather than the whole thing simply swelling.
+  -- Springs rather than easings: a pointer arriving and leaving is not a
+  -- scheduled thing, and a spring can be interrupted halfway and stay smooth.
+  local function pounce(rest, over, down)
+    return function()
+      if held:get() then return down end
+      return hot:get() and over or rest
+    end
+  end
   return ui.Item {
     width = size,
     height = size,
+    scale = pounce(1.0, 1.10, 0.94),
+    behavior = {
+      scale = { kind = "spring", mass = 1, damping = 13, stiffness = 380, epsilon = 0.002 },
+    },
     ui.Sdf {
       width = size, height = size,
       fill_color = function() return hot:get() and BUTTON_HOT or BUTTON end,
       behavior = { fill_color = { duration = 150, easing = "out_quad" } },
       ui.SdfShape { width = size, height = size, shape = "circle" },
     },
-    mark,
+    icon(name, mark_box, {
+      x = math.floor((size - mark_box) / 2),
+      y = math.floor((size - mark_box) / 2),
+      scale = pounce(1.0, 1.14, 0.9),
+      behavior = {
+        scale = { kind = "spring", mass = 1, damping = 11, stiffness = 460, epsilon = 0.002 },
+      },
+    }),
     ui.MouseArea {
       anchors = { fill = true },
       on_entered = function() write(hot, true) end,
-      on_exited = function() write(hot, false) end,
+      on_exited = function()
+        write(hot, false)
+        write(held, false)
+      end,
+      on_pressed = function() write(held, true) end,
+      on_released = function() write(held, false) end,
       on_clicked = on_tap,
     },
   }
@@ -568,10 +640,18 @@ local prompt = {
 
 -- The well, and the letter on it. Two fields rather than one because the letter
 -- is ink on the well and not a hole through it.
+-- The well answers the typing as well as the ring does: a small push per key,
+-- and a brighter face while one is held. It is the biggest thing on the screen,
+-- so it moves the least.
 prompt[#prompt + 1] = ui.Sdf {
   x = math.floor((PROMPT_W - FACE_LG) / 2),
   width = FACE_LG, height = FACE_LG,
-  fill_color = WELL,
+  fill_color = function() return kick:get() > 0 and "#fafafb2e" or WELL end,
+  scale = function() return 1.0 + kick:get() * 0.03 end,
+  behavior = {
+    fill_color = { duration = 220, easing = "out_quad" },
+    scale = { kind = "spring", mass = 1, damping = 14, stiffness = 300, epsilon = 0.002 },
+  },
   ui.SdfShape { width = FACE_LG, height = FACE_LG, shape = "circle" },
 }
 prompt[#prompt + 1] = ui.Sdf {
@@ -755,7 +835,14 @@ place(ui.MouseArea {
       end
     elseif key == "F1" then
       open_keyboard()
-    elseif asking:get() and text and text ~= "" then
+    elseif text and text ~= "" then
+      -- A key struck on the list is not a key wasted: it picks the account that
+      -- is already selected and becomes the first character of its password.
+      -- Nothing on this screen should swallow a keystroke and do nothing.
+      if not asking:get() then
+        if #users == 0 then return end
+        choose_user(chosen_user:get())
+      end
       type_character(text)
     end
   end,
