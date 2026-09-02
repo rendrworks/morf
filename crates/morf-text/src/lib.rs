@@ -471,6 +471,7 @@ mod raster_glyph;
 
 pub use glyph_fields::{
     FIELD_REFERENCE_PX as GLYPH_FIELD_REFERENCE_PX, FIELD_SPREAD_PX as GLYPH_FIELD_SPREAD_PX,
+    field_units_per_logical_px,
 };
 
 #[cfg(test)]

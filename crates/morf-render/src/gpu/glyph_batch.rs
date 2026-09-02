@@ -91,11 +91,9 @@ pub(crate) fn create_glyph_batch(
             (bounds.y + vertical_offset) as f32 * scale,
         );
         // How much the field changes across one device pixel, from the size the
-        // glyph is drawn at. The field spans its spread — three-eighths of the
-        // reference either side of the edge — over nought to one, so a device
-        // pixel covers this much of it, and the edge can fade over exactly one
-        // pixel without measuring anything.
-        let ramp = 1.0 / (0.75 * (*size as f32) * scale).max(f32::EPSILON);
+        // glyph is drawn at, so the edge can fade over exactly one pixel
+        // without measuring anything.
+        let ramp = morf_text::field_units_per_logical_px(*size as f32) / scale.max(f32::EPSILON);
         let mut push = |glyph: RasterGlyph, morph: Option<RasterGlyph>, progress: f32| {
             if glyph.width > 0 && glyph.height > 0 {
                 glyphs.push(PreparedGlyph {

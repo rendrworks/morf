@@ -47,11 +47,34 @@ pub fn field_reference_for(size: f32) -> f32 {
 
 /// How far outside the glyph a field of this reference size is measured.
 ///
-/// A fraction rather than a fixed count, so every field carries the same room
-/// in proportion to the letter — the range an outline can live in, a weight can
-/// move through, and two glyphs can interpolate across.
+/// Capped, and the cap is what decides how good the edges look. A field is a
+/// byte: two hundred and fifty-five levels spread over twice this distance. The
+/// only ones that matter are those inside the pixel the edge falls in, so the
+/// wider the spread the fewer levels there are to draw that pixel with — at a
+/// spread proportional to the reference, a sixty-four pixel letter had five
+/// greys across its edge and a three hundred pixel one had barely one, which is
+/// what stepped curves are made of.
+///
+/// Eight reference pixels is far more than an edge, a weight or an outline
+/// needs, and it leaves sixteen greys to draw with at the reference size rather
+/// than five. Nothing needs the wider range any more: a letter composed into a
+/// field is an outline walked exactly, not a texture sampled, so its reach is
+/// not bounded by this at all.
 pub fn field_spread_for(reference: f32) -> f32 {
-    (reference * 0.375).round()
+    (reference * 0.375).min(8.0).round()
+}
+
+/// How much of a field one logical pixel covers, for a glyph drawn at `size`.
+///
+/// The one place the reference and the spread are turned into the units the
+/// shader thresholds in. Everything that has to speak in field units — the
+/// width of an edge, a weight, an outline — goes through here, because the
+/// relation between the two stopped being a fixed ratio when the spread gained
+/// a cap, and two copies of it would have quietly disagreed.
+pub fn field_units_per_logical_px(size: f32) -> f32 {
+    let reference = field_reference_for(size);
+    let spread = field_spread_for(reference);
+    (reference / size.max(1.0)) / (spread * 2.0)
 }
 
 /// The spread of a field measured at the default reference size.

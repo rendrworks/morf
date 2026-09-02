@@ -3,7 +3,6 @@ use crate::{DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode};
 use morf_image::ImageCache;
 use morf_layout::{Geometry, Transform2D};
 use morf_scene::Color;
-use morf_text::{GLYPH_FIELD_REFERENCE_PX, GLYPH_FIELD_SPREAD_PX};
 use std::collections::{HashMap, HashSet};
 
 use super::glyphs::*;
@@ -357,14 +356,17 @@ fn hinting_bias(size: f64) -> f32 {
 }
 
 pub(crate) fn glyph_field_uniform(style: DistanceFieldStyle, size: f64) -> [f32; 4] {
-    let per_logical_pixel = GLYPH_FIELD_REFERENCE_PX / (size.max(1.0) as f32);
-    let span = GLYPH_FIELD_SPREAD_PX as f32 * 2.0;
+    // How much of the field one logical pixel covers at this size. Asked for
+    // rather than derived here: the spread is capped, so it is no longer a
+    // fixed fraction of the reference and a second copy of the arithmetic would
+    // disagree with the first.
+    let per_pixel = morf_text::field_units_per_logical_px(size.max(1.0) as f32);
     [
         // Positive thickness moves the edge outwards, which is the direction
         // that adds ink — the field counts upwards away from the glyph.
-        0.5 + (style.thickness + hinting_bias(size)) * per_logical_pixel / span,
-        style.softness * per_logical_pixel / span,
-        style.outline_width * per_logical_pixel / span,
+        0.5 + (style.thickness + hinting_bias(size)) * per_pixel,
+        style.softness * per_pixel,
+        style.outline_width * per_pixel,
         0.0,
     ]
 }
