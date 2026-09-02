@@ -293,7 +293,8 @@ fn ordinary_text_is_rasterized_at_its_own_size() {
     assert!(
         direct
             .iter()
-            .all(|glyph| glyph.draw_width == glyph.width && glyph.draw_height == glyph.height),
+            .all(|glyph| glyph.draw_width == glyph.width as f32
+                && glyph.draw_height == glyph.height as f32),
     );
 }
 

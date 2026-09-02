@@ -208,12 +208,12 @@ impl TextSystem {
         };
         Some(RasterGlyph {
             cache_key,
-            x: glyph.x + image.placement.left,
-            y: glyph.y - image.placement.top,
+            x: (glyph.x + image.placement.left) as f32,
+            y: (glyph.y - image.placement.top) as f32,
             width: image.placement.width,
             height: image.placement.height,
-            draw_width: image.placement.width,
-            draw_height: image.placement.height,
+            draw_width: image.placement.width as f32,
+            draw_height: image.placement.height as f32,
             content,
             data: Rc::new(image.data),
         })
@@ -225,14 +225,20 @@ pub(crate) fn field_raster(glyph: &PhysicalGlyph, key: u64, field: &Rc<FieldImag
     // How much bigger than the reference this glyph is being drawn.
     let drawn = f32::from_bits(glyph.cache_key.font_size_bits);
     let scale = drawn / field_reference_for(drawn);
+    // Where shaping actually put this glyph, fraction and all. A rasterizer
+    // threw the fraction into a subpixel bin and rendered a variant for it; a
+    // field is one shape drawn wherever it is told, so the fraction is simply
+    // kept. Dropping it is what leaves letters standing unevenly apart.
+    let pen_x = glyph.x as f32 + glyph.cache_key.x_bin.as_float();
+    let pen_y = glyph.y as f32 + glyph.cache_key.y_bin.as_float();
     RasterGlyph {
         cache_key: key,
-        x: glyph.x + (field.left as f32 * scale).round() as i32,
-        y: glyph.y - (field.top as f32 * scale).round() as i32,
+        x: pen_x + field.left * scale,
+        y: pen_y - field.top * scale,
         width: field.width,
         height: field.height,
-        draw_width: (field.width as f32 * scale).round().max(1.0) as u32,
-        draw_height: (field.height as f32 * scale).round().max(1.0) as u32,
+        draw_width: (field.width as f32 * scale).max(1.0),
+        draw_height: (field.height as f32 * scale).max(1.0),
         content: RasterContent::Field,
         data: Rc::clone(&field.data),
     }

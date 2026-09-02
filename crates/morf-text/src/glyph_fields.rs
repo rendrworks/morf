@@ -251,11 +251,16 @@ pub(crate) fn segment_box(segments: &[Segment], spread: f32) -> Option<FieldBox>
         min_y = min_y.min(segment.y0).min(segment.y1);
         max_y = max_y.max(segment.y0).max(segment.y1);
     }
+    // Not rounded to whole pixels. The box's edges are where the outline
+    // actually is, because this origin is what the quad is positioned from: a
+    // box snapped to the reference grid moves the letter by up to a whole
+    // reference pixel, which at a small drawn size is most of a pixel on
+    // screen and reads as letters standing unevenly apart.
     Some(FieldBox {
-        left: (min_x - spread).floor(),
-        top: (max_y + spread).ceil(),
-        right: (max_x + spread).ceil(),
-        bottom: (min_y - spread).floor(),
+        left: min_x - spread,
+        top: max_y + spread,
+        right: max_x + spread,
+        bottom: min_y - spread,
     })
 }
 
@@ -312,8 +317,10 @@ pub(crate) fn field_from_segments(
 
     let left = area.left;
     let top = area.top;
-    let width = (area.right - area.left).max(1.0) as u32;
-    let height = (area.top - area.bottom).max(1.0) as u32;
+    // The grid is whole texels even though the box is not: the extra fraction
+    // of a texel falls outside the spread, where the field is saturated anyway.
+    let width = (area.right - area.left).ceil().max(1.0) as u32;
+    let height = (area.top - area.bottom).ceil().max(1.0) as u32;
 
     let mut data = Vec::with_capacity((width * height) as usize);
     for row in 0..height {
@@ -340,8 +347,8 @@ pub(crate) fn field_from_segments(
     }
 
     Some(FieldImage {
-        left: left as i32,
-        top: top as i32,
+        left,
+        top,
         width,
         height,
         data: Rc::new(data),
@@ -353,8 +360,12 @@ pub(crate) fn field_from_segments(
 /// `left` and `top` are the reference-size placement of the *padded* box, so
 /// scaling them by the size being drawn gives the quad directly.
 pub(crate) struct FieldImage {
-    pub(crate) left: i32,
-    pub(crate) top: i32,
+    /// Where the box sits relative to the pen, in reference pixels.
+    ///
+    /// Fractional, and it matters: this is what the quad is placed from, and
+    /// rounding it here is rounding the letter's position on screen.
+    pub(crate) left: f32,
+    pub(crate) top: f32,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) data: Rc<Vec<u8>>,

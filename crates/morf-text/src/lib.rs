@@ -145,14 +145,20 @@ pub enum RasterContent {
 }
 
 /// Positioned glyph bitmap ready for atlas upload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RasterGlyph {
     /// Process-local key identifying the cached raster image.
     pub cache_key: u64,
     /// Physical left edge relative to the render target.
-    pub x: i32,
+    ///
+    /// Fractional. A glyph measured once and drawn at any size has no reason to
+    /// land on a whole pixel, and forcing it onto one is what makes letters sit
+    /// unevenly apart — the spacing error is the rounding, accumulated across a
+    /// word. Subpixel positioning is what a rasterizer used its subpixel bins
+    /// for; a field needs only to be told where to go.
+    pub x: f32,
     /// Physical top edge relative to the render target.
-    pub y: i32,
+    pub y: f32,
     /// Bitmap width, in the pixels the bitmap was measured at.
     pub width: u32,
     /// Bitmap height, in the pixels the bitmap was measured at.
@@ -163,9 +169,9 @@ pub struct RasterGlyph {
     /// distance field is measured once at a reference size and then drawn at
     /// whatever size is asked for, so for those two this is the only place the
     /// two numbers part company: the atlas holds `width`, the screen gets this.
-    pub draw_width: u32,
+    pub draw_width: f32,
     /// Quad height in physical pixels.
-    pub draw_height: u32,
+    pub draw_height: f32,
     /// Bitmap pixel format.
     pub content: RasterContent,
     /// Tightly packed bitmap bytes.
