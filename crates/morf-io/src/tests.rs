@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value as JsonValue;
 use zbus::zvariant::{ObjectPath, OwnedValue, Signature, StructureBuilder, Value};
