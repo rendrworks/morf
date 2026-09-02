@@ -41,7 +41,15 @@ pub(crate) fn polygon_params(
     let Some(glyph) = layer.glyph else {
         return (plain, 0.0);
     };
-    let points = text.glyph_outline(glyph, layer.glyph_morph_to, layer.morph);
+    let family = layer.font_family.as_deref().unwrap_or("sans-serif");
+    let family_to = layer.font_family_morph_to.as_deref().unwrap_or(family);
+    let points = text.glyph_outline(
+        glyph,
+        layer.glyph_morph_to,
+        layer.morph,
+        family,
+        family_to,
+    );
     if points.len() < 3 {
         return (plain, 0.0);
     }

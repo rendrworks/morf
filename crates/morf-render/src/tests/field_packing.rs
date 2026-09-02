@@ -219,6 +219,8 @@ fn a_blend_widens_the_area_a_field_may_reach() {
         vec![SdfLayer {
             glyph: None,
             glyph_morph_to: None,
+            font_family: None,
+            font_family_morph_to: None,
             bounds: Geometry {
                 x: 0.0,
                 y: 0.0,

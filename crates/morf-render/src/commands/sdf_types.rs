@@ -6,7 +6,11 @@ pub use morf_region::{Operation, Shape, ShapeParams};
 use morf_scene::Color;
 
 /// One analytic distance field, and how it joins the composition.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// Not `Copy`: a letter names the face it is cut from, and a face is a name.
+/// Only a layer that *is* a letter carries one, so a composition of plain
+/// shapes still allocates nothing.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SdfLayer {
     /// Layer rectangle in logical surface coordinates.
     pub bounds: Geometry,
@@ -48,4 +52,18 @@ pub struct SdfLayer {
     /// result is one outline, so a morphing letter costs the composition
     /// exactly what a still one does.
     pub glyph_morph_to: Option<char>,
+    /// The face the letter is cut from, or `None` for the default one.
+    ///
+    /// Which outline a glyph is depends on the face as much as on the
+    /// character: an `8` in a grotesque and an `8` in a script are two
+    /// different shapes.
+    pub font_family: Option<Box<str>>,
+    /// The face the letter it turns into is cut from, if not this one.
+    ///
+    /// The correspondence between two outlines is geometric — contours matched
+    /// by position, resampled, rotated onto each other — and knows nothing
+    /// about where either came from. So a grotesque `8` walks to a blackletter
+    /// `W` exactly as it walks to its own `W`, and changing the face mid-morph
+    /// is a morph rather than a swap.
+    pub font_family_morph_to: Option<Box<str>>,
 }

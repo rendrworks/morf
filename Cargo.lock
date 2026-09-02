@@ -1259,6 +1259,7 @@ dependencies = [
  "morf-scene",
  "morf-services",
  "morf-shader",
+ "morf-text",
  "serde_json",
 ]
 

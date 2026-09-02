@@ -19,5 +19,6 @@ morf-reactive.workspace = true
 morf-region.workspace = true
 morf-scene.workspace = true
 morf-shader.workspace = true
+morf-text.workspace = true
 morf-services.workspace = true
 serde_json.workspace = true

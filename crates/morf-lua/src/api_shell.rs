@@ -79,6 +79,20 @@ pub(crate) fn install_shell_api<'gc>(
         Ok(CallbackReturn::Return)
     });
     morf.set_field(ctx, "env", env);
+    // What faces this machine has, so a configuration that offers a choice of
+    // font can offer the real ones rather than a list of names guessed by
+    // whoever wrote it. A call rather than a table: working the answer out
+    // means scanning the font directories, and most configurations never ask.
+    let font_families = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let names = morf_text::installed_families();
+        let table = Table::new(&ctx);
+        for (index, name) in names.iter().enumerate() {
+            table.set(ctx, index as i64 + 1, name.as_str())?;
+        }
+        stack.replace(ctx, table);
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "font_families", font_families);
     morf.set_field(ctx, "process_id", i64::from(std::process::id()));
     morf.set_field(ctx, "version", env!("CARGO_PKG_VERSION"));
     let launched = launch_time_ms();

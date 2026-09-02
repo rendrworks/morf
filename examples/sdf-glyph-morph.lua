@@ -11,6 +11,12 @@
 -- turning into another letter; sometimes it is a letter turning into a shape,
 -- or a shape into a letter, because the composition does not distinguish them.
 --
+-- Each click also changes the face. Correspondence is geometry — contours
+-- paired by position, resampled, rotated onto each other — and knows nothing
+-- about which font either outline came out of, so a grotesque `8` walks onto a
+-- blackletter `W` exactly as it walks onto its own. Watch a pixel face arrive:
+-- its corners are all right angles, and they stay right angles the whole way.
+--
 -- The two morphs are not the same underneath, and the difference is worth
 -- watching for. Two letters correspond: their contours are matched, resampled
 -- and rotated onto each other, so every point walks to its opposite number and
@@ -27,7 +33,11 @@ local core = require("morf.core")
 -- with a click target across the whole of it, which left nothing above it to
 -- click on and no way to reach anything underneath — including whatever you
 -- would have used to close it.
-local W, H = 760, 560
+-- Sized around the stage rather than the other way about: the glyph is the
+-- thing being looked at, so it gets its measurement first and the window is
+-- whatever holds it with room for two lines of label.
+local STAGE = 680
+local W, H = STAGE + 220, STAGE + 300
 morf.surface.width = W
 morf.surface.height = H
 morf.surface.anchors = { top = true, left = true }
@@ -49,6 +59,16 @@ local SHAPES = {
 local GLYPHS = {
   "A", "B", "G", "K", "R", "S", "W", "@", "&", "?",
   "0", "3", "5", "8", "9", "#", "%", "+", "£", "€",
+}
+
+-- Faces to cut the letters from. The four generic names always resolve to
+-- something; the rest are asked for by name and fall back if the machine has
+-- not got them — which is why the caption says which face was *asked* for
+-- rather than claiming to know which one arrived.
+local FACES = {
+  "sans-serif", "serif", "monospace", "cursive",
+  "Blacksword", "basis33", "Grape Nuts", "Departure Mono",
+  "Bahnschrift", "Iosevka", "Liberation Serif", "Roboto",
 }
 
 local TINTS = {
@@ -75,8 +95,8 @@ local seed = morf.signal("morph.seed", 0)
 --- A morph is those two plus a number between them, and landing it is copying
 --- the second over the first — at which point the number means nothing and can
 --- go back to zero without anything moving.
-local now = { body = "circle", hole = "8", hole_is_glyph = true }
-local next_up = { body = "circle", hole = "8", hole_is_glyph = true }
+local now = { body = "circle", hole = "8", hole_is_glyph = true, face = "sans-serif" }
+local next_up = now
 
 -- One journey at a time. A plain flag rather than the travel signal: the signal
 -- returns to zero the moment the swap lands, while the property is still easing
@@ -99,7 +119,10 @@ local function pick(list, avoid)
 end
 
 local function describe(state)
-  return state.body .. "  ·  " .. state.hole
+  if not state.hole_is_glyph then
+    return state.body .. "  ·  " .. state.hole
+  end
+  return state.body .. "  ·  " .. state.hole .. "  ·  " .. state.face
 end
 
 local function advance()
@@ -107,9 +130,11 @@ local function advance()
   morphing = true
   next_up = {
     body = pick(SHAPES, now.body),
-    -- Two in five are a shape rather than a letter, so a run of clicks shows
-    -- letter-to-letter, letter-to-shape and shape-to-shape without being asked.
-    hole_is_glyph = math.random(5) > 2,
+    -- One in five is a shape rather than a letter, so a run of clicks still
+    -- shows letter-to-shape and shape-to-shape without being asked — but the
+    -- letters are what the faces are for, so they are most of it.
+    hole_is_glyph = math.random(5) > 1,
+    face = pick(FACES, now.face),
   }
   next_up.hole = next_up.hole_is_glyph and pick(GLYPHS, now.hole)
     or pick(SHAPES, now.hole)
@@ -117,18 +142,24 @@ local function advance()
   body_node.morph_to = next_up.body
   if now.hole_is_glyph and next_up.hole_is_glyph then
     -- Both letters: they correspond, so this is an outline morph and the
-    -- shape in between is a letterform.
+    -- shape in between is a letterform — including when the two are cut from
+    -- different faces, which is a morph and not a swap.
     hole_node.shape = "glyph"
     hole_node.glyph = now.hole
+    hole_node.font_family = now.face
     hole_node.glyph_morph_to = next_up.hole
+    hole_node.font_family_morph_to = next_up.face
     hole_node.morph_to = "glyph"
   else
     -- One of them is not a letter. There is no correspondence to find between
     -- an `S` and a hexagon, so the two are interpolated as fields instead.
     hole_node.glyph = now.hole_is_glyph and now.hole or ""
+    hole_node.font_family = now.hole_is_glyph and now.face or next_up.face
+    hole_node.font_family_morph_to = ""
     hole_node.shape = now.hole_is_glyph and "glyph" or now.hole
     if next_up.hole_is_glyph then
       hole_node.glyph = next_up.hole
+      hole_node.font_family = next_up.face
       hole_node.morph_to = "glyph"
     else
       hole_node.morph_to = next_up.hole
@@ -144,9 +175,8 @@ end
 -- Drawing it.
 --------------------------------------------------------------------------------
 
-local STAGE = math.min(s(520), math.min(W, H) - s(220))
 local STAGE_X = math.floor((W - STAGE) / 2)
-local STAGE_Y = math.floor(H * 0.42) - math.floor(STAGE / 2)
+local STAGE_Y = s(96)
 
 body_node = ui.SdfShape {
   width = STAGE,
@@ -173,6 +203,7 @@ hole_node = ui.SdfShape {
   shape = "glyph",
   glyph = now.hole,
   glyph_morph_to = now.hole,
+  font_family = now.face,
   morph_to = "glyph",
   radius = math.floor(STAGE * 0.06),
   points = 6,
@@ -207,6 +238,10 @@ swap = ui.Timer {
       hole_node.shape = "glyph"
       hole_node.glyph = now.hole
       hole_node.glyph_morph_to = now.hole
+      -- Both ends the same face now, so the letter stops travelling where it
+      -- arrived rather than snapping back to the face it set out from.
+      hole_node.font_family = now.face
+      hole_node.font_family_morph_to = ""
       hole_node.morph_to = "glyph"
     else
       hole_node.glyph = ""

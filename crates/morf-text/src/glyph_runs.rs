@@ -9,7 +9,7 @@ use morf_scene::NodeHandle;
 
 use crate::glyph_morph::{Contour, contour_points, contours, pair_up, walk};
 use crate::raster_glyph::field_raster;
-use crate::{BufferKey, GlyphPair, RasterGlyph, TextSystem};
+use crate::{BufferKey, FastMap, GlyphPair, RasterGlyph, TextSystem};
 
 impl TextSystem {
     /// Rasterizes one cached text node at a physical origin and scale.
@@ -143,13 +143,20 @@ impl TextSystem {
         glyph: char,
         morph_to: Option<char>,
         travel: f32,
+        family: &str,
+        family_to: &str,
     ) -> Vec<(f32, f32)> {
-        let Some(from) = self.outline_points(glyph) else {
+        let Some(from) = self.outline_points(glyph, family) else {
             return Vec::new();
         };
+        // The two ends need not be the same face. Correspondence is geometry —
+        // contours paired by position, resampled, rotated onto each other — so
+        // one face's letter walks onto another's the same way it walks onto its
+        // own. A face change is a morph, not a swap.
         let target = morph_to
-            .filter(|other| *other != glyph && travel > 0.0)
-            .and_then(|other| self.outline_points(other));
+            .filter(|other| *other != glyph || family_to != family)
+            .filter(|_| travel > 0.0)
+            .and_then(|other| self.outline_points(other, family_to));
         match target {
             Some(to) => walk(&pair_up(from, to), travel.clamp(0.0, 1.0)),
             None => contour_points(&from),
@@ -161,17 +168,19 @@ impl TextSystem {
     /// A character has to be shaped before a font can be asked for its outline,
     /// and shaping wants a buffer. This keeps one for the purpose rather than
     /// borrowing a node's, since a letter used as a shape belongs to no text.
-    fn outline_key(&mut self, glyph: char) -> Option<cosmic_text::CacheKey> {
-        if let Some(known) = self.outline_keys.get(&glyph) {
+    fn outline_key(&mut self, glyph: char, family: &str) -> Option<cosmic_text::CacheKey> {
+        if let Some(known) = self.outline_keys.get(family).and_then(|by| by.get(&glyph)) {
             return *known;
         }
-        let key = self.shape_one(glyph);
-        self.outline_keys.insert(glyph, key);
+        let key = self.shape_one_in(glyph, family);
+        if let Some(by_glyph) = self.outline_keys.get_mut(family) {
+            by_glyph.insert(glyph, key);
+        } else {
+            let mut by_glyph = FastMap::default();
+            by_glyph.insert(glyph, key);
+            self.outline_keys.insert(family.into(), by_glyph);
+        }
         key
-    }
-
-    fn shape_one(&mut self, glyph: char) -> Option<cosmic_text::CacheKey> {
-        self.shape_one_in(glyph, "sans-serif")
     }
 
     fn shape_one_in(&mut self, glyph: char, family: &str) -> Option<cosmic_text::CacheKey> {
@@ -448,8 +457,8 @@ impl TextSystem {
             .map(<[cosmic_text::Command]>::to_vec)
     }
 
-    fn outline_points(&mut self, glyph: char) -> Option<Vec<Contour>> {
-        let key = self.outline_key(glyph)?;
+    fn outline_points(&mut self, glyph: char, family: &str) -> Option<Vec<Contour>> {
+        let key = self.outline_key(glyph, family)?;
         let commands = self.glyphs.get_outline_commands(&mut self.fonts, key)?;
         let found = contours(commands);
         (!found.is_empty()).then_some(found)

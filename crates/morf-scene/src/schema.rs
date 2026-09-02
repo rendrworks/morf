@@ -245,6 +245,13 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 // `morph_progress` alongside whatever the shapes are doing.
                 string("glyph", ""),
                 string("glyph_morph_to", ""),
+                // Which face the letter is cut from, and which the letter it
+                // turns into is cut from. Empty means the same face, which is
+                // the ordinary case; naming a second one morphs across faces,
+                // since matching two outlines is geometry and does not care
+                // which font either of them came out of.
+                string("font_family", "sans-serif"),
+                string("font_family_morph_to", ""),
                 // The layer's own fill. Fully transparent means "take the
                 // field's", which is what keeps a single-colour composition
                 // from having to repeat itself on every layer.

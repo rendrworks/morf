@@ -114,6 +114,20 @@ fn shape_layer(
     Ok(Some(SdfLayer {
         glyph,
         glyph_morph_to,
+        // Only a letter has a face. Asking for the string when there is no
+        // glyph would allocate on every plain shape in every field, every
+        // frame, to describe something that is never read.
+        font_family: match glyph {
+            Some(_) => Some(scene.string_value(node, "font_family")?.into()),
+            None => None,
+        },
+        font_family_morph_to: match glyph {
+            Some(_) => match scene.string_value(node, "font_family_morph_to")? {
+                "" => None,
+                named => Some(named.into()),
+            },
+            None => None,
+        },
         bounds,
         color: layer_color(scene, node, defaults)?,
         shape,
@@ -159,6 +173,8 @@ fn rect_layer(
     Ok(Some(SdfLayer {
         glyph: None,
         glyph_morph_to: None,
+        font_family: None,
+        font_family_morph_to: None,
         bounds,
         // A rect brings its own colour into the composition, so a fused row of
         // differently coloured rects keeps every one of them and blends across

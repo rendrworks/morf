@@ -314,3 +314,48 @@ fn a_field_is_still_available_when_it_is_asked_for() {
         "asking for a field gets one",
     );
 }
+
+/// A letter is one particular outline, and which one depends on the face.
+#[test]
+fn a_face_decides_which_outline_a_letter_is() {
+    let mut text = TextSystem::new();
+    let Some(other) = installed_face_unlike("serif", &mut text) else {
+        return;
+    };
+    let serif = text.glyph_outline('8', None, 0.0, "serif", "serif");
+    let elsewhere = text.glyph_outline('8', None, 0.0, &other, &other);
+    assert!(!serif.is_empty() && !elsewhere.is_empty());
+    assert_ne!(serif, elsewhere, "two faces are two outlines of the same `8`");
+}
+
+/// Two faces morph into one another, because correspondence is geometry.
+///
+/// Nothing in the matching asks where an outline came from, so a letter walks
+/// onto another face's letter the way it walks onto its own — which is what
+/// makes changing the face an animation rather than a swap.
+#[test]
+fn a_letter_walks_onto_another_face() {
+    let mut text = TextSystem::new();
+    let Some(other) = installed_face_unlike("serif", &mut text) else {
+        return;
+    };
+    let start = text.glyph_outline('W', Some('W'), 0.0, "serif", &other);
+    let end = text.glyph_outline('W', Some('W'), 1.0, "serif", &other);
+    let half = text.glyph_outline('W', Some('W'), 0.5, "serif", &other);
+    assert_eq!(start.len(), end.len(), "one correspondence, one point count");
+    assert_eq!(half.len(), start.len());
+    assert_ne!(start, end, "the two faces are not the same W");
+    // Halfway is between the two rather than either of them: the letter is
+    // travelling, not waiting to be replaced at the end.
+    assert_ne!(half, start);
+    assert_ne!(half, end);
+}
+
+/// The first installed face whose `8` differs from the named one's.
+fn installed_face_unlike(from: &str, text: &mut TextSystem) -> Option<String> {
+    let reference = text.glyph_outline('8', None, 0.0, from, from);
+    ["monospace", "cursive", "fantasy", "sans-serif"]
+        .into_iter()
+        .find(|face| text.glyph_outline('8', None, 0.0, face, face) != reference)
+        .map(str::to_owned)
+}

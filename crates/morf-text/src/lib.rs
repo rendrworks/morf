@@ -117,8 +117,12 @@ pub struct TextSystem {
     /// Separate from `fields` because the box depends on both glyphs, so the
     /// same letter measured against two different partners is two entries.
     field_pairs: FastMap<(u64, u64), Option<MeasuredPair>>,
-    /// Shaped keys for characters used as shapes rather than as text.
-    outline_keys: FastMap<char, Option<cosmic_text::CacheKey>>,
+    /// Shaped keys for characters used as shapes rather than as text, by face.
+    ///
+    /// Nested rather than keyed by a `(face, character)` pair, because the pair
+    /// cannot be looked up without owning the face name — and this is asked
+    /// once per glyph layer per frame.
+    outline_keys: FastMap<Box<str>, FastMap<char, Option<cosmic_text::CacheKey>>>,
     font_sources: HashSet<String>,
     /// Fields already measured, by the glyph they belong to.
     ///
@@ -462,9 +466,11 @@ fn normalize_font_weight(weight: f64) -> u16 {
     }
 }
 
+mod families;
 mod glyph_corners;
 mod glyph_fields;
 mod glyph_morph;
+pub use families::installed_families;
 pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
 mod glyph_runs;
 mod measure;
