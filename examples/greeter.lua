@@ -84,15 +84,16 @@ morf.surface.keyboard_focus = "exclusive"
 local SCALE = math.max(0.75, math.min(1.7, math.min(W / 1920, H / 1080)))
 local function s(n) return math.floor(n * SCALE) end
 
-local INK = "#222226"
-local TEXT = "#fafafb"
-local DIM = "#dbdbe7"
-local CARD = "#353539"
-local CARD_HOT = "#40404a"
-local ENTRY = "#404046"
-local WELL = "#fafafb21"
-local ACCENT = "#3584e4"
-local ALERT = "#ff7b63"
+-- Worked out from the stylesheet rather than picked by eye.
+local INK = "#222226"       -- $system_base_color
+local TEXT = "#fafafb"      -- $system_fg_color
+local DIM = "#dedee4"       -- darken($system_fg_color, 10%)
+local CARD = "#353539"      -- button(normal) over the base colour
+local CARD_HOT = "#3a3a3f"
+local BUTTON = "#404045"    -- button(normal) over $system_bg_color, and %system_entry
+local BUTTON_HOT = "#45454b"
+local WELL = "#fafafb21"    -- transparentize($system_fg_color, .87)
+local ACCENT_RING = "#86b5ef33" -- the accent at a fifth, which is the focus ring
 
 local function write(signal, value)
   local ok, error = signal:set(value)
@@ -303,27 +304,110 @@ local function backspace()
   write(typed, #password)
 end
 
+
 --------------------------------------------------------------------------------
--- Which half of the screen you are on.
+-- Icons, as distance fields.
 --------------------------------------------------------------------------------
 
--- GDM has two states and shows one at a time: a list of accounts, and then one
--- account being asked for a password. The list is not dimmed behind the prompt
--- or tucked into a corner — it is gone, and the way back is the cancel button.
+--- GNOME draws symbolic SVGs from an icon theme. A configuration cannot count
+--- on a theme being installed, or on a font having the character — and a login
+--- screen is the worst place to find a tofu box where the power button was. So
+--- every mark here is arithmetic: unions, subtractions and rotations of the
+--- same shapes a field composes anyway, at any size, in any environment.
+--- `extra` is merged in before the node is built, because a binding is declared
+--- when a node is constructed and not assigned to it afterwards — a function
+--- put on a live property is a function, not a rule for one.
+local function icon(name, box, extra)
+  local field = { width = box, height = box, fill_color = TEXT }
+  for key, value in pairs(extra or {}) do field[key] = value end
+  local half = box / 2
+  local function put(layer) field[#field + 1] = ui.SdfShape(layer) end
+  local function bar(x, y, w, h, rot, op)
+    put { x = x, y = y, width = w, height = h, shape = "rect",
+          radius = math.min(w, h) / 2, rotation = rot or 0, operation = op }
+  end
+
+  if name == "back" or name == "next" then
+    -- A chevron: two rounded bars meeting at a point, which is how a symbolic
+    -- arrow is drawn. A solid triangle reads as "play".
+    -- The two arms meet at the tip and lean away from it. `back` points left,
+    -- so its tip is on the left and the arms reach right; `next` is the mirror.
+    local thick, arm = box * 0.13, box * 0.42
+    local reach = arm * 0.354
+    local lean = name == "back" and -1 or 1
+    local spine = half + reach * lean
+    bar(spine - thick / 2, half - reach - arm / 2, thick, arm, -45 * lean)
+    bar(spine - thick / 2, half + reach - arm / 2, thick, arm, 45 * lean)
+  elseif name == "power" then
+    put { width = box, height = box, shape = "ring", thickness = box * 0.13 }
+    bar(half - box * 0.13, -1, box * 0.26, half, 0, "subtract")
+    bar(half - box * 0.065, box * 0.08, box * 0.13, box * 0.34)
+  elseif name == "restart" then
+    put { width = box, height = box, shape = "ring", thickness = box * 0.13 }
+    bar(half - box * 0.02, -1, box * 0.3, half * 0.5, 0, "subtract")
+    put { x = half - box * 0.02, y = 0, width = box * 0.30, height = box * 0.26,
+          shape = "triangle", rotation = 90 }
+  elseif name == "suspend" then
+    -- A crescent: one disc with another taken out of it.
+    put { x = box * 0.06, y = box * 0.06, width = box * 0.88, height = box * 0.88,
+          shape = "circle" }
+    put { x = box * 0.30, y = -box * 0.16, width = box * 0.88, height = box * 0.88,
+          shape = "circle", operation = "subtract" }
+  elseif name == "options" then
+    local thick = box * 0.13
+    for row = 0, 2 do
+      bar(box * 0.16, box * 0.24 + row * (thick + box * 0.11), box * 0.68, thick)
+    end
+  elseif name == "keyboard" then
+    put { x = box * 0.04, y = box * 0.22, width = box * 0.92, height = box * 0.56,
+          shape = "rect", radius = box * 0.13 }
+    put { x = box * 0.15, y = box * 0.33, width = box * 0.70, height = box * 0.34,
+          shape = "rect", radius = box * 0.06, operation = "subtract" }
+    bar(box * 0.30, box * 0.54, box * 0.40, box * 0.07)
+  end
+  return ui.Sdf(field)
+end
+
+--------------------------------------------------------------------------------
+-- Which of the two screens you are on.
+--------------------------------------------------------------------------------
+
+-- GDM shows one at a time: a list of accounts, and then one account being asked
+-- for a password. The list is not dimmed behind the prompt or moved into a
+-- corner — it is gone, and the way back is the button left of the entry.
 local asking = morf.signal("greeter.asking", false)
+
+local face = morf.signal("greeter.face", 0)
+local face_from = users[1] and users[1].initial or "?"
+local face_to = face_from
+local initial_letter
+local face_swap
+
+--- The letter in the well walks from one account's initial to the next. Two
+--- outlines correspond, so what is on screen in between is a letterform rather
+--- than a cross-fade of two pictures.
+local function morph_initial(index)
+  local user = users[index]
+  if not user or user.initial == face_from then return end
+  face_to = user.initial
+  initial_letter.glyph_morph_to = face_to
+  write(face, 1)
+  face_swap.running = true
+end
 
 local function choose_user(index)
   if working:get() then return end
   write(chosen_user, index)
+  morph_initial(index)
   clear_password()
-  say("enter password")
+  say("")
   write(asking, true)
 end
 
 local function go_back()
   if working:get() then return end
   clear_password()
-  say("enter password")
+  say("")
   write(asking, false)
 end
 
@@ -331,15 +415,18 @@ end
 -- The user list.
 --------------------------------------------------------------------------------
 
-local LIST_W = s(367)          -- 25em, $_gdm_dialog_width
-local ITEM_PAD = s(9)          -- $base_padding * 1.5
-local FACE_SM = s(48)
+-- `.login-dialog-user-list-view` is 25em wide; an item is a 64px avatar with
+-- `$base_padding * 1.5` around it, `$modal_radius` corners and `$base_padding
+-- * 2` between them, and the horizontal user widget puts `$base_padding * 3`
+-- between the avatar and the name.
+local LIST_W = s(400)
+local FACE_SM = s(64)
+local ITEM_PAD = s(9)
 local ITEM_H = FACE_SM + ITEM_PAD * 2
-local ITEM_GAP = s(12)         -- $base_padding * 2
-local ITEM_RADIUS = s(16)      -- $modal_radius
+local ITEM_GAP = s(12)
+local ITEM_RADIUS = s(16)
+local NAME_GAP = s(18)
 
---- One account, as GDM draws it: a round well with the initial in it, and the
---- name beside it, on a card that lights up under the pointer.
 local function user_row(index, user)
   local hot = morf.signal("greeter.row." .. index, false)
   return ui.Item {
@@ -352,33 +439,26 @@ local function user_row(index, user)
       behavior = { color = { duration = 150, easing = "out_quad" } },
     },
     ui.Sdf {
-      x = ITEM_PAD,
-      y = ITEM_PAD,
-      width = FACE_SM,
-      height = FACE_SM,
+      x = ITEM_PAD, y = ITEM_PAD, width = FACE_SM, height = FACE_SM,
       fill_color = WELL,
       ui.SdfShape { width = FACE_SM, height = FACE_SM, shape = "circle" },
     },
     ui.Text {
-      x = ITEM_PAD,
-      y = ITEM_PAD,
-      width = FACE_SM,
-      height = FACE_SM,
+      x = ITEM_PAD, y = ITEM_PAD, width = FACE_SM, height = FACE_SM,
       text = user.initial,
-      font_size = s(20),
+      font_size = s(24),
       font_weight = 700,
       horizontal_alignment = "center",
       vertical_alignment = "center",
       color = TEXT,
     },
     ui.Text {
-      -- $base_padding * 3, the horizontal user widget's spacing.
-      x = ITEM_PAD + FACE_SM + s(18),
+      x = ITEM_PAD + FACE_SM + NAME_GAP,
       y = ITEM_PAD,
-      width = LIST_W - (ITEM_PAD * 2 + FACE_SM + s(18)),
+      width = LIST_W - (ITEM_PAD * 2 + FACE_SM + NAME_GAP),
       height = FACE_SM,
       text = user.label,
-      font_size = s(20),        -- %title_3, 15pt
+      font_size = s(16),          -- %title_3
       font_weight = 700,
       vertical_alignment = "center",
       elide = "right",
@@ -395,10 +475,14 @@ end
 
 local LIST_H = math.max(1, #users) * ITEM_H + math.max(0, #users - 1) * ITEM_GAP
 local LIST_X = math.floor((W - LIST_W) / 2)
-local LIST_Y = math.floor((H - LIST_H) / 2)
+-- `.login-dialog-user-selection-box` reserves 4em above and 8em below, and the
+-- box is centred — so the list itself sits a couple of ems above the middle.
+local LIST_Y = math.floor((H - LIST_H) / 2) - s(32)
 
-local list_view = { x = LIST_X, y = LIST_Y, width = LIST_W, height = LIST_H + s(70) }
-list_view.visible = function() return not asking:get() end
+local list_view = {
+  x = LIST_X, y = LIST_Y, width = LIST_W, height = LIST_H + s(56),
+  visible = function() return not asking:get() end,
+}
 for index, user in ipairs(users) do
   local node = user_row(index, user)
   node.y = (index - 1) * (ITEM_H + ITEM_GAP)
@@ -406,22 +490,22 @@ for index, user in ipairs(users) do
 end
 if #users == 0 then
   list_view[#list_view + 1] = ui.Text {
-    width = LIST_W,
-    height = ITEM_H,
+    width = LIST_W, height = ITEM_H,
     text = "no accounts on this machine",
-    font_size = s(15),
+    font_size = s(16),
     horizontal_alignment = "center",
     vertical_alignment = "center",
     color = DIM,
   }
 end
--- `.login-dialog-not-listed-label` — %heading, and left-aligned under the list.
+-- `.login-dialog-not-listed-label` is `%heading`, and the button it sits in is
+-- aligned to the start of the list rather than centred under it.
 list_view[#list_view + 1] = ui.Text {
   x = s(6),
-  y = LIST_H + s(22),
+  y = LIST_H + s(18),
   width = LIST_W,
   text = "Not listed?",
-  font_size = s(15),
+  font_size = s(12),
   font_weight = 700,
   color = DIM,
 }
@@ -430,32 +514,24 @@ list_view[#list_view + 1] = ui.Text {
 -- The prompt.
 --------------------------------------------------------------------------------
 
-local FACE_LG = s(160)         -- $base_icon_size * 10
-local PROMPT_W = s(440)        -- 25em * 1.2
-local ENTRY_W = s(400)
-local ENTRY_H = s(46)
--- The avatar, the `.75em` gap under the name, and the name's own line.
-local ENTRY_Y = FACE_LG + s(24) + s(38) + s(20)
+-- `.login-dialog-prompt-layout` is 30em wide, and the dialog puts a fixed-top
+-- actor at `centre - 550/2` with `margin-top: 80px` on top of that.
+local PROMPT_W = s(480)
 local PROMPT_X = math.floor((W - PROMPT_W) / 2)
-local PROMPT_Y = math.floor(H * 0.5) - s(210)
+local PROMPT_Y = math.floor(H / 2) - s(275) + s(80)
 
-local face = morf.signal("greeter.face", 0)
-local face_from = users[1] and users[1].initial or "?"
-local face_to = face_from
-local initial_letter
-local face_swap
+local FACE_LG = s(160)          -- `$base_icon_size * 10`
+local ROW_H = s(64)             -- `.login-dialog-button-box` is 4em tall
+local CANCEL = s(40)            -- 16px icon with `$base_padding * 2` around it
+local ENTRY_MARGIN = s(20)      -- `.login-dialog-prompt-entry-area`
+local ENTRY_H = ROW_H - s(16)
+local ENTRY_X = CANCEL + ENTRY_MARGIN
+local ENTRY_W = PROMPT_W - ENTRY_X - ENTRY_MARGIN
+local ENTRY_RADIUS = s(12)
+local ICON = s(16)              -- `$scalable_icon_size`
 
---- The letter in the well walks from one account's initial to the next. Two
---- outlines correspond, so what is on screen in between is a letterform and
---- not a cross-fade of two pictures.
-local function morph_initial(index)
-  local user = users[index]
-  if not user or user.initial == face_from then return end
-  face_to = user.initial
-  initial_letter.glyph_morph_to = face_to
-  write(face, 1)
-  face_swap.running = true
-end
+-- The avatar, the 24px under it, the 22px name, and its `.75em` bottom margin.
+local ROW_Y = FACE_LG + s(24) + s(26) + s(16)
 
 initial_letter = ui.SdfShape {
   x = math.floor(FACE_LG * 0.32),
@@ -479,23 +555,94 @@ face_swap = ui.Timer {
   end,
 }
 
--- The dots, as a field rather than a string of `●`. A row of circles that do
--- not touch, so it reads as a count and not as a smear.
-local DOT = s(9)
-local DOT_GAP = s(17)
-local DOTS = 20
+--- A round button with a field for a face, which is every button GDM's login
+--- screen has: `.icon-button` is circular, `%system_button` coloured, and the
+--- icon inside it is `$scalable_icon_size`.
+local function round_button(id, name, size, on_tap)
+  local hot = morf.signal("greeter.button." .. id, false)
+  local mark = icon(name, math.floor(size * 0.42))
+  mark.x = math.floor((size - size * 0.42) / 2)
+  mark.y = mark.x
+  return ui.Item {
+    width = size,
+    height = size,
+    ui.Sdf {
+      width = size, height = size,
+      fill_color = function() return hot:get() and BUTTON_HOT or BUTTON end,
+      behavior = { fill_color = { duration = 150, easing = "out_quad" } },
+      ui.SdfShape { width = size, height = size, shape = "circle" },
+    },
+    mark,
+    ui.MouseArea {
+      anchors = { fill = true },
+      on_entered = function() write(hot, true) end,
+      on_exited = function() write(hot, false) end,
+      on_clicked = on_tap,
+    },
+  }
+end
+
+local prompt = {
+  x = PROMPT_X, y = PROMPT_Y, width = PROMPT_W, height = s(400),
+  visible = function() return asking:get() end,
+}
+
+-- The well, and the letter on it. Two fields rather than one because the letter
+-- is ink on the well and not a hole through it.
+prompt[#prompt + 1] = ui.Sdf {
+  x = math.floor((PROMPT_W - FACE_LG) / 2),
+  width = FACE_LG, height = FACE_LG,
+  fill_color = WELL,
+  ui.SdfShape { width = FACE_LG, height = FACE_LG, shape = "circle" },
+}
+prompt[#prompt + 1] = ui.Sdf {
+  x = math.floor((PROMPT_W - FACE_LG) / 2),
+  width = FACE_LG, height = FACE_LG,
+  fill_color = TEXT,
+  initial_letter,
+}
+
+-- `.user-widget.vertical .user-widget-label` — 20pt, weight 400, centred.
+prompt[#prompt + 1] = ui.Text {
+  y = FACE_LG + s(24),
+  width = PROMPT_W,
+  text = function()
+    local user = users[chosen_user:get()]
+    return user and user.label or ""
+  end,
+  font_size = s(22),
+  font_weight = 400,
+  horizontal_alignment = "center",
+  color = TEXT,
+}
+
+-- The back button, left of the entry and vertically centred in the row, which
+-- is where `.cancel-button` sits in `.login-dialog-button-box`.
+do
+  local node = round_button("cancel", "back", CANCEL, go_back)
+  node.y = ROW_Y + math.floor((ROW_H - CANCEL) / 2)
+  prompt[#prompt + 1] = node
+end
+
+-- The dots, as a field. A row of circles that do not touch, so it reads as a
+-- count rather than a smear — and no font has to have `●` for it to.
+local DOT = s(10)
+local DOT_GAP = s(18)
+-- As many as fit between the entry's leading padding and the arrow at its
+-- trailing edge, so a long password fills the field rather than running out of
+-- it. `.login-dialog-prompt-entry` reserves 2.5em on the trailing side.
+local DOTS = math.max(1, math.floor((ENTRY_W - s(14) - s(40)) / DOT_GAP))
 local dot_row = {
-  x = s(20),
-  y = math.floor((ENTRY_H - DOT) / 2),
+  x = ENTRY_X + s(14),
+  y = ROW_Y + math.floor((ROW_H - DOT) / 2),
   width = DOTS * DOT_GAP,
   height = DOT,
   fill_color = TEXT,
 }
 for index = 1, DOTS do
-  -- Grown into rather than switched on, so a held key reads as a rhythm. Size
-  -- and not `opacity`: the layers of a field compose into one shape before
-  -- anything is painted, so a layer has no opacity of its own to turn down —
-  -- what it has is a radius, and a circle of no radius is nothing.
+  -- Size, and not `opacity`: the layers of a field compose into one shape
+  -- before anything is painted, so a layer has no opacity of its own to turn
+  -- down. What it has is a radius, and a circle of no radius is nothing.
   dot_row[#dot_row + 1] = ui.SdfShape {
     x = function()
       return (index - 1) * DOT_GAP + (typed:get() >= index and 0 or DOT / 2)
@@ -513,171 +660,62 @@ for index = 1, DOTS do
   }
 end
 
-local prompt = {
-  x = PROMPT_X,
-  y = PROMPT_Y,
-  width = PROMPT_W,
-  height = s(430),
-  visible = function() return asking:get() end,
+prompt[#prompt + 1] = ui.Rect {
+  x = ENTRY_X,
+  y = ROW_Y + math.floor((ROW_H - ENTRY_H) / 2),
+  width = ENTRY_W,
+  height = ENTRY_H,
+  radius = ENTRY_RADIUS,
+  color = BUTTON,
+  -- `%system_entry:focus` is a two-pixel ring at a fifth of the accent, drawn
+  -- inside the entry. It always has the keys here, so it always has the ring.
+  border_width = s(2),
+  border_color = ACCENT_RING,
+}
+prompt[#prompt + 1] = ui.Text {
+  x = ENTRY_X + s(14),
+  y = ROW_Y,
+  width = ENTRY_W - s(28),
+  height = ROW_H,
+  text = function() return typed:get() == 0 and "Password" or "" end,
+  font_size = s(15),
+  vertical_alignment = "center",
+  color = DIM,
+  opacity = 0.65,
+}
+prompt[#prompt + 1] = ui.Sdf(dot_row)
+
+-- `.next-button` sits in `.login-dialog-default-button-well`, inside the entry
+-- at its trailing edge with `0.5em` to spare, and carries no background of its
+-- own — the entry it stands in is its background.
+do
+  prompt[#prompt + 1] = icon("next", ICON, {
+    x = ENTRY_X + ENTRY_W - s(8) - ICON,
+    y = ROW_Y + math.floor((ROW_H - ICON) / 2),
+    opacity = function() return typed:get() > 0 and 1 or 0.4 end,
+    behavior = { opacity = { duration = 180, easing = "out_quad" } },
+  })
+end
+prompt[#prompt + 1] = ui.MouseArea {
+  x = ENTRY_X, y = ROW_Y, width = ENTRY_W, height = ROW_H,
+  on_clicked = function() attempt() end,
 }
 
 -- `.login-dialog-message` — centred, dimmed, and holding 2.75em of height
--- whether or not it has anything to say, so nothing below it jumps.
---
--- Declared before the avatar rather than after the entry, though it is drawn
--- below it: whatever node came directly after the entry in tree order did not
--- draw at all — any element, at any position, at any depth — and only moving
--- it out of that slot brings it back. That is a renderer bug and it wants
--- finding; it is not worth a login screen that cannot say a password was wrong.
-prompt[#prompt + 1] = ui.Item {
-  x = 0,
-  y = ENTRY_Y + ENTRY_H + s(24),
-  width = PROMPT_W,
-  height = s(40),
-  visible = function() return asking:get() end,
-  ui.Text {
-    width = PROMPT_W,
-    height = s(40),
-    text = function()
-      if working:get() then return "Authenticating…" end
-      return message:get()
-    end,
-    font_size = s(15),
-    horizontal_alignment = "center",
-    color = function() return alarmed:get() and ALERT or DIM end,
-    behavior = { color = { duration = 320, easing = "out_quad" } },
-  },
-}
-
-prompt[#prompt + 1] = ui.Sdf {
-  x = math.floor((PROMPT_W - FACE_LG) / 2),
-  width = FACE_LG,
-  height = FACE_LG,
-  fill_color = WELL,
-  ui.SdfShape { width = FACE_LG, height = FACE_LG, shape = "circle" },
-}
--- The letter is its own field on top rather than a hole in the well, so it
--- reads the same way round as the letters in the list: light on dim, not the
--- desktop showing through.
-prompt[#prompt + 1] = ui.Sdf {
-  x = math.floor((PROMPT_W - FACE_LG) / 2),
-  width = FACE_LG,
-  height = FACE_LG,
-  fill_color = TEXT,
-  initial_letter,
-}
-
--- `.user-widget.vertical` — 20pt, weight 400, centred, and a `.75em` gap under
--- it before anything else.
+-- whether or not it has anything to say, so nothing below it moves. GDM does
+-- not colour a failed password red; it says so and leaves the screen alone.
 prompt[#prompt + 1] = ui.Text {
-  y = FACE_LG + s(24),
+  y = ROW_Y + ROW_H + s(9),
   width = PROMPT_W,
+  height = s(44),
   text = function()
-    local user = users[chosen_user:get()]
-    return user and user.label or ""
+    if working:get() then return "Authenticating…" end
+    return message:get()
   end,
-  font_size = s(27),
-  font_weight = 400,
+  font_size = s(12),
   horizontal_alignment = "center",
-  color = TEXT,
+  color = DIM,
 }
-
--- `.login-dialog-input-well`.
-local input_well = {
-  y = ENTRY_Y,
-  width = PROMPT_W,
-  height = s(160),
-}
-
-input_well[#input_well + 1] = ui.Item {
-  x = math.floor((PROMPT_W - ENTRY_W) / 2),
-  y = 0,
-  width = ENTRY_W,
-  height = ENTRY_H,
-  ui.Rect {
-    anchors = { fill = true },
-    radius = s(12),           -- $base_border_radius * 1.5
-    color = ENTRY,
-    -- GDM rings the entry in the accent colour while it has the keys, and in
-    -- red when the answer was wrong. It always has the keys here.
-    border_width = s(2),
-    border_color = function() return alarmed:get() and ALERT or ACCENT end,
-    behavior = { border_color = { duration = 250, easing = "out_quad" } },
-  },
-  ui.Text {
-    x = s(20),
-    anchors = { fill = true },
-    text = function() return typed:get() == 0 and "Password" or "" end,
-    font_size = s(16),
-    vertical_alignment = "center",
-    color = DIM,
-    opacity = 0.7,
-  },
-  ui.Sdf(dot_row),
-  -- The submit arrow: a triangle in a field, so it is the same mark in every
-  -- font and at every size.
-  ui.Sdf {
-    x = ENTRY_W - ENTRY_H,
-    width = ENTRY_H,
-    height = ENTRY_H,
-    fill_color = function() return typed:get() > 0 and TEXT or DIM end,
-    opacity = function() return typed:get() > 0 and 1 or 0.35 end,
-    behavior = { opacity = { duration = 180, easing = "out_quad" } },
-    ui.SdfShape {
-      x = math.floor(ENTRY_H * 0.34),
-      y = math.floor(ENTRY_H * 0.30),
-      width = math.floor(ENTRY_H * 0.32),
-      height = math.floor(ENTRY_H * 0.40),
-      shape = "triangle",
-      rotation = 90,
-    },
-  },
-  ui.MouseArea { anchors = { fill = true }, on_clicked = function() attempt() end },
-}
-
-prompt[#prompt + 1] = ui.Item(input_well)
-
---------------------------------------------------------------------------------
--- Buttons, in GDM's corners.
---------------------------------------------------------------------------------
-
-local PILL_H = s(40)
-local BUTTON_PAD = s(32)       -- .login-dialog-bottom-button-group
-local BUTTON_GAP = s(16)
-
---- A flat pill that lights up under the pointer, which is what every button on
---- GDM's login screen is.
-local function pill(id, label, width, lit, on_tap)
-  local hot = morf.signal("greeter.pill." .. id, false)
-  local function live() return hot:get() or lit() end
-  return ui.Item {
-    width = width,
-    height = PILL_H,
-    ui.Rect {
-      anchors = { fill = true },
-      radius = s(999),
-      color = function() return live() and CARD_HOT or CARD end,
-      behavior = { color = { duration = 150, easing = "out_quad" } },
-    },
-    ui.Text {
-      anchors = { fill = true },
-      text = label,
-      font_size = s(15),
-      font_weight = 700,
-      horizontal_alignment = "center",
-      vertical_alignment = "center",
-      elide = "right",
-      color = function() return live() and TEXT or DIM end,
-      behavior = { color = { duration = 150, easing = "out_quad" } },
-    },
-    ui.MouseArea {
-      anchors = { fill = true },
-      on_entered = function() write(hot, true) end,
-      on_exited = function() write(hot, false) end,
-      on_clicked = on_tap,
-    },
-  }
-end
 
 --------------------------------------------------------------------------------
 -- The tree.
@@ -691,7 +729,7 @@ local function place(node) tree[#tree + 1] = node end
 
 -- First, so it is at the bottom of the stack. A hit test returns the *topmost*
 -- MouseArea over the point, and this one covers the screen: placed last it
--- would sit over every row and swallow the taps meant for them. Key handlers
+-- would sit over every button and swallow the taps meant for them. Key handlers
 -- are collected by walking the tree rather than by z-order, so being underneath
 -- costs it nothing.
 place(ui.MouseArea {
@@ -704,7 +742,6 @@ place(ui.MouseArea {
         attempt()
       elseif #users > 0 then
         choose_user(chosen_user:get())
-        morph_initial(chosen_user:get())
       end
     elseif key == "BackSpace" then
       backspace()
@@ -730,65 +767,56 @@ place(ui.MouseArea {
 place(ui.Rect { width = W, height = H, color = INK })
 place(ui.Item(list_view))
 
+--------------------------------------------------------------------------------
+-- `.login-dialog-bottom-button-group`: 32px in from the corner, 16px apart.
+--------------------------------------------------------------------------------
 
+local BUTTON_SIZE = s(48)       -- 16px icon with `to_em(16px)` around it
+local BUTTON_PAD = s(32)
+local BUTTON_GAP = s(16)
+local BUTTON_Y = H - BUTTON_PAD - BUTTON_SIZE
 
--- Bottom right: the session, then power. Laid out from the right edge inwards,
--- which is the order GDM's button group ends up in.
 local right = W - BUTTON_PAD
 local function place_right(node)
-  right = right - node.width
+  right = right - BUTTON_SIZE
   node.x = right
-  node.y = H - BUTTON_PAD - PILL_H
+  node.y = BUTTON_Y
   place(node)
   right = right - BUTTON_GAP
 end
 
-for index = #available, 1, -1 do
-  local entry = available[index]
-  place_right(pill("session" .. index, entry.name, s(190),
-    function() return chosen_session:get() == index end,
-    function() if not working:get() then write(chosen_session, index) end end))
-end
-if #available == 0 then
-  place_right(pill("nosession", "no sessions", s(190), function() return false end,
-                   function() end))
-end
-place_right(pill("sleep", "Suspend", s(120), function() return false end,
-                 function() power("Suspend") end))
-place_right(pill("restart", "Restart", s(120), function() return false end,
-                 function() power("Reboot") end))
-place_right(pill("shutdown", "Power Off", s(130), function() return false end,
-                 function() power("PowerOff") end))
-
--- Bottom left: the keyboard, and the way back out of the prompt.
-do
-  local node = pill("keyboard", "Keyboard", s(130), function() return false end,
-                    open_keyboard)
-  node.x = BUTTON_PAD
-  node.y = H - BUTTON_PAD - PILL_H
-  place(node)
-
-  -- Wrapped, because a binding is made when a node is built and not afterwards:
-  -- `cancel.visible = function() ... end` assigns a function to a live property
-  -- rather than declaring one, which is a different thing and refused.
-  place(ui.Item {
-    x = BUTTON_PAD + s(130) + BUTTON_GAP,
-    y = H - BUTTON_PAD - PILL_H,
-    width = s(120),
-    height = PILL_H,
-    visible = function() return asking:get() end,
-    pill("cancel", "Cancel", s(120), function() return false end, go_back),
-  })
+-- Rightmost first, so they read left to right in the order written.
+place_right(round_button("keyboard", "keyboard", BUTTON_SIZE, open_keyboard))
+place_right(round_button("power", "power", BUTTON_SIZE, function() power("PowerOff") end))
+place_right(round_button("restart", "restart", BUTTON_SIZE, function() power("Reboot") end))
+place_right(round_button("suspend", "suspend", BUTTON_SIZE, function() power("Suspend") end))
+if #available > 1 then
+  place_right(round_button("options", "options", BUTTON_SIZE, function()
+    if not working:get() then write(chosen_session, chosen_session:get() % #available + 1) end
+  end))
 end
 
--- The prompt last, so it is drawn over everything and nothing is drawn after
--- it. Topmost is where the focused thing belongs anyway — and it sidesteps a
--- renderer fault this screen kept walking into: whatever node came directly
--- after the prompt's entry in draw order did not draw at all, whichever element
--- it was and wherever it sat. It wants finding, but a login screen is not the
--- place to leave it showing.
+-- Which session that button is currently on. GDM keeps this in a popup; a
+-- greeter with no popup has to say it somewhere, and saying nothing at all
+-- leaves the button meaningless.
+place(ui.Text {
+  x = s(32),
+  y = BUTTON_Y,
+  width = right - s(32),
+  height = BUTTON_SIZE,
+  text = function()
+    local entry = available[chosen_session:get()]
+    return entry and entry.name or "no sessions on this machine"
+  end,
+  font_size = s(12),
+  font_weight = 700,
+  vertical_alignment = "center",
+  horizontal_alignment = "right",
+  elide = "right",
+  color = DIM,
+})
+
 place(ui.Item(prompt))
-
 place(face_swap)
 
 ui.Item(tree)
