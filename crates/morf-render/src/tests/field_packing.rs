@@ -245,3 +245,17 @@ fn a_blend_widens_the_area_a_field_may_reach() {
     // The outline and the softened edge are on top of it, not instead of it.
     assert_eq!(field_spread(4.0, 3.0, &layers(18.0)), 23.0);
 }
+
+/// The field shader walks a polygon layer in runs of a fixed length rather than
+/// being told one, because every contour is resampled to the same size when the
+/// outline is built. That length is written into `field.wgsl`, so a change here
+/// has to be a change there — this is what says so.
+#[test]
+fn the_shader_and_the_outline_agree_on_a_contour_length() {
+    assert_eq!(morf_text::GLYPH_CONTOUR_POINTS, 96);
+    let shader = include_str!("../field.wgsl");
+    assert!(
+        shader.contains("sd_polygon(point, u32(layer.params.x), 96u, u32(layer.extra.w))"),
+        "field.wgsl must walk polygon contours in runs of GLYPH_CONTOUR_POINTS"
+    );
+}

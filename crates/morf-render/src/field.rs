@@ -17,14 +17,13 @@ pub struct SdfFieldLayer {
     pub kinds: [f32; 4],
     /// Centre then half-extents, in the field's own space.
     pub rect: [f32; 4],
-    /// `[unused, points, inner radius, thickness]`.
+    /// `[outline start, points, inner radius, thickness]`.
     ///
-    /// The first slot is padding, not a corner radius: corners come through
-    /// `radii`, and the shader has never read this one. The doc used to say
-    /// otherwise, which is the sort of disagreement that survives precisely
-    /// because nothing depends on it.
+    /// The first slot was padding — corners come through `radii` — and now
+    /// carries where a polygon layer's outline points begin. It is the one slot
+    /// in here nothing else wanted.
     pub params: [f32; 4],
-    /// `[angle, rotation, blend, unused]`.
+    /// `[angle, rotation, blend, outline loop count]`.
     pub extra: [f32; 4],
     /// Linear-light fill for this layer.
     pub color: [f32; 4],
@@ -182,6 +181,7 @@ impl SdfFieldInstance {
         let scale = scale_120.max(1) as f64 / 120.0;
         let first = layers.len();
         for layer in sources.iter().take(MAX_FIELD_LAYERS) {
+            let outline = polygon_params(layer, scale, outlines, text);
             layers.push(SdfFieldLayer {
                 kinds: [
                     layer.shape.code() as f32,
@@ -195,12 +195,12 @@ impl SdfFieldInstance {
                     ((layer.bounds.width / 2.0) * scale) as f32,
                     ((layer.bounds.height / 2.0) * scale) as f32,
                 ],
-                params: polygon_params(layer, scale, outlines, text),
+                params: outline.0,
                 extra: [
                     layer.angle,
                     layer.rotation,
                     (f64::from(layer.blend) * scale) as f32,
-                    0.0,
+                    outline.1,
                 ],
                 color: color_array(layer.color),
                 radii: layer.radii.map(|radius| (f64::from(radius) * scale) as f32),

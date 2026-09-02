@@ -91,14 +91,18 @@ fn shape_layer(
     let glyph = scene.string_value(node, "glyph")?.chars().next();
     let glyph_morph_to = scene.string_value(node, "glyph_morph_to")?.chars().next();
     let name = scene.string_value(node, "shape")?;
-    let shape = if glyph.is_some() {
+    let named = Shape::parse(name)
+        .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape shape `{name}`")))?;
+    // Naming a letter is enough to mean the layer *is* that letter, unless the
+    // shape was named too — which is how a shape morphs into a letter rather
+    // than out of one.
+    let shape = if glyph.is_some() && name == "circle" {
         Shape::Polygon
     } else {
-        Shape::parse(name)
-            .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape shape `{name}`")))?
+        named
     };
     let target = scene.string_value(node, "morph_to")?;
-    let morph_to = if target.is_empty() || glyph.is_some() {
+    let morph_to = if target.is_empty() {
         shape
     } else {
         Shape::parse(target)

@@ -9,12 +9,13 @@ use morf_region::Shape;
 
 use crate::commands::SdfLayer;
 
-/// A layer's shape parameters, resolving a letter to points when it is one.
+/// A layer's shape parameters, and how many contours its outline has.
 ///
-/// The first two slots mean different things for a polygon than for a star: a
-/// polygon has no radius or point count to describe, so they carry where its
-/// run of outline points begins and how many there are. Every other shape keeps
-/// what it always had.
+/// The outline goes in the two slots nothing else uses — the padding at the
+/// front of `params` and the tail of `extra` — because every other slot already
+/// means something to some shape. Putting the run there instead cost a star its
+/// point count and its waist, and `morph_to = "star"` came out as a
+/// ninety-six-pointed scribble.
 ///
 /// The points are placed into the layer's own box — centred, and scaled to fit
 /// without distorting the letter — because a field layer is positioned by its
@@ -24,22 +25,25 @@ pub(crate) fn polygon_params(
     scale: f64,
     outlines: &mut Vec<[f32; 2]>,
     text: &mut morf_text::TextSystem,
-) -> [f32; 4] {
+) -> ([f32; 4], f32) {
     let plain = [
         0.0,
         layer.points,
         layer.inner_radius,
         (f64::from(layer.thickness) * scale) as f32,
     ];
-    if layer.shape != Shape::Polygon {
-        return plain;
+    // Either end being an outline means the points are needed: a star morphing
+    // into a letter reads the letter's points just as the letter morphing into
+    // a star does.
+    if layer.shape != Shape::Polygon && layer.morph_to != Shape::Polygon {
+        return (plain, 0.0);
     }
     let Some(glyph) = layer.glyph else {
-        return plain;
+        return (plain, 0.0);
     };
     let points = text.glyph_outline(glyph, layer.glyph_morph_to, layer.morph);
     if points.len() < 3 {
-        return plain;
+        return (plain, 0.0);
     }
 
     // Font coordinates count upwards from a baseline; a field's box counts
@@ -68,12 +72,8 @@ pub(crate) fn polygon_params(
             -(point.1 - centre.1) * fit,
         ]);
     }
-    // Where the run starts, how long one loop is, and how many loops.
-    let stride = morf_text::GLYPH_CONTOUR_POINTS as f32;
-    [
-        first,
-        stride,
-        (points.len() / morf_text::GLYPH_CONTOUR_POINTS) as f32,
-        plain[3],
-    ]
+    // Where the run starts, and how many closed loops are in it. Every loop is
+    // `GLYPH_CONTOUR_POINTS` long, which the shader knows.
+    let loops = (points.len() / morf_text::GLYPH_CONTOUR_POINTS) as f32;
+    ([first, plain[1], plain[2], plain[3]], loops)
 }

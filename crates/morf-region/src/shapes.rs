@@ -68,8 +68,11 @@ impl Shape {
             "pie" | "sector" => Self::Pie,
             "cross" | "plus" => Self::Cross,
             "ellipse" | "oval" => Self::Ellipse,
-            // Not nameable from a configuration: a polygon layer is produced by
-            // asking for a glyph, which is where its points come from.
+            // Nameable so a layer can morph *into* an outline as well as out of
+            // one: `shape = "star", morph_to = "glyph"` is a star becoming a
+            // letter, which is the same interpolation as a star becoming a
+            // hexagon. The points come from the layer's `glyph`.
+            "glyph" | "polygon" => Self::Polygon,
             _ => return None,
         })
     }
@@ -82,7 +85,7 @@ impl Shape {
             Self::Capsule => "capsule",
             Self::Triangle => "triangle",
             Self::Hexagon => "hexagon",
-            Self::Polygon => "polygon",
+            Self::Polygon => "glyph",
             Self::Star => "star",
             Self::Ring => "ring",
             Self::Pie => "pie",

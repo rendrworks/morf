@@ -315,12 +315,10 @@ fn shape_distance(kind: u32, point: vec2<f32>, layer: Layer) -> f32 {
         case 7u: { return sd_pie(point, radius, layer.extra.x); }
         case 9u: { return sd_ellipse(point, half); }
         case 10u: {
-            return sd_polygon(
-                point,
-                u32(layer.params.x),
-                u32(layer.params.y),
-                u32(layer.params.z),
-            );
+            // Every contour is resampled to the same length when the outline
+            // is built, so the stride is known here rather than sent. It must
+            // match `morf_text::GLYPH_CONTOUR_POINTS`, which a test asserts.
+            return sd_polygon(point, u32(layer.params.x), 96u, u32(layer.extra.w));
         }
         default: { return sd_cross(point, half, layer.params.w); }
     }
