@@ -308,3 +308,84 @@ fn probe_fonts() {
         );
     }
 }
+
+/// The accelerated field generator must agree with the plain one exactly.
+///
+/// It is the shipping generator: every glyph on screen comes out of it. A
+/// speed-up that changes a single byte is not a speed-up, it is a new
+/// renderer — so this checks byte for byte, over faces built differently
+/// enough to exercise long thin strokes, tight counters and stray marks.
+#[test]
+#[ignore]
+fn probe_field_generator_agrees() {
+    const REFERENCE: f32 = 128.0;
+    let spread = crate::glyph_fields::field_spread_for(REFERENCE);
+    let mut checked = 0;
+    let mut differing = 0;
+    for family in ["Roboto", "Liberation Serif", "Grape Nuts", "basis33"] {
+        let mut text = TextSystem::new();
+        if !text.has_family(family) {
+            continue;
+        }
+        for glyph in "#WAmoe8B$4RQg@ilj.,'\"".chars() {
+            let Some(key) = text.probe_outline_key_in(glyph, REFERENCE, family) else { continue };
+            let Some(commands) = text.probe_outline_commands(key) else { continue };
+            let segments = crate::glyph_fields::flatten(&commands);
+            let Some(area) = crate::glyph_fields::segment_box(&segments, spread) else { continue };
+            let Some(fast) = crate::glyph_fields::field_from_segments(&segments, area, spread)
+            else { continue };
+            let Some(slow) = crate::glyph_fields::field_by_brute_force(&segments, area, spread)
+            else { continue };
+            checked += 1;
+            assert_eq!(fast.width, slow.width, "{family} {glyph:?} width");
+            assert_eq!(fast.height, slow.height, "{family} {glyph:?} height");
+            let worst = fast
+                .data
+                .iter()
+                .zip(slow.data.iter())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            if worst != 0 {
+                differing += 1;
+                println!("  {family} {glyph:?}: worst byte difference {worst}");
+            }
+        }
+    }
+    println!("{checked} glyphs checked, {differing} differing");
+    assert_eq!(differing, 0, "accelerated generator must match byte for byte");
+}
+
+/// What the acceleration is worth, at the sizes where the stall was visible.
+#[test]
+#[ignore]
+fn probe_field_generator_timing() {
+    use std::time::Instant;
+    let mut text = TextSystem::new();
+    for reference in [64.0_f32, 128.0, 256.0] {
+        let spread = crate::glyph_fields::field_spread_for(reference);
+        let mut fast_total = 0.0_f64;
+        let mut slow_total = 0.0_f64;
+        let mut glyphs = 0;
+        for glyph in "#WAmoe8B$4RQg@".chars() {
+            let Some(key) = text.probe_outline_key_in(glyph, reference, "Roboto") else { continue };
+            let Some(commands) = text.probe_outline_commands(key) else { continue };
+            let segments = crate::glyph_fields::flatten(&commands);
+            let Some(area) = crate::glyph_fields::segment_box(&segments, spread) else { continue };
+            let mark = Instant::now();
+            let _ = crate::glyph_fields::field_from_segments(&segments, area, spread);
+            fast_total += mark.elapsed().as_secs_f64() * 1000.0;
+            let mark = Instant::now();
+            let _ = crate::glyph_fields::field_by_brute_force(&segments, area, spread);
+            slow_total += mark.elapsed().as_secs_f64() * 1000.0;
+            glyphs += 1;
+        }
+        let glyphs = glyphs.max(1) as f64;
+        println!(
+            "reference {reference:>5}: brute force {:>7.2} ms/glyph, accelerated {:>6.2} ms/glyph  ({:.1}x)",
+            slow_total / glyphs,
+            fast_total / glyphs,
+            slow_total / fast_total.max(1e-9)
+        );
+    }
+}

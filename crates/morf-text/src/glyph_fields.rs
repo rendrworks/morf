@@ -113,6 +113,9 @@ impl Segment {
     /// way round. Summed over the outline this is the winding number, which is
     /// what says inside from outside — including the counters of `o` and `8`,
     /// which are wound the other way and so cancel.
+    /// Kept for `field_by_brute_force`, which the fast generator is checked
+    /// against. The generator itself sweeps a whole row at a time instead.
+    #[cfg(test)]
     pub(crate) fn winding(&self, x: f32, y: f32) -> i32 {
         if (self.y0 <= y) == (self.y1 <= y) {
             return 0;
@@ -345,21 +348,93 @@ pub(crate) fn field_from_segments(
     let width = (area.right - area.left).ceil().max(1.0) as u32;
     let height = (area.top - area.bottom).ceil().max(1.0) as u32;
 
+    // Two different questions, each asked the cheap way.
+    //
+    // The distance only matters within the spread — past it every value folds
+    // to the same saturated byte — so a texel need only look at segments near
+    // it. Sorting the segments into a grid of cells one spread across means the
+    // nine cells around a texel hold every segment that could be within one,
+    // and if they hold none the answer is "further than the spread", which is
+    // the same byte either way.
+    //
+    // The sign cannot be localised like that: which side of the outline a point
+    // is on depends on every segment a ray from it crosses. But a whole row
+    // shares a ray, so the crossings are found once per row instead of once per
+    // texel, and each texel only counts the ones to its right.
+    let cell = spread.max(1.0);
+    let across = ((width as f32 / cell).ceil() as usize).max(1);
+    let down = ((height as f32 / cell).ceil() as usize).max(1);
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); across * down];
+    for (index, segment) in segments.iter().enumerate() {
+        let low_x = segment.x0.min(segment.x1) - left;
+        let high_x = segment.x0.max(segment.x1) - left;
+        let low_y = top - segment.y0.max(segment.y1);
+        let high_y = top - segment.y0.min(segment.y1);
+        let first_column = ((low_x / cell).floor().max(0.0) as usize).min(across - 1);
+        let last_column = ((high_x / cell).floor().max(0.0) as usize).min(across - 1);
+        let first_row = ((low_y / cell).floor().max(0.0) as usize).min(down - 1);
+        let last_row = ((high_y / cell).floor().max(0.0) as usize).min(down - 1);
+        for row in first_row..=last_row {
+            for column in first_column..=last_column {
+                buckets[row * across + column].push(index as u32);
+            }
+        }
+    }
+
     let mut data = Vec::with_capacity((width * height) as usize);
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    let mut nearby: Vec<u32> = Vec::new();
     for row in 0..height {
         // Sampled at the centre of the texel, and downwards: the field is read
         // as an image, where the first row is the top, while the outline it is
         // measured from counts y upwards from the baseline.
         let y = top - row as f32 - 0.5;
+
+        // Where this row's ray crosses the outline, and which way each crossing
+        // turns. Gathered once for the row.
+        crossings.clear();
+        for segment in segments {
+            if (segment.y0 <= y) == (segment.y1 <= y) {
+                continue;
+            }
+            let along = (y - segment.y0) / (segment.y1 - segment.y0);
+            let at = segment.x0 + along * (segment.x1 - segment.x0);
+            crossings.push((at, if segment.y1 > segment.y0 { 1 } else { -1 }));
+        }
+
+        let band = ((row as f32 / cell).floor() as usize).min(down - 1);
+        let mut last_column_cell = usize::MAX;
         for column in 0..width {
             let x = left + column as f32 + 0.5;
+
+            let cell_column = ((column as f32 / cell).floor() as usize).min(across - 1);
+            if cell_column != last_column_cell {
+                last_column_cell = cell_column;
+                nearby.clear();
+                for band_row in band.saturating_sub(1)..=(band + 1).min(down - 1) {
+                    for band_column in
+                        cell_column.saturating_sub(1)..=(cell_column + 1).min(across - 1)
+                    {
+                        nearby.extend_from_slice(&buckets[band_row * across + band_column]);
+                    }
+                }
+                nearby.sort_unstable();
+                nearby.dedup();
+            }
+
             let mut nearest = f32::MAX;
-            let mut winding = 0;
-            for segment in segments {
-                nearest = nearest.min(segment.distance_squared(x, y));
-                winding += segment.winding(x, y);
+            for index in &nearby {
+                nearest = nearest.min(segments[*index as usize].distance_squared(x, y));
             }
             let distance = nearest.sqrt();
+
+            let mut winding = 0;
+            for (at, turn) in &crossings {
+                if *at > x {
+                    winding += turn;
+                }
+            }
+
             // Negative inside, positive outside, then folded into the byte the
             // shader thresholds: zero is deep inside a stroke and one is
             // further out than the spread reaches.
@@ -392,4 +467,41 @@ pub(crate) struct FieldImage {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) data: Rc<Vec<u8>>,
+}
+
+/// The field, computed by asking every texel about every segment.
+///
+/// Kept as the thing `field_from_segments` is checked against. It is what the
+/// generator used to be, and the acceleration is only worth having if the two
+/// agree byte for byte.
+#[cfg(test)]
+pub(crate) fn field_by_brute_force(
+    segments: &[Segment],
+    area: FieldBox,
+    spread: f32,
+) -> Option<FieldImage> {
+    if segments.is_empty() {
+        return None;
+    }
+    let left = area.left;
+    let top = area.top;
+    let width = (area.right - area.left).ceil().max(1.0) as u32;
+    let height = (area.top - area.bottom).ceil().max(1.0) as u32;
+    let mut data = Vec::with_capacity((width * height) as usize);
+    for row in 0..height {
+        let y = top - row as f32 - 0.5;
+        for column in 0..width {
+            let x = left + column as f32 + 0.5;
+            let mut nearest = f32::MAX;
+            let mut winding = 0;
+            for segment in segments {
+                nearest = nearest.min(segment.distance_squared(x, y));
+                winding += segment.winding(x, y);
+            }
+            let signed = if winding != 0 { -nearest.sqrt() } else { nearest.sqrt() };
+            let unit = (signed + spread) / (spread * 2.0);
+            data.push((unit.clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+    }
+    Some(FieldImage { left, top, width, height, data: Rc::new(data) })
 }
