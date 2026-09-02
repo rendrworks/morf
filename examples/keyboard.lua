@@ -104,6 +104,13 @@ local layer = morf.signal("keyboard.layer", LETTERS)
 local shifted = morf.signal("keyboard.shifted", false)
 local locked = morf.signal("keyboard.locked", false)
 
+-- Whether the board is mid-morph. While it is, every key swells past its
+-- neighbours and the row's field fuses them into one bar, and the letters melt
+-- out of their own distance fields. The layer is swapped at the bottom of that,
+-- where there is nothing legible on screen to swap — so the board is never seen
+-- to *replace* its keys, only to re-form as different ones.
+local fusing = morf.signal("keyboard.fusing", false)
+
 local function write(signal, value)
   local ok, error = signal:set(value)
   assert(ok, error)
@@ -124,6 +131,28 @@ local function emit(code, shift)
   -- Single-shot unless locked, the way every touch keyboard behaves: one
   -- capital is what shift is nearly always wanted for.
   if shifted:get() and not locked:get() then write(shifted, false) end
+end
+
+-- How long the board spends liquid, and how long a key waits behind the one
+-- to its left. The stagger is what makes it a wave rather than a blink: ten
+-- columns at `MORPH_STAGGER` apart still finish inside `MORPH_MELT`, so every
+-- key has fused before the layer underneath changes.
+local MORPH_MELT = 210
+local MORPH_REFORM = 150
+local MORPH_STAGGER = 14
+
+local morph_timer
+local morph_target = LETTERS
+local morph_stage = 0
+
+--- Melts the board, changes the layer underneath it, and lets it re-form.
+local function switch_layer(target)
+  if morph_stage ~= 0 then return end
+  morph_target = target
+  morph_stage = 1
+  write(fusing, true)
+  morph_timer.interval = MORPH_MELT
+  morph_timer.running = true
 end
 
 --------------------------------------------------------------------------------
@@ -147,6 +176,9 @@ local BOARD_X = math.floor((W - BOARD_W) / 2)
 -- stops.
 local SWELL = math.floor(GAP * 0.62)
 local SEAM = math.floor(GAP * 0.85)
+-- Enough to close the gap outright rather than merely reach across it: a press
+-- should read as two keys touching, a morph as the row having no keys in it.
+local FUSE = math.floor(GAP * 0.95)
 
 morf.surface.width = W
 morf.surface.height = BOARD_H
@@ -206,6 +238,7 @@ local function lay_row(y, entries)
     entry.width = math.floor(KEY * units + GAP * (units - 1))
     entry.height = KEY
     entry.id = entry.id or ("r" .. y .. "c" .. index)
+    entry.order = index - 1
     place(entry)
     row.keys[#row.keys + 1] = entry
     x = x + entry.width + GAP
@@ -260,9 +293,9 @@ local row_three = {
     -- capitals without holding anything.
     tap = function()
       if layer:get() == NUMBERS then
-        write(layer, SYMBOLS)
+        switch_layer(SYMBOLS)
       elseif layer:get() == SYMBOLS then
-        write(layer, NUMBERS)
+        switch_layer(NUMBERS)
       elseif locked:get() then
         write(locked, false)
         write(shifted, false)
@@ -291,11 +324,7 @@ lay_row(line, {
     units = 1.5,
     tone = "control",
     label = function() return layer:get() == LETTERS and "123" or "abc" end,
-    tap = function()
-      write(layer, layer:get() == LETTERS and NUMBERS or LETTERS)
-      write(shifted, false)
-      write(locked, false)
-    end,
+    tap = function() switch_layer(layer:get() == LETTERS and NUMBERS or LETTERS) end,
   },
   { id = "comma", label = ",", tap = function() emit(COMMA) end },
   { id = "space", units = 4, label = "space", tap = function() emit(SPACE) end },
@@ -347,21 +376,40 @@ local function row_field(row)
     blend = SEAM,
   }
   for index, entry in ipairs(row.keys) do
+    -- How far this key is currently past its own edges: nothing at rest, a
+    -- little under a finger, and enough to swallow the gap while the board is
+    -- morphing.
+    local function grown()
+      if fusing:get() then return FUSE end
+      return entry.down:get() and SWELL or 0
+    end
+    -- Each key waits a little longer than the one to its left, so the row
+    -- liquefies as a wave running across it instead of blinking.
+    local lag = entry.order * MORPH_STAGGER
+    local function swell_motion()
+      return { kind = "spring", mass = 1, damping = 15, stiffness = 380, epsilon = 0.01,
+               delay = lag }
+    end
     field[#field + 1] = ui.SdfShape {
       -- Positioned against the strip, so the shape's own coordinates stay
       -- inside the node the field resolves over.
-      x = function() return entry.x - (entry.down:get() and SWELL or 0) end,
-      y = function() return entry.y - top - (entry.down:get() and SWELL or 0) end,
-      width = function() return entry.width + (entry.down:get() and SWELL * 2 or 0) end,
-      height = function() return entry.height + (entry.down:get() and SWELL * 2 or 0) end,
+      x = function() return entry.x - grown() end,
+      y = function() return entry.y - top - grown() end,
+      width = function() return entry.width + grown() * 2 end,
+      height = function() return entry.height + grown() * 2 end,
       shape = "box",
-      radius = math.floor(KEY * 0.26),
+      -- The corners round right out as the key dissolves, so what the row fuses
+      -- into is a bar and not a slab with square ends.
+      radius = function()
+        return math.floor(KEY * (fusing:get() and 0.5 or 0.26))
+      end,
       operation = index == 1 and "union" or "smooth_union",
       behavior = {
-        x = { kind = "spring", mass = 1, damping = 15, stiffness = 380, epsilon = 0.01 },
-        y = { kind = "spring", mass = 1, damping = 15, stiffness = 380, epsilon = 0.01 },
-        width = { kind = "spring", mass = 1, damping = 15, stiffness = 380, epsilon = 0.01 },
-        height = { kind = "spring", mass = 1, damping = 15, stiffness = 380, epsilon = 0.01 },
+        x = swell_motion(),
+        y = swell_motion(),
+        width = swell_motion(),
+        height = swell_motion(),
+        radius = { duration = MORPH_MELT, easing = "in_out_quad", delay = lag },
       },
     }
   end
@@ -395,12 +443,24 @@ for _, entry in ipairs(keys) do
     font_weight = 500,
     horizontal_alignment = "center",
     vertical_alignment = "center",
+    -- Softening a glyph moves the threshold its distance field is read at, so
+    -- the letter dissolves into its own field rather than fading behind an
+    -- opacity ramp. The field was measured once on the CPU and is only sampled
+    -- differently here, which is why this costs nothing per frame.
+    softness = function() return fusing:get() and math.floor(KEY * 0.16) or 0 end,
+    opacity = function() return fusing:get() and 0 or 1 end,
     color = function()
       if entry.down:get() then return "#0a0e14" end
       if tone_of(entry) == "live" then return LIVE end
       return tone_of(entry) == "control" and DIM or LABEL
     end,
-    behavior = { color = { duration = 110, easing = "out_quad" } },
+    behavior = {
+      color = { duration = 110, easing = "out_quad" },
+      softness = { duration = MORPH_MELT, easing = "in_out_quad",
+                   delay = entry.order * MORPH_STAGGER },
+      opacity = { duration = MORPH_MELT, easing = "in_out_quad",
+                  delay = entry.order * MORPH_STAGGER },
+    },
   }
 end
 
@@ -420,5 +480,29 @@ for _, entry in ipairs(keys) do
     on_clicked = entry.tap,
   }
 end
+
+-- One timer runs the whole morph. Forty `on_finished` handlers would each fire
+-- their own swap, and the board would change layer forty times in a row.
+morph_timer = ui.Timer {
+  interval = MORPH_MELT,
+  ["repeat"] = false,
+  running = false,
+  on_triggered = function()
+    if morph_stage == 1 then
+      -- The bottom of the melt: nothing legible is on screen, so this is where
+      -- the keys become different keys.
+      write(layer, morph_target)
+      write(shifted, false)
+      write(locked, false)
+      write(fusing, false)
+      morph_stage = 2
+      morph_timer.interval = MORPH_REFORM
+      morph_timer.running = true
+    else
+      morph_stage = 0
+    end
+  end,
+}
+parts[#parts + 1] = morph_timer
 
 ui.Item(parts)
