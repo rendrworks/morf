@@ -95,11 +95,25 @@ pub(crate) fn create_glyph_batch(
             bounds.x as f32 * scale,
             (bounds.y + vertical_offset) as f32 * scale,
         );
-        let own = text_system.rasterize(*node, origin, scale, wants_field);
-        // The target is shaped against the same box, so paired glyphs travel
-        // between the positions the two texts actually put them in rather than
-        // morphing in place and landing wrong.
-        let target = if morphing {
+        let mut push =
+            |glyph: RasterGlyph, morph: Option<RasterGlyph>, progress: f32, bridge: f32| {
+                if glyph.width > 0 && glyph.height > 0 {
+                    glyphs.push(PreparedGlyph {
+                        glyph,
+                        morph,
+                        morph_progress: progress,
+                        morph_bridge: bridge,
+                        color: *color,
+                        color_overlay: *color_overlay,
+                        transform: *transform,
+                        command_index,
+                        field: glyph_field_uniform(*field_style, *size),
+                        outline_color: color_array(field_style.outline_color),
+                    });
+                }
+            };
+
+        if morphing {
             text_system.measure_target(
                 *node,
                 morph_to,
@@ -114,39 +128,27 @@ pub(crate) fn create_glyph_batch(
                     font_source: (!font_source.is_empty()).then(|| font_source.clone()),
                 },
             );
-            text_system.rasterize_target(*node, origin, scale, true)
-        } else {
-            Vec::new()
-        };
-
-        let mut push = |glyph: RasterGlyph, morph: Option<RasterGlyph>, progress: f32| {
-            if glyph.width > 0 && glyph.height > 0 {
-                glyphs.push(PreparedGlyph {
-                    glyph,
-                    morph,
-                    morph_progress: progress,
-                    color: *color,
-                    color_overlay: *color_overlay,
-                    transform: *transform,
-                    command_index,
-                    field: glyph_field_uniform(*field_style, *size),
-                    outline_color: color_array(field_style.outline_color),
-                });
+            // Paired glyphs come back already measured over one shared box, so
+            // both are read through the same quad and the same coordinates —
+            // there is nothing left here to reconcile between them.
+            for (glyph, partner, apart) in text_system.rasterize_pairs(*node, origin, scale) {
+                push(glyph, partner, *morph_progress, apart);
             }
-        };
-
-        let progress = if morphing { *morph_progress } else { 0.0 };
-        let mut target = target.into_iter();
-        for glyph in own {
-            // An unpaired letter keeps its progress and has no partner, so the
-            // shader interpolates it towards empty space and it dissolves.
-            push(glyph, target.next(), progress);
-        }
-        // Whatever the target has left over is arriving rather than leaving, so
-        // it runs the same interpolation backwards: fully dissolved at zero and
-        // whole at one.
-        for glyph in target {
-            push(glyph, None, 1.0 - progress);
+            // Whatever the target has that the source does not is arriving
+            // rather than leaving, so it runs the same interpolation backwards:
+            // dissolved at zero and whole at one.
+            let own = text_system.rasterize(*node, origin, scale, true).len();
+            for glyph in text_system
+                .rasterize_target(*node, origin, scale, true)
+                .into_iter()
+                .skip(own)
+            {
+                push(glyph, None, 1.0 - *morph_progress, 0.0);
+            }
+        } else {
+            for glyph in text_system.rasterize(*node, origin, scale, wants_field) {
+                push(glyph, None, 0.0, 0.0);
+            }
         }
     }
     if glyphs.is_empty() {
@@ -173,31 +175,17 @@ pub(crate) fn create_glyph_batch(
             RasterContent::Mask | RasterContent::Field => color_array(prepared.color),
             RasterContent::Color => [1.0, 1.0, 1.0, prepared.color.alpha],
         };
-        let box_of = |glyph: &RasterGlyph| Geometry {
-            x: f64::from(glyph.x) / f64::from(scale),
-            y: f64::from(glyph.y) / f64::from(scale),
-            // The quad, not the bitmap: a distance field is measured once
-            // and drawn at any size, so these are the only two of the four
-            // that follow the font size rather than the atlas.
-            width: f64::from(glyph.draw_width) / f64::from(scale),
-            height: f64::from(glyph.draw_height) / f64::from(scale),
-        };
-        let mut quad = box_of(&glyph);
-        // Paired glyphs are read through one quad, so it has to be the quad
-        // both of them live in: the two letters differ in width and in where
-        // they sit on the baseline, and sampling either field outside its own
-        // box would clip the letter it is turning into.
-        if let Some(partner) = &prepared.morph {
-            let travel = f64::from(prepared.morph_progress);
-            let target = box_of(partner);
-            quad.x += (target.x - quad.x) * travel;
-            quad.y += (target.y - quad.y) * travel;
-            quad.width += (target.width - quad.width) * travel;
-            quad.height += (target.height - quad.height) * travel;
-        }
         let (origin, axes) = transformed_quad(
             prepared.transform,
-            quad,
+            Geometry {
+                x: f64::from(glyph.x) / f64::from(scale),
+                y: f64::from(glyph.y) / f64::from(scale),
+                // The quad, not the bitmap: a distance field is measured once
+                // and drawn at any size, so these are the only two of the four
+                // that follow the font size rather than the atlas.
+                width: f64::from(glyph.draw_width) / f64::from(scale),
+                height: f64::from(glyph.draw_height) / f64::from(scale),
+            },
             f64::from(scale),
             (target_width, target_height),
         );
@@ -254,6 +242,7 @@ pub(crate) fn create_glyph_batch(
             ],
             outline_color: prepared.outline_color,
             morph_uv,
+            morph_bridge: prepared.morph_bridge,
             ..GlyphInstance::default()
         });
     }

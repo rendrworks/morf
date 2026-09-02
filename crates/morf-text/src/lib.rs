@@ -66,6 +66,13 @@ struct TextInput {
     font_source: Option<String>,
 }
 
+/// Two glyphs measured over one box, and how much of them fails to overlap.
+pub(crate) type MeasuredPair = (Rc<FieldImage>, Rc<FieldImage>, f32);
+
+/// One glyph paired with the glyph it is turning into, if it has one, and how
+/// far apart the two shapes are.
+pub type GlyphPair = (RasterGlyph, Option<RasterGlyph>, f32);
+
 /// Which of a node's two shaped runs a buffer holds.
 ///
 /// A text node that is morphing has two: the text it is, and the text it is
@@ -93,6 +100,11 @@ pub struct TextSystem {
     fonts: FontSystem,
     glyphs: SwashCache,
     buffers: FastMap<BufferKey, CachedBuffer>,
+    /// Fields measured for a *pair* of glyphs over their shared box.
+    ///
+    /// Separate from `fields` because the box depends on both glyphs, so the
+    /// same letter measured against two different partners is two entries.
+    field_pairs: FastMap<(u64, u64), Option<MeasuredPair>>,
     font_sources: HashSet<String>,
     /// Fields already measured, by the glyph they belong to.
     ///
@@ -167,6 +179,7 @@ impl TextSystem {
             fonts,
             glyphs: SwashCache::new(),
             buffers: FastMap::default(),
+            field_pairs: FastMap::default(),
             font_sources: HashSet::new(),
             fields: FastMap::default(),
         };
@@ -231,59 +244,6 @@ impl TextSystem {
     pub fn remove(&mut self, node: NodeHandle) {
         self.buffers.remove(&BufferKey::own(node));
         self.buffers.remove(&BufferKey::target(node));
-    }
-
-    /// Rasterizes one cached text node at a physical origin and scale.
-    /// The glyphs of a laid-out node, positioned.
-    ///
-    /// `field` asks for distance-field glyphs rather than direct
-    /// rasterizations. See [`raster_glyph`](Self::raster_glyph) for when that
-    /// is the right thing to want; for ordinary text at its own size it is not.
-    pub fn rasterize(
-        &mut self,
-        node: NodeHandle,
-        origin: (f32, f32),
-        scale: f32,
-        field: bool,
-    ) -> Vec<RasterGlyph> {
-        self.rasterize_run(BufferKey::own(node), origin, scale, field)
-    }
-
-    /// The glyphs of the text a node is morphing *towards*, positioned the same
-    /// way. Empty when the node is not morphing, because nothing shaped it.
-    pub fn rasterize_target(
-        &mut self,
-        node: NodeHandle,
-        origin: (f32, f32),
-        scale: f32,
-        field: bool,
-    ) -> Vec<RasterGlyph> {
-        self.rasterize_run(BufferKey::target(node), origin, scale, field)
-    }
-
-    fn rasterize_run(
-        &mut self,
-        key: BufferKey,
-        origin: (f32, f32),
-        scale: f32,
-        field: bool,
-    ) -> Vec<RasterGlyph> {
-        let Some(buffer) = self.buffers.get(&key) else {
-            return Vec::new();
-        };
-        let physical: Vec<_> = buffer
-            .buffer
-            .layout_runs()
-            .flat_map(|run| {
-                run.glyphs.iter().map(move |glyph| {
-                    glyph.physical((origin.0, origin.1 + run.line_y * scale), scale)
-                })
-            })
-            .collect();
-        physical
-            .into_iter()
-            .filter_map(|glyph| self.raster_glyph(&glyph, field))
-            .collect()
     }
 }
 fn elided_text(
@@ -482,6 +442,7 @@ fn normalize_font_weight(weight: f64) -> u16 {
 }
 
 mod glyph_fields;
+mod glyph_runs;
 mod measure;
 mod raster_glyph;
 
