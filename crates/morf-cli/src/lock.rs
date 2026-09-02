@@ -172,7 +172,7 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                     repaint |= runtime.dispatch_clipboard(text);
                 }
                 LayerEvent::Screencopy { request_id, result } => {
-                    repaint |= dispatch_screencopy(&mut runtime, request_id, result);
+                    repaint |= dispatch_screencopy(&mut runtime, None, request_id, result);
                 }
                 LayerEvent::InputMethod(state) => {
                     repaint |= runtime.dispatch_input_method(

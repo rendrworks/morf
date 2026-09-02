@@ -251,6 +251,18 @@ pub struct Screencopy {
     pub format: String,
     /// Whether rows are ordered bottom-to-top.
     pub y_invert: bool,
+    /// A source string `ui.Image` resolves, holding this capture's pixels.
+    ///
+    /// The point of it: a configuration that wants the picture on screen sets
+    /// `ui.Image { source = frame.source }` and is done. Without this the
+    /// capture protocols hand over bytes with nowhere to go — `ui.Image`
+    /// resolves paths, so showing one meant encoding a file and reading it
+    /// back, megabytes per thumbnail per refresh to move pixels already in
+    /// memory.
+    ///
+    /// Named after the request, so a thumbnail that refreshes replaces itself.
+    /// `pixels` is still there for a configuration that wants the bytes.
+    pub source: String,
     /// Captured bytes including stride padding.
     pub pixels: Vec<u8>,
 }

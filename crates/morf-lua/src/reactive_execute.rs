@@ -212,6 +212,7 @@ pub(crate) fn execute_screencopy_handler(
             value.set_field(ctx, "stride", i64::from(frame.stride));
             value.set_field(ctx, "format", frame.format.as_str());
             value.set_field(ctx, "y_invert", frame.y_invert);
+            value.set_field(ctx, "source", ctx.intern(frame.source.as_bytes()));
             value.set_field(ctx, "pixels", ctx.intern(&frame.pixels));
             Variadic(vec![LuaValue::Table(value), LuaValue::Nil])
         }

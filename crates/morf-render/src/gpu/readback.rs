@@ -71,3 +71,41 @@ impl WgpuBackend {
         out
     }
 }
+
+impl WgpuBackend {
+    /// Publishes pixels under a name `ui.Image` can resolve as `memory:<name>`.
+    ///
+    /// The way a screen capture reaches a configuration's own scene. Without it
+    /// the capture protocols hand over pixels that nothing can display, which
+    /// is half a feature: an overview needs the thumbnail on screen, not in a
+    /// buffer.
+    ///
+    /// Replaces whatever the name held, so a thumbnail that refreshes does not
+    /// leak an image per refresh.
+    pub fn publish_image(
+        &mut self,
+        name: impl Into<String>,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) {
+        self.images.insert_memory(
+            name,
+            morf_image::ImageData {
+                width,
+                height,
+                rgba,
+            },
+        );
+    }
+
+    /// Drops a published image, and says whether there was one.
+    pub fn forget_image(&mut self, name: &str) -> bool {
+        self.images.forget_memory(name)
+    }
+
+    /// How many published images are held, and how many bytes they occupy.
+    pub fn published_images(&self) -> (usize, usize) {
+        self.images.memory_usage()
+    }
+}

@@ -67,7 +67,7 @@ pub(crate) fn run_surface(
                     return Err("layer surface was closed".to_owned());
                 }
                 LayerEvent::Screencopy { request_id, result } => {
-                    dispatch_screencopy(&mut runtime, request_id, result);
+                    dispatch_screencopy(&mut runtime, None, request_id, result);
                 }
                 LayerEvent::Configure { .. }
                 | LayerEvent::Closed { .. }

@@ -97,7 +97,7 @@ pub(crate) fn handle_surface_event(
             repaint |= runtime.dispatch_clipboard(text);
         }
         LayerEvent::Screencopy { request_id, result } => {
-            repaint |= dispatch_screencopy(runtime, request_id, result);
+            repaint |= dispatch_screencopy(runtime, Some(renderer), request_id, result);
         }
         LayerEvent::InputMethod(state) => {
             repaint |= runtime.dispatch_input_method(
