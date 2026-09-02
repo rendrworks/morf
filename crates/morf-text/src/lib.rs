@@ -469,6 +469,8 @@ fn normalize_font_weight(weight: f64) -> u16 {
 mod families;
 mod glyph_corners;
 mod glyph_fields;
+#[cfg(test)]
+mod glyph_fields_reference;
 mod glyph_morph;
 pub use families::installed_families;
 pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;

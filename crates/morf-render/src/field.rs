@@ -433,7 +433,7 @@ impl SdfFieldInstance {
     }
 }
 
-mod glyph_layer;
+pub(crate) mod glyph_layer;
 mod reach;
 
 pub use reach::*;

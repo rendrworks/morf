@@ -9,6 +9,19 @@ use morf_region::Shape;
 
 use crate::commands::SdfLayer;
 
+/// How many edges share one bounding box.
+///
+/// A fragment measures itself against every edge of an outline, so a letter
+/// costs a hundred-odd steps per pixel and twice that under a shadow. Boxing
+/// the edges in runs lets most of those runs be skipped: one that is further
+/// away than the nearest edge found so far, and out of the band a rightward
+/// ray could cross, cannot change either the distance or the winding. Six cuts
+/// a contour into sixteen runs and costs a third of its points again in boxes;
+/// against four, eight, twelve and sixteen it opened the fewest edges for the
+/// box tests it added — a little over a third of the letter, where measuring
+/// everything is the whole of it.
+pub(crate) const OUTLINE_SPAN: usize = 6;
+
 /// A layer's shape parameters, and how many contours its outline has.
 ///
 /// The outline goes in the two slots nothing else uses — the padding at the
@@ -43,13 +56,7 @@ pub(crate) fn polygon_params(
     };
     let family = layer.font_family.as_deref().unwrap_or("sans-serif");
     let family_to = layer.font_family_morph_to.as_deref().unwrap_or(family);
-    let points = text.glyph_outline(
-        glyph,
-        layer.glyph_morph_to,
-        layer.morph,
-        family,
-        family_to,
-    );
+    let points = text.glyph_outline(glyph, layer.glyph_morph_to, layer.morph, family, family_to);
     if points.len() < 3 {
         return (plain, 0.0);
     }
@@ -72,7 +79,7 @@ pub(crate) fn polygon_params(
     let fit = (half_width * 2.0 / span_x).min(half_height * 2.0 / span_y);
     let centre = ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5);
 
-    let first = outlines.len() as f32;
+    let first = outlines.len();
     for point in &points {
         outlines.push([
             (point.0 - centre.0) * fit,
@@ -82,6 +89,42 @@ pub(crate) fn polygon_params(
     }
     // Where the run starts, and how many closed loops are in it. Every loop is
     // `GLYPH_CONTOUR_POINTS` long, which the shader knows.
-    let loops = (points.len() / morf_text::GLYPH_CONTOUR_POINTS) as f32;
-    ([first, plain[1], plain[2], plain[3]], loops)
+    let loops = points.len() / morf_text::GLYPH_CONTOUR_POINTS;
+    push_span_boxes(outlines, first, loops);
+    ([first as f32, plain[1], plain[2], plain[3]], loops as f32)
+}
+
+/// Boxes each run of edges, after the points the runs are cut from.
+///
+/// They go behind the points rather than in a buffer of their own because the
+/// shader can find them without being told where: the contours are a fixed
+/// length, so the run of boxes starts exactly where the points end.
+///
+/// A box holds the run's edges, which means one point more than the run's own
+/// — the last edge of a run ends on the first point of the next, and the last
+/// run of a contour closes on the contour's first point.
+///
+/// And it is loosened by a hair afterwards. A box that fits its run exactly is
+/// only exact in arithmetic: the shader compares it against numbers it works
+/// out edge by edge, so a crossing that lands on the boundary can be ruled out
+/// by a rounding error in the last bit, and a letter turns inside out along a
+/// hairline. The slack is far under a pixel and far over the error.
+fn push_span_boxes(outlines: &mut Vec<[f32; 2]>, first: usize, loops: usize) {
+    const SLACK: f32 = 1.0 / 1024.0;
+    let stride = morf_text::GLYPH_CONTOUR_POINTS;
+    for contour in 0..loops {
+        let start = first + contour * stride;
+        for span in (0..stride).step_by(OUTLINE_SPAN) {
+            let mut low = [f32::MAX, f32::MAX];
+            let mut high = [f32::MIN, f32::MIN];
+            for step in 0..=OUTLINE_SPAN {
+                let point = outlines[start + (span + step) % stride];
+                low = [low[0].min(point[0]), low[1].min(point[1])];
+                high = [high[0].max(point[0]), high[1].max(point[1])];
+            }
+            let slack = SLACK * (1.0 + (high[0] - low[0]).max(high[1] - low[1]));
+            outlines.push([low[0] - slack, low[1] - slack]);
+            outlines.push([high[0] + slack, high[1] + slack]);
+        }
+    }
 }

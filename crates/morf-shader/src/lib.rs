@@ -24,7 +24,7 @@
 //! The reason to fear a compiler is that `while true do end` hangs the GPU,
 //! wgpu loses the device, and the compositor dies with it — a session ended by
 //! a typo in a config. But this crate decides what WGSL comes out, so every
-//! emitted loop carries an iteration guard (see [`limits`]). The author writes
+//! emitted loop carries an iteration guard (see `limits`). The author writes
 //! a natural `while`; it cannot run away, because they never chose what the
 //! loop would become.
 //!

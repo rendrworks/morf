@@ -325,7 +325,10 @@ fn a_face_decides_which_outline_a_letter_is() {
     let serif = text.glyph_outline('8', None, 0.0, "serif", "serif");
     let elsewhere = text.glyph_outline('8', None, 0.0, &other, &other);
     assert!(!serif.is_empty() && !elsewhere.is_empty());
-    assert_ne!(serif, elsewhere, "two faces are two outlines of the same `8`");
+    assert_ne!(
+        serif, elsewhere,
+        "two faces are two outlines of the same `8`"
+    );
 }
 
 /// Two faces morph into one another, because correspondence is geometry.
@@ -342,7 +345,11 @@ fn a_letter_walks_onto_another_face() {
     let start = text.glyph_outline('W', Some('W'), 0.0, "serif", &other);
     let end = text.glyph_outline('W', Some('W'), 1.0, "serif", &other);
     let half = text.glyph_outline('W', Some('W'), 0.5, "serif", &other);
-    assert_eq!(start.len(), end.len(), "one correspondence, one point count");
+    assert_eq!(
+        start.len(),
+        end.len(),
+        "one correspondence, one point count"
+    );
     assert_eq!(half.len(), start.len());
     assert_ne!(start, end, "the two faces are not the same W");
     // Halfway is between the two rather than either of them: the letter is

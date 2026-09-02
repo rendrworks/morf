@@ -1,7 +1,7 @@
 //! Rasterising a region on a coarser grid.
 //!
 //! Split from `lib` because it is a different bargain, not a different
-//! implementation: [`build`](crate::build) answers exactly, and this answers to
+//! implementation: [`build`] answers exactly, and this answers to
 //! within a cell in exchange for the square of the saving. Whether that is a
 //! good trade is the caller's to know, so the two are named apart.
 

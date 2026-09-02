@@ -261,3 +261,18 @@ fn the_shader_and_the_outline_agree_on_a_contour_length() {
         "field.wgsl must walk polygon contours in runs of GLYPH_CONTOUR_POINTS"
     );
 }
+
+/// The boxes that let a fragment skip most of a contour are packed behind the
+/// points by the renderer and found by arithmetic in the shader, so the two
+/// have to agree on how many edges one box holds.
+#[test]
+fn the_shader_and_the_outline_agree_on_a_run_length() {
+    let shader = include_str!("../field.wgsl");
+    assert!(
+        shader.contains(&format!(
+            "const OUTLINE_SPAN: u32 = {}u;",
+            crate::field::glyph_layer::OUTLINE_SPAN
+        )),
+        "field.wgsl must box outline edges in runs of OUTLINE_SPAN"
+    );
+}

@@ -16,7 +16,7 @@ impl TextSystem {
     /// The glyphs of a laid-out node, positioned.
     ///
     /// `field` asks for distance-field glyphs rather than direct
-    /// rasterizations. See [`raster_glyph`](Self::raster_glyph) for when that
+    /// rasterizations. See `raster_glyph` for when that
     /// is the right thing to want; for ordinary text at its own size it is not.
     pub fn rasterize(
         &mut self,

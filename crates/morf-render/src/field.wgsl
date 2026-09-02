@@ -260,41 +260,69 @@ fn sd_ellipse(point: vec2<f32>, half: vec2<f32>) -> f32 {
     return (length(point / r) - 1.0) * min(r.x, r.y);
 }
 
+/// Edges per bounding box, matching `glyph_layer::OUTLINE_SPAN`, which a test
+/// asserts. The boxes are packed after the points, so where they start can be
+/// worked out from the run rather than sent.
+const OUTLINE_SPAN: u32 = 6u;
+
 /// Distance to a closed outline, with the sign from its winding.
 ///
 /// The same measurement the glyph fields use, done per pixel instead of once
 /// into a texture — which is the whole point of a letter being a shape here
-/// rather than a picture. It costs a pass over the points for every pixel, so
-/// it is for the letters a configuration composes with, not for a page of text.
+/// rather than a picture. A pixel walks the boxes and only opens the runs it
+/// could be answered by, but it is still a walk per pixel: this is for the
+/// letters a configuration composes with, not for a page of text.
 fn sd_polygon(point: vec2<f32>, first: u32, stride: u32, loops: u32) -> f32 {
     if stride < 3u || loops == 0u {
         return 1.0e9;
     }
     var nearest = 1.0e9;
     var winding = 0;
-    let count = stride * loops;
-    for (var index = 0u; index < count; index = index + 1u) {
+    let spans = (stride + OUTLINE_SPAN - 1u) / OUTLINE_SPAN;
+    let boxes = first + stride * loops;
+    for (var contour = 0u; contour < loops; contour = contour + 1u) {
         // Each loop closes on itself rather than on the next one along, which
         // is what lets one layer hold a letter with holes in it: the counters
         // of `8` are wound against its body and cancel it, so they come out
         // hollow instead of being threaded onto it.
-        let loop_start = first + (index / stride) * stride;
-        let step = (index % stride + 1u) % stride;
-        let a = outline[first + index];
-        let b = outline[loop_start + step];
-        let edge = b - a;
-        let to_point = point - a;
-        let along = clamp(dot(to_point, edge) / max(dot(edge, edge), 1e-9), 0.0, 1.0);
-        let offset = to_point - edge * along;
-        nearest = min(nearest, dot(offset, offset));
-        // A ray going right: an edge crossing the point's height flips the
-        // count, and the total says inside from outside. Wound the other way,
-        // a letter's counter cancels its body and comes out hollow.
-        let crosses = (a.y <= point.y) != (b.y <= point.y);
-        if crosses {
-            let t = (point.y - a.y) / (b.y - a.y);
-            if a.x + t * edge.x > point.x {
-                winding = winding + select(-1, 1, b.y > a.y);
+        let loop_start = first + contour * stride;
+        for (var span = 0u; span < spans; span = span + 1u) {
+            let corner = boxes + (contour * spans + span) * 2u;
+            let low = outline[corner];
+            let high = outline[corner + 1u];
+            // A rightward ray can only meet a run that straddles the point's
+            // height and reaches past it — the same half-open band the edge
+            // test below uses, so a run on the boundary is dropped by both.
+            let may_cross = point.y >= low.y && point.y < high.y && point.x < high.x;
+            // And the box is a floor on how near the run's edges can come, so
+            // a run further off than the nearest edge so far cannot win.
+            let away = max(max(low - point, point - high), vec2<f32>(0.0, 0.0));
+            if !may_cross && dot(away, away) >= nearest {
+                continue;
+            }
+            for (var step = 0u; step < OUTLINE_SPAN; step = step + 1u) {
+                let index = span * OUTLINE_SPAN + step;
+                if index >= stride {
+                    break;
+                }
+                let a = outline[loop_start + index];
+                let b = outline[loop_start + (index + 1u) % stride];
+                let edge = b - a;
+                let to_point = point - a;
+                let along = clamp(dot(to_point, edge) / max(dot(edge, edge), 1e-9), 0.0, 1.0);
+                let offset = to_point - edge * along;
+                nearest = min(nearest, dot(offset, offset));
+                // A ray going right: an edge crossing the point's height flips
+                // the count, and the total says inside from outside. Wound the
+                // other way, a letter's counter cancels its body and comes out
+                // hollow.
+                let crosses = (a.y <= point.y) != (b.y <= point.y);
+                if crosses {
+                    let t = (point.y - a.y) / (b.y - a.y);
+                    if a.x + t * edge.x > point.x {
+                        winding = winding + select(-1, 1, b.y > a.y);
+                    }
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-//! Composable surface regions, over the shape vocabulary in [`shapes`].
+//! Composable surface regions, over the shape vocabulary in `shapes`.
 //!
 //! Every family the renderer can draw can be composed into an input region
 //! here, by the same analytic distance function, so a star-shaped node is

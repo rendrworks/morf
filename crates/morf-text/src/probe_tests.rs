@@ -328,14 +328,25 @@ fn probe_field_generator_agrees() {
             continue;
         }
         for glyph in "#WAmoe8B$4RQg@ilj.,'\"".chars() {
-            let Some(key) = text.probe_outline_key_in(glyph, REFERENCE, family) else { continue };
-            let Some(commands) = text.probe_outline_commands(key) else { continue };
+            let Some(key) = text.probe_outline_key_in(glyph, REFERENCE, family) else {
+                continue;
+            };
+            let Some(commands) = text.probe_outline_commands(key) else {
+                continue;
+            };
             let segments = crate::glyph_fields::flatten(&commands);
-            let Some(area) = crate::glyph_fields::segment_box(&segments, spread) else { continue };
+            let Some(area) = crate::glyph_fields::segment_box(&segments, spread) else {
+                continue;
+            };
             let Some(fast) = crate::glyph_fields::field_from_segments(&segments, area, spread)
-            else { continue };
-            let Some(slow) = crate::glyph_fields::field_by_brute_force(&segments, area, spread)
-            else { continue };
+            else {
+                continue;
+            };
+            let Some(slow) =
+                crate::glyph_fields_reference::field_by_brute_force(&segments, area, spread)
+            else {
+                continue;
+            };
             checked += 1;
             assert_eq!(fast.width, slow.width, "{family} {glyph:?} width");
             assert_eq!(fast.height, slow.height, "{family} {glyph:?} height");
@@ -353,7 +364,10 @@ fn probe_field_generator_agrees() {
         }
     }
     println!("{checked} glyphs checked, {differing} differing");
-    assert_eq!(differing, 0, "accelerated generator must match byte for byte");
+    assert_eq!(
+        differing, 0,
+        "accelerated generator must match byte for byte"
+    );
 }
 
 /// What the acceleration is worth, at the sizes where the stall was visible.
@@ -368,15 +382,21 @@ fn probe_field_generator_timing() {
         let mut slow_total = 0.0_f64;
         let mut glyphs = 0;
         for glyph in "#WAmoe8B$4RQg@".chars() {
-            let Some(key) = text.probe_outline_key_in(glyph, reference, "Roboto") else { continue };
-            let Some(commands) = text.probe_outline_commands(key) else { continue };
+            let Some(key) = text.probe_outline_key_in(glyph, reference, "Roboto") else {
+                continue;
+            };
+            let Some(commands) = text.probe_outline_commands(key) else {
+                continue;
+            };
             let segments = crate::glyph_fields::flatten(&commands);
-            let Some(area) = crate::glyph_fields::segment_box(&segments, spread) else { continue };
+            let Some(area) = crate::glyph_fields::segment_box(&segments, spread) else {
+                continue;
+            };
             let mark = Instant::now();
             let _ = crate::glyph_fields::field_from_segments(&segments, area, spread);
             fast_total += mark.elapsed().as_secs_f64() * 1000.0;
             let mark = Instant::now();
-            let _ = crate::glyph_fields::field_by_brute_force(&segments, area, spread);
+            let _ = crate::glyph_fields_reference::field_by_brute_force(&segments, area, spread);
             slow_total += mark.elapsed().as_secs_f64() * 1000.0;
             glyphs += 1;
         }
