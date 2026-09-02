@@ -61,15 +61,15 @@ local GLYPHS = {
   "0", "3", "5", "8", "9", "#", "%", "+", "£", "€",
 }
 
--- Faces to cut the letters from. The four generic names always resolve to
--- something; the rest are asked for by name and fall back if the machine has
--- not got them — which is why the caption says which face was *asked* for
--- rather than claiming to know which one arrived.
-local FACES = {
-  "sans-serif", "serif", "monospace", "cursive",
-  "Blacksword", "basis33", "Grape Nuts", "Departure Mono",
-  "Bahnschrift", "Iosevka", "Liberation Serif", "Roboto",
-}
+-- Faces to cut the letters from: every one installed on the machine, asked for
+-- rather than listed here. A list written into a configuration is a guess about
+-- somebody else's computer — it names faces they have not got and misses every
+-- face they have. The four generic names go in front because they are the ones
+-- that always resolve to something, whatever is installed.
+local FACES = { "sans-serif", "serif", "monospace", "cursive" }
+for _, family in ipairs(core.font_families()) do
+  FACES[#FACES + 1] = family
+end
 
 local TINTS = {
   "#7fc3dd", "#c98fd0", "#8fd0a4", "#e0b56a", "#e0847a",

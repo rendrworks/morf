@@ -15,6 +15,7 @@ pub(crate) fn install_module_api<'gc>(
     let core = Table::new(&ctx);
     for name in [
         "env",
+        "font_families",
         "process_id",
         "version",
         "instance_id",
