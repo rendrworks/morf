@@ -5,6 +5,7 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity as WlrKeyboardInteractivity, Layer,
 };
+use smithay_client_toolkit::shell::xdg::window::WindowDecorations;
 use wayland_client::protocol::{wl_output, wl_surface};
 
 use crate::{state_types::*, surface_types::*, types::*};
@@ -79,28 +80,51 @@ impl LayerClient {
         let output = self.layer_output(config.output.as_deref())?;
         let surface = self.state.compositor.create_surface(&qh);
         surface.set_buffer_scale(1);
-        let layer = self.state.layer_shell.create_layer_surface(
-            &qh,
-            surface,
-            match config.layer {
-                ShellLayer::Background => Layer::Background,
-                ShellLayer::Bottom => Layer::Bottom,
-                ShellLayer::Top => Layer::Top,
-                ShellLayer::Overlay => Layer::Overlay,
-            },
-            Some(config.namespace),
-            output.as_ref(),
-        );
-        layer.set_anchor(layer_anchor_mask(config.anchors));
-        layer.set_keyboard_interactivity(layer_interactivity(config.keyboard_focus));
-        layer.set_size(config.width, config.height);
-        layer.set_margin(
-            config.margin_top,
-            config.margin_right,
-            config.margin_bottom,
-            config.margin_left,
-        );
-        layer.set_exclusive_zone(config.exclusive_zone);
+        let layer = match &self.state.layer_shell {
+            Some(shell) => {
+                let layer = shell.create_layer_surface(
+                    &qh,
+                    surface,
+                    match config.layer {
+                        ShellLayer::Background => Layer::Background,
+                        ShellLayer::Bottom => Layer::Bottom,
+                        ShellLayer::Top => Layer::Top,
+                        ShellLayer::Overlay => Layer::Overlay,
+                    },
+                    Some(config.namespace.clone()),
+                    output.as_ref(),
+                );
+                layer.set_anchor(layer_anchor_mask(config.anchors));
+                layer.set_keyboard_interactivity(layer_interactivity(config.keyboard_focus));
+                layer.set_size(config.width, config.height);
+                layer.set_margin(
+                    config.margin_top,
+                    config.margin_right,
+                    config.margin_bottom,
+                    config.margin_left,
+                );
+                layer.set_exclusive_zone(config.exclusive_zone);
+                ShellSurface::Layer(layer)
+            }
+            // No layer-shell: stand the surface up as a fullscreen toplevel
+            // instead. Anchors, margins and the exclusive zone are dropped
+            // rather than approximated, because a toplevel has no way to
+            // express them and inventing an offset would put the surface
+            // somewhere the configuration never asked for. Fullscreen is asked
+            // for explicitly instead of assumed: a compositor that honours it
+            // gives the whole output, which is what a shell surface covers, and
+            // one that refuses still maps the window at its requested size.
+            None => {
+                let window =
+                    self.state
+                        .xdg_shell
+                        .create_window(surface, WindowDecorations::None, &qh);
+                window.set_title(config.namespace.clone());
+                window.set_app_id(config.namespace.clone());
+                window.set_fullscreen(None);
+                ShellSurface::Window(Box::new(window))
+            }
+        };
         let fractional_scale = self
             .state
             .fractional_manager
@@ -163,12 +187,16 @@ impl LayerClient {
     /// survive: the compositor answers with a configure, and the surface
     /// resizes in place instead of unmapping and coming back.
     pub fn set_layer_geometry(&self, id: u64, config: &BarConfig) -> Result<(), WaylandError> {
-        let layer = &self
+        let record = self
             .state
             .layers
             .get(&id)
-            .ok_or_else(|| WaylandError("layer surface is not open".into()))?
-            .surface;
+            .ok_or_else(|| WaylandError("layer surface is not open".into()))?;
+        // Nothing to re-anchor on a toplevel: it has no anchors, margins or
+        // exclusive zone to set, and the compositor sizes it.
+        let Some(layer) = record.surface.as_layer() else {
+            return Ok(());
+        };
         layer.set_size(config.width, config.height);
         layer.set_anchor(layer_anchor_mask(config.anchors));
         layer.set_margin(

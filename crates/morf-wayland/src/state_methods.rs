@@ -1,5 +1,4 @@
 use smithay_client_toolkit::session_lock::SessionLock;
-use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_client::QueueHandle;
 use wayland_client::protocol::{wl_output, wl_shm};

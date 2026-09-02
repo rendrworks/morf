@@ -1,6 +1,5 @@
 use crate::client_layer::PRIMARY_LAYER;
 use smithay_client_toolkit::compositor::FrameCallbackData;
-use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::XdgSurface;
 use smithay_client_toolkit::shell::xdg::popup::Popup;
@@ -149,12 +148,19 @@ impl LayerClient {
         )
         .map_err(|error| WaylandError(format!("could not create popup: {error}")))?;
         if let SurfaceRole::Layer(id) = parent {
-            self.state
+            // Only layer-shell has `get_popup`. Under the toplevel fallback the
+            // popup is already parented by the xdg positioner it was created
+            // with, so there is nothing further to attach it to.
+            if let Some(layer) = self
+                .state
                 .layers
                 .get(&id)
                 .ok_or_else(|| WaylandError("popup parent layer is not open".into()))?
                 .surface
-                .get_popup(popup.xdg_popup());
+                .as_layer()
+            {
+                layer.get_popup(popup.xdg_popup());
+            }
         }
         if config.grab_focus {
             let seat = self

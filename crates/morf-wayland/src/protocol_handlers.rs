@@ -4,7 +4,6 @@ use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::seat::keyboard::KeyEvent;
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::protocol::{wl_output, wl_region, wl_surface};
@@ -48,7 +47,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 use crate::{helpers::*, state_types::*, surface_types::*, types::*};
 
 impl LayerState {
-    pub(crate) fn layer(&self) -> &LayerSurface {
+    pub(crate) fn layer(&self) -> &ShellSurface {
         &self
             .layers
             .get(&PRIMARY_LAYER)

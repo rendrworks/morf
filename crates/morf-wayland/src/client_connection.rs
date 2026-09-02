@@ -51,8 +51,12 @@ impl LayerClient {
         let qh = queue.handle();
         let compositor = CompositorState::bind(&globals, &qh)
             .map_err(|error| WaylandError(format!("wl_compositor is unavailable: {error}")))?;
-        let layer_shell = LayerShell::bind(&globals, &qh)
-            .map_err(|error| WaylandError(format!("layer shell is unavailable: {error}")))?;
+        // Not fatal when missing. A compositor without layer-shell is a
+        // compositor morf can still draw on, as a fullscreen toplevel; see
+        // `ShellSurface`. Refusing to connect would rule out every kiosk
+        // compositor, greetd's included, over an extension that is optional
+        // by design.
+        let layer_shell = LayerShell::bind(&globals, &qh).ok();
         let xdg_shell = XdgShell::bind(&globals, &qh)
             .map_err(|error| WaylandError(format!("xdg shell is unavailable: {error}")))?;
         let fractional_manager = globals

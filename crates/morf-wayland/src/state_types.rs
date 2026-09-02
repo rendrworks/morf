@@ -10,7 +10,7 @@ use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::session_lock::{SessionLock, SessionLockState, SessionLockSurface};
-use smithay_client_toolkit::shell::wlr_layer::{LayerShell, LayerSurface};
+use smithay_client_toolkit::shell::wlr_layer::LayerShell;
 use smithay_client_toolkit::shell::xdg::XdgShell;
 use smithay_client_toolkit::shell::xdg::popup::Popup;
 use smithay_client_toolkit::shell::xdg::window::Window;
@@ -97,7 +97,7 @@ impl HasWindowHandle for WaylandWindowTarget {
 /// One live wlr-layer-shell surface and the per-surface state the compositor
 /// configures independently of every other layer surface this client owns.
 pub(crate) struct LayerRecord {
-    pub(crate) surface: LayerSurface,
+    pub(crate) surface: ShellSurface,
     pub(crate) fractional_scale: Option<WpFractionalScaleV1>,
     pub(crate) viewport: Option<WpViewport>,
     pub(crate) width: u32,
@@ -138,7 +138,11 @@ pub(crate) struct LayerState {
     pub(crate) outputs: OutputState,
     pub(crate) seats: SeatState,
     pub(crate) xdg_shell: XdgShell,
-    pub(crate) layer_shell: LayerShell,
+    /// The layer shell, when the compositor offers one.
+    ///
+    /// Optional because `wlr-layer-shell` is an extension and kiosk
+    /// compositors omit it; see `ShellSurface` for what happens instead.
+    pub(crate) layer_shell: Option<LayerShell>,
     pub(crate) layers: HashMap<u64, LayerRecord>,
     pub(crate) popups: HashMap<u64, Popup>,
     /// Reposition tokens sent to, and echoed back by, each live popup.

@@ -1,5 +1,9 @@
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
+use smithay_client_toolkit::shell::xdg::window::Window;
 use std::error::Error as StdError;
 use std::fmt;
+use wayland_client::protocol::wl_surface;
 use wayland_client::{Connection, EventQueue};
 use wayland_protocols::xdg::shell::client::xdg_toplevel;
 
@@ -262,4 +266,58 @@ pub struct LayerClient {
     pub(crate) connection: Connection,
     pub(crate) queue: EventQueue<LayerState>,
     pub(crate) state: LayerState,
+}
+
+/// The shell role a primary surface is actually wearing.
+///
+/// morf wants a layer surface: it is the protocol built for shells, and it is
+/// what gives an anchored bar, an exclusive zone and keyboard focus that a
+/// toplevel cannot ask for. But `wlr-layer-shell` is an optional extension, and
+/// kiosk compositors do not carry it — `cage`, which is what greetd runs a
+/// greeter inside, offers only `xdg-shell`. Making the bind fatal meant morf
+/// refused to start there at all, which is the wrong trade: a greeter that
+/// covers the screen is precisely the case where a fullscreen toplevel is
+/// indistinguishable from the layer surface it is standing in for, because the
+/// compositor gives its single client the whole output regardless.
+///
+/// So the layer role is preferred and the toplevel is the fallback. The
+/// fallback is worth less than it looks on a general-purpose compositor —
+/// anchors, margins and the exclusive zone have no meaning for a toplevel and
+/// are dropped — which is why it is only ever reached when the compositor has
+/// no layer-shell whatsoever, leaving nothing better to fall back from.
+pub(crate) enum ShellSurface {
+    /// A `wlr-layer-shell` surface: what a shell wants.
+    Layer(LayerSurface),
+    /// A fullscreen xdg toplevel, standing in where there is no layer-shell.
+    Window(Box<Window>),
+}
+
+impl ShellSurface {
+    /// The underlying `wl_surface`, whichever role wraps it.
+    pub(crate) fn wl_surface(&self) -> &wl_surface::WlSurface {
+        match self {
+            Self::Layer(layer) => layer.wl_surface(),
+            Self::Window(window) => window.wl_surface(),
+        }
+    }
+
+    /// The layer surface, when this really is one.
+    ///
+    /// Callers use this for the things only layer-shell can do — re-anchoring,
+    /// the exclusive zone, parenting a popup — and skip them otherwise, since a
+    /// toplevel has no equivalent to skip *to*.
+    pub(crate) fn as_layer(&self) -> Option<&LayerSurface> {
+        match self {
+            Self::Layer(layer) => Some(layer),
+            Self::Window(_) => None,
+        }
+    }
+
+    /// Commits pending surface state.
+    pub(crate) fn commit(&self) {
+        match self {
+            Self::Layer(layer) => layer.commit(),
+            Self::Window(window) => window.commit(),
+        }
+    }
 }
