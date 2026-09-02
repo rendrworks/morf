@@ -13,6 +13,7 @@ struct VertexOutput {
     @location(10) outline_color: vec4<f32>,
     @location(11) morph_uv: vec2<f32>,
     @location(12) morph_size: vec2<f32>,
+    @location(13) ramp: f32,
 }
 
 @group(0) @binding(0) var atlas: texture_2d<f32>;
@@ -35,6 +36,7 @@ fn vs_main(
     @location(11) field: vec4<f32>,
     @location(12) outline_color: vec4<f32>,
     @location(13) morph_bounds: vec4<f32>,
+    @location(14) ramp: f32,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -60,6 +62,7 @@ fn vs_main(
     output.outline_color = outline_color;
     output.morph_uv = morph_bounds.xy + corner * morph_bounds.zw;
     output.morph_size = morph_bounds.zw;
+    output.ramp = ramp;
     return output;
 }
 
@@ -123,7 +126,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let partner = textureSample(atlas, atlas_sampler, input.morph_uv).r;
             field = mix(field, partner, input.field.w);
         }
-        let feather = max(fwidth(field), 0.0001) + input.field.y;
+        // Half the field's change across one device pixel, so the edge fades
+        // over exactly one pixel. Taken from the size the glyph is drawn at
+        // rather than measured from the sampled field: `fwidth` of a minified
+        // texture varies from pixel to pixel, and an antialiasing width that
+        // wobbles is what a hard, unsettled edge looks like.
+        let feather = max(input.ramp * 0.5, 0.0001) + input.field.y;
         let fill = 1.0 - smoothstep(edge - feather, edge + feather, field);
         let outer = 1.0 - smoothstep(
             edge + input.field.z - feather,

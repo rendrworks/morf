@@ -337,13 +337,32 @@ pub(crate) fn texture_placement(
 /// so an outline asked for in logical pixels has to be converted through the
 /// ratio between the two. Doing it here rather than in the configuration is
 /// what lets an outline width mean the same thing at every font size.
+/// Extra edge outset for small text, in logical pixels.
+///
+/// A hinted rasterizer snaps a stem onto the pixel grid, so a one-pixel stem is
+/// one solid pixel. A field has no hinting: the same stem lands wherever the
+/// outline puts it, usually spread across two pixels at part strength each, and
+/// the letter reads lighter than the hinted one it replaced. Moving the edge out
+/// by a fraction of a pixel gives that back.
+///
+/// Only where it is the problem. Above the fade the stems are wide enough that
+/// the grid no longer decides how solid they look, and the same outset there
+/// would simply be a heavier font than the one asked for.
+fn hinting_bias(size: f64) -> f32 {
+    const FULL_BELOW: f64 = 10.0;
+    const NONE_ABOVE: f64 = 20.0;
+    const OUTSET: f32 = 0.18;
+    let reach = ((NONE_ABOVE - size) / (NONE_ABOVE - FULL_BELOW)).clamp(0.0, 1.0);
+    OUTSET * reach as f32
+}
+
 pub(crate) fn glyph_field_uniform(style: DistanceFieldStyle, size: f64) -> [f32; 4] {
     let per_logical_pixel = GLYPH_FIELD_REFERENCE_PX / (size.max(1.0) as f32);
     let span = GLYPH_FIELD_SPREAD_PX as f32 * 2.0;
     [
         // Positive thickness moves the edge outwards, which is the direction
         // that adds ink — the field counts upwards away from the glyph.
-        0.5 + style.thickness * per_logical_pixel / span,
+        0.5 + (style.thickness + hinting_bias(size)) * per_logical_pixel / span,
         style.softness * per_logical_pixel / span,
         style.outline_width * per_logical_pixel / span,
         0.0,

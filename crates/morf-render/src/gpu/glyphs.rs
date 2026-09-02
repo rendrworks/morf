@@ -36,6 +36,13 @@ pub(crate) struct GlyphInstance {
     /// turning into is shorter — and the shader reads "outside" there instead,
     /// so an unpaired letter dissolves rather than snapping away.
     pub(crate) morph_uv: [f32; 4],
+    /// How much the field changes across one device pixel.
+    ///
+    /// Known exactly from the size the glyph is drawn at, so the edge does not
+    /// have to guess it from the gradient of a sampled texture — which is a
+    /// noisy thing to measure once the field is minified, and reads as an edge
+    /// that will not settle.
+    pub(crate) ramp: f32,
 }
 
 pub(crate) fn layer_mask_data(
@@ -174,6 +181,8 @@ pub(crate) struct PreparedGlyph {
     /// towards the far-outside value instead, which is how a letter with
     /// nothing opposite it dissolves.
     pub(crate) morph_progress: f32,
+    /// The field's change across one device pixel.
+    pub(crate) ramp: f32,
     pub(crate) color: Color,
     pub(crate) color_overlay: Color,
     pub(crate) transform: Transform2D,
