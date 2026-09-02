@@ -131,7 +131,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // rather than measured from the sampled field: `fwidth` of a minified
         // texture varies from pixel to pixel, and an antialiasing width that
         // wobbles is what a hard, unsettled edge looks like.
-        let feather = max(input.ramp * 0.5, 0.0001) + input.field.y;
+        //
+        // Floored at the field's own precision. The field is a byte, so it
+        // cannot resolve an edge finer than one step in two hundred and
+        // fifty-five, and asking for a narrower fade than that puts the whole
+        // transition inside a single stored level — which is a hard, stepped
+        // edge however exact the arithmetic was. Large text is where this
+        // bites, because that is where a device pixel covers least of the
+        // field.
+        const FIELD_STEP: f32 = 1.0 / 255.0;
+        let feather = max(input.ramp * 0.5, FIELD_STEP) + input.field.y;
         let fill = 1.0 - smoothstep(edge - feather, edge + feather, field);
         let outer = 1.0 - smoothstep(
             edge + input.field.z - feather,
