@@ -5,10 +5,12 @@ use std::rc::Rc;
 
 use cosmic_text::{PhysicalGlyph, SubpixelBin, SwashContent};
 
+use crate::MORPH_FRAMES;
 use crate::glyph_fields::{
-    FieldImage, disagreement, field_reference_for, field_spread_for, glyph_field, glyph_field_in,
-    outline_box,
+    FieldImage, field_from_segments, field_reference_for, field_spread_for, glyph_field,
+    segment_box,
 };
+use crate::glyph_morph::{between, contours, pair_up};
 use crate::{RasterContent, RasterGlyph, TextSystem};
 
 impl TextSystem {
@@ -85,34 +87,71 @@ impl TextSystem {
     /// makes the two fields comparable — and it is only affordable because the
     /// field is measured from the outline, where the box is a choice, rather
     /// than inherited from whatever rectangle a rasterizer happened to return.
-    pub(crate) fn field_pair(
-        &mut self,
-        from: &PhysicalGlyph,
-        to: &PhysicalGlyph,
-    ) -> Option<(RasterGlyph, RasterGlyph, f32)> {
+    /// The reference key a partner glyph's frames are stored under.
+    pub(crate) fn pair_target_key(glyph: &PhysicalGlyph) -> u64 {
+        Self::field_key(glyph).1
+    }
+
+    /// Two glyphs and the shapes between them, as a strip of measured frames.
+    ///
+    /// The morph is solved in the outline — contours matched, resampled and
+    /// rotated onto each other, then walked point by point — and each step is
+    /// measured into a field of its own. What the renderer interpolates is two
+    /// *neighbouring* steps, which differ by a fraction of the journey, so the
+    /// interpolation has almost nothing to do and none of the swelling that
+    /// averaging the two end letters produces.
+    ///
+    /// Every frame shares one box, so the strip is read through one quad.
+    pub(crate) fn morph_frames(&mut self, from: &PhysicalGlyph, to: &PhysicalGlyph) -> Option<u64> {
         let (from_reference, from_key) = Self::field_key(from);
         let (to_reference, to_key) = Self::field_key(to);
         let pair = (from_key, to_key);
         if !self.field_pairs.contains_key(&pair) {
-            let measured = self.measure_pair(from_reference, to_reference);
+            let measured = self.measure_frames(from_reference, to_reference);
             self.field_pairs.insert(pair, measured);
         }
-        let (first, second, apart) = self.field_pairs.get(&pair)?.clone()?;
+        self.field_pairs.get(&pair)?.as_ref().map(|_| from_key)
+    }
+
+    /// The atlas key one frame of a morph is held under.
+    ///
+    /// Every frame is its own picture and needs its own entry. Keying them all
+    /// by the two letters put thirteen different shapes under two names, and
+    /// the atlas — quite correctly — kept the first of each and handed it back
+    /// for the rest, so the morph never moved.
+    fn frame_key(from_key: u64, to_key: u64, index: usize) -> u64 {
+        from_key
+            .wrapping_mul(0x9e3779b97f4a7c15)
+            .wrapping_add(to_key.wrapping_mul(0xc2b2ae3d27d4eb4f))
+            .wrapping_add(index as u64)
+    }
+
+    /// The two frames either side of `travel`, and how far between them it is.
+    pub(crate) fn morph_step(
+        &self,
+        from_key: u64,
+        to_key: u64,
+        travel: f32,
+    ) -> Option<crate::MorphStep> {
+        let frames = self.field_pairs.get(&(from_key, to_key))?.as_ref()?;
+        let last = frames.len() - 1;
+        let along = (travel.clamp(0.0, 1.0) * last as f32).clamp(0.0, last as f32);
+        let index = (along.floor() as usize).min(last.saturating_sub(1));
+        let next = (index + 1).min(last);
         Some((
-            field_raster(from, from_key, &first),
-            // Positioned at the *first* glyph's pen. Both fields already cover
-            // the same box, so the pair is one quad and the letter that is
-            // arriving is placed by the field rather than by its own advance.
-            field_raster(from, to_key, &second),
-            apart,
+            Rc::clone(&frames[index]),
+            Self::frame_key(from_key, to_key, index),
+            Rc::clone(&frames[next]),
+            Self::frame_key(from_key, to_key, next),
+            along - index as f32,
         ))
     }
 
-    fn measure_pair(
+    fn measure_frames(
         &mut self,
         from: cosmic_text::CacheKey,
         to: cosmic_text::CacheKey,
-    ) -> Option<crate::MeasuredPair> {
+    ) -> Option<Vec<Rc<FieldImage>>> {
         let from_commands = self
             .glyphs
             .get_outline_commands(&mut self.fonts, from)?
@@ -121,17 +160,33 @@ impl TextSystem {
             .glyphs
             .get_outline_commands(&mut self.fonts, to)?
             .to_vec();
-        // Measured where the two letters actually sit. Lining their ink up
-        // first was tried and is worse: it pulls the arriving letter off its
-        // own metrics — an `h` whose ascender lands at the `n`'s centre — and
-        // buys nothing, because two letters that disagree disagree about their
-        // strokes, not about where they are.
         let spread = field_spread_for(f32::from_bits(from.font_size_bits));
-        let area = outline_box(&from_commands, spread)?.union(outline_box(&to_commands, spread)?);
-        let first = glyph_field_in(&from_commands, area, spread)?;
-        let second = glyph_field_in(&to_commands, area, spread)?;
-        let apart = disagreement(&first, &second);
-        Some((Rc::new(first), Rc::new(second), apart))
+        let paired = pair_up(contours(&from_commands), contours(&to_commands));
+        if paired.is_empty() {
+            return None;
+        }
+
+        // One box for the whole strip, taken from the widest the shape ever
+        // gets on the way across — which is not always either end of it.
+        let mut area: Option<crate::glyph_fields::FieldBox> = None;
+        let mut steps = Vec::with_capacity(MORPH_FRAMES);
+        for frame in 0..MORPH_FRAMES {
+            let travel = frame as f32 / (MORPH_FRAMES - 1) as f32;
+            let segments = between(&paired, travel);
+            let box_here = segment_box(&segments, spread)?;
+            area = Some(match area {
+                Some(known) => known.union(box_here),
+                None => box_here,
+            });
+            steps.push(segments);
+        }
+        let area = area?;
+
+        let mut frames = Vec::with_capacity(steps.len());
+        for segments in steps {
+            frames.push(Rc::new(field_from_segments(&segments, area, spread)?));
+        }
+        Some(frames)
     }
 
     /// A glyph rasterized at the size it is drawn.
@@ -166,7 +221,7 @@ impl TextSystem {
 }
 
 /// One measured field, placed against a pen position and a drawn size.
-fn field_raster(glyph: &PhysicalGlyph, key: u64, field: &Rc<FieldImage>) -> RasterGlyph {
+pub(crate) fn field_raster(glyph: &PhysicalGlyph, key: u64, field: &Rc<FieldImage>) -> RasterGlyph {
     // How much bigger than the reference this glyph is being drawn.
     let drawn = f32::from_bits(glyph.cache_key.font_size_bits);
     let scale = drawn / field_reference_for(drawn);

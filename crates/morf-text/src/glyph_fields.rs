@@ -65,16 +65,16 @@ pub const FIELD_SPREAD_PX: u32 = 24;
 const FLATTEN_TOLERANCE: f32 = 0.05;
 
 /// One straight piece of an outline.
-struct Segment {
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
+pub(crate) struct Segment {
+    pub(crate) x0: f32,
+    pub(crate) y0: f32,
+    pub(crate) x1: f32,
+    pub(crate) y1: f32,
 }
 
 impl Segment {
     /// Distance from a point to this piece, squared.
-    fn distance_squared(&self, x: f32, y: f32) -> f32 {
+    pub(crate) fn distance_squared(&self, x: f32, y: f32) -> f32 {
         let (dx, dy) = (self.x1 - self.x0, self.y1 - self.y0);
         let length = dx * dx + dy * dy;
         let t = if length <= f32::EPSILON {
@@ -90,7 +90,7 @@ impl Segment {
     /// way round. Summed over the outline this is the winding number, which is
     /// what says inside from outside — including the counters of `o` and `8`,
     /// which are wound the other way and so cancel.
-    fn winding(&self, x: f32, y: f32) -> i32 {
+    pub(crate) fn winding(&self, x: f32, y: f32) -> i32 {
         if (self.y0 <= y) == (self.y1 <= y) {
             return 0;
         }
@@ -108,7 +108,7 @@ impl Segment {
 /// leave a gap the winding count could escape through and the letter would come
 /// back inside-out. Fonts close their contours, but a `MoveTo` without a
 /// `Close` before it is legal and has to be treated as one.
-fn flatten(commands: &[Command]) -> Vec<Segment> {
+pub(crate) fn flatten(commands: &[Command]) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut start = (0.0_f32, 0.0_f32);
     let mut at = start;
@@ -235,13 +235,17 @@ pub(crate) fn glyph_field(commands: &[Command], spread: f32) -> Option<FieldImag
 /// The box a glyph's field is measured over: its ink, with the spread around
 /// it. In reference pixels relative to the pen, y counting up.
 pub(crate) fn outline_box(commands: &[Command], spread: f32) -> Option<FieldBox> {
-    let segments = flatten(commands);
+    segment_box(&flatten(commands), spread)
+}
+
+/// The box a set of straight pieces needs, with the spread around them.
+pub(crate) fn segment_box(segments: &[Segment], spread: f32) -> Option<FieldBox> {
     if segments.is_empty() {
         return None;
     }
     let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
     let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
-    for segment in &segments {
+    for segment in segments {
         min_x = min_x.min(segment.x0).min(segment.x1);
         max_x = max_x.max(segment.x0).max(segment.x1);
         min_y = min_y.min(segment.y0).min(segment.y1);
@@ -289,7 +293,19 @@ pub(crate) fn glyph_field_in(
     area: FieldBox,
     spread: f32,
 ) -> Option<FieldImage> {
-    let segments = flatten(commands);
+    field_from_segments(&flatten(commands), area, spread)
+}
+
+/// Measures an outline already broken into straight pieces.
+///
+/// The pieces need not have come from a font: an outline interpolated between
+/// two letters is measured exactly the same way, which is what lets a morph be
+/// a real shape rather than an average of two fields.
+pub(crate) fn field_from_segments(
+    segments: &[Segment],
+    area: FieldBox,
+    spread: f32,
+) -> Option<FieldImage> {
     if segments.is_empty() {
         return None;
     }
@@ -309,7 +325,7 @@ pub(crate) fn glyph_field_in(
             let x = left + column as f32 + 0.5;
             let mut nearest = f32::MAX;
             let mut winding = 0;
-            for segment in &segments {
+            for segment in segments {
                 nearest = nearest.min(segment.distance_squared(x, y));
                 winding += segment.winding(x, y);
             }
@@ -342,32 +358,4 @@ pub(crate) struct FieldImage {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) data: Rc<Vec<u8>>,
-}
-
-/// How much of the two shapes fails to overlap, from nothing to all of it.
-///
-/// The area covered by one and not the other, over the area covered by either.
-/// Zero for a letter measured against itself, small for two that differ in one
-/// stroke, large for two with nothing in common — which is exactly the order in
-/// which linear interpolation between them starts to come apart, so it is what
-/// decides how hard the renderer has to work to hold the shape together.
-pub(crate) fn disagreement(first: &FieldImage, second: &FieldImage) -> f32 {
-    // Below the halfway byte is inside the letter, which is the direction the
-    // shader thresholds in.
-    const INK: u8 = 128;
-    let mut apart = 0_u32;
-    let mut either = 0_u32;
-    for (left, right) in first.data.iter().zip(second.data.iter()) {
-        let (inside, other) = (*left < INK, *right < INK);
-        if inside || other {
-            either += 1;
-            if inside != other {
-                apart += 1;
-            }
-        }
-    }
-    if either == 0 {
-        return 0.0;
-    }
-    apart as f32 / either as f32
 }

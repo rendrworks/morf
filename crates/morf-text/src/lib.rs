@@ -67,7 +67,19 @@ struct TextInput {
 }
 
 /// Two glyphs measured over one box, and how much of them fails to overlap.
-pub(crate) type MeasuredPair = (Rc<FieldImage>, Rc<FieldImage>, f32);
+pub(crate) type MeasuredPair = Vec<Rc<FieldImage>>;
+
+/// Two neighbouring frames of a morph, their atlas keys, and where between
+/// them the glyph currently is.
+pub(crate) type MorphStep = (Rc<FieldImage>, u64, Rc<FieldImage>, u64, f32);
+
+/// How many shapes are measured along the way from one letter to the next.
+///
+/// The renderer interpolates the two either side of where it is, so this sets
+/// how far apart those two are: enough of them that neighbours differ by a
+/// twelfth of the journey, which is close enough that averaging their fields
+/// has nothing left to get wrong.
+pub(crate) const MORPH_FRAMES: usize = 13;
 
 /// One glyph paired with the glyph it is turning into, if it has one, and how
 /// far apart the two shapes are.
@@ -442,6 +454,7 @@ fn normalize_font_weight(weight: f64) -> u16 {
 }
 
 mod glyph_fields;
+mod glyph_morph;
 mod glyph_runs;
 mod measure;
 mod raster_glyph;

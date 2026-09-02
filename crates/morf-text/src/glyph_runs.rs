@@ -7,6 +7,7 @@
 use cosmic_text::PhysicalGlyph;
 use morf_scene::NodeHandle;
 
+use crate::raster_glyph::field_raster;
 use crate::{BufferKey, GlyphPair, RasterGlyph, TextSystem};
 
 impl TextSystem {
@@ -38,30 +39,42 @@ impl TextSystem {
         self.rasterize_run(BufferKey::target(node), origin, scale, field)
     }
 
-    /// A node's glyphs paired with the glyphs of the text it is morphing into.
+    /// A node's glyphs, each with the shape it is part way towards.
     ///
-    /// Each pair is measured over one shared box, so the two fields are in the
-    /// same units and can be interpolated; a glyph with no partner comes back
-    /// alone and is left to dissolve. The pairing is positional, which is the
-    /// only correspondence two arbitrary letters have.
+    /// What comes back is not the two letters: it is the two *frames* of the
+    /// morph either side of `travel`, and how far between them the glyph is.
+    /// The correspondence between the letters was solved in the outline when
+    /// the frames were measured, so all that is left here is to pick a pair
+    /// that already differ by almost nothing.
     pub fn rasterize_pairs(
         &mut self,
         node: NodeHandle,
         origin: (f32, f32),
         scale: f32,
+        travel: f32,
     ) -> Vec<GlyphPair> {
         let own = self.physical_glyphs(BufferKey::own(node), origin, scale);
         let target = self.physical_glyphs(BufferKey::target(node), origin, scale);
         let mut target = target.into_iter();
         own.into_iter()
-            .map(|glyph| match target.next() {
-                Some(partner) => match self.field_pair(&glyph, &partner) {
-                    Some((first, second, apart)) => (Some(first), Some(second), apart),
+            .map(|glyph| {
+                let Some(partner) = target.next() else {
+                    return (self.raster_glyph(&glyph, true), None, 0.0);
+                };
+                let Some(from_key) = self.morph_frames(&glyph, &partner) else {
+                    return (self.raster_glyph(&glyph, true), None, 0.0);
+                };
+                let to_key = Self::pair_target_key(&partner);
+                match self.morph_step(from_key, to_key, travel) {
+                    Some((first, first_key, second, second_key, local)) => (
+                        Some(field_raster(&glyph, first_key, &first)),
+                        Some(field_raster(&glyph, second_key, &second)),
+                        local,
+                    ),
                     None => (self.raster_glyph(&glyph, true), None, 0.0),
-                },
-                None => (self.raster_glyph(&glyph, true), None, 0.0),
+                }
             })
-            .filter_map(|(glyph, partner, apart)| Some((glyph?, partner, apart)))
+            .filter_map(|(glyph, partner, local)| Some((glyph?, partner, local)))
             .filter(|(glyph, _, _)| glyph.width > 0 && glyph.height > 0)
             .collect()
     }

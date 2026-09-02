@@ -131,7 +131,6 @@ local available = sessions()
 -- needs is how *many* characters have been typed, which is all `typed` carries.
 local password = ""
 
-local revealed = morf.signal("greeter.revealed", false)
 local chosen_user = morf.signal("greeter.user", 1)
 local chosen_session = morf.signal("greeter.session", 1)
 local typed = morf.signal("greeter.typed", 0)
@@ -150,12 +149,6 @@ local function clear_password()
   write(typed, 0)
 end
 
---- Lifts the shade. Any key or any touch does it, the way a lock screen works:
---- the clock is what it shows at rest, and the login is what it shows once
---- somebody is there.
-local function reveal()
-  if not revealed:get() then write(revealed, true) end
-end
 
 --------------------------------------------------------------------------------
 -- Talking to greetd.
@@ -281,33 +274,28 @@ end
 -- The clock.
 --------------------------------------------------------------------------------
 
--- Five slots: `HH:MM`. Each is its own node, so a minute rolling over moves the
--- two digits that changed and leaves the rest alone — and each of those two
--- *morphs*, because a glyph is a distance field and two of them interpolate.
--- `9` becomes `0` through outlines the font does not contain, rather than one
--- number cutting to another.
+-- `HH:MM:SS`, one node per character. A second rolling over moves the one or
+-- two slots that changed and leaves the rest alone — and each of those *morphs*,
+-- because a glyph is a distance field and two of them interpolate: `5` becomes
+-- `6` through outlines the font does not contain.
 --
--- The colon is a slot like any other. It never changes, so its two glyphs are
--- identical and the interpolation between them is the identity: it is left
--- perfectly alone without having to be a special case.
-local CLOCK_MORPH = 420
--- Narrower than the glyphs' own advance, so the numerals sit as a clock
--- rather than as five separate letters. A digit is centred in its slot, so
--- tightening the slot tightens the spacing without moving anything off centre.
-local DIGIT_W = s(64)
-local COLON_W = s(28)
+-- The colons need no special case. They never change, so their two glyphs are
+-- identical and the interpolation between them is the identity.
+local CLOCK_FORMAT = "%H:%M:%S"
+local CLOCK_MORPH = 340
+local DIGIT_W = s(34)
+local COLON_W = s(15)
 
 local travel = morf.signal("greeter.travel", 0)
-local shown = "     "
-local arriving = "     "
+local arriving = ""
 local digits = {}
 local clock_swap
 
 local function clock_text()
-  return core.system_clock():format("%H:%M")
+  return core.system_clock():format(CLOCK_FORMAT)
 end
 
---- Puts a new time on screen, morphing whichever slots differ.
+--- Puts a new time up, morphing whichever slots differ.
 local function retime()
   local next_time = clock_text()
   if next_time == arriving then return end
@@ -319,51 +307,56 @@ local function retime()
   clock_swap.running = true
 end
 
-local slot_x = math.floor((W - (DIGIT_W * 4 + COLON_W)) / 2)
-for index = 1, 5 do
-  local width = index == 3 and COLON_W or DIGIT_W
+local shape = clock_text()
+local clock_w = 0
+for index = 1, #shape do
+  clock_w = clock_w + (shape:sub(index, index) == ":" and COLON_W or DIGIT_W)
+end
+
+local slot_x = 0
+for index = 1, #shape do
+  local width = shape:sub(index, index) == ":" and COLON_W or DIGIT_W
   digits[index] = ui.Text {
     x = slot_x,
     width = width,
-    text = " ",
-    morph_to = " ",
+    height = s(72),
+    text = shape:sub(index, index),
+    morph_to = shape:sub(index, index),
     morph_progress = function() return travel:get() end,
-    font_size = s(112),
-    font_weight = 300,
+    font_size = s(56),
+    font_weight = 250,
     horizontal_alignment = "center",
     vertical_alignment = "center",
     color = TEXT,
-    behavior = {
-      morph_progress = { duration = CLOCK_MORPH, easing = "in_out_cubic" },
-    },
+    behavior = { morph_progress = { duration = CLOCK_MORPH, easing = "in_out_cubic" } },
   }
   slot_x = slot_x + width
 end
-
-local today = ui.Text {
-  width = W,
-  text = "",
-  font_size = s(17),
-  horizontal_alignment = "center",
-  color = MUTED,
-}
+arriving = shape
 
 --- Lands the new time and drops the progress.
 ---
 --- Once `text` and `morph_to` name the same glyph the interpolation between
---- them is the identity, so the progress can go back to zero without anything
+--- them is the identity, so the progress goes back to zero without anything
 --- moving — no second animation, and nothing to see.
 clock_swap = ui.Timer {
   interval = CLOCK_MORPH,
   ["repeat"] = false,
   running = false,
   on_triggered = function()
-    shown = arriving
     for index, node in ipairs(digits) do
-      node.text = shown:sub(index, index)
+      node.text = arriving:sub(index, index)
     end
     write(travel, 0)
   end,
+}
+
+local today = ui.Text {
+  width = W,
+  text = core.system_clock():format("%A %d %B"),
+  font_size = s(14),
+  horizontal_alignment = "center",
+  color = MUTED,
 }
 
 --------------------------------------------------------------------------------
@@ -382,7 +375,7 @@ local function drift(index, home_x, home_y, radius, colour, reach)
     width = radius * 2,
     height = radius * 2,
     fill_color = colour,
-    opacity = 0.55,
+    opacity = 0.5,
     softness = radius * 0.85,
     behavior = {
       x = { duration = 8000 + index * 1100, easing = "in_out_sine" },
@@ -393,70 +386,145 @@ local function drift(index, home_x, home_y, radius, colour, reach)
 end
 
 --------------------------------------------------------------------------------
--- Accounts and sessions.
+-- The person, and the field they type into.
 --------------------------------------------------------------------------------
 
-local TILE = s(96)
-local TILE_GAP = s(26)
+-- One stack, close together and centred. A login screen is a single question
+-- with a single answer, and spreading its parts down the screen makes them look
+-- like separate things to deal with.
+local AVATAR = s(108)
+local FIELD_W = math.min(s(360), W - s(80))
+local FIELD_H = s(50)
+local FIELD_X = math.floor((W - FIELD_W) / 2)
 
-local function avatar(index, user)
-  local function mine() return chosen_user:get() == index end
-  return ui.Item {
-    width = TILE,
-    height = TILE + s(34),
-    ui.Rect {
-      width = TILE,
-      height = TILE,
-      radius = TILE / 2,
-      color = function() return mine() and ACCENT_IN or RAISED end,
-      border_width = s(2),
-      border_color = function() return mine() and ACCENT or LINE end,
-      -- A spring rather than a duration: a tap should feel answered, and the
-      -- small overshoot is what reads as an answer.
-      scale = function() return mine() and 1.07 or 1.0 end,
+local STACK_TOP = math.floor(H * 0.30)
+local NAME_Y = STACK_TOP + AVATAR + s(22)
+local FIELD_Y = NAME_Y + s(52)
+local MESSAGE_Y = FIELD_Y + FIELD_H + s(14)
+local SESSION_Y = MESSAGE_Y + s(30)
+
+local blink = morf.signal("greeter.blink", true)
+
+local DOT = s(9)
+local DOT_GAP = s(9)
+local DOT_LEFT = s(22)
+
+-- The dots and the caret sit inside the field, laid out from its left edge the
+-- way typed text does, so it reads as somewhere to type rather than as a
+-- progress bar. A dot appears where the character went.
+local function field_dots()
+  local nodes = {}
+  for index = 1, 24 do
+    nodes[#nodes + 1] = ui.Rect {
+      x = DOT_LEFT + (index - 1) * (DOT + DOT_GAP),
+      y = math.floor((FIELD_H - DOT) / 2),
+      width = DOT,
+      height = DOT,
+      radius = DOT / 2,
+      color = function() return alarmed:get() and ALERT or TEXT end,
+      opacity = function() return typed:get() >= index and 1 or 0 end,
+      scale = function() return typed:get() >= index and 1.0 or 0.4 end,
       behavior = {
-        color = { duration = 220, easing = "out_quad" },
-        border_color = { duration = 220, easing = "out_quad" },
-        scale = { kind = "spring", mass = 1, damping = 13, stiffness = 250, epsilon = 0.001 },
+        opacity = { duration = 120, easing = "out_quad" },
+        scale = { kind = "spring", mass = 1, damping = 12, stiffness = 340, epsilon = 0.001 },
+        color = { duration = 200, easing = "out_quad" },
       },
+    }
+  end
+  return nodes
+end
+
+local field_parts = {
+  x = FIELD_X,
+  y = FIELD_Y,
+  width = FIELD_W,
+  height = FIELD_H,
+  ui.Rect {
+    anchors = { fill = true },
+    radius = s(12),
+    color = RAISED,
+    border_width = s(2),
+    -- Always lit. This screen has exactly one thing to type into and nothing
+    -- else can take the keyboard, so a field that looked unfocused would be
+    -- lying about what a keypress will do.
+    border_color = function() return alarmed:get() and ALERT or ACCENT end,
+    behavior = { border_color = { duration = 300, easing = "out_quad" } },
+  },
+  -- The placeholder leaves as soon as there is anything to show.
+  ui.Text {
+    x = DOT_LEFT,
+    width = FIELD_W - DOT_LEFT * 2,
+    height = FIELD_H,
+    text = "Password",
+    font_size = s(15),
+    vertical_alignment = "center",
+    color = MUTED,
+    opacity = function() return typed:get() == 0 and 1 or 0 end,
+    behavior = { opacity = { duration = 140, easing = "out_quad" } },
+  },
+  -- The caret. It sits after the last dot, so it moves as you type.
+  ui.Rect {
+    x = function() return DOT_LEFT + typed:get() * (DOT + DOT_GAP) end,
+    y = math.floor(FIELD_H * 0.26),
+    width = s(2),
+    height = math.floor(FIELD_H * 0.48),
+    color = ACCENT,
+    opacity = function() return blink:get() and 1 or 0 end,
+    behavior = {
+      x = { kind = "spring", mass = 1, damping = 15, stiffness = 420, epsilon = 0.1 },
+      opacity = { duration = 90, easing = "out_quad" },
+    },
+  },
+  ui.MouseArea { anchors = { fill = true }, on_clicked = open_keyboard },
+}
+for _, dot in ipairs(field_dots()) do
+  field_parts[#field_parts + 1] = dot
+end
+
+--- One account, as a row that can be picked. The chosen one is shown large
+--- above the field; the rest sit at the foot of the screen, which is where a
+--- login screen puts the people who are not logging in.
+local function other(index, user, x, y)
+  local hot = morf.signal("greeter.other." .. user.name, false)
+  return ui.Item {
+    x = x, y = y, width = s(150), height = s(38),
+    ui.Rect {
+      anchors = { fill = true },
+      radius = s(19),
+      color = function() return hot:get() and RAISED or "#00000000" end,
+      behavior = { color = { duration = 160, easing = "out_quad" } },
     },
     ui.Text {
-      width = TILE,
-      height = TILE,
-      text = user.initial,
-      font_size = s(32),
-      font_weight = 600,
+      anchors = { fill = true },
+      text = user.label,
+      font_size = s(14),
       horizontal_alignment = "center",
       vertical_alignment = "center",
-      color = function() return mine() and TEXT or MUTED end,
-      behavior = { color = { duration = 220, easing = "out_quad" } },
-    },
-    ui.Text {
-      y = TILE + s(9),
-      width = TILE,
-      text = user.label,
-      font_size = s(13),
-      horizontal_alignment = "center",
       elide = "right",
-      color = function() return mine() and TEXT or MUTED end,
-      behavior = { color = { duration = 220, easing = "out_quad" } },
+      color = function() return hot:get() and TEXT or MUTED end,
+      behavior = { color = { duration = 160, easing = "out_quad" } },
     },
     ui.MouseArea {
-      width = TILE,
-      height = TILE + s(34),
+      anchors = { fill = true },
+      on_entered = function() write(hot, true) end,
+      on_exited = function() write(hot, false) end,
       on_clicked = function() pick_user(index) end,
     },
   }
 end
 
+--------------------------------------------------------------------------------
+-- Sessions and the machine's own controls.
+--------------------------------------------------------------------------------
+
 local function pill(index, entry, width)
   local function mine() return chosen_session:get() == index end
   return ui.Item {
     width = width,
-    height = s(34),
+    height = s(32),
     ui.Rect {
       anchors = { fill = true },
-      radius = s(17),
+      radius = s(16),
       color = function() return mine() and ACCENT_IN or "#00000000" end,
       border_width = s(1),
       border_color = function() return mine() and ACCENT or LINE end,
@@ -468,7 +536,7 @@ local function pill(index, entry, width)
     ui.Text {
       anchors = { fill = true },
       text = entry.name,
-      font_size = s(13),
+      font_size = s(12),
       horizontal_alignment = "center",
       vertical_alignment = "center",
       elide = "right",
@@ -484,19 +552,17 @@ local function pill(index, entry, width)
   }
 end
 
---- A labelled button, for the things that are not logging in.
----
 --- Words rather than symbols: ⏻ is in most fonts but ⟳ and ⌨ are not, and a
 --- greeter that renders a tofu box has told the person in front of it nothing.
 --- A greeter is also the one screen where guessing wrong is expensive.
-local ACTION_W = s(98)
+local ACTION_W = s(96)
 local function action(x, y, label, on_tap)
   local hot = morf.signal("greeter.action." .. label, false)
   return ui.Item {
-    x = x, y = y, width = ACTION_W, height = s(34),
+    x = x, y = y, width = ACTION_W, height = s(32),
     ui.Rect {
       anchors = { fill = true },
-      radius = s(17),
+      radius = s(16),
       color = function() return hot:get() and RAISED or "#00000000" end,
       border_width = s(1),
       border_color = function() return hot:get() and ACCENT or LINE end,
@@ -508,7 +574,7 @@ local function action(x, y, label, on_tap)
     ui.Text {
       anchors = { fill = true },
       text = label,
-      font_size = s(13),
+      font_size = s(12),
       horizontal_alignment = "center",
       vertical_alignment = "center",
       color = function() return hot:get() and TEXT or MUTED end,
@@ -524,108 +590,6 @@ local function action(x, y, label, on_tap)
 end
 
 --------------------------------------------------------------------------------
--- The card, and the shade over it.
---------------------------------------------------------------------------------
-
-local CARD_W = math.min(s(520), W - s(80))
-local CARD_H = s(128)
-local CARD_X = math.floor((W - CARD_W) / 2)
-local CARD_Y = math.floor(H * 0.42)
-
-local DOTS = 16
-local DOT = s(10)
-local DOT_GAP = s(9)
-
-local function dots()
-  local nodes = {}
-  local span = DOTS * DOT + (DOTS - 1) * DOT_GAP
-  local left = math.floor((CARD_W - span) / 2)
-  for index = 1, DOTS do
-    nodes[#nodes + 1] = ui.Rect {
-      x = left + (index - 1) * (DOT + DOT_GAP),
-      y = s(86),
-      width = DOT,
-      height = DOT,
-      radius = DOT / 2,
-      color = function()
-        if alarmed:get() then return ALERT end
-        return typed:get() >= index and ACCENT or LINE
-      end,
-      scale = function() return typed:get() >= index and 1.0 or 0.5 end,
-      behavior = {
-        color = { duration = 160, easing = "out_quad" },
-        scale = { kind = "spring", mass = 1, damping = 12, stiffness = 330, epsilon = 0.001 },
-      },
-    }
-  end
-  return nodes
-end
-
--- Everything below the clock lives in one item, so the shade is a single
--- animated number rather than a dozen. It arrives from underneath on a spring,
--- which is the difference between a screen appearing and a screen being handed
--- to you.
-local card_parts = {
-  x = CARD_X,
-  y = function() return revealed:get() and CARD_Y or CARD_Y + s(60) end,
-  width = CARD_W,
-  height = CARD_H,
-  opacity = function() return revealed:get() and 1 or 0 end,
-  behavior = {
-    y = { kind = "spring", mass = 1, damping = 19, stiffness = 170, epsilon = 0.5 },
-    opacity = { duration = 260, easing = "out_quad" },
-  },
-  ui.Rect {
-    anchors = { fill = true },
-    radius = s(20),
-    color = PANEL,
-    border_width = s(1),
-    -- The border is the one thing that answers a refused password, and it
-    -- answers by colouring and easing back rather than by blinking.
-    border_color = function() return alarmed:get() and ALERT or LINE end,
-    behavior = { border_color = { duration = 320, easing = "out_quad" } },
-  },
-  ui.Text {
-    y = s(24),
-    width = CARD_W,
-    text = function()
-      local user = users[chosen_user:get()]
-      return user and user.label or "no accounts found"
-    end,
-    font_size = s(21),
-    font_weight = 600,
-    horizontal_alignment = "center",
-    color = TEXT,
-  },
-  ui.Text {
-    y = s(56),
-    width = CARD_W,
-    text = function()
-      if working:get() then return "checking…" end
-      return message:get()
-    end,
-    font_size = s(13),
-    horizontal_alignment = "center",
-    color = function()
-      if working:get() then return ACCENT end
-      return alarmed:get() and ALERT or MUTED
-    end,
-    behavior = { color = { duration = 320, easing = "out_quad" } },
-  },
-  -- The whole card is the way to ask for a keyboard. On a machine with no
-  -- keys, touching the thing you are being asked to type into is the gesture
-  -- that has to work.
-  ui.MouseArea {
-    anchors = { fill = true },
-    on_clicked = open_keyboard,
-  },
-}
-for _, dot in ipairs(dots()) do
-  card_parts[#card_parts + 1] = dot
-end
-local card = ui.Item(card_parts)
-
---------------------------------------------------------------------------------
 -- The tree.
 --------------------------------------------------------------------------------
 
@@ -637,15 +601,13 @@ local function place(node) tree[#tree + 1] = node end
 
 -- First, so it is at the bottom of the stack. A hit test returns the *topmost*
 -- MouseArea over the point, and this one covers the screen: placed last it
--- would sit over the card and the account tiles and swallow every tap on them.
+-- would sit over the field and the account rows and swallow every tap on them.
 -- Key handlers are collected by walking the tree rather than by z-order, so
 -- sitting underneath costs it nothing.
 place(ui.MouseArea {
   width = W,
   height = H,
-  on_clicked = reveal,
   on_key_pressed = function(key, modifiers, text)
-    reveal()
     if working:get() then return end
     if key == "Return" or key == "KP_Enter" then
       attempt()
@@ -666,114 +628,126 @@ place(ui.MouseArea {
 })
 
 place(ui.Rect { width = W, height = H, color = INK })
-place(drift(1, math.floor(W * 0.20), math.floor(H * 0.26), s(320), "#17384a", s(100)))
-place(drift(2, math.floor(W * 0.76), math.floor(H * 0.70), s(280), "#26203f", s(80)))
+place(drift(1, math.floor(W * 0.22), math.floor(H * 0.24), s(340), "#16374a", s(110)))
+place(drift(2, math.floor(W * 0.74), math.floor(H * 0.74), s(300), "#241f3d", s(90)))
 
--- The clock lifts and shrinks as the shade goes up, which is the whole of the
--- transition: at rest it is the screen, and once somebody is there it is a
--- heading over the thing they came to use.
+-- The clock, at the top and out of the way. It is not the point of this screen
+-- — the field is — so it is a heading rather than the thing being looked at.
 local clock_parts = {
-  x = 0,
-  y = function() return revealed:get() and math.floor(H * 0.12) or math.floor(H * 0.34) end,
-  width = W,
-  height = s(150),
-  scale = function() return revealed:get() and 0.72 or 1.0 end,
-  behavior = {
-    y = { kind = "spring", mass = 1, damping = 21, stiffness = 150, epsilon = 0.5 },
-    scale = { kind = "spring", mass = 1, damping = 21, stiffness = 150, epsilon = 0.001 },
-  },
+  x = math.floor((W - clock_w) / 2),
+  y = math.floor(H * 0.09),
+  width = clock_w,
+  height = s(72),
 }
 for _, digit in ipairs(digits) do
   clock_parts[#clock_parts + 1] = digit
 end
 place(ui.Item(clock_parts))
 
-today.y = 0
+today.y = math.floor(H * 0.09) + s(72)
+place(today)
+
+-- The person logging in: their initial, large, over their name and the field.
 place(ui.Item {
-  x = 0,
-  y = function() return revealed:get() and math.floor(H * 0.12) + s(126) or math.floor(H * 0.34) + s(160) end,
-  width = W,
-  height = s(30),
-  behavior = { y = { kind = "spring", mass = 1, damping = 21, stiffness = 150, epsilon = 0.5 } },
-  today,
+  x = math.floor((W - AVATAR) / 2),
+  y = STACK_TOP,
+  width = AVATAR,
+  height = AVATAR,
+  ui.Rect {
+    anchors = { fill = true },
+    radius = AVATAR / 2,
+    color = ACCENT_IN,
+    border_width = s(2),
+    border_color = ACCENT,
+  },
+  ui.Text {
+    anchors = { fill = true },
+    text = function()
+      local user = users[chosen_user:get()]
+      return user and user.initial or "?"
+    end,
+    font_size = s(40),
+    font_weight = 600,
+    horizontal_alignment = "center",
+    vertical_alignment = "center",
+    color = TEXT,
+  },
 })
 
--- The hint is only true while the shade is down, and says so by leaving.
 place(ui.Text {
-  y = math.floor(H * 0.34) + s(210),
+  y = NAME_Y,
   width = W,
-  text = "press any key",
-  font_size = s(14),
+  text = function()
+    local user = users[chosen_user:get()]
+    return user and user.label or "no accounts found"
+  end,
+  font_size = s(22),
+  font_weight = 500,
   horizontal_alignment = "center",
-  color = MUTED,
-  opacity = function() return revealed:get() and 0 or 1 end,
-  behavior = { opacity = { duration = 240, easing = "out_quad" } },
+  color = TEXT,
 })
 
--- Everything the shade covers goes in one item, so lifting it is a single
--- animated number rather than one per tile, pill and panel. The card keeps its
--- own spring inside this, which is what gives the arrival its slight lag behind
--- the fade.
-local login = { x = 0, y = 0, width = W, height = H,
-  opacity = function() return revealed:get() and 1 or 0 end,
-  behavior = { opacity = { duration = 280, easing = "out_quad" } },
-}
+place(ui.Item(field_parts))
 
-local strip_span = #users * TILE + math.max(0, #users - 1) * TILE_GAP
-local strip_x = math.floor((W - strip_span) / 2)
-for index, user in ipairs(users) do
-  local tile = avatar(index, user)
-  tile.x = strip_x + (index - 1) * (TILE + TILE_GAP)
-  tile.y = math.floor(H * 0.27)
-  login[#login + 1] = tile
-end
+place(ui.Text {
+  y = MESSAGE_Y,
+  width = W,
+  text = function()
+    if working:get() then return "checking…" end
+    return message:get()
+  end,
+  font_size = s(13),
+  horizontal_alignment = "center",
+  color = function()
+    if working:get() then return ACCENT end
+    return alarmed:get() and ALERT or MUTED
+  end,
+  behavior = { color = { duration = 320, easing = "out_quad" } },
+})
 
-login[#login + 1] = card
-
-local PILL_W = s(190)
-local pill_span = #available * PILL_W + math.max(0, #available - 1) * s(12)
+local PILL_W = s(180)
+local pill_span = #available * PILL_W + math.max(0, #available - 1) * s(10)
 local pill_x = math.floor((W - pill_span) / 2)
 for index, entry in ipairs(available) do
   local node = pill(index, entry, PILL_W)
-  node.x = pill_x + (index - 1) * (PILL_W + s(12))
-  node.y = CARD_Y + CARD_H + s(22)
-  login[#login + 1] = node
+  node.x = pill_x + (index - 1) * (PILL_W + s(10))
+  node.y = SESSION_Y
+  place(node)
 end
 
-place(ui.Item(login))
+-- Everyone who is not the person above, along the foot of the screen.
+if #users > 1 then
+  local row_span = #users * s(150) + (#users - 1) * s(8)
+  local row_x = math.floor((W - row_span) / 2)
+  for index, user in ipairs(users) do
+    place(other(index, user, row_x + (index - 1) * (s(150) + s(8)), H - s(76)))
+  end
+end
 
 place(action(W - ACTION_W - s(24), s(24), "shut down", function() power("PowerOff") end))
 place(action(W - ACTION_W * 2 - s(34), s(24), "restart", function() power("Reboot") end))
 place(action(W - ACTION_W * 3 - s(44), s(24), "sleep", function() power("Suspend") end))
 place(action(s(24), s(24), "keyboard", open_keyboard))
 
--- One flip every few seconds; the long easings in `drift` carry the motion.
 place(ui.Timer {
-  interval = 7000,
-  ["repeat"] = true,
-  running = true,
+  interval = 7000, ["repeat"] = true, running = true,
   on_triggered = function() write(tide, tide:get() == 1 and 0 or 1) end,
 })
 
+-- Twice a second, so a second never lands more than half a second late.
 place(ui.Timer {
-  interval = 1000,
-  ["repeat"] = true,
-  running = true,
+  interval = 500, ["repeat"] = true, running = true,
   on_triggered = function()
     retime()
     today.text = core.system_clock():format("%A %d %B")
   end,
 })
 
+place(ui.Timer {
+  interval = 560, ["repeat"] = true, running = true,
+  on_triggered = function() write(blink, not blink:get()) end,
+})
+
 place(clock_swap)
 
 ui.Item(tree)
-
--- The first time is put up without a morph: there is nothing to travel from.
-shown = clock_text()
-arriving = shown
-for index, node in ipairs(digits) do
-  node.text = shown:sub(index, index)
-  node.morph_to = shown:sub(index, index)
-end
-today.text = core.system_clock():format("%A %d %B")

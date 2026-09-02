@@ -13,7 +13,6 @@ struct VertexOutput {
     @location(10) outline_color: vec4<f32>,
     @location(11) morph_uv: vec2<f32>,
     @location(12) morph_size: vec2<f32>,
-    @location(13) morph_bridge: f32,
 }
 
 @group(0) @binding(0) var atlas: texture_2d<f32>;
@@ -36,7 +35,6 @@ fn vs_main(
     @location(11) field: vec4<f32>,
     @location(12) outline_color: vec4<f32>,
     @location(13) morph_bounds: vec4<f32>,
-    @location(14) morph_bridge: f32,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -62,7 +60,6 @@ fn vs_main(
     output.outline_color = outline_color;
     output.morph_uv = morph_bounds.xy + corner * morph_bounds.zw;
     output.morph_size = morph_bounds.zw;
-    output.morph_bridge = morph_bridge;
     return output;
 }
 
@@ -112,47 +109,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // The field runs from inside to outside across the encoded spread, so
         // the edge is wherever the requested weight sits and a wider outline is
         // simply a second threshold further out.
-        // Two distance fields interpolated and thresholded once, which is what
-        // makes this a morph rather than a crossfade: the edge that gets drawn
-        // is the contour of a field that lies between the two letters, so it
-        // passes through outlines belonging to neither. A zero-sized target
-        // rect means this glyph has nothing opposite it, and the far-outside
-        // value is what it dissolves into.
-        let progress = input.field.w;
+        //
+        // A morphing glyph arrives as two neighbouring frames of the journey
+        // rather than as its two end letters. The correspondence between the
+        // letters — which stroke becomes which — was solved in the outline
+        // before either was measured, so these two shapes differ by a twelfth
+        // of the way across and averaging them has almost nothing to get wrong.
+        // Averaging the *end* letters is what swells and tears, and none of
+        // that is reachable from here any more.
+        let edge = input.field.x;
         var field = sampled.r;
-        if progress > 0.0 {
-            var partner = 1.0;
-            if input.morph_size.x > 0.0 && input.morph_size.y > 0.0 {
-                partner = textureSample(atlas, atlas_sampler, input.morph_uv).r;
-            }
-            field = mix(field, partner, progress);
-            // Fatten both shapes through the middle of the crossing.
-            //
-            // Interpolating two fields linearly is exact when the shapes are
-            // alike and fragments when they are not: where a stroke of one has
-            // nothing to correspond to in the other, the blended field grows a
-            // saddle and the contour pinches into pieces. Moving the threshold
-            // out as the crossing peaks bridges those pinches, so the letter
-            // passes through one thick shape rather than a scatter of them. It
-            // costs a little weight at the midpoint, which is the moment
-            // nothing is legible anyway.
-            //
-            // Scaled by how much of the two shapes fails to overlap, measured
-            // once for the pair when the fields were built. It has to be a
-            // property of the pair rather than of the pixel: the pinches happen
-            // where *both* fields read as outside, so nothing local to the
-            // point knows they are about to appear. A letter morphing into
-            // itself scores zero and is left exactly alone.
-            let crossing = 0.5 - abs(progress - 0.5);
-            // Squared, so the amount separates the pairs that need it from the
-            // ones that do not: two letters differing in a single stroke are
-            // barely touched, and two with nothing in common get the whole of
-            // it.
-            let apart = input.morph_bridge * input.morph_bridge;
-            field = field - crossing * apart * 0.40;
+        if input.morph_size.x > 0.0 && input.morph_size.y > 0.0 {
+            let partner = textureSample(atlas, atlas_sampler, input.morph_uv).r;
+            field = mix(field, partner, input.field.w);
         }
         let feather = max(fwidth(field), 0.0001) + input.field.y;
-        let edge = input.field.x;
         let fill = 1.0 - smoothstep(edge - feather, edge + feather, field);
         let outer = 1.0 - smoothstep(
             edge + input.field.z - feather,

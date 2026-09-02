@@ -36,8 +36,6 @@ pub(crate) struct GlyphInstance {
     /// turning into is shorter — and the shader reads "outside" there instead,
     /// so an unpaired letter dissolves rather than snapping away.
     pub(crate) morph_uv: [f32; 4],
-    /// How far apart the two shapes are, nought to one.
-    pub(crate) morph_bridge: f32,
 }
 
 pub(crate) fn layer_mask_data(
@@ -170,9 +168,6 @@ pub(crate) struct PreparedGlyph {
     pub(crate) glyph: RasterGlyph,
     /// The glyph this one is turning into, when it has a partner.
     pub(crate) morph: Option<RasterGlyph>,
-    /// How much of the two shapes fails to overlap, and so how hard the
-    /// renderer has to work to keep the crossing in one piece.
-    pub(crate) morph_bridge: f32,
     /// How far between the two, zero at `glyph` and one at `morph`.
     ///
     /// A glyph with no partner still carries a progress: it interpolates

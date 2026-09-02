@@ -90,23 +90,21 @@ pub(crate) fn create_glyph_batch(
             bounds.x as f32 * scale,
             (bounds.y + vertical_offset) as f32 * scale,
         );
-        let mut push =
-            |glyph: RasterGlyph, morph: Option<RasterGlyph>, progress: f32, bridge: f32| {
-                if glyph.width > 0 && glyph.height > 0 {
-                    glyphs.push(PreparedGlyph {
-                        glyph,
-                        morph,
-                        morph_progress: progress,
-                        morph_bridge: bridge,
-                        color: *color,
-                        color_overlay: *color_overlay,
-                        transform: *transform,
-                        command_index,
-                        field: glyph_field_uniform(*field_style, *size),
-                        outline_color: color_array(field_style.outline_color),
-                    });
-                }
-            };
+        let mut push = |glyph: RasterGlyph, morph: Option<RasterGlyph>, progress: f32| {
+            if glyph.width > 0 && glyph.height > 0 {
+                glyphs.push(PreparedGlyph {
+                    glyph,
+                    morph,
+                    morph_progress: progress,
+                    color: *color,
+                    color_overlay: *color_overlay,
+                    transform: *transform,
+                    command_index,
+                    field: glyph_field_uniform(*field_style, *size),
+                    outline_color: color_array(field_style.outline_color),
+                });
+            }
+        };
 
         if morphing {
             text_system.measure_target(
@@ -126,8 +124,13 @@ pub(crate) fn create_glyph_batch(
             // Paired glyphs come back already measured over one shared box, so
             // both are read through the same quad and the same coordinates —
             // there is nothing left here to reconcile between them.
-            for (glyph, partner, apart) in text_system.rasterize_pairs(*node, origin, scale) {
-                push(glyph, partner, *morph_progress, apart);
+            // The travel is resolved into a pair of neighbouring frames and a
+            // local position between them, so what reaches the shader is always
+            // a short step.
+            for (glyph, partner, local) in
+                text_system.rasterize_pairs(*node, origin, scale, *morph_progress)
+            {
+                push(glyph, partner, local);
             }
             // Whatever the target has that the source does not is arriving
             // rather than leaving, so it runs the same interpolation backwards:
@@ -138,11 +141,11 @@ pub(crate) fn create_glyph_batch(
                 .into_iter()
                 .skip(own)
             {
-                push(glyph, None, 1.0 - *morph_progress, 0.0);
+                push(glyph, None, 1.0 - *morph_progress);
             }
         } else {
             for glyph in text_system.rasterize(*node, origin, scale, true) {
-                push(glyph, None, 0.0, 0.0);
+                push(glyph, None, 0.0);
             }
         }
     }
@@ -237,7 +240,6 @@ pub(crate) fn create_glyph_batch(
             ],
             outline_color: prepared.outline_color,
             morph_uv,
-            morph_bridge: prepared.morph_bridge,
             ..GlyphInstance::default()
         });
     }
