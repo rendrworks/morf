@@ -7,7 +7,9 @@
 
 use std::rc::Rc;
 
-use crate::glyph_fields::{FieldBox, FieldImage, Segment};
+use morf_outline::Segment;
+
+use crate::glyph_fields::{FieldBox, FieldImage};
 
 pub(crate) fn field_by_brute_force(
     segments: &[Segment],

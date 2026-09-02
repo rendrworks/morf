@@ -38,6 +38,7 @@ pub(crate) fn polygon_params(
     scale: f64,
     outlines: &mut Vec<[f32; 2]>,
     text: &mut morf_text::TextSystem,
+    drawings: &mut morf_svg::SvgOutlines,
 ) -> ([f32; 4], f32) {
     let plain = [
         0.0,
@@ -51,18 +52,47 @@ pub(crate) fn polygon_params(
     if layer.shape != Shape::Polygon && layer.morph_to != Shape::Polygon {
         return (plain, 0.0);
     }
-    let Some(glyph) = layer.glyph else {
-        return (plain, 0.0);
+    // A letter or a drawing: two ways of writing down the same thing, and by
+    // here the difference is only which of the two a layer happened to name.
+    let points = match (layer.glyph, layer.svg_source.as_deref()) {
+        // A letter walking onto a drawing, which is the same thing said the
+        // other way round.
+        (Some(glyph), Some(source)) if layer.morph > 0.0 => {
+            let family = layer.font_family.as_deref().unwrap_or("sans-serif");
+            morf_svg::SvgOutlines::walk_between(
+                text.glyph_contours(glyph, family),
+                drawings.contours_of(source),
+                layer.morph,
+            )
+        }
+        (Some(glyph), _) => {
+            let family = layer.font_family.as_deref().unwrap_or("sans-serif");
+            let family_to = layer.font_family_morph_to.as_deref().unwrap_or(family);
+            text.glyph_outline(glyph, layer.glyph_morph_to, layer.morph, family, family_to)
+        }
+        (None, Some(source)) => match layer.glyph_morph_to {
+            // A drawing walking onto a letter. The two are cached apart, so the
+            // loops are fetched from both sides and paired here — which is the
+            // whole of the difference, because from `pair_up` onwards neither
+            // side can tell what the other one was written in.
+            Some(letter) if layer.morph > 0.0 => {
+                let family = layer.font_family.as_deref().unwrap_or("sans-serif");
+                morf_svg::SvgOutlines::walk_between(
+                    drawings.contours_of(source),
+                    text.glyph_contours(letter, family),
+                    layer.morph,
+                )
+            }
+            _ => drawings.outline(source, layer.svg_source_morph_to.as_deref(), layer.morph),
+        },
+        (None, None) => return (plain, 0.0),
     };
-    let family = layer.font_family.as_deref().unwrap_or("sans-serif");
-    let family_to = layer.font_family_morph_to.as_deref().unwrap_or(family);
-    let points = text.glyph_outline(glyph, layer.glyph_morph_to, layer.morph, family, family_to);
     if points.len() < 3 {
         return (plain, 0.0);
     }
 
     // Font coordinates count upwards from a baseline; a field's box counts
-    // downwards from its top-left. One scale for both axes, so the letter keeps
+    // downwards from its top-left. One scale for both axes, so the shape keeps
     // its proportions inside whatever rectangle it was given.
     let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
     let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);

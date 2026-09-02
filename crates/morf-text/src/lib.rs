@@ -467,13 +467,16 @@ fn normalize_font_weight(weight: f64) -> u16 {
 }
 
 mod families;
-mod glyph_corners;
 mod glyph_fields;
 #[cfg(test)]
 mod glyph_fields_reference;
 mod glyph_morph;
+mod glyph_steps;
 pub use families::installed_families;
 pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
+/// A closed loop of an outline, for a caller pairing letters with shapes that
+/// are not letters.
+pub use morf_outline::Contour;
 mod glyph_runs;
 mod measure;
 mod raster_glyph;

@@ -63,7 +63,7 @@ impl RenderBackend for WgpuBackend {
             materials: field_materials,
             outlines: field_outlines,
             shaders: field_shaders,
-        } = collect_field_instances(list, scale_120, &mut self.text);
+        } = collect_field_instances(list, scale_120, &mut self.text, &mut self.drawings);
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
                 queue: &self.queue,

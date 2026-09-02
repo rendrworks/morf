@@ -1,20 +1,20 @@
-// Where a letter turns sharply, taken from the curves rather than from the
-// pieces they were broken into.
-//
-// A corner has to be found before flattening, not after. Once an outline is
-// chopped into straight pieces at a twentieth of a pixel, every join along a
-// tight curve turns by a few degrees, and an angle test applied to those pieces
-// calls all of them corners — which is how an `o` ends up with ninety-six of
-// them. The curves know better: a Bézier's direction at each end comes from its
-// control points, and two curves meeting either continue each other or do not.
+//! Where an outline turns sharply, taken from the curves rather than from the
+//! pieces they were broken into.
+//!
+//! A corner has to be found before flattening, not after. Once an outline is
+//! chopped into straight pieces at a twentieth of a pixel, every join along a
+//! tight curve turns by a few degrees, and an angle test applied to those pieces
+//! calls all of them corners — which is how an `o` ends up with ninety-six of
+//! them. The curves know better: a Bézier's direction at each end comes from its
+//! control points, and two curves meeting either continue each other or do not.
 
-use cosmic_text::Command;
+use crate::step::Step;
 
 /// How far two curves must turn away from each other to be a corner.
 ///
 /// The cosine of about eight degrees. Well above what a curve's own control
 /// points produce where it joins its neighbour smoothly, well below the
-/// shallowest corner a letterform has.
+/// shallowest corner a letterform or a drawn shape has.
 const CORNER_COSINE: f32 = 0.99;
 
 /// A corner, and the two half-planes that meet there.
@@ -28,20 +28,21 @@ const CORNER_COSINE: f32 = 0.99;
 /// affine function exactly — which is the whole reason this is worth carrying.
 /// What bilinear cannot reproduce is the crease where two of them meet, and
 /// that is precisely what these two let the shader rebuild.
-#[cfg(test)]
+///
+/// Public rather than test-only because the measurement lives in another crate:
+/// `#[cfg(test)]` does not reach across one.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Corner {
+pub struct Corner {
     /// Where the two curves meet.
-    pub(crate) at: (f32, f32),
+    pub at: (f32, f32),
     /// Outward normals of the arriving and leaving edges.
-    pub(crate) normals: [(f32, f32); 2],
+    pub normals: [(f32, f32); 2],
     /// Whether the shape is locally the *intersection* of the two half-planes
     /// rather than their union — `max` of the two distances rather than `min`.
     /// Getting this backwards turns a corner into a notch.
-    pub(crate) convex: bool,
+    pub convex: bool,
 }
 
-#[cfg(test)]
 impl Corner {
     /// The distance to the wedge these two half-planes cut out.
     ///
@@ -51,7 +52,7 @@ impl Corner {
     /// understates it by up to the difference between a side and a diagonal,
     /// which is a corner rounded off by another name. A reflex corner is the
     /// same statement inside out.
-    pub(crate) fn distance(&self, x: f32, y: f32) -> f32 {
+    pub fn distance(&self, x: f32, y: f32) -> f32 {
         let (dx, dy) = (x - self.at.0, y - self.at.1);
         let first = dx * self.normals[0].0 + dy * self.normals[0].1;
         let second = dx * self.normals[1].0 + dy * self.normals[1].1;
@@ -73,10 +74,9 @@ impl Corner {
 /// The corners of each closed subpath, with the half-planes meeting at them.
 ///
 /// Diagnostic only; see `Corner`.
-#[cfg(test)]
-pub(crate) fn corners(commands: &[Command]) -> Vec<Corner> {
+pub fn corners(steps: &[Step]) -> Vec<Corner> {
     let mut found = Vec::new();
-    for edges in split_subpaths(commands) {
+    for edges in split_subpaths(steps) {
         if edges.len() < 2 {
             continue;
         }
@@ -114,9 +114,9 @@ pub(crate) fn corners(commands: &[Command]) -> Vec<Corner> {
 }
 
 /// The corner vertices of one closed subpath, in the order they are walked.
-pub(crate) fn corner_points(commands: &[Command]) -> Vec<Vec<(f32, f32)>> {
+pub fn corner_points(steps: &[Step]) -> Vec<Vec<(f32, f32)>> {
     let mut subpaths = Vec::new();
-    for edges in split_subpaths(commands) {
+    for edges in split_subpaths(steps) {
         if edges.len() < 2 {
             // One edge closing on itself has a join, but nothing to compare it
             // against that is not itself.
@@ -218,9 +218,9 @@ fn cubic_ends(
 /// Breaks the command stream into closed subpaths of curves.
 ///
 /// Every subpath is closed, because a distance is measured to a boundary and a
-/// boundary with a gap in it is not one. A `MoveTo` before an explicit `Close`
+/// boundary with a gap in it is not one. A move before an explicit close
 /// closes the previous subpath itself.
-fn split_subpaths(commands: &[Command]) -> Vec<Vec<Edge>> {
+fn split_subpaths(steps: &[Step]) -> Vec<Vec<Edge>> {
     let mut subpaths = Vec::new();
     let mut edges: Vec<Edge> = Vec::new();
     let mut start = (0.0_f32, 0.0_f32);
@@ -237,18 +237,18 @@ fn split_subpaths(commands: &[Command]) -> Vec<Vec<Edge>> {
         }
     };
 
-    for command in commands {
-        match command {
-            Command::MoveTo(point) => {
+    for step in steps {
+        match *step {
+            Step::Move(x, y) => {
                 close(&mut edges, at, start);
                 if !edges.is_empty() {
                     subpaths.push(std::mem::take(&mut edges));
                 }
-                start = (point.x, point.y);
+                start = (x, y);
                 at = start;
             }
-            Command::LineTo(point) => {
-                let to = (point.x, point.y);
+            Step::Line(x, y) => {
+                let to = (x, y);
                 let direction = normalise(to.0 - at.0, to.1 - at.1);
                 edges.push(Edge {
                     start: at,
@@ -257,10 +257,9 @@ fn split_subpaths(commands: &[Command]) -> Vec<Vec<Edge>> {
                 });
                 at = to;
             }
-            Command::QuadTo(control, point) => {
-                let control = (control.x, control.y);
-                let to = (point.x, point.y);
-                let (entering, leaving) = quadratic_ends(at, control, to);
+            Step::Quad(cx, cy, x, y) => {
+                let to = (x, y);
+                let (entering, leaving) = quadratic_ends(at, (cx, cy), to);
                 edges.push(Edge {
                     start: at,
                     entering,
@@ -268,11 +267,9 @@ fn split_subpaths(commands: &[Command]) -> Vec<Vec<Edge>> {
                 });
                 at = to;
             }
-            Command::CurveTo(first, second, point) => {
-                let first = (first.x, first.y);
-                let second = (second.x, second.y);
-                let to = (point.x, point.y);
-                let (entering, leaving) = cubic_ends(at, first, second, to);
+            Step::Cubic(ax, ay, bx, by, x, y) => {
+                let to = (x, y);
+                let (entering, leaving) = cubic_ends(at, (ax, ay), (bx, by), to);
                 edges.push(Edge {
                     start: at,
                     entering,
@@ -280,7 +277,7 @@ fn split_subpaths(commands: &[Command]) -> Vec<Vec<Edge>> {
                 });
                 at = to;
             }
-            Command::Close => {
+            Step::Close => {
                 close(&mut edges, at, start);
                 at = start;
             }

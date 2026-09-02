@@ -1,0 +1,10 @@
+[package]
+name = "morf-svg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+morf-outline.workspace = true
+resvg.workspace = true

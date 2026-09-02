@@ -13,6 +13,7 @@ morf-layout.workspace = true
 morf-region.workspace = true
 morf-scene.workspace = true
 morf-shader.workspace = true
+morf-svg.workspace = true
 morf-text.workspace = true
 raw-window-handle.workspace = true
 wgpu.workspace = true

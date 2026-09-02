@@ -116,6 +116,7 @@ fn color_overlay_propagates_through_a_subtree() {
         &mut materials,
         &mut Vec::new(),
         &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
     )
     .unwrap();
     assert_eq!(materials[0].color_overlay, color_array(overlay));

@@ -243,7 +243,7 @@ impl TextSystem {
             return;
         };
         let segments = flatten(&commands);
-        let corners = crate::glyph_corners::corners(&commands);
+        let corners = morf_outline::corners(&crate::glyph_steps::steps(&commands));
         println!("{} corners found", corners.len());
         for corner in corners.iter().take(3) {
             println!(
@@ -305,7 +305,7 @@ impl TextSystem {
         let spread = field_spread_for(reference);
         let field = glyph_field(&commands, spread)?;
         let segments = flatten(&commands);
-        let corners = crate::glyph_corners::corners(&commands);
+        let corners = morf_outline::corners(&crate::glyph_steps::steps(&commands));
 
         // How near a corner a texel has to be for its half-planes to speak, and
         // how far out their word fades back to the stored field.
@@ -417,7 +417,7 @@ impl TextSystem {
         }
         let walked: Vec<(f32, f32)> = contours
             .iter()
-            .flat_map(crate::glyph_morph::contour_of)
+            .flat_map(morf_outline::contour_of)
             .copied()
             .collect();
         let mut worst = 0.0_f32;
@@ -455,6 +455,17 @@ impl TextSystem {
         self.glyphs
             .get_outline_commands(&mut self.fonts, key)
             .map(<[cosmic_text::Command]>::to_vec)
+    }
+
+    /// One letter's closed loops, for a caller pairing them with something that
+    /// is not a letter.
+    ///
+    /// A drawing morphing into an `S` is the same arithmetic as one letter
+    /// morphing into another — the correspondence is geometry and does not ask
+    /// where either outline came from — but the two sides are cached in
+    /// different places, so whoever holds both has to be handed the loops.
+    pub fn glyph_contours(&mut self, glyph: char, family: &str) -> Vec<Contour> {
+        self.outline_points(glyph, family).unwrap_or_default()
     }
 
     fn outline_points(&mut self, glyph: char, family: &str) -> Option<Vec<Contour>> {

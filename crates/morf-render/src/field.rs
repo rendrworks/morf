@@ -131,11 +131,12 @@ impl SdfFieldInstance {
         materials: &mut Vec<SdfFieldMaterial>,
         outlines: &mut Vec<[f32; 2]>,
         text: &mut morf_text::TextSystem,
+        drawings: &mut morf_svg::SvgOutlines,
     ) -> Option<Self> {
         match command {
-            DrawCommand::Field { .. } => {
-                Self::from_field(command, scale_120, layers, materials, outlines, text)
-            }
+            DrawCommand::Field { .. } => Self::from_field(
+                command, scale_120, layers, materials, outlines, text, drawings,
+            ),
             DrawCommand::Quad { .. } => Self::from_quad(command, scale_120, layers, materials),
             _ => None,
         }
@@ -151,6 +152,7 @@ impl SdfFieldInstance {
         materials: &mut Vec<SdfFieldMaterial>,
         outlines: &mut Vec<[f32; 2]>,
         text: &mut morf_text::TextSystem,
+        drawings: &mut morf_svg::SvgOutlines,
     ) -> Option<Self> {
         let DrawCommand::Field {
             bounds,
@@ -181,7 +183,7 @@ impl SdfFieldInstance {
         let scale = scale_120.max(1) as f64 / 120.0;
         let first = layers.len();
         for layer in sources.iter().take(MAX_FIELD_LAYERS) {
-            let outline = polygon_params(layer, scale, outlines, text);
+            let outline = polygon_params(layer, scale, outlines, text, drawings);
             layers.push(SdfFieldLayer {
                 kinds: [
                     layer.shape.code() as f32,

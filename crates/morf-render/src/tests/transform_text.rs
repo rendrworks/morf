@@ -236,6 +236,7 @@ fn rectangles_emit_normalized_gradient_instances() {
         &mut materials,
         &mut Vec::new(),
         &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
     )
     .unwrap();
     assert_eq!(materials[0].gradient_data[0], 1.0);

@@ -42,6 +42,8 @@ morf-layout = { path = "crates/morf-layout" }
 morf-lifecycle = { path = "crates/morf-lifecycle" }
 morf-lua = { path = "crates/morf-lua" }
 morf-menu = { path = "crates/morf-menu" }
+morf-outline = { path = "crates/morf-outline" }
+morf-svg = { path = "crates/morf-svg" }
 morf-reactive = { path = "crates/morf-reactive" }
 morf-region = { path = "crates/morf-region" }
 morf-shader = { path = "crates/morf-shader" }

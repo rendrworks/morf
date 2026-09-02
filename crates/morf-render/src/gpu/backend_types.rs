@@ -135,6 +135,9 @@ pub struct WgpuBackend {
     /// nothing to rebuild.
     pub(crate) layer_target_pool: Vec<(wgpu::Texture, wgpu::TextureView)>,
     pub(crate) text: TextSystem,
+    /// Documents already read, so an icon is parsed and resampled once rather
+    /// than once a frame.
+    pub(crate) drawings: morf_svg::SvgOutlines,
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
     pub(crate) surface: Option<SurfaceState>,

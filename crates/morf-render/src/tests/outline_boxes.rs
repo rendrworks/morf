@@ -103,6 +103,8 @@ fn glyph_layer_for(glyph: char) -> SdfLayer {
     SdfLayer {
         glyph: Some(glyph),
         glyph_morph_to: None,
+        svg_source: None,
+        svg_source_morph_to: None,
         font_family: None,
         font_family_morph_to: None,
         bounds: Geometry {
@@ -131,12 +133,19 @@ fn boxing_a_contour_skips_only_runs_that_could_not_have_won() {
     let stride = morf_text::GLYPH_CONTOUR_POINTS;
     let spans = stride.div_ceil(OUTLINE_SPAN);
     let mut text = morf_text::TextSystem::new();
+    let mut drawings = morf_svg::SvgOutlines::new();
     let mut checked = 0;
     // Letters with counters, with a single stroke, and with several pieces —
     // the box walk has to hold for a contour whichever kind of shape it is.
     for glyph in "8B@gRo·il.,".chars() {
         let mut points = Vec::new();
-        let (params, loops) = polygon_params(&glyph_layer_for(glyph), 1.0, &mut points, &mut text);
+        let (params, loops) = polygon_params(
+            &glyph_layer_for(glyph),
+            1.0,
+            &mut points,
+            &mut text,
+            &mut drawings,
+        );
         let loops = loops as usize;
         if loops == 0 {
             continue;
@@ -174,9 +183,16 @@ fn boxing_a_contour_opens_a_fraction_of_it() {
     let stride = morf_text::GLYPH_CONTOUR_POINTS;
     let spans = stride.div_ceil(OUTLINE_SPAN);
     let mut text = morf_text::TextSystem::new();
+    let mut drawings = morf_svg::SvgOutlines::new();
     for glyph in "8B@gRoil".chars() {
         let mut points = Vec::new();
-        let (params, loops) = polygon_params(&glyph_layer_for(glyph), 1.0, &mut points, &mut text);
+        let (params, loops) = polygon_params(
+            &glyph_layer_for(glyph),
+            1.0,
+            &mut points,
+            &mut text,
+            &mut drawings,
+        );
         let loops = loops as usize;
         if loops == 0 {
             continue;

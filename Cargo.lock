@@ -1268,6 +1268,10 @@ name = "morf-menu"
 version = "0.1.3"
 
 [[package]]
+name = "morf-outline"
+version = "0.1.3"
+
+[[package]]
 name = "morf-reactive"
 version = "0.1.3"
 dependencies = [
@@ -1288,6 +1292,7 @@ dependencies = [
  "morf-region",
  "morf-scene",
  "morf-shader",
+ "morf-svg",
  "morf-text",
  "pollster",
  "raw-window-handle",
@@ -1322,11 +1327,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "morf-svg"
+version = "0.1.3"
+dependencies = [
+ "morf-outline",
+ "resvg",
+]
+
+[[package]]
 name = "morf-text"
 version = "0.1.3"
 dependencies = [
  "cosmic-text",
  "morf-layout",
+ "morf-outline",
  "morf-scene",
  "signed-distance-field",
  "unicode-segmentation",

@@ -52,6 +52,11 @@ pub struct SdfLayer {
     /// result is one outline, so a morphing letter costs the composition
     /// exactly what a still one does.
     pub glyph_morph_to: Option<char>,
+    /// The drawing this layer is, for `Polygon` — the same slot a glyph fills,
+    /// because by the time a field sees either one they are both an outline.
+    pub svg_source: Option<Box<str>>,
+    /// The drawing it turns into.
+    pub svg_source_morph_to: Option<Box<str>>,
     /// The face the letter is cut from, or `None` for the default one.
     ///
     /// Which outline a glyph is depends on the face as much as on the

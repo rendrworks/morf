@@ -247,6 +247,7 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
         &mut materials,
         &mut Vec::new(),
         &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
     )
     .unwrap();
     assert_eq!(instance.bounds, [20.0, 20.0, 40.0, 20.0]);
@@ -281,6 +282,7 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
         &mut materials,
         &mut Vec::new(),
         &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
     )
     .unwrap();
     assert_eq!(materials[0].shadow[2], 1.0);

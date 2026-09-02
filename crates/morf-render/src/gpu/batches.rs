@@ -1,3 +1,4 @@
+use morf_svg::SvgOutlines;
 use morf_text::TextSystem;
 
 use crate::{DrawList, SdfFieldInstance, SdfFieldLayer, SdfFieldMaterial, ShaderBinding};
@@ -27,6 +28,7 @@ pub(crate) fn collect_field_instances(
     list: &DrawList,
     scale_120: u32,
     text: &mut TextSystem,
+    drawings: &mut SvgOutlines,
 ) -> FieldBatch {
     let mut indices = vec![None; list.commands.len()];
     let mut instances = Vec::new();
@@ -44,6 +46,7 @@ pub(crate) fn collect_field_instances(
             &mut materials,
             &mut outlines,
             text,
+            drawings,
         ) {
             indices[command_index] = Some(instances.len() as u32);
             instances.push(instance);

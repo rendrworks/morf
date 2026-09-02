@@ -90,13 +90,19 @@ fn shape_layer(
     // shape with parameters, so there is nothing for `shape` to say about it.
     let glyph = scene.string_value(node, "glyph")?.chars().next();
     let glyph_morph_to = scene.string_value(node, "glyph_morph_to")?.chars().next();
+    // And a named drawing does the same. Read as a borrow first and only
+    // allocated when there is one, so a plain shape pays nothing per frame.
+    let svg_source = match scene.string_value(node, "source")? {
+        "" => None,
+        source => Some(source),
+    };
     let name = scene.string_value(node, "shape")?;
     let named = Shape::parse(name)
         .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape shape `{name}`")))?;
     // Naming a letter is enough to mean the layer *is* that letter, unless the
     // shape was named too — which is how a shape morphs into a letter rather
     // than out of one.
-    let shape = if glyph.is_some() && name == "circle" {
+    let shape = if (glyph.is_some() || svg_source.is_some()) && name == "circle" {
         Shape::Polygon
     } else {
         named
@@ -114,6 +120,11 @@ fn shape_layer(
     Ok(Some(SdfLayer {
         glyph,
         glyph_morph_to,
+        svg_source: svg_source.map(Into::into),
+        svg_source_morph_to: match scene.string_value(node, "source_morph_to")? {
+            "" => None,
+            source => Some(source.into()),
+        },
         // Only a letter has a face. Asking for the string when there is no
         // glyph would allocate on every plain shape in every field, every
         // frame, to describe something that is never read.
@@ -174,6 +185,8 @@ fn rect_layer(
         glyph: None,
         glyph_morph_to: None,
         font_family: None,
+        svg_source: None,
+        svg_source_morph_to: None,
         font_family_morph_to: None,
         bounds,
         // A rect brings its own colour into the composition, so a fused row of

@@ -245,6 +245,18 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 // `morph_progress` alongside whatever the shapes are doing.
                 string("glyph", ""),
                 string("glyph_morph_to", ""),
+                // A drawing, on exactly the same terms. An SVG is a set of
+                // closed curves and so is a letter, so naming a file here makes
+                // this layer that drawing's outline — which then unions,
+                // subtracts and morphs like every other shape, including into a
+                // letter or a circle. Nothing is rasterised on the way: a
+                // picture of a shape has pixels rather than points, and there is
+                // nothing in a picture to walk onto anything else.
+                //
+                // `source_morph_to` names the drawing it turns into, walked at
+                // `morph_progress` beside whatever the shapes are doing.
+                string("source", ""),
+                string("source_morph_to", ""),
                 // Which face the letter is cut from, and which the letter it
                 // turns into is cut from. Empty means the same face, which is
                 // the ordinary case; naming a second one morphs across faces,

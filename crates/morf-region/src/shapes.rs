@@ -72,7 +72,11 @@ impl Shape {
             // one: `shape = "star", morph_to = "glyph"` is a star becoming a
             // letter, which is the same interpolation as a star becoming a
             // hexagon. The points come from the layer's `glyph`.
-            "glyph" | "polygon" => Self::Polygon,
+            // And `svg`, which is the same thing again: a drawing is an outline,
+            // a letter is an outline, and the field walks whichever it is
+            // handed. Which one a layer means is said by naming a `glyph` or a
+            // `source`, not by naming a different shape.
+            "glyph" | "polygon" | "svg" | "outline" => Self::Polygon,
             _ => return None,
         })
     }

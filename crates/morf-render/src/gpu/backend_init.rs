@@ -194,6 +194,7 @@ impl WgpuBackend {
             image_textures: HashMap::new(),
             layer_target_pool: Vec::new(),
             text: TextSystem::new(),
+            drawings: morf_svg::SvgOutlines::new(),
             texture,
             view,
             surface,
