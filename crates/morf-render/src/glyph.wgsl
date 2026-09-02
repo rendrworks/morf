@@ -118,35 +118,65 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // letters — which stroke becomes which — was solved in the outline
         // before either was measured, so these two shapes differ by a twelfth
         // of the way across and averaging them has almost nothing to get wrong.
-        // Averaging the *end* letters is what swells and tears, and none of
-        // that is reachable from here any more.
         let edge = input.field.x;
-        var field = sampled.r;
-        if input.morph_size.x > 0.0 && input.morph_size.y > 0.0 {
-            let partner = textureSample(atlas, atlas_sampler, input.morph_uv).r;
-            field = mix(field, partner, input.field.w);
-        }
-        // Half the field's change across one device pixel, so the edge fades
-        // over exactly one pixel. Taken from the size the glyph is drawn at
-        // rather than measured from the sampled field: `fwidth` of a minified
-        // texture varies from pixel to pixel, and an antialiasing width that
-        // wobbles is what a hard, unsettled edge looks like.
-        //
-        // Floored at the field's own precision. The field is a byte, so it
-        // cannot resolve an edge finer than one step in two hundred and
-        // fifty-five, and asking for a narrower fade than that puts the whole
-        // transition inside a single stored level — which is a hard, stepped
-        // edge however exact the arithmetic was. Large text is where this
-        // bites, because that is where a device pixel covers least of the
-        // field.
+        // Half the field's change across one device pixel. Taken from the size
+        // the glyph is drawn at rather than measured from the sampled field:
+        // `fwidth` of a minified texture varies from pixel to pixel, and an
+        // antialiasing width that wobbles is what a hard, unsettled edge looks
+        // like. Floored at the field's own precision, because a byte cannot
+        // resolve an edge finer than one step in two hundred and fifty-five.
         const FIELD_STEP: f32 = 1.0 / 255.0;
         let feather = max(input.ramp * 0.5, FIELD_STEP) + input.field.y;
-        let fill = 1.0 - smoothstep(edge - feather, edge + feather, field);
-        let outer = 1.0 - smoothstep(
-            edge + input.field.z - feather,
-            edge + input.field.z + feather,
-            field,
+
+        // Four readings inside the pixel rather than one at its centre.
+        //
+        // A single reading thresholded over one pixel is the right *coverage*
+        // and still looks stepped: it gives one intermediate value per pixel,
+        // so along a shallow curve — where the edge moves a fraction of a pixel
+        // per column — whole runs of pixels come out the same and the eye reads
+        // the run as a stair. Four readings on a rotated grid, averaged,
+        // approximate how much of the pixel the letter actually covers, which
+        // is what a rasterizer computes exactly and what the stair was missing.
+        //
+        // The offsets are in pixels, turned into atlas coordinates by how far a
+        // pixel reaches across the atlas here — which the derivatives already
+        // know, and which is right whatever size the glyph is drawn at.
+        let across = dpdx(input.uv);
+        let down = dpdy(input.uv);
+        let morph_across = dpdx(input.morph_uv);
+        let morph_down = dpdy(input.morph_uv);
+        let morphing = input.morph_size.x > 0.0 && input.morph_size.y > 0.0;
+        // A rotated grid, so neither a horizontal nor a vertical edge has two
+        // readings land on the same line as each other.
+        var taps = array<vec2<f32>, 4>(
+            vec2<f32>(-0.125, -0.375),
+            vec2<f32>(0.375, -0.125),
+            vec2<f32>(-0.375, 0.125),
+            vec2<f32>(0.125, 0.375),
         );
+        var fill = 0.0;
+        var outer = 0.0;
+        for (var index = 0; index < 4; index = index + 1) {
+            let tap = taps[index];
+            let shift = across * tap.x + down * tap.y;
+            var here = textureSample(atlas, atlas_sampler, input.uv + shift).r;
+            if morphing {
+                let partner = textureSample(
+                    atlas,
+                    atlas_sampler,
+                    input.morph_uv + morph_across * tap.x + morph_down * tap.y,
+                ).r;
+                here = mix(here, partner, input.field.w);
+            }
+            fill = fill + (1.0 - smoothstep(edge - feather, edge + feather, here));
+            outer = outer + (1.0 - smoothstep(
+                edge + input.field.z - feather,
+                edge + input.field.z + feather,
+                here,
+            ));
+        }
+        fill = fill * 0.25;
+        outer = outer * 0.25;
         let body = mix(input.color.rgb, input.color_overlay.rgb, input.color_overlay.a);
         let body_alpha = fill * input.color.a;
         // The outline occupies only the band the fill does not, and sits under
