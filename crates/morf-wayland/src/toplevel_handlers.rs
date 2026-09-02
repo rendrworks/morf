@@ -66,14 +66,26 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for LayerState {
                 state.toplevels.entry(id).or_default().app_id = app_id;
             }
             ext_foreign_toplevel_handle_v1::Event::Identifier { identifier } => {
+                // Kept both ways: the description a configuration reads, and
+                // the handle a capture needs. A configuration is only ever
+                // given strings, so the engine is what has to find its way back
+                // from an identifier to the object the compositor knows.
+                state
+                    .toplevel_handles
+                    .insert(identifier.clone(), handle.clone());
                 state.toplevels.entry(id).or_default().identifier = identifier;
             }
             ext_foreign_toplevel_handle_v1::Event::Done => {
                 state.toplevels_changed = true;
             }
             ext_foreign_toplevel_handle_v1::Event::Closed => {
-                state.toplevels.remove(&id);
+                if let Some(gone) = state.toplevels.remove(&id) {
+                    state.toplevel_handles.remove(&gone.identifier);
+                }
                 state.toplevels_changed = true;
+                // Removed from the map above, so destroying it here frees the
+                // object rather than invalidating one a capture might still
+                // reach for.
                 handle.destroy();
             }
             _ => {}

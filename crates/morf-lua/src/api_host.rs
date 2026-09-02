@@ -89,14 +89,38 @@ pub(crate) fn install_host_service_api<'gc>(
         }
         let id = state.next_screencopy;
         state.next_screencopy = state.next_screencopy.wrapping_add(1);
-        state
-            .screencopy_requests
-            .push(ScreencopyRequest { id, include_cursor });
+        state.screencopy_requests.push(ScreencopyRequest {
+            id,
+            include_cursor,
+            window: None,
+        });
+        state.screencopy_callbacks.insert(id, ctx.stash(callback));
+        Ok(CallbackReturn::Return)
+    });
+    let window_state = Rc::clone(&state);
+    // `capture_window(identifier, handler)` — the same frame, the same handler
+    // shape, one window instead of the whole output. Separate from `capture`
+    // rather than an extra argument to it because the two can fail for
+    // different reasons and a configuration wants to know which.
+    let screencopy_window = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (identifier, callback): (String, Closure) = stack.consume(ctx)?;
+        let mut state = window_state.borrow_mut();
+        if state.screencopy_callbacks.len() >= 4 {
+            return Err(HostError("screencopy request limit reached".into()).into());
+        }
+        let id = state.next_screencopy;
+        state.next_screencopy = state.next_screencopy.wrapping_add(1);
+        state.screencopy_requests.push(ScreencopyRequest {
+            id,
+            include_cursor: false,
+            window: Some(identifier),
+        });
         state.screencopy_callbacks.insert(id, ctx.stash(callback));
         Ok(CallbackReturn::Return)
     });
     let screencopy = Table::new(&ctx);
     screencopy.set_field(ctx, "capture", screencopy_capture);
+    screencopy.set_field(ctx, "capture_window", screencopy_window);
     morf.set_field(ctx, "screencopy", screencopy);
     let virtual_key_state = Rc::clone(&state);
     let virtual_key = Callback::from_fn(&ctx, move |ctx, _, mut stack| {

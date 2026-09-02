@@ -255,13 +255,20 @@ pub struct Screencopy {
     pub pixels: Vec<u8>,
 }
 
-/// Correlated output-capture request queued by Lua.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Correlated capture request queued by Lua.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScreencopyRequest {
     /// Runtime-local request identifier.
     pub id: u64,
     /// Whether the compositor should include the cursor image.
     pub include_cursor: bool,
+    /// A window to capture instead of the output, by the identifier
+    /// `morf.windows` reported.
+    ///
+    /// By identifier rather than index or title: an index means something else
+    /// the moment a window opens, and two windows of one application share a
+    /// title as readily as an app id.
+    pub window: Option<String>,
 }
 
 impl IpcValue {

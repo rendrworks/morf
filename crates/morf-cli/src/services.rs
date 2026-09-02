@@ -50,8 +50,30 @@ pub(crate) fn apply_clipboard_requests(runtime: &mut Runtime, client: &mut Layer
 
 pub(crate) fn apply_screencopy_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     for request in runtime.take_screencopy_requests() {
-        if !client.capture_output(request.id, request.include_cursor) {
-            runtime.dispatch_screencopy(request.id, Err("screencopy is unavailable".to_owned()));
+        // A window if one was named, an output otherwise — and for an output,
+        // the newer protocol where the compositor has it.
+        //
+        // `wlr-screencopy` is deprecated but not dead, and it is the only path
+        // on compositors that have not caught up. It is also the only one that
+        // can include the cursor: the newer protocol makes a pointer a separate
+        // session, so asking for one here would be asking for a different
+        // capture rather than the same one with a pointer drawn on it.
+        let started = match &request.window {
+            Some(identifier) => client.capture_window(request.id, identifier),
+            None if request.include_cursor => client.capture_output(request.id, true),
+            None => {
+                client.capture_output_image(request.id) || client.capture_output(request.id, false)
+            }
+        };
+        if !started {
+            let why = match &request.window {
+                Some(_) if !client.supports_window_capture() => {
+                    "this compositor cannot capture a single window"
+                }
+                Some(_) => "no window with that identifier",
+                None => "screen capture is unavailable",
+            };
+            runtime.dispatch_screencopy(request.id, Err(why.to_owned()));
         }
     }
 }

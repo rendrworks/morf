@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, screencopy {}, backdrop-blur {}, windows {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, capture {}, backdrop-blur {}, windows {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
@@ -146,7 +146,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     virtual_keyboard,
                     input_method,
                     text_input,
-                    screencopy,
+                    // Which capture path is live, not merely that one is.
+                    // `wlr-screencopy` can only ever give an output; the newer
+                    // protocol is what makes a single window possible, and the
+                    // difference is the difference between a screenshot and an
+                    // overview.
+                    match (
+                        client.supports_window_capture(),
+                        client.supports_image_capture(),
+                        screencopy,
+                    ) {
+                        (true, _, _) => "ext+window",
+                        (false, true, _) => "ext-output-only",
+                        (false, false, true) => "wlr-fallback",
+                        (false, false, false) => "none",
+                    },
                     // Whether this compositor will blur behind a surface. Worth
                     // reporting because it is the one capability here that a
                     // configuration cannot work around: absent, the panel is

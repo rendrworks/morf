@@ -31,9 +31,19 @@ use wayland_protocols::ext::background_effect::v1::client::{
     ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
     ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
 };
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1;
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1;
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::ExtIdleNotificationV1, ext_idle_notifier_v1::ExtIdleNotifierV1,
+};
+use wayland_protocols::ext::image_capture_source::v1::client::{
+    ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
+    ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
+};
+use wayland_protocols::ext::image_copy_capture::v1::client::{
+    ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
+    ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
+    ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -201,6 +211,23 @@ pub(crate) struct LayerState {
     pub(crate) toplevels: HashMap<ObjectId, ToplevelInfo>,
     /// Whether the list changed since a caller last looked.
     pub(crate) toplevels_changed: bool,
+    /// The handle behind each window, kept so a capture can name one.
+    ///
+    /// Separate from the descriptions because a configuration is given strings
+    /// and hands one back: it never sees a protocol object, and the engine has
+    /// to find its way from an identifier to the handle the compositor knows.
+    pub(crate) toplevel_handles: HashMap<String, ExtForeignToplevelHandleV1>,
+    /// `ext-image-copy-capture-v1` and the two source factories, when offered.
+    ///
+    /// The replacement for `wlr-screencopy`, and the reason to want it: that one
+    /// captures outputs and only outputs, so a thumbnail of a *window* could not
+    /// be had at all — cropping an output gives whatever is on top at that
+    /// rectangle, not the window.
+    pub(crate) capture_manager: Option<ExtImageCopyCaptureManagerV1>,
+    pub(crate) output_source_manager: Option<ExtOutputImageCaptureSourceManagerV1>,
+    pub(crate) toplevel_source_manager: Option<ExtForeignToplevelImageCaptureSourceManagerV1>,
+    /// Captures in flight on the newer protocol.
+    pub(crate) captures: Vec<PendingCapture>,
     pub(crate) session_locks: SessionLockState,
     pub(crate) session_lock: Option<SessionLock>,
     pub(crate) lock_surfaces: Vec<LockSurface>,
@@ -219,6 +246,26 @@ pub(crate) struct PendingScreencopy {
     pub(crate) buffer: Option<ShmBuffer>,
     pub(crate) format: Option<ScreencopyFormat>,
     pub(crate) y_invert: bool,
+}
+
+/// One capture in flight on `ext-image-copy-capture-v1`.
+///
+/// More states than the older protocol needed, because this one negotiates
+/// before it copies: the session reports the size and formats it can produce,
+/// and only once that is `done` is there anything to allocate a buffer against.
+/// A frame is then created, given the buffer, and told to capture.
+pub(crate) struct PendingCapture {
+    pub(crate) request_id: u64,
+    pub(crate) session: ExtImageCopyCaptureSessionV1,
+    pub(crate) frame: Option<ExtImageCopyCaptureFrameV1>,
+    /// Size the session says it will produce, from `buffer_size`.
+    pub(crate) size: Option<(u32, u32)>,
+    /// The first shared-memory format offered that this engine can carry.
+    pub(crate) format: Option<wl_shm::Format>,
+    pub(crate) pool: Option<SlotPool>,
+    pub(crate) buffer: Option<ShmBuffer>,
+    /// Whether the frame has been created and told to capture.
+    pub(crate) started: bool,
 }
 
 pub(crate) struct LockSurface {

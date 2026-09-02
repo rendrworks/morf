@@ -17,6 +17,11 @@ use wayland_client::globals::registry_queue_init;
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1;
 use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1;
+use wayland_protocols::ext::image_capture_source::v1::client::{
+    ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
+    ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
+};
+use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
@@ -81,6 +86,18 @@ impl LayerClient {
         let toplevel_list = globals
             .bind::<ExtForeignToplevelListV1, _, _>(&qh, 1..=1, ())
             .ok();
+        // The newer capture protocol, and the two things that name what to
+        // capture. Bound separately because a compositor may offer the copy
+        // machinery and only one kind of source.
+        let capture_manager = globals
+            .bind::<ExtImageCopyCaptureManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
+        let output_source_manager = globals
+            .bind::<ExtOutputImageCaptureSourceManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
+        let toplevel_source_manager = globals
+            .bind::<ExtForeignToplevelImageCaptureSourceManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
         let screencopy_manager = globals
             .bind::<ZwlrScreencopyManagerV1, _, _>(&qh, 1..=3, ())
             .ok();
@@ -141,6 +158,11 @@ impl LayerClient {
             toplevel_list,
             toplevels: HashMap::new(),
             toplevels_changed: false,
+            toplevel_handles: HashMap::new(),
+            capture_manager,
+            output_source_manager,
+            toplevel_source_manager,
+            captures: Vec::new(),
             background_effect,
             // Assumed absent until the manager says otherwise: the capability
             // arrives as an event, so anything sent before it would be a guess.
