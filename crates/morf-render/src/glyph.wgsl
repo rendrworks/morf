@@ -16,6 +16,16 @@ struct VertexOutput {
     @location(13) ramp: f32,
 }
 
+/// The middle of three, which is how three channels describe one contour.
+///
+/// Away from a corner all three agree and this is simply the distance. At one,
+/// two channels see one edge and the third sees the other, and the median
+/// follows whichever pair holds — which is the corner, exactly, instead of the
+/// arc a single distance draws through the wedge between two edges.
+fn median(values: vec3<f32>) -> f32 {
+    return max(min(values.r, values.g), min(max(values.r, values.g), values.b));
+}
+
 @group(0) @binding(0) var atlas: texture_2d<f32>;
 @group(0) @binding(1) var atlas_sampler: sampler;
 
@@ -121,11 +131,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // Averaging the *end* letters is what swells and tears, and none of
         // that is reachable from here any more.
         let edge = input.field.x;
-        var field = sampled.r;
+        // Mixed channel by channel and taken to the median afterwards: the
+        // median of a blend is not the blend of medians, and it is the blend
+        // that is part way between two shapes.
+        var channels = sampled.rgb;
         if input.morph_size.x > 0.0 && input.morph_size.y > 0.0 {
-            let partner = textureSample(atlas, atlas_sampler, input.morph_uv).r;
-            field = mix(field, partner, input.field.w);
+            let partner = textureSample(atlas, atlas_sampler, input.morph_uv).rgb;
+            channels = mix(channels, partner, input.field.w);
         }
+        let field = median(channels);
         // Half the field's change across one device pixel, so the edge fades
         // over exactly one pixel. Taken from the size the glyph is drawn at
         // rather than measured from the sampled field: `fwidth` of a minified

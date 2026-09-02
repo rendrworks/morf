@@ -464,6 +464,7 @@ fn normalize_font_weight(weight: f64) -> u16 {
 
 mod glyph_fields;
 mod glyph_morph;
+mod glyph_msdf;
 pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
 mod glyph_runs;
 mod measure;

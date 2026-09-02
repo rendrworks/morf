@@ -79,6 +79,12 @@ local seed = morf.signal("morph.seed", 0)
 local now = { body = "circle", hole = "8", hole_is_glyph = true }
 local next_up = { body = "circle", hole = "8", hole_is_glyph = true }
 
+-- One journey at a time. A plain flag rather than the travel signal: the signal
+-- returns to zero the moment the swap lands, while the property is still easing
+-- back to it, so a click in that window started a second morph on top of the
+-- first and two things moved at once.
+local morphing = false
+
 local body_node
 local hole_node
 local caption
@@ -98,7 +104,8 @@ local function describe(state)
 end
 
 local function advance()
-  if travel:get() > 0 then return end
+  if morphing then return end
+  morphing = true
   next_up = {
     body = pick(SHAPES, now.body),
     -- Two in five are a shape rather than a letter, so a run of clicks shows
@@ -209,6 +216,7 @@ swap = ui.Timer {
     end
     write(travel, 0)
     caption.text = describe(now)
+    morphing = false
   end,
 }
 
