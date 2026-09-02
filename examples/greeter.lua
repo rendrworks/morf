@@ -66,7 +66,7 @@ local function s(n) return math.floor(n * SCALE) end
 
 local INK = "#05070c"
 local PANEL = "#121a27cc"
-local PANEL_SOLID = "#1a2534"
+local SLAB = "#7fc3dd"
 local RAISED = "#1b2536"
 local LINE = "#2b3648"
 local TEXT = "#eef2f8"
@@ -287,7 +287,7 @@ local function drift(index, home_x, home_y, radius, colour, reach)
     width = radius * 2,
     height = radius * 2,
     fill_color = colour,
-    opacity = 0.5,
+    opacity = 0.55,
     softness = radius * 0.85,
     behavior = {
       x = { duration = 8000 + index * 1100, easing = "in_out_sine" },
@@ -298,126 +298,120 @@ local function drift(index, home_x, home_y, radius, colour, reach)
 end
 
 --------------------------------------------------------------------------------
--- The clock, as six tiles with the time cut out of them.
+-- The clock: one slab, with the time cut out of it.
 --------------------------------------------------------------------------------
 
--- Each digit is a hole in a shape rather than a letter drawn on top of one.
--- A glyph is an outline, and the composition takes outlines, so subtracting one
--- from a rounded square is the same arithmetic as subtracting a circle: solved
--- at the edge, per pixel, at whatever size the tile happens to be.
+-- Six tiles close enough together that the field fuses them, so the clock is a
+-- single piece of something rather than six boxes in a row — and the time is
+-- subtracted from it. A glyph is an outline and the composition takes outlines,
+-- so cutting a numeral out is the same arithmetic as cutting a circle out, and
+-- the hole lands on the seam between two tiles as cleanly as in the middle of
+-- one, because by then there are no tiles left, only the slab they made.
 --
--- On a tick, the tiles that changed morph. Both halves move at once and from
--- the same number — the tile breathes from squircle towards circle and back,
--- and the figure inside it walks to the next figure — because there is only one
--- shape here, and the hole is part of it.
-local TILE = s(104)
-local TILE_GAP = s(10)
-local GROUP_GAP = s(30)
-local CLOCK_MORPH = 420
+-- Twelve layers: six to build the slab, six to cut it. A field composes at most
+-- sixteen, which is the reason the clock is `HHMMSS` in a block of two rather
+-- than a line of six.
+local TILE = s(196)
+-- Negative: the tiles overlap. Butted up with a seam between them, the smooth
+-- union of a grid leaves a diamond of nothing where four corners meet — the
+-- seam between two is filled by the blend, but the point where two seams cross
+-- is filled by neither. Overlapping removes the junction rather than blending
+-- across it.
+local TILE_GAP = -s(30)
+local CLOCK_MORPH = 460
+local CLOCK_X = math.floor(W * 0.10)
+local CLOCK_W = TILE * 2 + TILE_GAP
+local CLOCK_H = TILE * 3 + TILE_GAP * 2
+local CLOCK_Y = math.floor((H - CLOCK_H) / 2)
 
 local travel = morf.signal("greeter.travel", 0)
-local arriving = "000000"
-local tiles = {}
+local arriving = core.system_clock():format("%H%M%S")
+local shown = arriving
+local holes = {}
 local clock_swap
 
-local function clock_digits()
-  return core.system_clock():format("%H%M%S")
-end
-
---- Puts a new time up, morphing whichever tiles differ.
 local function retime()
-  local next_time = clock_digits()
+  local next_time = core.system_clock():format("%H%M%S")
   if next_time == arriving then return end
   arriving = next_time
-  for index, tile in ipairs(tiles) do
-    tile.glyph_morph_to = arriving:sub(index, index)
+  for index, hole in ipairs(holes) do
+    hole.glyph_morph_to = arriving:sub(index, index)
   end
   write(travel, 1)
   clock_swap.running = true
 end
 
-local shown = clock_digits()
-arriving = shown
-
-local clock_w = TILE * 6 + TILE_GAP * 3 + GROUP_GAP * 2
-local clock_x = math.floor((W - clock_w) / 2)
-local clock_y = math.floor(H * 0.12)
-
-local clock_nodes = {}
-do
-  local x = clock_x
-  for index = 1, 6 do
-    local hole = ui.SdfShape {
-      x = math.floor(TILE * 0.18),
-      y = math.floor(TILE * 0.16),
-      width = math.floor(TILE * 0.64),
-      height = math.floor(TILE * 0.68),
-      glyph = shown:sub(index, index),
-      glyph_morph_to = shown:sub(index, index),
-      morph_progress = function() return travel:get() end,
-      operation = "subtract",
-      behavior = { morph_progress = { duration = CLOCK_MORPH, easing = "in_out_cubic" } },
-    }
-    tiles[index] = hole
-    clock_nodes[#clock_nodes + 1] = ui.Sdf {
-      x = x,
-      y = clock_y,
-      width = TILE,
-      height = TILE,
-      fill_color = PANEL_SOLID,
-      ui.SdfShape {
-        width = TILE,
-        height = TILE,
-        shape = "rect",
-        radius = math.floor(TILE * 0.30),
-        -- The tile eases towards a circle at the middle of the change and back,
-        -- so the whole thing moves rather than only the number in it.
-        morph_to = "circle",
-        morph_progress = function() return 0.5 - math.abs(travel:get() - 0.5) end,
-        behavior = { morph_progress = { duration = CLOCK_MORPH, easing = "in_out_cubic" } },
-      },
-      hole,
-    }
-    x = x + TILE + (index % 2 == 0 and GROUP_GAP or TILE_GAP)
-  end
+local function slot_position(index)
+  local column = (index - 1) % 2
+  local row = math.floor((index - 1) / 2)
+  return column * (TILE + TILE_GAP), row * (TILE + TILE_GAP)
 end
 
---- Lands the new time and drops the progress.
----
---- Once the figure shown and the figure arriving are the same, walking between
---- them changes nothing, so the progress returns to zero with nothing to see.
+local clock_field = {
+  x = CLOCK_X,
+  y = CLOCK_Y,
+  width = CLOCK_W,
+  height = CLOCK_H,
+  fill_color = SLAB,
+  -- Wider than the gap, so the tiles are already one piece at rest.
+  blend = s(22),
+}
+for index = 1, 6 do
+  local x, y = slot_position(index)
+  clock_field[#clock_field + 1] = ui.SdfShape {
+    x = x,
+    y = y,
+    width = TILE,
+    height = TILE,
+    shape = "rect",
+    radius = math.floor(TILE * 0.30),
+    operation = index == 1 and "union" or "smooth_union",
+  }
+end
+for index = 1, 6 do
+  local x, y = slot_position(index)
+  local digit = shown:sub(index, index)
+  holes[index] = ui.SdfShape {
+    x = x + math.floor(TILE * 0.22),
+    y = y + math.floor(TILE * 0.18),
+    width = math.floor(TILE * 0.56),
+    height = math.floor(TILE * 0.64),
+    glyph = digit,
+    glyph_morph_to = digit,
+    morph_progress = function() return travel:get() end,
+    operation = "subtract",
+    behavior = { morph_progress = { duration = CLOCK_MORPH, easing = "in_out_cubic" } },
+  }
+  clock_field[#clock_field + 1] = holes[index]
+end
+
+--- Lands the new time and drops the progress. Once the figure shown and the
+--- figure arriving are the same, walking between them changes nothing.
 clock_swap = ui.Timer {
   interval = CLOCK_MORPH,
   ["repeat"] = false,
   running = false,
   on_triggered = function()
-    for index, tile in ipairs(tiles) do
-      tile.glyph = arriving:sub(index, index)
+    for index, hole in ipairs(holes) do
+      hole.glyph = arriving:sub(index, index)
     end
     write(travel, 0)
   end,
 }
 
-local today = ui.Text {
-  y = clock_y + TILE + s(22),
-  width = W,
-  text = core.system_clock():format("%A %d %B"),
-  font_size = s(15),
-  horizontal_alignment = "center",
-  color = MUTED,
-}
-
 --------------------------------------------------------------------------------
--- The person, as their initial cut out of a shape.
+-- The login, off to one side.
 --------------------------------------------------------------------------------
 
--- The same idea as the clock, and the reason the avatar is a field rather than
--- a circle with a letter on it: choosing another account walks the initial to
--- the new one while the shape itself eases, and neither has to be kept in step
--- with the other because they are one shape.
-local AVATAR = s(132)
-local AVATAR_X = math.floor((W - AVATAR) / 2)
-local AVATAR_Y = math.floor(H * 0.38)
+-- Nothing here is centred on the screen. A login screen with everything stacked
+-- down the middle is the shape every login screen has, and the clock is far too
+-- big to sit above anything — so the slab holds the left and the login answers
+-- it from the right.
+local COLUMN_X = math.floor(W * 0.50)
+local COLUMN_W = math.min(s(520), W - COLUMN_X - s(80))
+
+local AVATAR = s(150)
+local AVATAR_Y = math.floor(H * 0.50) - s(200)
 
 local face = morf.signal("greeter.face", 0)
 local face_from = users[1] and users[1].initial or "?"
@@ -427,28 +421,27 @@ local face_swap
 
 local function show_user(index)
   local user = users[index]
-  if not user then return end
+  if not user or user.initial == face_from then return end
   face_to = user.initial
-  if face_to == face_from then return end
   initial_hole.glyph_morph_to = face_to
   write(face, 1)
   face_swap.running = true
 end
 
 initial_hole = ui.SdfShape {
-  x = math.floor(AVATAR * 0.26),
-  y = math.floor(AVATAR * 0.24),
-  width = math.floor(AVATAR * 0.48),
-  height = math.floor(AVATAR * 0.52),
+  x = math.floor(AVATAR * 0.27),
+  y = math.floor(AVATAR * 0.23),
+  width = math.floor(AVATAR * 0.46),
+  height = math.floor(AVATAR * 0.54),
   glyph = face_from,
   glyph_morph_to = face_from,
   morph_progress = function() return face:get() end,
   operation = "subtract",
-  behavior = { morph_progress = { duration = 380, easing = "in_out_cubic" } },
+  behavior = { morph_progress = { duration = 400, easing = "in_out_cubic" } },
 }
 
 face_swap = ui.Timer {
-  interval = 380,
+  interval = 400,
   ["repeat"] = false,
   running = false,
   on_triggered = function()
@@ -459,20 +452,20 @@ face_swap = ui.Timer {
 }
 
 local avatar = ui.Sdf {
-  x = AVATAR_X,
+  x = COLUMN_X,
   y = AVATAR_Y,
   width = AVATAR,
   height = AVATAR,
-  fill_color = function() return alarmed:get() and ALERT or ACCENT end,
+  fill_color = function() return alarmed:get() and ALERT or SLAB end,
   behavior = { fill_color = { duration = 320, easing = "out_quad" } },
   ui.SdfShape {
     width = AVATAR,
     height = AVATAR,
     shape = "circle",
-    -- Rounds off towards a squircle once there is a password being typed, so
-    -- the shape itself reports that the screen is listening.
+    -- Squares off once there is a password being typed, so the shape itself
+    -- reports that the screen is listening.
     morph_to = "rect",
-    radius = math.floor(AVATAR * 0.34),
+    radius = math.floor(AVATAR * 0.32),
     morph_progress = function() return typed:get() > 0 and 1 or 0 end,
     behavior = {
       morph_progress = { kind = "spring", mass = 1, damping = 16, stiffness = 190,
@@ -482,45 +475,33 @@ local avatar = ui.Sdf {
   initial_hole,
 }
 
---------------------------------------------------------------------------------
--- The password, as drops that run together.
---------------------------------------------------------------------------------
-
--- One field with a seam radius, so a typed character is a drop that appears and
--- merges with the one before it. Nothing here is a picture of merging: the
--- neck between two drops is where their distances agree, computed at the edge,
--- which is the same reason the numerals cut clean holes.
-local DROP = s(15)
-local DROP_GAP = s(21)
-local DROPS = 18
-local DROPS_W = (DROPS - 1) * DROP_GAP + DROP * 2
-local DROPS_X = math.floor((W - DROPS_W) / 2)
--- Directly under the name, so the shape, the name and what is being typed read
--- as one thing rather than three placed on the same screen.
-local DROPS_Y = AVATAR_Y + AVATAR + s(74)
+-- The password as drops in one field: a typed character appears and runs into
+-- the one before it, so what builds up is a single length of something rather
+-- than a row of ticks. The neck between two drops is where their distances
+-- agree — the same arithmetic that cuts the numerals out of the slab.
+local DROP = s(17)
+local DROPS = 12
+local DROP_GAP = s(25)
+local DROPS_Y = AVATAR_Y + AVATAR + s(126)
 
 local drops = {
-  x = DROPS_X,
+  x = COLUMN_X,
   y = DROPS_Y,
-  width = DROPS_W,
+  width = (DROPS - 1) * DROP_GAP + DROP * 2,
   height = DROP * 2,
-  fill_color = function() return alarmed:get() and ALERT or ACCENT end,
-  blend = math.floor(DROP * 0.9),
+  fill_color = function() return alarmed:get() and ALERT or SLAB end,
+  blend = math.floor(DROP * 0.95),
   behavior = { fill_color = { duration = 320, easing = "out_quad" } },
 }
 for index = 1, DROPS do
-  -- An untyped slot is a small mark rather than nothing at all: a row of them
-  -- says where the password goes, and each grows into a drop as it is filled.
-  local REST = math.floor(DROP * 0.34)
-  local size = function()
-    return typed:get() >= index and DROP * 2 or REST
-  end
-  local inset = function()
-    return typed:get() >= index and 0 or DROP - REST / 2
-  end
+  -- An untyped slot is a small mark rather than nothing at all: the row says
+  -- where the password goes, and each grows into a drop as it is filled.
+  local REST = math.floor(DROP * 0.3)
+  local size = function() return typed:get() >= index and DROP * 2 or REST end
+  local inset = function() return typed:get() >= index and 0 or DROP - REST / 2 end
   drops[#drops + 1] = ui.SdfShape {
     x = function() return (index - 1) * DROP_GAP + inset() end,
-    y = function() return inset() end,
+    y = inset,
     width = size,
     height = size,
     shape = "circle",
@@ -535,22 +516,22 @@ for index = 1, DROPS do
 end
 
 --------------------------------------------------------------------------------
--- Sessions, accounts and the machine's own controls.
+-- Everything that is a word.
 --------------------------------------------------------------------------------
 
---- A small labelled button. Words rather than symbols: ⏻ is in most fonts but
---- ⟳ and ⌨ are not, and a greeter that renders a tofu box has told the person
---- in front of it nothing. It is also the one screen where guessing is costly.
-local BUTTON_H = s(34)
-local function button(id, label, width, lit, on_tap)
+--- A row that can be chosen, left-aligned like everything in this column.
+--- Words rather than symbols: ⏻ is in most fonts but ⟳ and ⌨ are not, and a
+--- greeter that renders a tofu box has told the person in front of it nothing.
+local ROW_H = s(36)
+local function row(id, label, width, lit, on_tap)
   local hot = morf.signal("greeter.hot." .. id, false)
   local function live() return hot:get() or lit() end
   return ui.Item {
     width = width,
-    height = BUTTON_H,
+    height = ROW_H,
     ui.Rect {
       anchors = { fill = true },
-      radius = BUTTON_H / 2,
+      radius = ROW_H / 2,
       color = function() return live() and ACCENT_IN or "#00000000" end,
       border_width = s(1),
       border_color = function() return live() and ACCENT or LINE end,
@@ -590,7 +571,7 @@ local function place(node) tree[#tree + 1] = node end
 
 -- First, so it is at the bottom of the stack. A hit test returns the *topmost*
 -- MouseArea over the point, and this one covers the screen: placed last it
--- would sit over every button and swallow the taps meant for them. Key handlers
+-- would sit over every row and swallow the taps meant for them. Key handlers
 -- are collected by walking the tree rather than by z-order, so being underneath
 -- costs it nothing.
 place(ui.MouseArea {
@@ -621,98 +602,98 @@ place(ui.MouseArea {
 })
 
 place(ui.Rect { width = W, height = H, color = INK })
-place(drift(1, math.floor(W * 0.24), math.floor(H * 0.28), s(360), "#15364a", s(110)))
-place(drift(2, math.floor(W * 0.78), math.floor(H * 0.72), s(300), "#241f3d", s(90)))
+place(drift(1, math.floor(W * 0.16), math.floor(H * 0.62), s(420), "#15364a", s(130)))
+place(drift(2, math.floor(W * 0.80), math.floor(H * 0.24), s(320), "#241f3d", s(100)))
 
-for _, node in ipairs(clock_nodes) do place(node) end
-place(today)
-place(avatar)
-
+place(ui.Sdf(clock_field))
 place(ui.Text {
-  y = AVATAR_Y + AVATAR + s(20),
-  width = W,
+  x = CLOCK_X,
+  y = CLOCK_Y + CLOCK_H + s(26),
+  width = CLOCK_W,
+  text = core.system_clock():format("%A"),
+  font_size = s(19),
+  font_weight = 500,
+  color = TEXT,
+})
+local today = ui.Text {
+  x = CLOCK_X,
+  y = CLOCK_Y + CLOCK_H + s(54),
+  width = CLOCK_W,
+  text = core.system_clock():format("%d %B"),
+  font_size = s(15),
+  color = MUTED,
+}
+place(today)
+
+place(avatar)
+place(ui.Text {
+  x = COLUMN_X,
+  y = AVATAR_Y + AVATAR + s(30),
+  width = COLUMN_W,
   text = function()
     local user = users[chosen_user:get()]
     return user and user.label or "no accounts found"
   end,
-  font_size = s(23),
-  font_weight = 500,
-  horizontal_alignment = "center",
+  font_size = s(30),
+  font_weight = 600,
   color = TEXT,
 })
-
-place(ui.Sdf(drops))
-
 place(ui.Text {
-  y = DROPS_Y + DROP * 2 + s(18),
-  width = W,
+  x = COLUMN_X,
+  y = AVATAR_Y + AVATAR + s(74),
+  width = COLUMN_W,
   text = function()
     if working:get() then return "checking…" end
     return message:get()
   end,
-  font_size = s(13),
-  horizontal_alignment = "center",
+  font_size = s(14),
   color = function()
     if working:get() then return ACCENT end
     return alarmed:get() and ALERT or MUTED
   end,
   behavior = { color = { duration = 320, easing = "out_quad" } },
 })
+place(ui.Sdf(drops))
 
--- Accounts and sessions along one line, so the two choices this screen offers
--- sit together instead of bracketing it.
-local CHOICE_Y = DROPS_Y + DROP * 2 + s(54)
-local choices = {}
+-- The choices, stacked under the column rather than centred beneath everything.
+local choice_y = DROPS_Y + DROP * 2 + s(46)
 for index, user in ipairs(users) do
-  choices[#choices + 1] = {
-    label = user.label,
-    width = s(150),
-    lit = function() return chosen_user:get() == index end,
-    tap = function()
+  local node = row("user" .. index, user.label, s(168),
+    function() return chosen_user:get() == index end,
+    function()
       pick_user(index)
       show_user(index)
-    end,
-    id = "user" .. index,
-  }
+    end)
+  node.x = COLUMN_X + (index - 1) * (s(168) + s(10))
+  node.y = choice_y
+  place(node)
 end
 for index, entry in ipairs(available) do
-  choices[#choices + 1] = {
-    label = entry.name,
-    width = s(186),
-    lit = function() return chosen_session:get() == index end,
-    tap = function()
+  local node = row("session" .. index, entry.name, s(200),
+    function() return chosen_session:get() == index end,
+    function()
       if not working:get() then write(chosen_session, index) end
-    end,
-    id = "session" .. index,
-  }
-end
-do
-  local span = -s(10)
-  for _, choice in ipairs(choices) do span = span + choice.width + s(10) end
-  local x = math.floor((W - span) / 2)
-  for _, choice in ipairs(choices) do
-    local node = button(choice.id, choice.label, choice.width, choice.lit, choice.tap)
-    node.x = x
-    node.y = CHOICE_Y
-    place(node)
-    x = x + choice.width + s(10)
-  end
+    end)
+  node.x = COLUMN_X + (index - 1) * (s(200) + s(10))
+  node.y = choice_y + ROW_H + s(12)
+  place(node)
 end
 
 local ACTION_W = s(98)
-local function corner(index, label, on_tap)
-  local node = button(label, label, ACTION_W, function() return false end, on_tap)
-  node.x = W - ACTION_W * index - s(24) * index
-  node.y = s(24)
-  return node
+for index, action in ipairs({
+  { "shut down", function() power("PowerOff") end },
+  { "restart", function() power("Reboot") end },
+  { "sleep", function() power("Suspend") end },
+}) do
+  local node = row(action[1], action[1], ACTION_W, function() return false end, action[2])
+  node.x = W - (ACTION_W + s(12)) * index - s(12)
+  node.y = H - ROW_H - s(28)
+  place(node)
 end
-place(corner(1, "shut down", function() power("PowerOff") end))
-place(corner(2, "restart", function() power("Reboot") end))
-place(corner(3, "sleep", function() power("Suspend") end))
 do
-  local node = button("keyboard", "keyboard", ACTION_W, function() return false end, open_keyboard)
-  node.x = s(24)
-  node.y = s(24)
+  local node = row("keyboard", "keyboard", ACTION_W, function() return false end, open_keyboard)
+  node.x = s(28)
+  node.y = H - ROW_H - s(28)
   place(node)
 end
 
@@ -720,16 +701,13 @@ place(ui.Timer {
   interval = 7000, ["repeat"] = true, running = true,
   on_triggered = function() write(tide, tide:get() == 1 and 0 or 1) end,
 })
-
--- Twice a second, so a second never lands more than half a second late.
 place(ui.Timer {
   interval = 500, ["repeat"] = true, running = true,
   on_triggered = function()
     retime()
-    today.text = core.system_clock():format("%A %d %B")
+    today.text = core.system_clock():format("%d %B")
   end,
 })
-
 place(clock_swap)
 place(face_swap)
 
