@@ -24,22 +24,37 @@ use std::rc::Rc;
 
 use cosmic_text::Command;
 
-/// The size the outline is measured at, and the units every field is in.
+/// The size a field is measured at when nothing narrows it down.
 ///
-/// The field records a shape, not a size: text is drawn by scaling the quad,
-/// and nothing is measured again. This only sets how finely the curve is
-/// sampled and how much atlas one letter costs.
+/// A field records a shape, not a size, so one entry can serve any size — but
+/// only within reason. Reading a sixty-four pixel field into eleven pixels of
+/// text means resolving six texels into every screen pixel with nothing but a
+/// bilinear tap, and the letters come back scarred. So the reference is chosen
+/// per size instead; see [`field_reference_for`].
 pub const FIELD_REFERENCE_PX: f32 = 64.0;
 
-/// How far outside the glyph the field is measured, in reference pixels.
+/// The reference size a glyph drawn at `size` is measured at.
 ///
-/// This is the room an outline has to live in, the distance the edge can be
-/// moved to thicken a letter, and — the reason it is as wide as it is — the
-/// range over which two glyphs can be interpolated. Everything beyond it reads
-/// as "far outside", and two letters whose strokes are further apart than this
-/// have nothing to interpolate: the stroke cannot travel in, it can only appear.
-/// At eight pixels, which is what the distance transform could afford, most
-/// pairs fell apart in the middle.
+/// Powers of two, so a size that animates settles on a handful of fields rather
+/// than one per frame, and so a field is never read at worse than half its own
+/// resolution — which is the point: minification is what tore small text, not
+/// the field. Bounded below because a field smaller than this stops describing
+/// a letter, and above because past it the extra detail is beyond the screen.
+pub fn field_reference_for(size: f32) -> f32 {
+    let wanted = size.max(1.0).log2().ceil().exp2();
+    wanted.clamp(16.0, 128.0)
+}
+
+/// How far outside the glyph a field of this reference size is measured.
+///
+/// A fraction rather than a fixed count, so every field carries the same room
+/// in proportion to the letter — the range an outline can live in, a weight can
+/// move through, and two glyphs can interpolate across.
+pub fn field_spread_for(reference: f32) -> f32 {
+    (reference * 0.375).round()
+}
+
+/// The spread of a field measured at the default reference size.
 pub const FIELD_SPREAD_PX: u32 = 24;
 
 /// How finely a curve is broken into straight pieces before it is measured.
@@ -213,13 +228,13 @@ fn cubic_steps(
 /// baseline and y counts upwards, which is why the rows below are walked from
 /// the top down. Returns `None` for an outline with no ink — a space has no
 /// boundary to measure a distance from.
-pub(crate) fn glyph_field(commands: &[Command]) -> Option<FieldImage> {
-    glyph_field_in(commands, outline_box(commands)?)
+pub(crate) fn glyph_field(commands: &[Command], spread: f32) -> Option<FieldImage> {
+    glyph_field_in(commands, outline_box(commands, spread)?, spread)
 }
 
 /// The box a glyph's field is measured over: its ink, with the spread around
 /// it. In reference pixels relative to the pen, y counting up.
-pub(crate) fn outline_box(commands: &[Command]) -> Option<FieldBox> {
+pub(crate) fn outline_box(commands: &[Command], spread: f32) -> Option<FieldBox> {
     let segments = flatten(commands);
     if segments.is_empty() {
         return None;
@@ -232,7 +247,6 @@ pub(crate) fn outline_box(commands: &[Command]) -> Option<FieldBox> {
         min_y = min_y.min(segment.y0).min(segment.y1);
         max_y = max_y.max(segment.y0).max(segment.y1);
     }
-    let spread = FIELD_SPREAD_PX as f32;
     Some(FieldBox {
         left: (min_x - spread).floor(),
         top: (max_y + spread).ceil(),
@@ -270,13 +284,16 @@ impl FieldBox {
 }
 
 /// Measures an outline over a box chosen by the caller.
-pub(crate) fn glyph_field_in(commands: &[Command], area: FieldBox) -> Option<FieldImage> {
+pub(crate) fn glyph_field_in(
+    commands: &[Command],
+    area: FieldBox,
+    spread: f32,
+) -> Option<FieldImage> {
     let segments = flatten(commands);
     if segments.is_empty() {
         return None;
     }
 
-    let spread = FIELD_SPREAD_PX as f32;
     let left = area.left;
     let top = area.top;
     let width = (area.right - area.left).max(1.0) as u32;

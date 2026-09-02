@@ -1,7 +1,7 @@
 use crate::effects::color_array;
 use crate::{DrawCommand, DrawList, VerticalAlignment};
 use morf_layout::{Geometry, TextMeasurer, TextOptions};
-use morf_text::{GLYPH_FIELD_REFERENCE_PX, RasterContent, RasterGlyph, TextSystem};
+use morf_text::{RasterContent, RasterGlyph, TextSystem};
 
 use super::{backend_types::*, glyphs::*, textures::*};
 
@@ -73,24 +73,19 @@ pub(crate) fn create_glyph_batch(
             VerticalAlignment::Center => spare_height / 2.0,
             VerticalAlignment::Bottom => spare_height,
         };
-        // A distance field is wanted only when it buys something. A style that
-        // moves the edge, feathers it or draws an outline needs one; so does a
-        // glyph drawn at or above the size the field was measured at, where a
-        // direct rasterization would want its own cache entry per size.
+        // Every glyph that has an outline is drawn from its field. There used
+        // to be a size below which a direct rasterization won, and it won for a
+        // reason that has since been removed: the field was measured at one
+        // size for all text, so small text read a sixty-four pixel field
+        // through eleven pixels and came back scarred by the minification. A
+        // field is now measured at a reference chosen from the size it will be
+        // drawn at, so it is never read at worse than half its own resolution.
         //
-        // Below that it is a straight loss: an eleven-pixel label built from a
-        // sixty-four-pixel field has no hinting and a soft edge, which is how
-        // every label in the shell got worse when fields were switched on for
-        // all text rather than for the text that asked.
-        let styled = field_style.thickness != 0.0
-            || field_style.softness != 0.0
-            || field_style.outline_width != 0.0;
-        let large = (*size as f32) * scale >= GLYPH_FIELD_REFERENCE_PX;
-        // A morph needs fields on both sides. Two coverage bitmaps average into
-        // a double exposure of two letters; two distance fields average into a
-        // shape with one outline, which is the whole point.
+        // What that buys is one representation for all text: a size can be
+        // animated without refilling the atlas, and thickness, softness and an
+        // outline are thresholds every label can ask for rather than a
+        // privilege of large ones.
         let morphing = *morph_progress > 0.0 && !morph_to.is_empty();
-        let wants_field = styled || large || morphing;
         let origin = (
             bounds.x as f32 * scale,
             (bounds.y + vertical_offset) as f32 * scale,
@@ -146,7 +141,7 @@ pub(crate) fn create_glyph_batch(
                 push(glyph, None, 1.0 - *morph_progress, 0.0);
             }
         } else {
-            for glyph in text_system.rasterize(*node, origin, scale, wants_field) {
+            for glyph in text_system.rasterize(*node, origin, scale, true) {
                 push(glyph, None, 0.0, 0.0);
             }
         }

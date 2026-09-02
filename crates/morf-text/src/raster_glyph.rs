@@ -6,7 +6,8 @@ use std::rc::Rc;
 use cosmic_text::{PhysicalGlyph, SubpixelBin, SwashContent};
 
 use crate::glyph_fields::{
-    FIELD_REFERENCE_PX, FieldImage, disagreement, glyph_field, glyph_field_in, outline_box,
+    FieldImage, disagreement, field_reference_for, field_spread_for, glyph_field, glyph_field_in,
+    outline_box,
 };
 use crate::{RasterContent, RasterGlyph, TextSystem};
 
@@ -39,14 +40,8 @@ impl TextSystem {
         if !field {
             return self.mask_glyph(glyph);
         }
-        let mut reference = glyph.cache_key;
-        reference.font_size_bits = FIELD_REFERENCE_PX.to_bits();
-        reference.x_bin = SubpixelBin::Zero;
-        reference.y_bin = SubpixelBin::Zero;
-
-        let mut hasher = DefaultHasher::new();
-        reference.hash(&mut hasher);
-        let key = hasher.finish();
+        let (reference, key) = Self::field_key(glyph);
+        let spread = field_spread_for(f32::from_bits(reference.font_size_bits));
         if !self.fields.contains_key(&key) {
             // Straight from the font's own curves. A colour glyph has no
             // outline to ask for and comes back `None`, which falls through to
@@ -55,25 +50,13 @@ impl TextSystem {
             let measured = self
                 .glyphs
                 .get_outline_commands(&mut self.fonts, reference)
-                .and_then(glyph_field)
+                .and_then(|commands| glyph_field(commands, spread))
                 .map(Rc::new);
             self.fields.insert(key, measured);
         }
 
         if let Some(field) = self.fields.get(&key).and_then(Option::as_ref) {
-            // How much bigger than the reference this glyph is being drawn.
-            let scale = f32::from_bits(glyph.cache_key.font_size_bits) / FIELD_REFERENCE_PX;
-            return Some(RasterGlyph {
-                cache_key: key,
-                x: glyph.x + (field.left as f32 * scale).round() as i32,
-                y: glyph.y - (field.top as f32 * scale).round() as i32,
-                width: field.width,
-                height: field.height,
-                draw_width: (field.width as f32 * scale).round().max(1.0) as u32,
-                draw_height: (field.height as f32 * scale).round().max(1.0) as u32,
-                content: RasterContent::Field,
-                data: Rc::clone(&field.data),
-            });
+            return Some(field_raster(glyph, key, field));
         }
 
         self.mask_glyph(glyph)
@@ -85,7 +68,8 @@ impl TextSystem {
     /// the shape does not change with either.
     fn field_key(glyph: &PhysicalGlyph) -> (cosmic_text::CacheKey, u64) {
         let mut reference = glyph.cache_key;
-        reference.font_size_bits = FIELD_REFERENCE_PX.to_bits();
+        let drawn = f32::from_bits(glyph.cache_key.font_size_bits);
+        reference.font_size_bits = field_reference_for(drawn).to_bits();
         reference.x_bin = SubpixelBin::Zero;
         reference.y_bin = SubpixelBin::Zero;
         let mut hasher = DefaultHasher::new();
@@ -142,9 +126,10 @@ impl TextSystem {
         // own metrics — an `h` whose ascender lands at the `n`'s centre — and
         // buys nothing, because two letters that disagree disagree about their
         // strokes, not about where they are.
-        let area = outline_box(&from_commands)?.union(outline_box(&to_commands)?);
-        let first = glyph_field_in(&from_commands, area)?;
-        let second = glyph_field_in(&to_commands, area)?;
+        let spread = field_spread_for(f32::from_bits(from.font_size_bits));
+        let area = outline_box(&from_commands, spread)?.union(outline_box(&to_commands, spread)?);
+        let first = glyph_field_in(&from_commands, area, spread)?;
+        let second = glyph_field_in(&to_commands, area, spread)?;
         let apart = disagreement(&first, &second);
         Some((Rc::new(first), Rc::new(second), apart))
     }
@@ -183,7 +168,8 @@ impl TextSystem {
 /// One measured field, placed against a pen position and a drawn size.
 fn field_raster(glyph: &PhysicalGlyph, key: u64, field: &Rc<FieldImage>) -> RasterGlyph {
     // How much bigger than the reference this glyph is being drawn.
-    let scale = f32::from_bits(glyph.cache_key.font_size_bits) / FIELD_REFERENCE_PX;
+    let drawn = f32::from_bits(glyph.cache_key.font_size_bits);
+    let scale = drawn / field_reference_for(drawn);
     RasterGlyph {
         cache_key: key,
         x: glyph.x + (field.left as f32 * scale).round() as i32,
