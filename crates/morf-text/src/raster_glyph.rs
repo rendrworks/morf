@@ -5,7 +5,9 @@ use std::rc::Rc;
 
 use cosmic_text::{PhysicalGlyph, SubpixelBin, SwashContent};
 
-use crate::glyph_fields::{FIELD_REFERENCE_PX, FIELD_SPREAD_PX, FieldImage, glyph_field};
+use crate::glyph_fields::{
+    FIELD_REFERENCE_PX, FIELD_SPREAD_PX, FIELD_SUPERSAMPLE, FieldImage, glyph_field,
+};
 use crate::{RasterContent, RasterGlyph, TextSystem};
 
 impl TextSystem {
@@ -38,7 +40,9 @@ impl TextSystem {
             return self.mask_glyph(glyph);
         }
         let mut reference = glyph.cache_key;
-        reference.font_size_bits = FIELD_REFERENCE_PX.to_bits();
+        // Rasterized finer than the reference and averaged back down inside
+        // `glyph_field`; see `FIELD_SUPERSAMPLE`.
+        reference.font_size_bits = (FIELD_REFERENCE_PX * FIELD_SUPERSAMPLE as f32).to_bits();
         reference.x_bin = SubpixelBin::Zero;
         reference.y_bin = SubpixelBin::Zero;
 
@@ -58,8 +62,14 @@ impl TextSystem {
                         // The placement moves with the padding the field added
                         // around the glyph, so the quad below covers the field
                         // rather than only the ink inside it.
-                        left: image.placement.left - FIELD_SPREAD_PX as i32,
-                        top: image.placement.top + FIELD_SPREAD_PX as i32,
+                        // The placement came back in supersampled pixels, so
+                        // it returns to reference pixels before the padding the
+                        // field added is taken off it.
+                        left: (image.placement.left as f32 / FIELD_SUPERSAMPLE as f32).round()
+                            as i32
+                            - FIELD_SPREAD_PX as i32,
+                        top: (image.placement.top as f32 / FIELD_SUPERSAMPLE as f32).round() as i32
+                            + FIELD_SPREAD_PX as i32,
                         ..field
                     }))
                 });

@@ -124,6 +124,24 @@ pub(crate) struct GlyphAtlasEntry {
     pub(crate) height: u32,
     pub(crate) last_used: u64,
     pub(crate) pixels: Vec<u8>,
+    /// The byte the one-pixel gutter around this entry is filled with.
+    ///
+    /// Not always zero, because the atlas holds two kinds of thing that
+    /// disagree about what an empty byte means. For coverage, zero is "no
+    /// ink" and the gutter is simply blank. For a distance field, zero is the
+    /// *inside* of the glyph — so a zeroed gutter reads as solid ink, and
+    /// linear filtering at the quad's edge drags it into frame as a bright
+    /// rectangle around every glyph drawn from a field.
+    pub(crate) outside: u8,
+}
+
+/// The byte that means "nothing here" for a given kind of atlas content.
+pub(crate) fn outside_byte(content: RasterContent) -> u8 {
+    match content {
+        // Furthest outside the glyph the encoded spread can express.
+        RasterContent::Field => u8::MAX,
+        RasterContent::Mask | RasterContent::Color => 0,
+    }
 }
 
 pub(crate) struct PreparedGlyph {
@@ -268,19 +286,19 @@ impl GlyphAtlas {
             if let Some(entry) = self.entries.get_mut(&key) {
                 entry.last_used = self.clock;
             } else {
-                missing.push((key, glyph_pixels(glyph)));
+                missing.push((key, glyph_pixels(glyph), outside_byte(glyph.content)));
             }
         }
         let mut allocator = self.allocator;
         let mut placements = Vec::with_capacity(missing.len());
-        for (key, _) in &missing {
+        for (key, _, _) in &missing {
             let Some(placement) = allocator.allocate(key.width, key.height) else {
                 return self.rebuild(queue, glyphs, &requested);
             };
             placements.push(placement);
         }
         self.allocator = allocator;
-        for ((key, pixels), (x, y)) in missing.into_iter().zip(placements) {
+        for ((key, pixels, outside), (x, y)) in missing.into_iter().zip(placements) {
             let entry = GlyphAtlasEntry {
                 x,
                 y,
@@ -288,6 +306,7 @@ impl GlyphAtlas {
                 height: key.height,
                 last_used: self.clock,
                 pixels,
+                outside,
             };
             upload_glyph(queue, &self.texture, &entry, self.bytes_per_pixel);
             self.entries.insert(key, entry);
@@ -316,7 +335,7 @@ impl GlyphAtlas {
             let pixels = old
                 .get(&key)
                 .map_or_else(|| glyph_pixels(glyph), |entry| entry.pixels.clone());
-            requested_entries.push((key, pixels));
+            requested_entries.push((key, pixels, outside_byte(glyph.content)));
         }
         let mut retained: Vec<_> = old
             .into_iter()
@@ -324,7 +343,7 @@ impl GlyphAtlas {
             .collect();
         retained.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.last_used));
         self.allocator = ShelfAllocator::default();
-        for (key, pixels) in requested_entries {
+        for (key, pixels, outside) in requested_entries {
             let Some((x, y)) = self.allocator.allocate(key.width, key.height) else {
                 return Err(GpuError(
                     "visible glyphs exceed the persistent atlas capacity".to_owned(),
@@ -337,6 +356,7 @@ impl GlyphAtlas {
                 height: key.height,
                 last_used: self.clock,
                 pixels,
+                outside,
             };
             upload_glyph(queue, &self.texture, &entry, self.bytes_per_pixel);
             self.entries.insert(key, entry);
@@ -381,7 +401,8 @@ pub(crate) fn upload_glyph(
     let padded_width = entry.width + 2;
     let padded_height = entry.height + 2;
     let bytes_per_pixel = bytes_per_pixel as usize;
-    let mut padded = vec![0; padded_width as usize * padded_height as usize * bytes_per_pixel];
+    let mut padded =
+        vec![entry.outside; padded_width as usize * padded_height as usize * bytes_per_pixel];
     for row in 0..entry.height as usize {
         let source = row * entry.width as usize * bytes_per_pixel;
         let destination = ((row + 1) * padded_width as usize + 1) * bytes_per_pixel;

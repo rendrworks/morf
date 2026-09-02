@@ -23,6 +23,22 @@ use signed_distance_field::distance_field::DistanceStorage;
 /// scaling the quad; nothing is rasterized again.
 pub const FIELD_REFERENCE_PX: f32 = 64.0;
 
+/// How much finer than the reference the glyph is rasterized before its field
+/// is measured.
+///
+/// The distance transform works on a *binary* image, so whatever antialiasing
+/// the rasterizer produced is thrown away and every edge is rounded to the
+/// nearest whole pixel. At the reference size that is an error of half a pixel,
+/// and a glyph drawn at the reference size draws it one-for-one: the strokes
+/// come out visibly chewed, which is exactly where large text looked worse than
+/// small text that never touched a field at all.
+///
+/// Rasterizing four times finer and averaging the field back down puts the edge
+/// within an eighth of a reference pixel instead of a half. The distance
+/// transform runs on sixteen times the pixels, once per glyph and cached; the
+/// stored field is the same size it always was, so the atlas does not grow.
+pub const FIELD_SUPERSAMPLE: u32 = 4;
+
 /// How far outside the glyph the field is measured, in reference pixels.
 ///
 /// This is the room an outline has to live in, and the distance over which the
@@ -38,9 +54,19 @@ pub const FIELD_SPREAD_PX: u32 = 8;
 /// Returns `None` for a glyph with no ink at all — a space has no shape to
 /// measure, and the distance transform has nothing to work from.
 pub(crate) fn glyph_field(alpha: &[u8], width: u32, height: u32) -> Option<FieldImage> {
-    let pad = FIELD_SPREAD_PX;
-    let padded_width = width + pad * 2;
-    let padded_height = height + pad * 2;
+    // `alpha` is the glyph rasterized `FIELD_SUPERSAMPLE` times finer than the
+    // reference, so every length here is in those finer pixels until the field
+    // is averaged back down at the end.
+    let step = FIELD_SUPERSAMPLE;
+    let pad = FIELD_SPREAD_PX * step;
+    // Round the padded box out to whole reference pixels so it divides evenly
+    // into the blocks averaged below. The extra columns and rows are blank,
+    // which the distance transform reads as "outside" — the right answer for
+    // space beyond the glyph.
+    let out_width = (width + pad * 2).div_ceil(step);
+    let out_height = (height + pad * 2).div_ceil(step);
+    let padded_width = out_width * step;
+    let padded_height = out_height * step;
     let mut padded = vec![0u8; (padded_width * padded_height) as usize];
     for row in 0..height {
         let source = (row * width) as usize;
@@ -54,19 +80,32 @@ pub(crate) fn glyph_field(alpha: &[u8], width: u32, height: u32) -> Option<Field
         u16::try_from(padded_width).ok()?,
         u16::try_from(padded_height).ok()?,
     );
-    let spread = FIELD_SPREAD_PX as f32;
+    let spread = (FIELD_SPREAD_PX * step) as f32;
     let field = compute_f32_distance_field(&binary).normalize_clamped_distances(-spread, spread)?;
-    let data = Rc::new(
-        (0..padded.len())
-            .map(|index| (field.distances.get(index).clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect(),
-    );
+    // Average each block down to one reference pixel. A distance is a smooth
+    // signal, so its mean over the block is the distance at the block's centre
+    // — which is why this recovers the sub-pixel edge that binarizing threw
+    // away, rather than merely blurring it.
+    let divisor = (step * step) as f32;
+    let mut data = Vec::with_capacity((out_width * out_height) as usize);
+    for out_row in 0..out_height {
+        for out_column in 0..out_width {
+            let mut total = 0.0;
+            for row in 0..step {
+                let base = ((out_row * step + row) * padded_width + out_column * step) as usize;
+                for column in 0..step {
+                    total += field.distances.get(base + column as usize).clamp(0.0, 1.0);
+                }
+            }
+            data.push(((total / divisor) * 255.0).round() as u8);
+        }
+    }
     Some(FieldImage {
         left: 0,
         top: 0,
-        width: padded_width,
-        height: padded_height,
-        data,
+        width: out_width,
+        height: out_height,
+        data: Rc::new(data),
     })
 }
 
