@@ -355,59 +355,103 @@ local function pill(index, entry, width)
     },
   }
 end
-
 --------------------------------------------------------------------------------
 -- The keyboard on the screen.
 --------------------------------------------------------------------------------
 
-local KEY = s(74)
-local KEY_GAP = s(9)
+-- Three layers, the way every touch keyboard is built: letters, then numbers
+-- and the punctuation a password actually uses, then the rest of ASCII. A
+-- single flat board would need forty-odd keys the size of a fingernail, and a
+-- board with no numbers on it cannot type most passwords at all.
+--
+-- The layers share one set of key nodes. Each slot's label is a function of the
+-- current layer, so switching layers rewrites twenty-six labels rather than
+-- building and discarding three boards — the scene keeps its shape and morf
+-- only re-reads the text.
+local LETTERS, NUMBERS, SYMBOLS = 1, 2, 3
+local layer = morf.signal("greeter.layer", LETTERS)
+
+-- Rows are ten, nine and seven slots wide on every layer, so a slot means the
+-- same key in the same place whatever is printed on it. ASCII only, and
+-- deliberately: `gmatch(".")` walks bytes, so a single multi-byte character
+-- would arrive as mojibake in the password.
+local ROWS = {
+  { [LETTERS] = "qwertyuiop", [NUMBERS] = "1234567890", [SYMBOLS] = "[]{}#%^*+=" },
+  { [LETTERS] = "asdfghjkl",  [NUMBERS] = "-/:;()$&@\"", [SYMBOLS] = "_\\|<>~`;:" },
+  { [LETTERS] = "zxcvbnm",    [NUMBERS] = ".,?!'\"~",    [SYMBOLS] = ".,?!'\"=" },
+}
+
+local function slot_character(row, slot)
+  local set = ROWS[row][layer:get()]
+  local character = set:sub(slot, slot)
+  if layer:get() == LETTERS and shifted:get() then
+    return character:upper()
+  end
+  return character
+end
+
+local KEY = s(84)
+local KEY_GAP = s(10)
 local BOARD_W = KEY * 10 + KEY_GAP * 9
 local BOARD_X = math.floor((W - BOARD_W) / 2)
 
--- Digits carry their shifted symbols because a password that needs one should
--- not require finding a physical keyboard to type it.
-local SHIFTED_DIGIT = {
-  ["1"] = "!", ["2"] = "@", ["3"] = "#", ["4"] = "$", ["5"] = "%",
-  ["6"] = "^", ["7"] = "&", ["8"] = "*", ["9"] = "(", ["0"] = ")",
-}
+local function key_width(units)
+  return math.floor(KEY * units + KEY_GAP * (units - 1))
+end
 
---- One key. `units` is its width as a multiple of the square key.
-local function keycap(label, x, y, units, tone, on_tap)
-  local width = math.floor(KEY * units + KEY_GAP * (units - 1))
-  local pressed = morf.signal("greeter.key." .. label .. "." .. x .. "." .. y, false)
+--- One key. `id` names its press signal, which must not change when the label
+--- does; `label` and `tone` may be functions of the current layer.
+local function keycap(id, x, y, units, label, tone, on_tap)
+  local down = morf.signal("greeter.key." .. id, false)
+  local function shade()
+    return type(tone) == "function" and tone() or tone
+  end
   return ui.Item {
     x = x,
     y = y,
-    width = width,
+    width = key_width(units),
     height = KEY,
     ui.Rect {
       anchors = { fill = true },
-      radius = s(12),
+      radius = s(13),
       color = function()
-        if pressed:get() then return ACCENT end
-        return tone == "accent" and ACCENT_IN or RAISED
+        if down:get() then return ACCENT end
+        local kind = shade()
+        if kind == "accent" then return ACCENT_IN end
+        if kind == "live" then return ACCENT end
+        return RAISED
       end,
       border_width = s(1),
-      border_color = function() return pressed:get() and ACCENT or LINE end,
-      -- Stiff and well damped: the cap should be down before the eye reaches
-      -- it and back without a wobble, which is the whole of what makes a key
-      -- feel answered rather than animated.
-      scale = function() return pressed:get() and 0.94 or 1.0 end,
+      border_color = function()
+        if down:get() or shade() == "live" then return ACCENT end
+        return LINE
+      end,
+      -- Stiff and well damped: the cap should be down before the eye reaches it
+      -- and back without a wobble, which is the whole of what makes a key feel
+      -- answered rather than animated.
+      scale = function() return down:get() and 0.93 or 1.0 end,
       behavior = {
         color = { duration = 90, easing = "out_quad" },
         border_color = { duration = 90, easing = "out_quad" },
-        scale = { kind = "spring", mass = 1, damping = 16, stiffness = 420, epsilon = 0.001 },
+        scale = { kind = "spring", mass = 1, damping = 16, stiffness = 430, epsilon = 0.001 },
       },
     },
     ui.Text {
       anchors = { fill = true },
-      text = label,
-      vertical_alignment = "center",
-      font_size = s(17),
+      text = type(label) == "function" and label or function() return label end,
+      font_size = function()
+        local text = type(label) == "function" and label() or label
+        -- A word on a key is set smaller than a character, or "log in" runs
+        -- into its own edges while "q" floats in the middle of the cap.
+        return #text > 2 and s(15) or s(20)
+      end,
       font_weight = 500,
       horizontal_alignment = "center",
-      color = function() return pressed:get() and INK or TEXT end,
+      vertical_alignment = "center",
+      color = function()
+        if down:get() or shade() == "live" then return INK end
+        return TEXT
+      end,
       behavior = { color = { duration = 90, easing = "out_quad" } },
     },
     ui.MouseArea {
@@ -416,101 +460,109 @@ local function keycap(label, x, y, units, tone, on_tap)
       -- that only lights under a pointer would stay dark on the machines this
       -- keyboard exists for. `on_exited` covers a finger sliding off the key
       -- before it lifts, which leaves no release behind.
-      on_pressed = function() write(pressed, true) end,
-      on_released = function() write(pressed, false) end,
-      on_exited = function() write(pressed, false) end,
+      on_pressed = function() write(down, true) end,
+      on_released = function() write(down, false) end,
+      on_exited = function() write(down, false) end,
       on_clicked = on_tap,
     },
   }
 end
 
---- Lays one row of keys out centred on the board.
-local function keyrow(y, entries)
-  local total = 0
+--- Lays a row out centred on the board and appends it to `into`.
+local function keyrow(into, y, entries)
+  local total = -KEY_GAP
   for _, entry in ipairs(entries) do
-    total = total + KEY * entry.units + KEY_GAP * (entry.units - 1) + KEY_GAP
+    total = total + key_width(entry.units) + KEY_GAP
   end
-  total = total - KEY_GAP
-
-  local nodes = {}
   local x = BOARD_X + math.floor((BOARD_W - total) / 2)
   for _, entry in ipairs(entries) do
-    local width = math.floor(KEY * entry.units + KEY_GAP * (entry.units - 1))
-    nodes[#nodes + 1] = keycap(entry.label, x, y, entry.units, entry.tone, entry.tap)
-    x = x + width + KEY_GAP
+    into[#into + 1] = keycap(entry.id, x, y, entry.units, entry.label, entry.tone, entry.tap)
+    x = x + key_width(entry.units) + KEY_GAP
   end
-  return nodes
 end
 
-local function letters(characters)
+--- The slots of one row, as ordinary character keys.
+local function character_keys(row, count)
   local entries = {}
-  for character in characters:gmatch(".") do
+  for slot = 1, count do
     entries[#entries + 1] = {
-      label = character,
+      id = "r" .. row .. "s" .. slot,
       units = 1,
+      label = function() return slot_character(row, slot) end,
       tap = function()
-        type_character(shifted:get() and character:upper() or character)
+        type_character(slot_character(row, slot))
+        -- Shift is single-shot, as it is on every touch keyboard: one capital
+        -- is what it is nearly always wanted for, and a shift that stayed down
+        -- would silently uppercase the rest of a password.
+        if shifted:get() then write(shifted, false) end
       end,
     }
   end
   return entries
 end
 
-local function digits(characters)
-  local entries = {}
-  for character in characters:gmatch(".") do
-    entries[#entries + 1] = {
-      label = character,
-      units = 1,
-      tap = function()
-        type_character(shifted:get() and SHIFTED_DIGIT[character] or character)
-      end,
-    }
-  end
-  return entries
+--- The key left of the bottom letter row. It is shift on the letters layer and
+--- the way between the two symbol layers everywhere else — the position every
+--- touch keyboard puts that control in.
+local function modifier_key()
+  return {
+    id = "modifier",
+    units = 1.5,
+    label = function()
+      if layer:get() == LETTERS then return "shift" end
+      if layer:get() == NUMBERS then return "#+=" end
+      return "123"
+    end,
+    tone = function()
+      if layer:get() == LETTERS and shifted:get() then return "live" end
+      return "accent"
+    end,
+    tap = function()
+      if layer:get() == LETTERS then
+        write(shifted, not shifted:get())
+      elseif layer:get() == NUMBERS then
+        write(layer, SYMBOLS)
+      else
+        write(layer, NUMBERS)
+      end
+    end,
+  }
 end
 
-local function punctuation(characters)
-  local entries = {}
-  for character in characters:gmatch(".") do
-    entries[#entries + 1] = { label = character, units = 1,
-      tap = function() type_character(character) end }
-  end
-  return entries
+local function layer_key()
+  return {
+    id = "layer",
+    units = 1.5,
+    tone = "accent",
+    label = function() return layer:get() == LETTERS and "123" or "abc" end,
+    tap = function()
+      write(layer, layer:get() == LETTERS and NUMBERS or LETTERS)
+      write(shifted, false)
+    end,
+  }
 end
 
--- The board is one item that slides as a whole, so hiding it is a single
--- animated number rather than a rebuild.
-local BOARD_H = KEY * 5 + KEY_GAP * 4 + s(36)
-local BOARD_OPEN_Y = H - BOARD_H - s(24)
+local BOARD_H = KEY * 4 + KEY_GAP * 3 + s(36)
+local BOARD_OPEN_Y = H - BOARD_H - s(26)
 
 local rows = {}
-local function add(list)
-  for _, node in ipairs(list) do rows[#rows + 1] = node end
-end
-
 local line_y = s(18)
-add(keyrow(line_y, digits("1234567890")))
+keyrow(rows, line_y, character_keys(1, 10))
 line_y = line_y + KEY + KEY_GAP
-add(keyrow(line_y, letters("qwertyuiop")))
-line_y = line_y + KEY + KEY_GAP
-add(keyrow(line_y, letters("asdfghjkl")))
+keyrow(rows, line_y, character_keys(2, 9))
 line_y = line_y + KEY + KEY_GAP
 do
-  local row = { { label = "shift", units = 1.5, tone = "accent",
-                  tap = function() write(shifted, not shifted:get()) end } }
-  for _, entry in ipairs(letters("zxcvbnm")) do row[#row + 1] = entry end
-  row[#row + 1] = { label = "del", units = 1.5, tone = "accent", tap = backspace }
-  add(keyrow(line_y, row))
+  local row = { modifier_key() }
+  for _, entry in ipairs(character_keys(3, 7)) do row[#row + 1] = entry end
+  row[#row + 1] = { id = "delete", units = 1.5, tone = "accent", label = "del", tap = backspace }
+  keyrow(rows, line_y, row)
 end
 line_y = line_y + KEY + KEY_GAP
-do
-  local row = punctuation("-_.@/")
-  table.insert(row, { label = "space", units = 3.5,
-                      tap = function() type_character(" ") end })
-  table.insert(row, { label = "log in", units = 2, tone = "accent", tap = function() attempt() end })
-  add(keyrow(line_y, row))
-end
+keyrow(rows, line_y, {
+  layer_key(),
+  { id = "space", units = 5, label = "space", tap = function() type_character(" ") end },
+  { id = "enter", units = 2.5, tone = "accent", label = "log in", tap = function() attempt() end },
+})
 
 -- The panel and its keys go in as one list, for the reason given at the tree
 -- below: a `table.unpack` here would keep the first key and drop the rest.
@@ -527,11 +579,11 @@ local board_parts = {
     opacity = { duration = 200, easing = "out_quad" },
   },
   ui.Rect {
-    x = BOARD_X - s(18),
-    width = BOARD_W + s(36),
+    x = BOARD_X - s(20),
+    width = BOARD_W + s(40),
     height = BOARD_H,
-    radius = s(22),
-    color = "#0d121bd0",
+    radius = s(24),
+    color = "#0d121be8",
     border_width = s(1),
     border_color = LINE,
   },
@@ -679,6 +731,39 @@ local function place_all(nodes)
   for _, node in ipairs(nodes) do place(node) end
 end
 
+-- This goes in FIRST, so it is at the bottom of the stack.
+--
+-- A hit test returns the *topmost* MouseArea over the point, and this one
+-- covers the whole screen: placed last it would sit over the keyboard and the
+-- account tiles and swallow every tap on them, which is exactly what it did
+-- the first time. Key handlers are collected by walking the tree, not by
+-- z-order, so sitting at the bottom costs it nothing.
+--
+-- Keyboard focus is exclusive, so a physical keyboard still works throughout:
+-- the panel on screen is an addition, not a replacement.
+place(ui.MouseArea {
+  width = W,
+  height = H,
+  on_key_pressed = function(key, modifiers, text)
+    if working:get() then return end
+    if key == "Return" or key == "KP_Enter" then
+      attempt()
+    elseif key == "BackSpace" then
+      backspace()
+    elseif key == "Tab" and modifiers and modifiers.control then
+      if #available > 0 then write(chosen_session, chosen_session:get() % #available + 1) end
+    elseif key == "Tab" then
+      if #users > 0 then pick_user(chosen_user:get() % #users + 1) end
+    elseif key == "Escape" then
+      clear_password()
+    elseif key == "F1" then
+      write(keys_open, not keys_open:get())
+    elseif text and text ~= "" then
+      type_character(text)
+    end
+  end,
+})
+
 place(ui.Rect { width = W, height = H, color = INK })
 place(drift(1, math.floor(W * 0.18), math.floor(H * 0.22), s(300), "#1d3a4a", s(90)))
 place(drift(2, math.floor(W * 0.74), math.floor(H * 0.30), s(260), "#2a2340", s(70)))
@@ -766,32 +851,6 @@ place(ui.Timer {
     local now = core.system_clock()
     clock.text = now:format("%H:%M")
     today.text = now:format("%A %d %B")
-  end,
-})
-
--- Keyboard focus is exclusive, so a physical keyboard still works: the panel on
--- screen is an addition, not a replacement. This sits last so it is under
--- nothing — it claims no pointer area the keys wanted, only the keys.
-place(ui.MouseArea {
-  width = W,
-  height = H,
-  on_key_pressed = function(key, modifiers, text)
-    if working:get() then return end
-    if key == "Return" or key == "KP_Enter" then
-      attempt()
-    elseif key == "BackSpace" then
-      backspace()
-    elseif key == "Tab" and modifiers and modifiers.control then
-      if #available > 0 then write(chosen_session, chosen_session:get() % #available + 1) end
-    elseif key == "Tab" then
-      if #users > 0 then pick_user(chosen_user:get() % #users + 1) end
-    elseif key == "Escape" then
-      clear_password()
-    elseif key == "F1" then
-      write(keys_open, not keys_open:get())
-    elseif text and text ~= "" then
-      type_character(text)
-    end
   end,
 })
 
