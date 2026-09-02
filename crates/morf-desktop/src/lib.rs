@@ -27,6 +27,13 @@ pub struct DesktopEntry {
     pub startup_class: String,
     pub no_display: bool,
     pub hidden: bool,
+    /// A program that must exist for the entry to be offered at all.
+    pub try_exec: String,
+    /// What the session calls the desktop it starts, for `XDG_CURRENT_DESKTOP`.
+    pub desktop_names: Vec<String>,
+    /// The directory the entry was read from, which is how a session says
+    /// whether it is Wayland or X11 — the only place that is written down.
+    pub source: String,
     pub comment: String,
     pub icon: String,
     pub exec: String,
@@ -94,6 +101,9 @@ impl DesktopEntry {
             startup_class: value(main, "StartupWMClass"),
             no_display: boolean(main, "NoDisplay"),
             hidden: boolean(main, "Hidden"),
+            try_exec: value(main, "TryExec"),
+            desktop_names: list_value(main.get("DesktopNames")),
+            source: String::new(),
             comment: value(main, "Comment"),
             icon: value(main, "Icon"),
             command: parse_exec(&exec),
@@ -254,6 +264,22 @@ pub fn parse_exec(source: &str) -> Vec<String> {
     args
 }
 
+/// Whether `TryExec` names something runnable. An empty key claims nothing.
+fn program_exists(try_exec: &str) -> bool {
+    let name = try_exec.trim();
+    if name.is_empty() {
+        return true;
+    }
+    if name.contains('/') {
+        return fs::metadata(name).is_ok_and(|found| found.is_file());
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .any(|directory| fs::metadata(directory.join(name)).is_ok_and(|found| found.is_file()))
+}
+
 fn value(values: &BTreeMap<String, String>, key: &str) -> String {
     values.get(key).cloned().unwrap_or_default()
 }
@@ -327,10 +353,15 @@ fn scan_directory(
         let Ok(source) = fs::read_to_string(&path) else {
             continue;
         };
-        if let Some(entry) = DesktopEntry::parse(id, &source)
+        if let Some(mut entry) = DesktopEntry::parse(id, &source)
             && !entry.hidden
             && !entry.no_display
+            // An entry naming a program that is not installed is an entry that
+            // cannot run. Left in, it is a session in the greeter's list that
+            // authenticates and then dies with nothing on screen to say why.
+            && program_exists(&entry.try_exec)
         {
+            entry.source = directory.to_string_lossy().into_owned();
             entries.push(entry);
         }
     }
@@ -338,113 +369,4 @@ fn scan_directory(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_application_actions_and_exec_fields() {
-        let entry = DesktopEntry::parse(
-            "browser",
-            "[Desktop Entry]\nType=Application\nName=Browser\nGenericName=Web Browser\nExec=browser --new-window %U --title 'A B' %%\nIcon=browser\nCategories=Network;WebBrowser;\nActions=Private;\n\n[Desktop Action Private]\nName=Private Window\nExec=browser --private %U\n",
-        )
-        .unwrap();
-        assert_eq!(
-            entry.command,
-            ["browser", "--new-window", "--title", "A B", "%"]
-        );
-        assert_eq!(entry.categories, ["Network", "WebBrowser"]);
-        assert_eq!(entry.actions[0].command, ["browser", "--private"]);
-    }
-
-    #[test]
-    fn earlier_paths_mask_later_and_hidden_entries() {
-        let root = std::env::temp_dir().join(format!("morf-desktop-{}", std::process::id()));
-        let first = root.join("first");
-        let second = root.join("second");
-        fs::create_dir_all(&first).unwrap();
-        fs::create_dir_all(&second).unwrap();
-        fs::write(
-            first.join("masked.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Hidden\nHidden=true\n",
-        )
-        .unwrap();
-        fs::write(
-            second.join("masked.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Visible\n",
-        )
-        .unwrap();
-        fs::write(
-            second.join("shown.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Shown\nStartupWMClass=shown\n",
-        )
-        .unwrap();
-        fs::write(
-            second.join("internal.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Internal\nNoDisplay=true\n",
-        )
-        .unwrap();
-        let entries = DesktopEntries::scan_paths([first, second]).unwrap();
-        assert!(entries.by_id("masked").is_none());
-        assert!(entries.by_id("internal").is_none());
-        assert_eq!(entries.heuristic_lookup("shown").unwrap().name, "Shown");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_session_entry_parses_into_something_runnable() {
-        // What a greeter needs from one of these: a name to show, and a command
-        // to hand to `greetd`. The file format is the same as an application's,
-        // which is the reason this crate can serve both — but it lives in a
-        // directory this crate did not look in until now, so a login screen
-        // built on it would have listed nothing at all.
-        let entry = DesktopEntry::parse(
-            "hyprland",
-            "[Desktop Entry]\n\
-             Name=Hyprland\n\
-             Comment=An intelligent dynamic tiling compositor\n\
-             Exec=Hyprland\n\
-             Type=Application\n",
-        )
-        .expect("a session entry is a desktop entry");
-
-        assert_eq!(entry.name, "Hyprland");
-        assert_eq!(
-            parse_exec(&entry.exec),
-            vec!["Hyprland".to_owned()],
-            "and the command survives the trip, which is the half greetd needs",
-        );
-    }
-
-    #[test]
-    fn sessions_are_looked_for_where_sessions_live() {
-        // Both kinds, and Wayland before X: where a desktop ships both, they
-        // name the same session and the Wayland one is the one to start.
-        let paths = session_paths();
-        let names: Vec<String> = paths
-            .iter()
-            .filter_map(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-            })
-            .collect();
-        assert!(
-            names.contains(&"wayland-sessions".to_owned()),
-            "wayland sessions are searched: {paths:?}",
-        );
-        assert!(
-            names.contains(&"xsessions".to_owned()),
-            "and X ones too: {paths:?}",
-        );
-        let wayland = names.iter().position(|name| name == "wayland-sessions");
-        let x11 = names.iter().position(|name| name == "xsessions");
-        assert!(wayland < x11, "wayland first: {names:?}");
-
-        // And applications are still only looked for among applications.
-        assert!(
-            desktop_paths()
-                .iter()
-                .all(|path| path.file_name().is_some_and(|name| name == "applications")),
-            "the application search did not grow session directories",
-        );
-    }
-}
+mod tests;

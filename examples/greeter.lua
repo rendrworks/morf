@@ -1,4 +1,4 @@
--- A login screen.
+-- A login screen, wearing GDM's clothes.
 --
 -- Not a display manager. `greetd` owns authentication and starts sessions; a
 -- greeter is an ordinary Wayland client it runs, and this is one. greetd draws
@@ -35,12 +35,33 @@
 -- `cage` has no layer shell, so morf stands the surface up as a fullscreen
 -- toplevel instead. Nothing below has to know that.
 --
--- On the motion: nothing here animates from Lua. Every transition is a
--- `behavior` on a property — Lua writes a target once and morf's frame tick
--- carries it there. The clock is the exception worth looking at: its digits do
--- not cut from one number to the next, they *morph*, because a glyph is a
--- distance field and two of them can be interpolated. `9` becomes `0` through
--- shapes the font does not contain.
+-- ON THE LOOK. Every measurement here is GDM's own, read out of gnome-shell's
+-- stylesheet rather than eyeballed from a screenshot:
+--
+--     background          #222226   $system_base_color
+--     foreground          #fafafb   $system_fg_color
+--     dimmed text         #dbdbe7   darken($system_fg_color, 10%)
+--     list item           #353539   mix(fg, base, 9%)
+--     entry               #404046   mix(fg, $system_bg_color, 9%)
+--     avatar well         13% fg    transparentize($system_fg_color, .87)
+--     user list width     25em      $_gdm_dialog_width
+--     item radius         16px      $modal_radius
+--     entry radius        12px      $base_border_radius * 1.5
+--     large avatar        160px     $base_icon_size * 10
+--     name, prompt        20pt/400  .user-widget.vertical .user-widget-label
+--     name, list          15pt/700  %title_3
+--     bottom buttons      32px pad, 16px spacing
+--
+-- And the shape of it is GDM's too: a list of accounts in the middle of the
+-- screen, and choosing one puts the list away and asks that one account for a
+-- password. Not everything at once.
+--
+-- What is *not* GDM is how it is drawn. The dots in the password field are a
+-- distance field, not a string of `●` — a font that has not got the character
+-- draws a tofu box, and a login screen is the worst place to find that out. So
+-- is the arrow: a triangle in a field, at any size, in any font. The avatar's
+-- letter morphs from one account's initial to the next, because a glyph is an
+-- outline and two outlines can be walked between.
 
 local morf = require("morf")
 local ui = require("morf.ui")
@@ -58,32 +79,25 @@ morf.surface.layer = "overlay"
 -- The greeter is the only thing on screen and the password has to go somewhere.
 morf.surface.keyboard_focus = "exclusive"
 
--- Sized in proportion to the screen: a greeter is read from a metre away, and a
--- login screen laid out in fixed pixels is either a postage stamp on a 4K panel
--- or off the edge of a small one.
+-- GDM is laid out in `em` against an 11pt base, so it grows with the font
+-- rather than with the panel. Same idea: one number, everything in proportion.
 local SCALE = math.max(0.75, math.min(1.7, math.min(W / 1920, H / 1080)))
 local function s(n) return math.floor(n * SCALE) end
 
-local INK = "#05070c"
-local PANEL = "#121a27cc"
-local SLAB = "#7fc3dd"
-local RAISED = "#1b2536"
-local LINE = "#2b3648"
-local TEXT = "#eef2f8"
-local MUTED = "#7d8a9f"
-local ACCENT = "#79b8d1"
-local ACCENT_IN = "#12303d"
-local ALERT = "#e5735a"
+local INK = "#222226"
+local TEXT = "#fafafb"
+local DIM = "#dbdbe7"
+local CARD = "#353539"
+local CARD_HOT = "#40404a"
+local ENTRY = "#404046"
+local WELL = "#fafafb21"
+local ACCENT = "#3584e4"
+local ALERT = "#ff7b63"
 
 local function write(signal, value)
   local ok, error = signal:set(value)
   assert(ok, error)
 end
-
---------------------------------------------------------------------------------
--- Who can log in, and into what.
---------------------------------------------------------------------------------
-
 --- Ordinary human accounts, read straight out of `/etc/passwd`.
 ---
 --- No D-Bus and no AccountsService: the file is world-readable, it is the
@@ -110,11 +124,37 @@ local function accounts()
 end
 
 --- The sessions this machine can start, as ordinary desktop entries.
+---
+--- `command` and not `exec`: greetd takes an argument vector, and `Exec` is a
+--- command *line*. Handing the line over as a single argument asks the kernel
+--- for a program named `uwsm start -e -D Hyprland hyprland.desktop`, which is
+--- the shape of every session on this machine that takes an argument at all.
+---
+--- Each one also carries the environment it expects to be started in. A session
+--- launched without `XDG_CURRENT_DESKTOP` comes up with the portals guessing:
+--- screen sharing and file dialogs pick a backend by asking what desktop this
+--- is, and nothing has told them.
 local function sessions()
   local found = {}
   for _, entry in ipairs(core.desktop_entries(core.session_paths()):applications()) do
-    if entry.exec and entry.exec ~= "" then
-      found[#found + 1] = { name = entry.name, exec = entry.exec }
+    if entry.command and #entry.command > 0 then
+      -- Which directory it was found in is the only statement anywhere of
+      -- whether a session is Wayland or X11.
+      local kind = entry.source:match("xsessions$") and "x11" or "wayland"
+      local environment = {
+        "XDG_SESSION_TYPE=" .. kind,
+        "XDG_SESSION_DESKTOP=" .. entry.id,
+        "DESKTOP_SESSION=" .. entry.id,
+      }
+      if #entry.desktop_names > 0 then
+        environment[#environment + 1] =
+          "XDG_CURRENT_DESKTOP=" .. table.concat(entry.desktop_names, ":")
+      end
+      found[#found + 1] = {
+        name = entry.name,
+        command = entry.command,
+        environment = environment,
+      }
     end
   end
   return found
@@ -137,7 +177,6 @@ local chosen_session = morf.signal("greeter.session", 1)
 local typed = morf.signal("greeter.typed", 0)
 local working = morf.signal("greeter.working", false)
 local alarmed = morf.signal("greeter.alarmed", false)
-local tide = morf.signal("greeter.tide", 0)
 local message = morf.signal("greeter.message", "enter password")
 
 local function say(text, bad)
@@ -187,7 +226,7 @@ local function attempt()
 
   if reply and reply.type == "success" then
     local wanted = available[chosen_session:get()]
-    local started = session:start_session({ wanted.exec }, {})
+    local started = session:start_session(wanted.command, wanted.environment)
     if started and started.type == "success" then
       say("starting " .. wanted.name)
       -- greetd takes it from here: this process is about to be replaced by the
@@ -264,179 +303,168 @@ local function backspace()
   write(typed, #password)
 end
 
-local function pick_user(index)
+--------------------------------------------------------------------------------
+-- Which half of the screen you are on.
+--------------------------------------------------------------------------------
+
+-- GDM has two states and shows one at a time: a list of accounts, and then one
+-- account being asked for a password. The list is not dimmed behind the prompt
+-- or tucked into a corner — it is gone, and the way back is the cancel button.
+local asking = morf.signal("greeter.asking", false)
+
+local function choose_user(index)
   if working:get() then return end
   write(chosen_user, index)
   clear_password()
   say("enter password")
+  write(asking, true)
+end
+
+local function go_back()
+  if working:get() then return end
+  clear_password()
+  say("enter password")
+  write(asking, false)
 end
 
 --------------------------------------------------------------------------------
--- The background.
+-- The user list.
 --------------------------------------------------------------------------------
 
--- Two soft fields leaning one way and then the other. One timer flips `tide`
--- every few seconds and the long easings do the rest, so the drift costs Lua
--- one call per flip and nothing per frame. `softness` is what makes these
--- genuinely soft shapes rather than blurred pictures of shapes — a field has no
--- resolution, so the glow costs the same at any size.
-local function drift(index, home_x, home_y, radius, colour, reach)
-  return ui.Sdf {
-    x = function() return home_x + (tide:get() == 1 and reach or -reach) end,
-    y = function() return home_y + (tide:get() == 1 and -reach or reach) end,
-    width = radius * 2,
-    height = radius * 2,
-    fill_color = colour,
-    opacity = 0.55,
-    softness = radius * 0.85,
-    behavior = {
-      x = { duration = 8000 + index * 1100, easing = "in_out_sine" },
-      y = { duration = 9400 - index * 800, easing = "in_out_sine" },
+local LIST_W = s(367)          -- 25em, $_gdm_dialog_width
+local ITEM_PAD = s(9)          -- $base_padding * 1.5
+local FACE_SM = s(48)
+local ITEM_H = FACE_SM + ITEM_PAD * 2
+local ITEM_GAP = s(12)         -- $base_padding * 2
+local ITEM_RADIUS = s(16)      -- $modal_radius
+
+--- One account, as GDM draws it: a round well with the initial in it, and the
+--- name beside it, on a card that lights up under the pointer.
+local function user_row(index, user)
+  local hot = morf.signal("greeter.row." .. index, false)
+  return ui.Item {
+    width = LIST_W,
+    height = ITEM_H,
+    ui.Rect {
+      anchors = { fill = true },
+      radius = ITEM_RADIUS,
+      color = function() return hot:get() and CARD_HOT or CARD end,
+      behavior = { color = { duration = 150, easing = "out_quad" } },
     },
-    ui.SdfShape { width = radius * 2, height = radius * 2, shape = "circle" },
+    ui.Sdf {
+      x = ITEM_PAD,
+      y = ITEM_PAD,
+      width = FACE_SM,
+      height = FACE_SM,
+      fill_color = WELL,
+      ui.SdfShape { width = FACE_SM, height = FACE_SM, shape = "circle" },
+    },
+    ui.Text {
+      x = ITEM_PAD,
+      y = ITEM_PAD,
+      width = FACE_SM,
+      height = FACE_SM,
+      text = user.initial,
+      font_size = s(20),
+      font_weight = 700,
+      horizontal_alignment = "center",
+      vertical_alignment = "center",
+      color = TEXT,
+    },
+    ui.Text {
+      -- $base_padding * 3, the horizontal user widget's spacing.
+      x = ITEM_PAD + FACE_SM + s(18),
+      y = ITEM_PAD,
+      width = LIST_W - (ITEM_PAD * 2 + FACE_SM + s(18)),
+      height = FACE_SM,
+      text = user.label,
+      font_size = s(20),        -- %title_3, 15pt
+      font_weight = 700,
+      vertical_alignment = "center",
+      elide = "right",
+      color = TEXT,
+    },
+    ui.MouseArea {
+      anchors = { fill = true },
+      on_entered = function() write(hot, true) end,
+      on_exited = function() write(hot, false) end,
+      on_clicked = function() choose_user(index) end,
+    },
   }
 end
 
---------------------------------------------------------------------------------
--- The clock: one slab, with the time cut out of it.
---------------------------------------------------------------------------------
+local LIST_H = math.max(1, #users) * ITEM_H + math.max(0, #users - 1) * ITEM_GAP
+local LIST_X = math.floor((W - LIST_W) / 2)
+local LIST_Y = math.floor((H - LIST_H) / 2)
 
--- Six tiles close enough together that the field fuses them, so the clock is a
--- single piece of something rather than six boxes in a row — and the time is
--- subtracted from it. A glyph is an outline and the composition takes outlines,
--- so cutting a numeral out is the same arithmetic as cutting a circle out, and
--- the hole lands on the seam between two tiles as cleanly as in the middle of
--- one, because by then there are no tiles left, only the slab they made.
---
--- Twelve layers: six to build the slab, six to cut it. A field composes at most
--- sixteen, which is the reason the clock is `HHMMSS` in a block of two rather
--- than a line of six.
-local TILE = s(196)
--- Negative: the tiles overlap. Butted up with a seam between them, the smooth
--- union of a grid leaves a diamond of nothing where four corners meet — the
--- seam between two is filled by the blend, but the point where two seams cross
--- is filled by neither. Overlapping removes the junction rather than blending
--- across it.
-local TILE_GAP = -s(30)
-local CLOCK_MORPH = 460
-local CLOCK_X = math.floor(W * 0.10)
-local CLOCK_W = TILE * 2 + TILE_GAP
-local CLOCK_H = TILE * 3 + TILE_GAP * 2
-local CLOCK_Y = math.floor((H - CLOCK_H) / 2)
-
-local travel = morf.signal("greeter.travel", 0)
-local arriving = core.system_clock():format("%H%M%S")
-local shown = arriving
-local holes = {}
-local clock_swap
-
-local function retime()
-  local next_time = core.system_clock():format("%H%M%S")
-  if next_time == arriving then return end
-  arriving = next_time
-  for index, hole in ipairs(holes) do
-    hole.glyph_morph_to = arriving:sub(index, index)
-  end
-  write(travel, 1)
-  clock_swap.running = true
+local list_view = { x = LIST_X, y = LIST_Y, width = LIST_W, height = LIST_H + s(70) }
+list_view.visible = function() return not asking:get() end
+for index, user in ipairs(users) do
+  local node = user_row(index, user)
+  node.y = (index - 1) * (ITEM_H + ITEM_GAP)
+  list_view[#list_view + 1] = node
 end
-
-local function slot_position(index)
-  local column = (index - 1) % 2
-  local row = math.floor((index - 1) / 2)
-  return column * (TILE + TILE_GAP), row * (TILE + TILE_GAP)
-end
-
-local clock_field = {
-  x = CLOCK_X,
-  y = CLOCK_Y,
-  width = CLOCK_W,
-  height = CLOCK_H,
-  fill_color = SLAB,
-  -- Wider than the gap, so the tiles are already one piece at rest.
-  blend = s(22),
-}
-for index = 1, 6 do
-  local x, y = slot_position(index)
-  clock_field[#clock_field + 1] = ui.SdfShape {
-    x = x,
-    y = y,
-    width = TILE,
-    height = TILE,
-    shape = "rect",
-    radius = math.floor(TILE * 0.30),
-    operation = index == 1 and "union" or "smooth_union",
+if #users == 0 then
+  list_view[#list_view + 1] = ui.Text {
+    width = LIST_W,
+    height = ITEM_H,
+    text = "no accounts on this machine",
+    font_size = s(15),
+    horizontal_alignment = "center",
+    vertical_alignment = "center",
+    color = DIM,
   }
 end
-for index = 1, 6 do
-  local x, y = slot_position(index)
-  local digit = shown:sub(index, index)
-  holes[index] = ui.SdfShape {
-    x = x + math.floor(TILE * 0.22),
-    y = y + math.floor(TILE * 0.18),
-    width = math.floor(TILE * 0.56),
-    height = math.floor(TILE * 0.64),
-    glyph = digit,
-    glyph_morph_to = digit,
-    morph_progress = function() return travel:get() end,
-    operation = "subtract",
-    behavior = { morph_progress = { duration = CLOCK_MORPH, easing = "in_out_cubic" } },
-  }
-  clock_field[#clock_field + 1] = holes[index]
-end
-
---- Lands the new time and drops the progress. Once the figure shown and the
---- figure arriving are the same, walking between them changes nothing.
-clock_swap = ui.Timer {
-  interval = CLOCK_MORPH,
-  ["repeat"] = false,
-  running = false,
-  on_triggered = function()
-    for index, hole in ipairs(holes) do
-      hole.glyph = arriving:sub(index, index)
-    end
-    write(travel, 0)
-  end,
+-- `.login-dialog-not-listed-label` — %heading, and left-aligned under the list.
+list_view[#list_view + 1] = ui.Text {
+  x = s(6),
+  y = LIST_H + s(22),
+  width = LIST_W,
+  text = "Not listed?",
+  font_size = s(15),
+  font_weight = 700,
+  color = DIM,
 }
 
 --------------------------------------------------------------------------------
--- The login, off to one side.
+-- The prompt.
 --------------------------------------------------------------------------------
 
--- Nothing here is centred on the screen. A login screen with everything stacked
--- down the middle is the shape every login screen has, and the clock is far too
--- big to sit above anything — so the slab holds the left and the login answers
--- it from the right.
-local COLUMN_X = math.floor(W * 0.50)
-local COLUMN_W = math.min(s(520), W - COLUMN_X - s(80))
-
-local AVATAR = s(150)
-local AVATAR_Y = math.floor(H * 0.50) - s(200)
+local FACE_LG = s(160)         -- $base_icon_size * 10
+local PROMPT_W = s(440)        -- 25em * 1.2
+local ENTRY_W = s(400)
+local ENTRY_H = s(46)
+-- The avatar, the `.75em` gap under the name, and the name's own line.
+local ENTRY_Y = FACE_LG + s(24) + s(38) + s(20)
+local PROMPT_X = math.floor((W - PROMPT_W) / 2)
+local PROMPT_Y = math.floor(H * 0.5) - s(210)
 
 local face = morf.signal("greeter.face", 0)
 local face_from = users[1] and users[1].initial or "?"
 local face_to = face_from
-local initial_hole
+local initial_letter
 local face_swap
 
-local function show_user(index)
+--- The letter in the well walks from one account's initial to the next. Two
+--- outlines correspond, so what is on screen in between is a letterform and
+--- not a cross-fade of two pictures.
+local function morph_initial(index)
   local user = users[index]
   if not user or user.initial == face_from then return end
   face_to = user.initial
-  initial_hole.glyph_morph_to = face_to
+  initial_letter.glyph_morph_to = face_to
   write(face, 1)
   face_swap.running = true
 end
 
-initial_hole = ui.SdfShape {
-  x = math.floor(AVATAR * 0.27),
-  y = math.floor(AVATAR * 0.23),
-  width = math.floor(AVATAR * 0.46),
-  height = math.floor(AVATAR * 0.54),
+initial_letter = ui.SdfShape {
+  x = math.floor(FACE_LG * 0.32),
+  y = math.floor(FACE_LG * 0.28),
+  width = math.floor(FACE_LG * 0.36),
+  height = math.floor(FACE_LG * 0.44),
   glyph = face_from,
   glyph_morph_to = face_from,
   morph_progress = function() return face:get() end,
-  operation = "subtract",
   behavior = { morph_progress = { duration = 400, easing = "in_out_cubic" } },
 }
 
@@ -446,109 +474,201 @@ face_swap = ui.Timer {
   running = false,
   on_triggered = function()
     face_from = face_to
-    initial_hole.glyph = face_from
+    initial_letter.glyph = face_from
     write(face, 0)
   end,
 }
 
-local avatar = ui.Sdf {
-  x = COLUMN_X,
-  y = AVATAR_Y,
-  width = AVATAR,
-  height = AVATAR,
-  fill_color = function() return alarmed:get() and ALERT or SLAB end,
-  behavior = { fill_color = { duration = 320, easing = "out_quad" } },
-  ui.SdfShape {
-    width = AVATAR,
-    height = AVATAR,
-    shape = "circle",
-    -- Squares off once there is a password being typed, so the shape itself
-    -- reports that the screen is listening.
-    morph_to = "rect",
-    radius = math.floor(AVATAR * 0.32),
-    morph_progress = function() return typed:get() > 0 and 1 or 0 end,
-    behavior = {
-      morph_progress = { kind = "spring", mass = 1, damping = 16, stiffness = 190,
-                         epsilon = 0.001 },
-    },
-  },
-  initial_hole,
+-- The dots, as a field rather than a string of `●`. A row of circles that do
+-- not touch, so it reads as a count and not as a smear.
+local DOT = s(9)
+local DOT_GAP = s(17)
+local DOTS = 20
+local dot_row = {
+  x = s(20),
+  y = math.floor((ENTRY_H - DOT) / 2),
+  width = DOTS * DOT_GAP,
+  height = DOT,
+  fill_color = TEXT,
 }
-
--- The password as drops in one field: a typed character appears and runs into
--- the one before it, so what builds up is a single length of something rather
--- than a row of ticks. The neck between two drops is where their distances
--- agree — the same arithmetic that cuts the numerals out of the slab.
-local DROP = s(17)
-local DROPS = 12
-local DROP_GAP = s(25)
-local DROPS_Y = AVATAR_Y + AVATAR + s(126)
-
-local drops = {
-  x = COLUMN_X,
-  y = DROPS_Y,
-  width = (DROPS - 1) * DROP_GAP + DROP * 2,
-  height = DROP * 2,
-  fill_color = function() return alarmed:get() and ALERT or SLAB end,
-  blend = math.floor(DROP * 0.95),
-  behavior = { fill_color = { duration = 320, easing = "out_quad" } },
-}
-for index = 1, DROPS do
-  -- An untyped slot is a small mark rather than nothing at all: the row says
-  -- where the password goes, and each grows into a drop as it is filled.
-  local REST = math.floor(DROP * 0.3)
-  local size = function() return typed:get() >= index and DROP * 2 or REST end
-  local inset = function() return typed:get() >= index and 0 or DROP - REST / 2 end
-  drops[#drops + 1] = ui.SdfShape {
-    x = function() return (index - 1) * DROP_GAP + inset() end,
-    y = inset,
-    width = size,
-    height = size,
+for index = 1, DOTS do
+  -- Grown into rather than switched on, so a held key reads as a rhythm. Size
+  -- and not `opacity`: the layers of a field compose into one shape before
+  -- anything is painted, so a layer has no opacity of its own to turn down —
+  -- what it has is a radius, and a circle of no radius is nothing.
+  dot_row[#dot_row + 1] = ui.SdfShape {
+    x = function()
+      return (index - 1) * DOT_GAP + (typed:get() >= index and 0 or DOT / 2)
+    end,
+    y = function() return typed:get() >= index and 0 or DOT / 2 end,
+    width = function() return typed:get() >= index and DOT or 0 end,
+    height = function() return typed:get() >= index and DOT or 0 end,
     shape = "circle",
-    operation = index == 1 and "union" or "smooth_union",
     behavior = {
-      x = { kind = "spring", mass = 1, damping = 14, stiffness = 300, epsilon = 0.05 },
-      y = { kind = "spring", mass = 1, damping = 14, stiffness = 300, epsilon = 0.05 },
-      width = { kind = "spring", mass = 1, damping = 14, stiffness = 300, epsilon = 0.05 },
-      height = { kind = "spring", mass = 1, damping = 14, stiffness = 300, epsilon = 0.05 },
+      x = { duration = 110, easing = "out_quad" },
+      y = { duration = 110, easing = "out_quad" },
+      width = { duration = 110, easing = "out_quad" },
+      height = { duration = 110, easing = "out_quad" },
     },
   }
 end
 
+local prompt = {
+  x = PROMPT_X,
+  y = PROMPT_Y,
+  width = PROMPT_W,
+  height = s(430),
+  visible = function() return asking:get() end,
+}
+
+-- `.login-dialog-message` — centred, dimmed, and holding 2.75em of height
+-- whether or not it has anything to say, so nothing below it jumps.
+--
+-- Declared before the avatar rather than after the entry, though it is drawn
+-- below it: whatever node came directly after the entry in tree order did not
+-- draw at all — any element, at any position, at any depth — and only moving
+-- it out of that slot brings it back. That is a renderer bug and it wants
+-- finding; it is not worth a login screen that cannot say a password was wrong.
+prompt[#prompt + 1] = ui.Item {
+  x = 0,
+  y = ENTRY_Y + ENTRY_H + s(24),
+  width = PROMPT_W,
+  height = s(40),
+  visible = function() return asking:get() end,
+  ui.Text {
+    width = PROMPT_W,
+    height = s(40),
+    text = function()
+      if working:get() then return "Authenticating…" end
+      return message:get()
+    end,
+    font_size = s(15),
+    horizontal_alignment = "center",
+    color = function() return alarmed:get() and ALERT or DIM end,
+    behavior = { color = { duration = 320, easing = "out_quad" } },
+  },
+}
+
+prompt[#prompt + 1] = ui.Sdf {
+  x = math.floor((PROMPT_W - FACE_LG) / 2),
+  width = FACE_LG,
+  height = FACE_LG,
+  fill_color = WELL,
+  ui.SdfShape { width = FACE_LG, height = FACE_LG, shape = "circle" },
+}
+-- The letter is its own field on top rather than a hole in the well, so it
+-- reads the same way round as the letters in the list: light on dim, not the
+-- desktop showing through.
+prompt[#prompt + 1] = ui.Sdf {
+  x = math.floor((PROMPT_W - FACE_LG) / 2),
+  width = FACE_LG,
+  height = FACE_LG,
+  fill_color = TEXT,
+  initial_letter,
+}
+
+-- `.user-widget.vertical` — 20pt, weight 400, centred, and a `.75em` gap under
+-- it before anything else.
+prompt[#prompt + 1] = ui.Text {
+  y = FACE_LG + s(24),
+  width = PROMPT_W,
+  text = function()
+    local user = users[chosen_user:get()]
+    return user and user.label or ""
+  end,
+  font_size = s(27),
+  font_weight = 400,
+  horizontal_alignment = "center",
+  color = TEXT,
+}
+
+-- `.login-dialog-input-well`.
+local input_well = {
+  y = ENTRY_Y,
+  width = PROMPT_W,
+  height = s(160),
+}
+
+input_well[#input_well + 1] = ui.Item {
+  x = math.floor((PROMPT_W - ENTRY_W) / 2),
+  y = 0,
+  width = ENTRY_W,
+  height = ENTRY_H,
+  ui.Rect {
+    anchors = { fill = true },
+    radius = s(12),           -- $base_border_radius * 1.5
+    color = ENTRY,
+    -- GDM rings the entry in the accent colour while it has the keys, and in
+    -- red when the answer was wrong. It always has the keys here.
+    border_width = s(2),
+    border_color = function() return alarmed:get() and ALERT or ACCENT end,
+    behavior = { border_color = { duration = 250, easing = "out_quad" } },
+  },
+  ui.Text {
+    x = s(20),
+    anchors = { fill = true },
+    text = function() return typed:get() == 0 and "Password" or "" end,
+    font_size = s(16),
+    vertical_alignment = "center",
+    color = DIM,
+    opacity = 0.7,
+  },
+  ui.Sdf(dot_row),
+  -- The submit arrow: a triangle in a field, so it is the same mark in every
+  -- font and at every size.
+  ui.Sdf {
+    x = ENTRY_W - ENTRY_H,
+    width = ENTRY_H,
+    height = ENTRY_H,
+    fill_color = function() return typed:get() > 0 and TEXT or DIM end,
+    opacity = function() return typed:get() > 0 and 1 or 0.35 end,
+    behavior = { opacity = { duration = 180, easing = "out_quad" } },
+    ui.SdfShape {
+      x = math.floor(ENTRY_H * 0.34),
+      y = math.floor(ENTRY_H * 0.30),
+      width = math.floor(ENTRY_H * 0.32),
+      height = math.floor(ENTRY_H * 0.40),
+      shape = "triangle",
+      rotation = 90,
+    },
+  },
+  ui.MouseArea { anchors = { fill = true }, on_clicked = function() attempt() end },
+}
+
+prompt[#prompt + 1] = ui.Item(input_well)
+
 --------------------------------------------------------------------------------
--- Everything that is a word.
+-- Buttons, in GDM's corners.
 --------------------------------------------------------------------------------
 
---- A row that can be chosen, left-aligned like everything in this column.
---- Words rather than symbols: ⏻ is in most fonts but ⟳ and ⌨ are not, and a
---- greeter that renders a tofu box has told the person in front of it nothing.
-local ROW_H = s(36)
-local function row(id, label, width, lit, on_tap)
-  local hot = morf.signal("greeter.hot." .. id, false)
+local PILL_H = s(40)
+local BUTTON_PAD = s(32)       -- .login-dialog-bottom-button-group
+local BUTTON_GAP = s(16)
+
+--- A flat pill that lights up under the pointer, which is what every button on
+--- GDM's login screen is.
+local function pill(id, label, width, lit, on_tap)
+  local hot = morf.signal("greeter.pill." .. id, false)
   local function live() return hot:get() or lit() end
   return ui.Item {
     width = width,
-    height = ROW_H,
+    height = PILL_H,
     ui.Rect {
       anchors = { fill = true },
-      radius = ROW_H / 2,
-      color = function() return live() and ACCENT_IN or "#00000000" end,
-      border_width = s(1),
-      border_color = function() return live() and ACCENT or LINE end,
-      behavior = {
-        color = { duration = 180, easing = "out_quad" },
-        border_color = { duration = 180, easing = "out_quad" },
-      },
+      radius = s(999),
+      color = function() return live() and CARD_HOT or CARD end,
+      behavior = { color = { duration = 150, easing = "out_quad" } },
     },
     ui.Text {
       anchors = { fill = true },
       text = label,
-      font_size = s(13),
+      font_size = s(15),
+      font_weight = 700,
       horizontal_alignment = "center",
       vertical_alignment = "center",
       elide = "right",
-      color = function() return live() and TEXT or MUTED end,
-      behavior = { color = { duration = 180, easing = "out_quad" } },
+      color = function() return live() and TEXT or DIM end,
+      behavior = { color = { duration = 150, easing = "out_quad" } },
     },
     ui.MouseArea {
       anchors = { fill = true },
@@ -580,135 +700,95 @@ place(ui.MouseArea {
   on_key_pressed = function(key, modifiers, text)
     if working:get() then return end
     if key == "Return" or key == "KP_Enter" then
-      attempt()
+      if asking:get() then
+        attempt()
+      elseif #users > 0 then
+        choose_user(chosen_user:get())
+        morph_initial(chosen_user:get())
+      end
     elseif key == "BackSpace" then
       backspace()
+    elseif key == "Escape" then
+      if asking:get() then go_back() else clear_password() end
     elseif key == "Tab" and modifiers and modifiers.control then
       if #available > 0 then write(chosen_session, chosen_session:get() % #available + 1) end
     elseif key == "Tab" then
       if #users > 0 then
         local next_user = chosen_user:get() % #users + 1
-        pick_user(next_user)
-        show_user(next_user)
+        write(chosen_user, next_user)
+        morph_initial(next_user)
+        if asking:get() then clear_password() end
       end
-    elseif key == "Escape" then
-      clear_password()
     elseif key == "F1" then
       open_keyboard()
-    elseif text and text ~= "" then
+    elseif asking:get() and text and text ~= "" then
       type_character(text)
     end
   end,
 })
 
 place(ui.Rect { width = W, height = H, color = INK })
-place(drift(1, math.floor(W * 0.16), math.floor(H * 0.62), s(420), "#15364a", s(130)))
-place(drift(2, math.floor(W * 0.80), math.floor(H * 0.24), s(320), "#241f3d", s(100)))
+place(ui.Item(list_view))
 
-place(ui.Sdf(clock_field))
-place(ui.Text {
-  x = CLOCK_X,
-  y = CLOCK_Y + CLOCK_H + s(26),
-  width = CLOCK_W,
-  text = core.system_clock():format("%A"),
-  font_size = s(19),
-  font_weight = 500,
-  color = TEXT,
-})
-local today = ui.Text {
-  x = CLOCK_X,
-  y = CLOCK_Y + CLOCK_H + s(54),
-  width = CLOCK_W,
-  text = core.system_clock():format("%d %B"),
-  font_size = s(15),
-  color = MUTED,
-}
-place(today)
 
-place(avatar)
-place(ui.Text {
-  x = COLUMN_X,
-  y = AVATAR_Y + AVATAR + s(30),
-  width = COLUMN_W,
-  text = function()
-    local user = users[chosen_user:get()]
-    return user and user.label or "no accounts found"
-  end,
-  font_size = s(30),
-  font_weight = 600,
-  color = TEXT,
-})
-place(ui.Text {
-  x = COLUMN_X,
-  y = AVATAR_Y + AVATAR + s(74),
-  width = COLUMN_W,
-  text = function()
-    if working:get() then return "checking…" end
-    return message:get()
-  end,
-  font_size = s(14),
-  color = function()
-    if working:get() then return ACCENT end
-    return alarmed:get() and ALERT or MUTED
-  end,
-  behavior = { color = { duration = 320, easing = "out_quad" } },
-})
-place(ui.Sdf(drops))
 
--- The choices, stacked under the column rather than centred beneath everything.
-local choice_y = DROPS_Y + DROP * 2 + s(46)
-for index, user in ipairs(users) do
-  local node = row("user" .. index, user.label, s(168),
-    function() return chosen_user:get() == index end,
-    function()
-      pick_user(index)
-      show_user(index)
-    end)
-  node.x = COLUMN_X + (index - 1) * (s(168) + s(10))
-  node.y = choice_y
+-- Bottom right: the session, then power. Laid out from the right edge inwards,
+-- which is the order GDM's button group ends up in.
+local right = W - BUTTON_PAD
+local function place_right(node)
+  right = right - node.width
+  node.x = right
+  node.y = H - BUTTON_PAD - PILL_H
   place(node)
+  right = right - BUTTON_GAP
 end
-for index, entry in ipairs(available) do
-  local node = row("session" .. index, entry.name, s(200),
+
+for index = #available, 1, -1 do
+  local entry = available[index]
+  place_right(pill("session" .. index, entry.name, s(190),
     function() return chosen_session:get() == index end,
-    function()
-      if not working:get() then write(chosen_session, index) end
-    end)
-  node.x = COLUMN_X + (index - 1) * (s(200) + s(10))
-  node.y = choice_y + ROW_H + s(12)
-  place(node)
+    function() if not working:get() then write(chosen_session, index) end end))
 end
+if #available == 0 then
+  place_right(pill("nosession", "no sessions", s(190), function() return false end,
+                   function() end))
+end
+place_right(pill("sleep", "Suspend", s(120), function() return false end,
+                 function() power("Suspend") end))
+place_right(pill("restart", "Restart", s(120), function() return false end,
+                 function() power("Reboot") end))
+place_right(pill("shutdown", "Power Off", s(130), function() return false end,
+                 function() power("PowerOff") end))
 
-local ACTION_W = s(98)
-for index, action in ipairs({
-  { "shut down", function() power("PowerOff") end },
-  { "restart", function() power("Reboot") end },
-  { "sleep", function() power("Suspend") end },
-}) do
-  local node = row(action[1], action[1], ACTION_W, function() return false end, action[2])
-  node.x = W - (ACTION_W + s(12)) * index - s(12)
-  node.y = H - ROW_H - s(28)
-  place(node)
-end
+-- Bottom left: the keyboard, and the way back out of the prompt.
 do
-  local node = row("keyboard", "keyboard", ACTION_W, function() return false end, open_keyboard)
-  node.x = s(28)
-  node.y = H - ROW_H - s(28)
+  local node = pill("keyboard", "Keyboard", s(130), function() return false end,
+                    open_keyboard)
+  node.x = BUTTON_PAD
+  node.y = H - BUTTON_PAD - PILL_H
   place(node)
+
+  -- Wrapped, because a binding is made when a node is built and not afterwards:
+  -- `cancel.visible = function() ... end` assigns a function to a live property
+  -- rather than declaring one, which is a different thing and refused.
+  place(ui.Item {
+    x = BUTTON_PAD + s(130) + BUTTON_GAP,
+    y = H - BUTTON_PAD - PILL_H,
+    width = s(120),
+    height = PILL_H,
+    visible = function() return asking:get() end,
+    pill("cancel", "Cancel", s(120), function() return false end, go_back),
+  })
 end
 
-place(ui.Timer {
-  interval = 7000, ["repeat"] = true, running = true,
-  on_triggered = function() write(tide, tide:get() == 1 and 0 or 1) end,
-})
-place(ui.Timer {
-  interval = 500, ["repeat"] = true, running = true,
-  on_triggered = function()
-    retime()
-    today.text = core.system_clock():format("%d %B")
-  end,
-})
-place(clock_swap)
+-- The prompt last, so it is drawn over everything and nothing is drawn after
+-- it. Topmost is where the focused thing belongs anyway — and it sidesteps a
+-- renderer fault this screen kept walking into: whatever node came directly
+-- after the prompt's entry in draw order did not draw at all, whichever element
+-- it was and wherever it sat. It wants finding, but a login screen is not the
+-- place to leave it showing.
+place(ui.Item(prompt))
+
 place(face_swap)
 
 ui.Item(tree)
