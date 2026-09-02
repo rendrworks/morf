@@ -1,6 +1,6 @@
 use morf_io::{IpcReply, IpcRequest, IpcServer};
 use morf_lua::{Runtime, Screen};
-use morf_wayland::{BarConfig, LayerClient, ScreenInfo};
+use morf_wayland::{LayerClient, ScreenInfo};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use crate::{config::*, lock::*, services::*, workers::*};
 
 pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), String> {
-    let probe = LayerClient::connect(BarConfig::default()).map_err(|error| error.to_string())?;
+    let probe = LayerClient::probe().map_err(|error| error.to_string())?;
     let mut desired = named_screens(probe.screens())?;
     // Seeded before the first worker exists, so the very first configuration
     // load already sees every output and not only the one it draws to.

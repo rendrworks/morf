@@ -43,6 +43,18 @@ impl LayerClient {
         Self::connect_inner(None)
     }
 
+    /// Connects only to read what the compositor is offering.
+    ///
+    /// No surface. Asking the question through an ordinary connection used to
+    /// mean creating one from a default configuration, which put a surface on
+    /// screen that nothing had asked for: it reserved thirty-two pixels of
+    /// everyone else's space and, being `on_demand`, would take the keyboard
+    /// from whatever had it if the pointer found it first. Both were gone again
+    /// within a frame, which is not the same as never having happened.
+    pub fn probe() -> Result<Self, WaylandError> {
+        Self::connect_inner(None)
+    }
+
     pub(crate) fn connect_inner(config: Option<BarConfig>) -> Result<Self, WaylandError> {
         let connection = Connection::connect_to_env()
             .map_err(|error| WaylandError(format!("could not connect to Wayland: {error}")))?;
