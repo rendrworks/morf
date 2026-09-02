@@ -35,7 +35,6 @@ morf.surface.keyboard_focus = "none"
 
 local function s(n) return n end
 
-local INK = "#080b11"
 local TEXT = "#e9edf5"
 local MUTED = "#78849a"
 
@@ -220,11 +219,13 @@ swap = ui.Timer {
   end,
 }
 
+-- No background. The surface paints only the shape and its labels, so
+-- everywhere else stays transparent and the desktop shows through — which is
+-- also the honest way to look at an edge, with something behind it rather than
+-- a flat colour chosen to flatter it.
 ui.Item {
   width = W,
   height = H,
-
-  ui.Rect { width = W, height = H, color = INK },
 
   ui.Sdf {
     x = STAGE_X,
