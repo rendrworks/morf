@@ -40,6 +40,7 @@ impl TextMeasurer for NoText {
 struct RecordingBackend {
     frames: usize,
     damage: Vec<DamageRect>,
+    size: (u32, u32),
 }
 
 impl RenderBackend for RecordingBackend {
@@ -54,6 +55,10 @@ impl RenderBackend for RecordingBackend {
         self.frames += 1;
         self.damage = damage.to_vec();
         Ok(())
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.size = (width, height);
     }
 }
 

@@ -262,6 +262,33 @@ fn the_shader_and_the_outline_agree_on_a_contour_length() {
     );
 }
 
+/// A field finds its layers by an index carried from the vertex stage, and an
+/// index cannot survive being interpolated.
+///
+/// `style.z` and `style.w` are the first layer's index and the layer count.
+/// They are the same number at all four corners of the quad, but a varying
+/// that is not `flat` is interpolated anyway, and a 7.0 written at every corner
+/// comes back as 6.9999997 in the middle. `u32()` truncates towards zero, so
+/// the field read the *previous* field's layers and drew nothing anyone asked
+/// for. Which fields it hit depended on their layer index, so shapes went
+/// missing at what looked like random — and it survived every CPU test in this
+/// file, because every number on this side of the buffer was correct.
+#[test]
+fn the_field_shader_does_not_interpolate_what_it_indexes_with() {
+    let shader = include_str!("../field.wgsl");
+    for varying in [
+        "@location(1) @interpolate(flat) fill",
+        "@location(2) @interpolate(flat) outline",
+        "@location(3) @interpolate(flat) style",
+        "@location(4) @interpolate(flat) material",
+    ] {
+        assert!(
+            shader.contains(varying),
+            "field.wgsl must carry `{varying}` flat: it is one value per instance"
+        );
+    }
+}
+
 /// The boxes that let a fragment skip most of a contour are packed behind the
 /// points by the renderer and found by arithmetic in the shader, so the two
 /// have to agree on how many edges one box holds.

@@ -53,6 +53,48 @@ fn unchanged_frames_submit_no_gpu_work() {
     assert_eq!(engine.backend_mut().frames, 1);
 }
 
+/// A resize hands back a blank target, so the frame after one cannot be the
+/// difference from the frame before it.
+///
+/// Left as a difference, a resized surface comes up black and then fills in one
+/// piece at a time as things happen to animate — every pixel the tracker still
+/// believed was on screen went with the old target. This is why resizing goes
+/// through the engine rather than straight at the backend.
+#[test]
+fn a_resize_repaints_the_whole_screen() {
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Rect);
+    scene.assign(root, "width", 20.0).unwrap();
+    scene.assign(root, "height", 10.0).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 20.0,
+            height: 10.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+    let mut engine = RenderEngine::new(RecordingBackend::default());
+    assert!(
+        !engine
+            .render(&scene, &layout, 120, |_| {})
+            .unwrap()
+            .is_empty()
+    );
+    // Nothing has changed, so without the resize this frame would be empty —
+    // which is exactly what `unchanged_frames_submit_no_gpu_work` asserts.
+    engine.resize(40, 20);
+    assert_eq!(engine.backend_mut().size, (40, 20));
+    let damage = engine.render(&scene, &layout, 120, |_| {}).unwrap();
+    assert!(
+        !damage.is_empty(),
+        "the frame after a resize is painted in full, not diffed against a target that is gone"
+    );
+    assert_eq!(engine.backend_mut().frames, 2);
+}
+
 #[test]
 fn fractional_scale_rounds_damage_outward() {
     let geometry = Geometry {

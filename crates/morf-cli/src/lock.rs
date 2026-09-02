@@ -116,7 +116,7 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                         .lock_physical_size(index)
                         .ok_or_else(|| "configured lock surface disappeared".to_owned())?;
                     if let Some(renderer) = &mut renderers[index] {
-                        renderer.backend_mut().resize(width, height);
+                        renderer.resize(width, height);
                     } else {
                         let target = client
                             .lock_window_target(index)

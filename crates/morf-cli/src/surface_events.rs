@@ -19,7 +19,7 @@ pub(crate) fn handle_surface_event(
     match event {
         LayerEvent::Configure { id, .. } | LayerEvent::Scale { id, .. } if id == PRIMARY_LAYER => {
             let (width, height) = client.physical_size();
-            renderer.backend_mut().resize(width, height);
+            renderer.resize(width, height);
             for surface in state
                 .popup_surfaces
                 .values_mut()
@@ -28,7 +28,7 @@ pub(crate) fn handle_surface_event(
                 if let Some(renderer) = &mut surface.renderer {
                     let (width, height) =
                         physical_size((surface.width, surface.height), client.scale_120());
-                    renderer.backend_mut().resize(width, height);
+                    renderer.resize(width, height);
                 }
             }
             repaint = true;
@@ -364,9 +364,7 @@ pub(crate) fn handle_surface_event(
                 let (physical_width, physical_height) =
                     physical_size((surface.width, surface.height), client.scale_120());
                 if let Some(renderer) = &mut surface.renderer {
-                    renderer
-                        .backend_mut()
-                        .resize(physical_width, physical_height);
+                    renderer.resize(physical_width, physical_height);
                 } else {
                     let target = client
                         .popup_window_target(id)
@@ -406,9 +404,7 @@ pub(crate) fn handle_surface_event(
                 let (physical_width, physical_height) =
                     physical_size((surface.width, surface.height), client.scale_120());
                 if let Some(renderer) = &mut surface.renderer {
-                    renderer
-                        .backend_mut()
-                        .resize(physical_width, physical_height);
+                    renderer.resize(physical_width, physical_height);
                 } else {
                     let target = client
                         .floating_window_target(id)

@@ -64,13 +64,23 @@ struct Material {
 // layer says where its own run starts and how long it is.
 @group(0) @binding(3) var<storage, read> outline: array<vec2<f32>>;
 
+/// Only `local` varies across the quad. Everything else here is one number per
+/// instance, written identically at all four corners — so it is `flat`, and not
+/// only to save three interpolators.
+///
+/// `style.z` and `style.w` are the first layer's index and the layer count,
+/// carried as floats because that is what a varying is. Interpolated, a value
+/// written as 7.0 at every corner comes back as 6.9999997 in the middle, and
+/// `u32()` truncates towards zero: the field then reads the *previous* field's
+/// layers and draws nothing anyone asked for. Which fields it hit depended on
+/// their layer index, so it looked like shapes going missing at random.
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
-    @location(1) fill: vec4<f32>,
-    @location(2) outline: vec4<f32>,
+    @location(1) @interpolate(flat) fill: vec4<f32>,
+    @location(2) @interpolate(flat) outline: vec4<f32>,
     // [stroke width, softness, first layer, layer count]
-    @location(3) style: vec4<f32>,
+    @location(3) @interpolate(flat) style: vec4<f32>,
     @location(4) @interpolate(flat) material: u32,
 };
 

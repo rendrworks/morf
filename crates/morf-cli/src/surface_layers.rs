@@ -287,9 +287,7 @@ pub(crate) fn layer_surface_configure(
     let scale = client.layer_scale_120(layer).unwrap_or(120);
     let (physical_width, physical_height) = physical_size((surface.width, surface.height), scale);
     if let Some(renderer) = &mut surface.renderer {
-        renderer
-            .backend_mut()
-            .resize(physical_width, physical_height);
+        renderer.resize(physical_width, physical_height);
     } else {
         let target = client
             .layer_window_target(layer)
@@ -324,7 +322,7 @@ pub(crate) fn layer_surface_scale(
     let scale = client.layer_scale_120(layer).unwrap_or(120);
     if let Some(renderer) = &mut surface.renderer {
         let (width, height) = physical_size((surface.width, surface.height), scale);
-        renderer.backend_mut().resize(width, height);
+        renderer.resize(width, height);
     }
     // And then draw into it. Resizing the swapchain without repainting leaves
     // the surface showing whatever the old buffer held, at the new size, until

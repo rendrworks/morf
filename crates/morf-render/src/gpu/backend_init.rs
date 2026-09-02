@@ -214,7 +214,7 @@ impl WgpuBackend {
     }
 
     /// Recreates the physical target and updates shader viewport dimensions.
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn resize_target(&mut self, width: u32, height: u32) {
         self.width = width.max(1);
         self.height = height.max(1);
         (self.texture, self.view) = create_target(&self.device, self.width, self.height);

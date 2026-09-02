@@ -46,6 +46,10 @@ impl TextMeasurer for WgpuBackend {
 impl RenderBackend for WgpuBackend {
     type Error = GpuError;
 
+    fn resize(&mut self, width: u32, height: u32) {
+        self.resize_target(width, height);
+    }
+
     fn render(
         &mut self,
         list: &DrawList,

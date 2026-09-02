@@ -39,6 +39,16 @@ impl DamageTracker {
         std::mem::swap(&mut self.previous, list);
     }
 
+    /// Forgets what is on screen, so the next frame is damaged in full.
+    ///
+    /// For when the surface stops being what the last frame was painted into —
+    /// a resize hands back a blank target, and every pixel the tracker believes
+    /// is still there is gone with the old one.
+    pub fn forget(&mut self) {
+        self.previous = DrawList::default();
+        self.scale_120 = 0;
+    }
+
     /// Diffs commands and converts changed logical bounds at protocol scale in 120ths.
     pub fn diff(&mut self, next: &DrawList, scale_120: u32) -> Vec<DamageRect> {
         if self.scale_120 != 0 && self.scale_120 != scale_120 {
@@ -101,6 +111,14 @@ pub trait RenderBackend {
         damage: &[DamageRect],
         scale_120: u32,
     ) -> Result<(), Self::Error>;
+
+    /// Resizes the target the frames are painted into.
+    ///
+    /// Whatever the last frame left there does not survive this, which is why
+    /// it is on the trait and not only on the backend: it has to be reachable
+    /// through the engine, and the engine is the only thing that knows the
+    /// screen has to be repainted in full afterwards.
+    fn resize(&mut self, width: u32, height: u32);
 }
 
 /// Scene painter and damage tracker driving a selected backend.
@@ -155,6 +173,19 @@ impl<B: RenderBackend> RenderEngine<B> {
         }
         self.list = list;
         result
+    }
+
+    /// Resizes the target, and forgets what was on it.
+    ///
+    /// The two belong together. A resize hands back a blank target, so a frame
+    /// diffed against the one before it repaints only what changed and leaves
+    /// the rest of the screen as the cleared colour — black, with whatever
+    /// happens to animate afterwards appearing on it one piece at a time. That
+    /// is what this is: the resize goes through the engine so the baseline
+    /// cannot be left behind.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.backend.resize(width, height);
+        self.damage.forget();
     }
 
     /// Returns the backend for surface-specific operations.
