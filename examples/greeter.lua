@@ -93,7 +93,11 @@ local CARD_HOT = "#3a3a3f"
 local BUTTON = "#404045"    -- button(normal) over $system_bg_color, and %system_entry
 local BUTTON_HOT = "#45454b"
 local WELL = "#fafafb21"    -- transparentize($system_fg_color, .87)
+local ACCENT = "#86b5ef"    -- the dark-variant accent, for the ring under a key
 local ACCENT_RING = "#86b5ef33" -- the accent at a fifth, which is the focus ring
+local ALERT = "#ff7b63"     -- not GDM's, which says a refusal in words alone —
+                            -- but a screen that only answers in text is a screen
+                            -- you have to read to know it heard you
 
 local function write(signal, value)
   local ok, error = signal:set(value)
@@ -179,6 +183,13 @@ local typed = morf.signal("greeter.typed", 0)
 local working = morf.signal("greeter.working", false)
 local alarmed = morf.signal("greeter.alarmed", false)
 local message = morf.signal("greeter.message", "enter password")
+-- A key struck, and a password refused. Both are set to one and dropped back to
+-- zero a moment later; the springs on the properties they drive do the rest, so
+-- neither costs Lua anything per frame.
+local kick = morf.signal("greeter.kick", 0)
+local shake = morf.signal("greeter.shake", 0)
+local drift = morf.signal("greeter.drift", 0)
+local kick_rest, shake_rest
 
 local function say(text, bad)
   write(message, text)
@@ -243,6 +254,8 @@ local function attempt()
 
   clear_password()
   write(working, false)
+  write(shake, 1)
+  if shake_rest then shake_rest.running = true end
 end
 
 --- Asks logind to suspend, reboot or power off.
@@ -295,6 +308,11 @@ local function type_character(character)
   if #password >= CAPACITY then return end
   password = password .. character
   write(typed, #password)
+  -- Every key nudges the entry, and the spring settles it. Written here rather
+  -- than in the key handler so a character arriving from the on-screen keyboard
+  -- looks the same as one from a real one.
+  write(kick, 1)
+  if kick_rest then kick_rest.running = true end
   if alarmed:get() then say("enter password") end
 end
 
@@ -309,62 +327,24 @@ end
 -- Icons, as distance fields.
 --------------------------------------------------------------------------------
 
---- GNOME draws symbolic SVGs from an icon theme. A configuration cannot count
---- on a theme being installed, or on a font having the character — and a login
---- screen is the worst place to find a tofu box where the power button was. So
---- every mark here is arithmetic: unions, subtractions and rotations of the
---- same shapes a field composes anyway, at any size, in any environment.
---- `extra` is merged in before the node is built, because a binding is declared
---- when a node is constructed and not assigned to it afterwards — a function
---- put on a live property is a function, not a rule for one.
+--- GNOME draws symbolic SVGs from an icon theme, and so does this — except
+--- that here the drawing is not turned into a picture on the way. An SVG is a
+--- set of closed curves, a field takes closed curves, so the file *is* the
+--- shape: it composes, it is cut out of things, and it could morph into a
+--- letter if it were asked to. Nothing is rasterised, so the same file is exact
+--- at any size on any panel.
 local function icon(name, box, extra)
-  local field = { width = box, height = box, fill_color = TEXT }
+  local field = {
+    width = box,
+    height = box,
+    fill_color = TEXT,
+    ui.SdfShape {
+      width = box,
+      height = box,
+      source = core.shell_path("assets/icon-" .. name .. ".svg"),
+    },
+  }
   for key, value in pairs(extra or {}) do field[key] = value end
-  local half = box / 2
-  local function put(layer) field[#field + 1] = ui.SdfShape(layer) end
-  local function bar(x, y, w, h, rot, op)
-    put { x = x, y = y, width = w, height = h, shape = "rect",
-          radius = math.min(w, h) / 2, rotation = rot or 0, operation = op }
-  end
-
-  if name == "back" or name == "next" then
-    -- A chevron: two rounded bars meeting at a point, which is how a symbolic
-    -- arrow is drawn. A solid triangle reads as "play".
-    -- The two arms meet at the tip and lean away from it. `back` points left,
-    -- so its tip is on the left and the arms reach right; `next` is the mirror.
-    local thick, arm = box * 0.13, box * 0.42
-    local reach = arm * 0.354
-    local lean = name == "back" and -1 or 1
-    local spine = half + reach * lean
-    bar(spine - thick / 2, half - reach - arm / 2, thick, arm, -45 * lean)
-    bar(spine - thick / 2, half + reach - arm / 2, thick, arm, 45 * lean)
-  elseif name == "power" then
-    put { width = box, height = box, shape = "ring", thickness = box * 0.13 }
-    bar(half - box * 0.13, -1, box * 0.26, half, 0, "subtract")
-    bar(half - box * 0.065, box * 0.08, box * 0.13, box * 0.34)
-  elseif name == "restart" then
-    put { width = box, height = box, shape = "ring", thickness = box * 0.13 }
-    bar(half - box * 0.02, -1, box * 0.3, half * 0.5, 0, "subtract")
-    put { x = half - box * 0.02, y = 0, width = box * 0.30, height = box * 0.26,
-          shape = "triangle", rotation = 90 }
-  elseif name == "suspend" then
-    -- A crescent: one disc with another taken out of it.
-    put { x = box * 0.06, y = box * 0.06, width = box * 0.88, height = box * 0.88,
-          shape = "circle" }
-    put { x = box * 0.30, y = -box * 0.16, width = box * 0.88, height = box * 0.88,
-          shape = "circle", operation = "subtract" }
-  elseif name == "options" then
-    local thick = box * 0.13
-    for row = 0, 2 do
-      bar(box * 0.16, box * 0.24 + row * (thick + box * 0.11), box * 0.68, thick)
-    end
-  elseif name == "keyboard" then
-    put { x = box * 0.04, y = box * 0.22, width = box * 0.92, height = box * 0.56,
-          shape = "rect", radius = box * 0.13 }
-    put { x = box * 0.15, y = box * 0.33, width = box * 0.70, height = box * 0.34,
-          shape = "rect", radius = box * 0.06, operation = "subtract" }
-    bar(box * 0.30, box * 0.54, box * 0.40, box * 0.07)
-  end
   return ui.Sdf(field)
 end
 
@@ -376,7 +356,6 @@ end
 -- for a password. The list is not dimmed behind the prompt or moved into a
 -- corner — it is gone, and the way back is the button left of the entry.
 local asking = morf.signal("greeter.asking", false)
-
 local face = morf.signal("greeter.face", 0)
 local face_from = users[1] and users[1].initial or "?"
 local face_to = face_from
@@ -668,9 +647,27 @@ prompt[#prompt + 1] = ui.Rect {
   radius = ENTRY_RADIUS,
   color = BUTTON,
   -- `%system_entry:focus` is a two-pixel ring at a fifth of the accent, drawn
-  -- inside the entry. It always has the keys here, so it always has the ring.
-  border_width = s(2),
-  border_color = ACCENT_RING,
+  -- inside the entry. It always has the keys here, so it always has the ring —
+  -- and the ring is where the screen answers back. A key thickens and brightens
+  -- it and a spring lets it go; a refused password swings it red and shakes the
+  -- whole row. Both are one number driven from Lua once and settled by the
+  -- frame tick, so holding a key down costs no more than pressing it.
+  border_width = function() return s(2) + kick:get() * s(2) end,
+  border_color = function()
+    if shake:get() > 0 then return ALERT end
+    return kick:get() > 0 and ACCENT or ACCENT_RING
+  end,
+  translate_x = function() return shake:get() * s(14) end,
+  behavior = {
+    border_width = { kind = "spring", mass = 1, damping = 12, stiffness = 420,
+                     epsilon = 0.01 },
+    border_color = { duration = 260, easing = "out_quad" },
+    -- Barely damped, so letting go of the offset is an oscillation rather than
+    -- a slide: the row swings past centre a few times and settles. A shake is a
+    -- spring nobody is holding.
+    translate_x = { kind = "spring", mass = 1, damping = 5.5, stiffness = 560,
+                    epsilon = 0.05 },
+  },
 }
 prompt[#prompt + 1] = ui.Text {
   x = ENTRY_X + s(14),
@@ -765,6 +762,68 @@ place(ui.MouseArea {
 })
 
 place(ui.Rect { width = W, height = H, color = INK })
+
+--------------------------------------------------------------------------------
+-- The frost.
+--------------------------------------------------------------------------------
+
+-- Three soft fields leaning one way and then the other, and the whole lot put
+-- behind a blur. `softness` alone gives a shape with no edge; the blur on top is
+-- what turns three coloured shapes into weather. A field has no resolution, so
+-- the glow costs the same however large it is drawn.
+--
+-- `layer = { blur }` and not `backdrop_blur`: the second asks the *compositor*
+-- to blur what is behind the surface, and behind a greeter there is nothing —
+-- it owns the screen. This blurs a subtree of the surface's own drawing, which
+-- is the only thing there is to frost.
+local function cloud(index, home_x, home_y, radius, colour, reach)
+  return ui.Sdf {
+    x = function() return home_x + (drift:get() == 1 and reach or -reach) end,
+    y = function() return home_y + (drift:get() == 1 and -reach or reach) end,
+    width = radius * 2,
+    height = radius * 2,
+    fill_color = colour,
+    opacity = 0.5,
+    softness = radius * 0.8,
+    behavior = {
+      x = { duration = 11000 + index * 1700, easing = "in_out_sine" },
+      y = { duration = 13000 - index * 1300, easing = "in_out_sine" },
+    },
+    ui.SdfShape { width = radius * 2, height = radius * 2, shape = "circle" },
+  }
+end
+
+place(ui.Item {
+  width = W,
+  height = H,
+  layer = { blur = s(90) },
+  cloud(1, math.floor(W * 0.20), math.floor(H * 0.30), s(360), "#2b4c7e", s(120)),
+  cloud(2, math.floor(W * 0.72), math.floor(H * 0.66), s(300), "#4a3a7a", s(100)),
+  cloud(3, math.floor(W * 0.50), math.floor(H * 0.18), s(260), "#2a6a6a", s(90)),
+})
+
+place(ui.Timer {
+  interval = 9000, ["repeat"] = true, running = true,
+  on_triggered = function() write(drift, drift:get() == 1 and 0 or 1) end,
+})
+
+-- A sheet of glass over the weather. Barely there — a hundredth of white and a
+-- hairline of it at the edge — because what makes it read as glass is the blur
+-- behind it, not the sheet itself.
+local function sheet(x, y, width, height, visible)
+  return ui.Rect {
+    x = x - s(40), y = y - s(40),
+    width = width + s(80), height = height + s(80),
+    radius = s(28),
+    color = "#ffffff0e",
+    border_width = s(1),
+    border_color = "#ffffff1c",
+    visible = visible,
+  }
+end
+
+place(sheet(LIST_X, LIST_Y, LIST_W, LIST_H + s(56),
+            function() return not asking:get() end))
 place(ui.Item(list_view))
 
 --------------------------------------------------------------------------------
@@ -816,7 +875,22 @@ place(ui.Text {
   color = DIM,
 })
 
+place(sheet(PROMPT_X, PROMPT_Y, PROMPT_W, ROW_Y + ROW_H + s(60),
+            function() return asking:get() end))
 place(ui.Item(prompt))
+-- Letting go. Each is one shot: the signal is set on the event and dropped here,
+-- and the springs above turn the drop into the movement.
+kick_rest = ui.Timer {
+  interval = 70, ["repeat"] = false, running = false,
+  on_triggered = function() write(kick, 0) end,
+}
+shake_rest = ui.Timer {
+  interval = 60, ["repeat"] = false, running = false,
+  on_triggered = function() write(shake, 0) end,
+}
+place(kick_rest)
+place(shake_rest)
+
 place(face_swap)
 
 ui.Item(tree)
