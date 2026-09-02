@@ -42,7 +42,7 @@ pub const FIELD_REFERENCE_PX: f32 = 64.0;
 /// a letter, and above because past it the extra detail is beyond the screen.
 pub fn field_reference_for(size: f32) -> f32 {
     let wanted = size.max(1.0).log2().ceil().exp2();
-    wanted.clamp(16.0, 128.0)
+    wanted.clamp(16.0, 256.0)
 }
 
 /// How far outside the glyph a field of this reference size is measured.

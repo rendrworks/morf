@@ -193,6 +193,32 @@ impl TextSystem {
         Some(key)
     }
 
+    /// Diagnostic access to the shaped key and its outline, at a chosen size.
+    ///
+    /// For the probe that writes a glyph twice — as the outline traces it and
+    /// as the field reconstructs it — which is how the two are told apart when
+    /// one of them looks wrong.
+    #[cfg(test)]
+    pub(crate) fn probe_outline_key(
+        &mut self,
+        glyph: char,
+        reference: f32,
+    ) -> Option<cosmic_text::CacheKey> {
+        let mut key = self.outline_key(glyph)?;
+        key.font_size_bits = reference.to_bits();
+        Some(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn probe_outline_commands(
+        &mut self,
+        key: cosmic_text::CacheKey,
+    ) -> Option<Vec<cosmic_text::Command>> {
+        self.glyphs
+            .get_outline_commands(&mut self.fonts, key)
+            .map(<[cosmic_text::Command]>::to_vec)
+    }
+
     fn outline_points(&mut self, glyph: char) -> Option<Vec<Contour>> {
         let key = self.outline_key(glyph)?;
         let commands = self.glyphs.get_outline_commands(&mut self.fonts, key)?;
