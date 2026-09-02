@@ -47,9 +47,19 @@ pub(crate) fn append_node(
     // An effect shader composites the subtree rather than colouring one node,
     // so it is taken off the node here and given to the layer below.
     let effect = shader_binding(scene, node)?.filter(|shader| shader.samples_behind);
+    // A shape an enclosing field composes is not drawn as a node at all — its
+    // rotation is one of the numbers the field is given, and the field turns
+    // the sample point by it. Making a layer to rotate it into would be an
+    // offscreen target for a subtree that paints nothing.
+    //
+    // It was also wrong, not merely wasteful. The layer came out empty, an
+    // empty layer claims the index of the command that would have followed it,
+    // and the frame loop then stepped over that command: a rotated shape inside
+    // a field silently ate whatever was drawn next.
+    let absorbed = inherited.in_field && absorbed_by_field(element);
     let creates_layer = layer_config.enabled
         || node_opacity < 1.0
-        || rotation != 0.0
+        || (rotation != 0.0 && !absorbed)
         || rounded_clip
         || layer_blur > 0.0
         || layer_config.shadow_color.alpha > 0.0
@@ -108,7 +118,7 @@ pub(crate) fn append_node(
     // A shape an enclosing field composed is drawn by that field, not again on
     // its own. Everything else — text, images, anything without a field —
     // paints normally over the composition.
-    let painted = !(inherited.in_field && absorbed_by_field(element));
+    let painted = !absorbed;
     // A shadow is five numbers and a flag that only matter once the colour is
     // visible, and a rect with no shadow is the overwhelming majority. Asking
     // for the colour first turns six property reads into one for all of them.

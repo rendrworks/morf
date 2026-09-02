@@ -376,3 +376,65 @@ fn a_field_drives_the_morph_of_every_layer_that_does_not_speak_for_itself() {
     assert_eq!(layers[1].morph, 0.75, "follows the field");
     assert_eq!(layers[2].morph, 0.25, "keeps its own");
 }
+
+/// A shape a field composes is not a node with a picture of its own, and a
+/// rotated one must not become an offscreen layer.
+///
+/// It used to. `rotation != 0` made any node into a layer, and an `SdfShape`
+/// paints nothing on its own — so the layer came out empty. An empty layer
+/// still registers itself at the index of the command that would have followed
+/// it, and the frame loop jumps to a layer's `commands.end` once it has drawn
+/// it: for an empty layer that is the command it was standing in front of, so
+/// the command was stepped over and never drawn. A rotated shape inside a field
+/// silently ate whatever came next — a button's background, a line of text, the
+/// next shape along — and which one depended on the order things happened to be
+/// in, so it read as shapes going missing at random.
+#[test]
+fn a_rotated_shape_inside_a_field_is_not_a_layer_of_its_own() {
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    scene.assign(root, "width", 200.0).unwrap();
+    scene.assign(root, "height", 100.0).unwrap();
+    let field = scene.create(Element::Sdf);
+    scene.assign(field, "width", 40.0).unwrap();
+    scene.assign(field, "height", 40.0).unwrap();
+    let shape = scene.create(Element::SdfShape);
+    scene.assign(shape, "width", 40.0).unwrap();
+    scene.assign(shape, "height", 40.0).unwrap();
+    scene.assign(shape, "rotation", 45.0).unwrap();
+    scene.reparent(shape, Some(field)).unwrap();
+    // Whatever is drawn next. This is the one that used to disappear.
+    let after = scene.create(Element::Rect);
+    scene.assign(after, "x", 100.0).unwrap();
+    scene.assign(after, "width", 40.0).unwrap();
+    scene.assign(after, "height", 40.0).unwrap();
+    scene.reparent(field, Some(root)).unwrap();
+    scene.reparent(after, Some(root)).unwrap();
+
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 200.0,
+            height: 100.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+    let mut list = DrawList::default();
+    list.rebuild(&scene, &layout).unwrap();
+
+    assert!(
+        list.layers.is_empty(),
+        "a rotated shape a field composes needs no offscreen target: the field \
+         turns the sample point by that angle itself"
+    );
+    // Two fields: the composition, and the rectangle after it.
+    assert_eq!(list.commands.len(), 2);
+    assert!(
+        list.commands
+            .iter()
+            .any(|command| matches!(command, DrawCommand::Quad { node, .. } if *node == after)),
+        "the command after a rotated shape is still in the list"
+    );
+}

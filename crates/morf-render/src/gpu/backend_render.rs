@@ -147,7 +147,13 @@ impl RenderBackend for WgpuBackend {
             for owner in &mut command_layers[layer.commands.clone()] {
                 *owner = Some(layer_index);
             }
-            child_layers.insert((layer.parent, layer.commands.start), layer_index);
+            // An empty layer owns no commands, so it must not claim the index
+            // of the one that follows it: the frame loop jumps to a layer's
+            // `commands.end` after drawing it, and for an empty layer that is
+            // the command it was standing in front of.
+            if !layer.commands.is_empty() {
+                child_layers.insert((layer.parent, layer.commands.start), layer_index);
+            }
         }
         macro_rules! draw_command {
             ($pass:expr, $command_index:expr, $base_damage:expr) => {{
