@@ -94,6 +94,13 @@ pub(crate) fn install_shell_api<'gc>(
     });
     morf.set_field(ctx, "font_families", font_families);
     morf.set_field(ctx, "process_id", i64::from(std::process::id()));
+    // The binary that is running, so a configuration can start another of
+    // itself. `"morf"` only works when morf is on `PATH`, which it is not when
+    // it is being run out of a build directory — and a greeter that cannot open
+    // its on-screen keyboard because of that is a machine nobody can log into.
+    if let Ok(executable) = std::env::current_exe() {
+        morf.set_field(ctx, "executable", executable.to_string_lossy().as_ref());
+    }
     morf.set_field(ctx, "version", env!("CARGO_PKG_VERSION"));
     let launched = launch_time_ms();
     morf.set_field(

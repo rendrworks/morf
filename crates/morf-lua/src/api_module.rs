@@ -17,6 +17,7 @@ pub(crate) fn install_module_api<'gc>(
         "env",
         "font_families",
         "process_id",
+        "executable",
         "version",
         "instance_id",
         "shell_id",

@@ -189,7 +189,16 @@ local message = morf.signal("greeter.message", "enter password")
 local kick = morf.signal("greeter.kick", 0)
 local shake = morf.signal("greeter.shake", 0)
 local drift = morf.signal("greeter.drift", 0)
-local kick_rest, shake_rest
+local kick_rest, shake_rest, unmount_rest
+-- `asking` flips the instant a choice is made, so the fade has something to
+-- run against; these say which panel is still *mounted*. The one arriving is
+-- mounted at once and the one leaving stays until it has finished going, or
+-- there is nothing on screen to watch it go.
+local list_up = morf.signal("greeter.up.list", true)
+local prompt_up = morf.signal("greeter.up.prompt", false)
+-- What the last key delivered, which is the only way to tell a key that never
+-- arrived from one that arrived with no text on it.
+local last_key = morf.signal("greeter.lastkey", "")
 
 local function say(text, bad)
   write(message, text)
@@ -294,7 +303,11 @@ local function open_keyboard()
     say("no keyboard beside this configuration", true)
     return
   end
-  local started = pcall(morf.exec_detached, { "morf", path })
+  -- The binary that is already running, not the name `morf`: on a machine where
+  -- this was started from a build directory there is no `morf` on `PATH`, and
+  -- the keyboard would simply never appear — which is the worst possible thing
+  -- to discover at a login screen with no physical keyboard attached.
+  local started = pcall(morf.exec_detached, { core.executable or "morf", path })
   if started then
     keyboard_running = true
   else
@@ -379,20 +392,29 @@ local function morph_initial(index)
   face_swap.running = true
 end
 
+--- Crosses from one panel to the other: the arriving one is mounted at once so
+--- it has somewhere to fade in from, and the leaving one is taken down only
+--- after it has finished leaving.
+local function cross(to_prompt)
+  write(asking, to_prompt)
+  write(to_prompt and prompt_up or list_up, true)
+  if unmount_rest then unmount_rest.running = true end
+end
+
 local function choose_user(index)
   if working:get() then return end
   write(chosen_user, index)
   morph_initial(index)
   clear_password()
   say("")
-  write(asking, true)
+  cross(true)
 end
 
 local function go_back()
   if working:get() then return end
   clear_password()
   say("")
-  write(asking, false)
+  cross(false)
 end
 
 --------------------------------------------------------------------------------
@@ -505,9 +527,26 @@ local LIST_X = math.floor((W - LIST_W) / 2)
 -- box is centred — so the list itself sits a couple of ems above the middle.
 local LIST_Y = math.floor((H - LIST_H) / 2) - s(32)
 
+-- The two panels pass each other: the one leaving goes the way you are not
+-- going and the one arriving comes from the way you are. A cut between them
+-- says nothing about which way round they are; this says it without a word.
 local list_view = {
   x = LIST_X, y = LIST_Y, width = LIST_W, height = LIST_H + s(56),
-  visible = function() return not asking:get() end,
+  visible = function() return list_up:get() end,
+  opacity = function() return asking:get() and 0.0 or 1.0 end,
+  translate_x = function() return asking:get() and -s(90) or 0 end,
+  scale = function() return asking:get() and 0.94 or 1.0 end,
+  behavior = {
+    -- Springs, not durations. A duration says how long the movement takes and
+    -- nothing about how it feels; a spring says how heavy the thing is, and
+    -- crossing back before it has arrived carries the momentum it already had
+    -- rather than restarting from wherever it got to.
+    opacity = { duration = 190, easing = "out_quad" },
+    translate_x = { kind = "spring", mass = 1, damping = 21, stiffness = 150,
+                    epsilon = 0.05 },
+    scale = { kind = "spring", mass = 1, damping = 19, stiffness = 170,
+              epsilon = 0.002 },
+  },
 }
 for index, user in ipairs(users) do
   local node = user_row(index, user)
@@ -611,12 +650,32 @@ local function round_button(id, name, size, on_tap)
       behavior = { fill_color = { duration = 150, easing = "out_quad" } },
       ui.SdfShape { width = size, height = size, shape = "circle" },
     },
+    -- Each mark moves the way its own meaning moves: the chevrons slide the way
+    -- they point, the two that are circles turn, and the rest simply come
+    -- forward. An icon that animates against what it means is worse than one
+    -- that does not animate at all.
     icon(name, mark_box, {
       x = math.floor((size - mark_box) / 2),
       y = math.floor((size - mark_box) / 2),
       scale = pounce(1.0, 1.14, 0.9),
+      translate_x = function()
+        local lean = (name == "back" and -1) or (name == "next" and 1) or 0
+        return hot:get() and lean * s(3) or 0
+      end,
+      rotation = function()
+        if not hot:get() then return 0 end
+        -- A restart turns forwards and a suspend rolls back; a power button
+        -- does not turn at all, because a power symbol has an up.
+        if name == "restart" then return 90 end
+        if name == "suspend" then return -18 end
+        return 0
+      end,
       behavior = {
         scale = { kind = "spring", mass = 1, damping = 11, stiffness = 460, epsilon = 0.002 },
+        translate_x = { kind = "spring", mass = 1, damping = 12, stiffness = 420,
+                        epsilon = 0.05 },
+        rotation = { kind = "spring", mass = 1, damping = 16, stiffness = 190,
+                     epsilon = 0.05 },
       },
     }),
     ui.MouseArea {
@@ -635,7 +694,21 @@ end
 
 local prompt = {
   x = PROMPT_X, y = PROMPT_Y, width = PROMPT_W, height = s(400),
-  visible = function() return asking:get() end,
+  visible = function() return prompt_up:get() end,
+  opacity = function() return asking:get() and 1.0 or 0.0 end,
+  translate_x = function() return asking:get() and 0 or s(90) end,
+  scale = function() return asking:get() and 1.0 or 0.94 end,
+  behavior = {
+    -- Springs, not durations. A duration says how long the movement takes and
+    -- nothing about how it feels; a spring says how heavy the thing is, and
+    -- crossing back before it has arrived carries the momentum it already had
+    -- rather than restarting from wherever it got to.
+    opacity = { duration = 190, easing = "out_quad" },
+    translate_x = { kind = "spring", mass = 1, damping = 21, stiffness = 150,
+                    epsilon = 0.05 },
+    scale = { kind = "spring", mass = 1, damping = 19, stiffness = 170,
+              epsilon = 0.002 },
+  },
 }
 
 -- The well, and the letter on it. Two fields rather than one because the letter
@@ -812,28 +885,47 @@ local function place(node) tree[#tree + 1] = node end
 place(ui.MouseArea {
   width = W,
   height = H,
-  on_key_pressed = function(key, modifiers, text)
+  -- Two arguments, and they are the keysym and the text — not
+  -- `(key, modifiers, text)`, which is what this used to say. Written that way
+  -- the keysym landed in `key`, the text landed in `modifiers`, and `text` was
+  -- always nil: every comparison against `"Return"` failed and every character
+  -- was dropped. It looked exactly like a keyboard that was not reaching the
+  -- screen at all, and it was a signature that had never matched.
+  on_key_pressed = function(keysym, text)
+    -- X11 keysyms. There is no name for them here, so they are named here.
+    local RETURN, KP_ENTER = 0xff0d, 0xff8d
+    local BACKSPACE, ESCAPE = 0xff08, 0xff1b
+    local UP, DOWN, F1 = 0xff52, 0xff54, 0xffbe
+
+    write(last_key, string.format("0x%04x · text %s", keysym,
+      text == nil and "nil" or ("`" .. text .. "`")))
     if working:get() then return end
-    if key == "Return" or key == "KP_Enter" then
+
+    local function step_user(by)
+      if #users == 0 then return end
+      local next_user = ((chosen_user:get() - 1 + by) % #users) + 1
+      write(chosen_user, next_user)
+      morph_initial(next_user)
+      if asking:get() then clear_password() end
+    end
+
+    if keysym == RETURN or keysym == KP_ENTER then
       if asking:get() then
         attempt()
       elseif #users > 0 then
         choose_user(chosen_user:get())
       end
-    elseif key == "BackSpace" then
+    elseif keysym == BACKSPACE then
       backspace()
-    elseif key == "Escape" then
+    elseif keysym == ESCAPE then
       if asking:get() then go_back() else clear_password() end
-    elseif key == "Tab" and modifiers and modifiers.control then
-      if #available > 0 then write(chosen_session, chosen_session:get() % #available + 1) end
-    elseif key == "Tab" then
-      if #users > 0 then
-        local next_user = chosen_user:get() % #users + 1
-        write(chosen_user, next_user)
-        morph_initial(next_user)
-        if asking:get() then clear_password() end
-      end
-    elseif key == "F1" then
+    -- The arrows and not Tab: Tab never arrives, because the runtime takes it
+    -- to move keyboard focus between handlers before a configuration sees it.
+    elseif keysym == UP then
+      step_user(-1)
+    elseif keysym == DOWN then
+      step_user(1)
+    elseif keysym == F1 then
       open_keyboard()
     elseif text and text ~= "" then
       -- A key struck on the list is not a key wasted: it picks the account that
@@ -897,7 +989,7 @@ place(ui.Timer {
 -- A sheet of glass over the weather. Barely there — a hundredth of white and a
 -- hairline of it at the edge — because what makes it read as glass is the blur
 -- behind it, not the sheet itself.
-local function sheet(x, y, width, height, visible)
+local function sheet(x, y, width, height, up, here)
   return ui.Rect {
     x = x - s(40), y = y - s(40),
     width = width + s(80), height = height + s(80),
@@ -905,11 +997,19 @@ local function sheet(x, y, width, height, visible)
     color = "#ffffff0e",
     border_width = s(1),
     border_color = "#ffffff1c",
-    visible = visible,
+    visible = up,
+    opacity = function() return here() and 1.0 or 0.0 end,
+    scale = function() return here() and 1.0 or 0.94 end,
+    behavior = {
+      opacity = { duration = 190, easing = "out_quad" },
+      scale = { kind = "spring", mass = 1, damping = 19, stiffness = 170,
+                epsilon = 0.002 },
+    },
   }
 end
 
 place(sheet(LIST_X, LIST_Y, LIST_W, LIST_H + s(56),
+            function() return list_up:get() end,
             function() return not asking:get() end))
 place(ui.Item(list_view))
 
@@ -963,6 +1063,7 @@ place(ui.Text {
 })
 
 place(sheet(PROMPT_X, PROMPT_Y, PROMPT_W, ROW_Y + ROW_H + s(60),
+            function() return prompt_up:get() end,
             function() return asking:get() end))
 place(ui.Item(prompt))
 -- Letting go. Each is one shot: the signal is set on the event and dropped here,
@@ -975,8 +1076,31 @@ shake_rest = ui.Timer {
   interval = 60, ["repeat"] = false, running = false,
   on_triggered = function() write(shake, 0) end,
 }
+unmount_rest = ui.Timer {
+  interval = 460, ["repeat"] = false, running = false,
+  on_triggered = function()
+    write(list_up, not asking:get())
+    write(prompt_up, asking:get())
+  end,
+}
+-- What the keyboard is actually delivering. Small, dim, and in the corner: it
+-- is a diagnostic, not a feature, and it is here because a login screen that
+-- silently ignores a keypress gives you nothing at all to go on.
+place(ui.Text {
+  x = s(32),
+  y = s(24),
+  width = W - s(64),
+  text = function()
+    local seen = last_key:get()
+    return seen == "" and "keyboard: nothing yet" or ("keyboard: " .. seen)
+  end,
+  font_size = s(12),
+  color = "#ffffff55",
+})
+
 place(kick_rest)
 place(shake_rest)
+place(unmount_rest)
 
 place(face_swap)
 
