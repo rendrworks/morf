@@ -1,10 +1,8 @@
 use crate::dbus_encode::decode_message_value;
 use std::collections::BTreeMap;
-use std::sync::mpsc;
-use std::thread::JoinHandle;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use zbus::blocking::Connection as DbusConnection;
 use zbus::zvariant::{Array, Dict, OwnedValue, Structure, Value};
 
 use crate::dbus_types::DbusValue;
@@ -67,8 +65,12 @@ fn dict_value(value: &Dict<'_, '_>) -> Result<DbusValue, String> {
 /// Blocking receiver for a filtered D-Bus signal stream.
 pub struct DbusSignal {
     pub(crate) events: mpsc::Receiver<zbus::Message>,
-    pub(crate) connection: Option<DbusConnection>,
-    pub(crate) join: Option<JoinHandle<()>>,
+    /// The reader this subscription is a route on.
+    ///
+    /// Held so that dropping the subscription can remove the route and tell the
+    /// bus to stop sending what only it wanted.
+    pub(crate) router: Option<Arc<crate::dbus_types::SignalRouter>>,
+    pub(crate) id: u64,
 }
 
 impl DbusSignal {
@@ -78,9 +80,9 @@ impl DbusSignal {
     /// rather than a thing a comment claims: one connection has one unique
     /// name, and four have four.
     pub fn connection_name(&self) -> Option<String> {
-        self.connection
+        self.router
             .as_ref()
-            .and_then(|connection| connection.unique_name().map(ToString::to_string))
+            .and_then(|router| router.connection_name())
     }
 
     /// Waits for the next signal message.
@@ -97,11 +99,11 @@ impl DbusSignal {
 
 impl Drop for DbusSignal {
     fn drop(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            let _ = connection.close();
-        }
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+        // The route goes; the connection and its reader stay. They belong to
+        // the process, not to this subscription, and closing them would take
+        // every other subscription down with it.
+        if let Some(router) = self.router.take() {
+            router.unsubscribe(self.id);
         }
     }
 }

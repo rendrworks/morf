@@ -2,6 +2,7 @@
 
 mod dbus_decode;
 mod dbus_encode;
+mod dbus_serve;
 mod dbus_types;
 mod files;
 mod ipc;
@@ -11,6 +12,7 @@ mod streams;
 mod timer;
 
 pub use dbus_decode::DbusSignal;
+pub use dbus_serve::{DbusCall, DbusService, NameOutcome};
 pub use dbus_types::*;
 pub use files::*;
 pub use ipc::*;
@@ -18,5 +20,7 @@ pub use process::*;
 pub use sockets::*;
 pub use streams::*;
 pub use timer::*;
+#[cfg(test)]
+mod dbus_tests;
 #[cfg(test)]
 mod tests;

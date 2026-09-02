@@ -1,0 +1,225 @@
+//! Owning a bus name, and answering calls on it.
+//!
+//! The other half of D-Bus, and the first time this engine is a service rather
+//! than a client. What it unlocks is everything that requires *being* something
+//! on the bus: a notification server, an MPRIS player, a portal backend. Every
+//! one of those is a name plus a handful of methods, and none of them is
+//! possible while a process can only make calls.
+//!
+//! Deliberately not zbus's `ObjectServer`. That dispatches to Rust methods
+//! known at compile time, and what is needed here is dispatch to a Lua handler
+//! chosen at run time — so the calls are read off the connection and answered
+//! by hand. That is more code, and it is the code that lets a configuration
+//! decide what interface it offers.
+
+use std::collections::HashMap;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use zbus::blocking::{Connection as DbusConnection, MessageIterator};
+use zbus::fdo::RequestNameFlags;
+use zbus::message::Type as MessageType;
+
+use crate::dbus_encode::dbus_argument_value;
+use crate::dbus_types::{Bus, DbusValue};
+
+/// What happened when a name was asked for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NameOutcome {
+    /// The name is ours.
+    Owned,
+    /// Somebody else holds it and would not give it up.
+    ///
+    /// Reported rather than swallowed, because the difference matters and is
+    /// invisible from the outside: a notification server that quietly failed to
+    /// take `org.freedesktop.Notifications` looks exactly like one that took it
+    /// and is never sent anything.
+    Taken,
+    /// Ours is queued behind the current owner, and may arrive later.
+    Queued,
+}
+
+/// One method call waiting for an answer.
+#[derive(Clone, Debug)]
+pub struct DbusCall {
+    /// Correlates the reply with the call. Meaningless outside this process.
+    pub id: u64,
+    pub interface: String,
+    pub member: String,
+    pub path: String,
+    /// Who called, as a unique bus name.
+    pub sender: String,
+    /// Arguments, decoded the same way a reply body is.
+    pub arguments: DbusValue,
+}
+
+/// A bus name this process owns, and the calls arriving on it.
+pub struct DbusService {
+    connection: DbusConnection,
+    name: String,
+    calls: mpsc::Receiver<(u64, zbus::Message)>,
+    /// Calls that have been handed out and not yet answered.
+    ///
+    /// Held so a reply can be addressed to the message it answers. A call that
+    /// is never answered stays here, which is a leak of one message — and the
+    /// alternative, dropping it, is a caller that waits for its own timeout.
+    pending: HashMap<u64, zbus::Message>,
+    next_id: u64,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl DbusService {
+    /// Takes `name` on `bus` and starts collecting calls for `path`.
+    ///
+    /// `replace` asks the current owner to hand it over, and allows a later
+    /// process to do the same to us — which is what makes a shell restartable
+    /// without the user first killing it.
+    pub fn own(
+        bus: Bus,
+        name: &str,
+        path: &str,
+        replace: bool,
+    ) -> zbus::Result<(Self, NameOutcome)> {
+        let connection = match bus {
+            Bus::Session => zbus::blocking::connection::Builder::session()?,
+            Bus::System => zbus::blocking::connection::Builder::system()?,
+        }
+        .build()?;
+        // `AllowReplacement` either way: a shell that cannot be restarted
+        // without first being killed is a shell nobody restarts.
+        //
+        // `DoNotQueue` when not replacing, because without it the bus puts us
+        // in a queue and reports success — and a configuration would believe it
+        // owned a name it does not, which is the exact confusion this reports
+        // rather than swallows.
+        let flags = if replace {
+            RequestNameFlags::AllowReplacement | RequestNameFlags::ReplaceExisting
+        } else {
+            RequestNameFlags::AllowReplacement | RequestNameFlags::DoNotQueue
+        };
+        let outcome = match connection.request_name_with_flags(name, flags) {
+            Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => NameOutcome::Owned,
+            Ok(zbus::fdo::RequestNameReply::InQueue) => NameOutcome::Queued,
+            Ok(_) => NameOutcome::Taken,
+            Err(zbus::Error::NameTaken) => NameOutcome::Taken,
+            Err(error) => return Err(error),
+        };
+
+        // Method calls addressed to our object. Signals and replies are not our
+        // business here, and a rule that let them through would mean deciding
+        // what to do with them on every iteration.
+        let rule = zbus::MatchRule::builder()
+            .msg_type(MessageType::MethodCall)
+            .path(path.to_owned())?
+            .build();
+        let iterator = MessageIterator::for_match_rule(rule, &connection, Some(64))?;
+        let (tx, calls) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let mut id = 0u64;
+            for message in iterator {
+                let Ok(message) = message else { break };
+                id = id.wrapping_add(1);
+                if tx.send((id, message)).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok((
+            Self {
+                connection,
+                name: name.to_owned(),
+                calls,
+                pending: HashMap::new(),
+                next_id: 0,
+                join: Some(join),
+            },
+            outcome,
+        ))
+    }
+
+    /// The name this service holds.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The next call waiting, if one arrived within `timeout`.
+    pub fn next_call(&mut self, timeout: Duration) -> Option<DbusCall> {
+        let (_, message) = self.calls.recv_timeout(timeout).ok()?;
+        let header = message.header();
+        let call = DbusCall {
+            id: {
+                self.next_id = self.next_id.wrapping_add(1);
+                self.next_id
+            },
+            interface: header
+                .interface()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            member: header.member().map(ToString::to_string).unwrap_or_default(),
+            path: header.path().map(ToString::to_string).unwrap_or_default(),
+            sender: header.sender().map(ToString::to_string).unwrap_or_default(),
+            arguments: crate::dbus_encode::decode_message_value(&message).unwrap_or(DbusValue::Nil),
+        };
+        self.pending.insert(call.id, message);
+        Some(call)
+    }
+
+    /// Answers a call.
+    ///
+    /// `DbusValue::Nil` is a reply with no body, which is what most methods
+    /// return and is not the same as no reply at all — a caller waits for its
+    /// timeout on the second.
+    pub fn reply(&mut self, id: u64, value: &DbusValue) -> Result<(), String> {
+        let message = self.pending.remove(&id).ok_or("no such call")?;
+        let header = message.header();
+        match value {
+            DbusValue::Nil => self.connection.reply(&header, &()),
+            other => {
+                let body = dbus_argument_value(other)?;
+                self.connection.reply(&header, &body)
+            }
+        }
+        .map_err(|error| error.to_string())
+    }
+
+    /// Answers a call with an error.
+    pub fn reply_error(&mut self, id: u64, name: &str, message: &str) -> Result<(), String> {
+        let call = self.pending.remove(&id).ok_or("no such call")?;
+        self.connection
+            .reply_error(&call.header(), name, &message)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Emits a signal from this service's object.
+    pub fn emit(
+        &self,
+        path: &str,
+        interface: &str,
+        member: &str,
+        value: &DbusValue,
+    ) -> Result<(), String> {
+        match value {
+            DbusValue::Nil => {
+                self.connection
+                    .emit_signal(None::<&str>, path, interface, member, &())
+            }
+            other => {
+                let body = dbus_argument_value(other)?;
+                self.connection
+                    .emit_signal(None::<&str>, path, interface, member, &body)
+            }
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
+impl Drop for DbusService {
+    fn drop(&mut self) {
+        // Releasing the name lets whoever is queued behind us take over
+        // immediately rather than waiting for the connection to be noticed as
+        // gone.
+        let _ = self.connection.release_name(self.name.as_str());
+        drop(self.join.take());
+    }
+}

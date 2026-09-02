@@ -20,7 +20,7 @@ use crate::dbus_decode::basic_value;
 use crate::dbus_encode::dbus_argument_value;
 use crate::dbus_encode::decode_message_value;
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -258,52 +258,137 @@ impl DbusProxy {
 
     /// Subscribes to one signal on a dedicated bus connection.
     pub fn subscribe(&self, signal: impl Into<String>) -> zbus::Result<DbusSignal> {
-        // One connection per bus, shared by every subscription on it.
+        // One connection per bus, and one reader thread on it, with every
+        // subscription a route rather than a thread of its own.
         //
-        // This used to open its own: a socket, an authentication handshake and
-        // a bus registration for each signal a configuration watched. A shell
-        // that follows battery, network, player and tray paid four of each for
-        // work one connection does. The match rule is what separates them, and
-        // the bus has always been able to carry as many as it is asked to.
-        //
-        // The rule is registered by `for_match_rule` and deregistered when the
-        // iterator drops, so a configuration that stops listening stops costing
-        // the bus anything — which hand-rolled routing would have had to
-        // remember to do.
-        let connection = shared_connection(self.bus)?;
-        let rule = zbus::MatchRule::builder()
+        // This began as a connection each: a socket, an authentication
+        // handshake and a bus name for every signal a configuration watched. A
+        // thread each was the obvious next step and is the wrong one — a thread
+        // blocked in `next()` cannot be woken, so ending a subscription would
+        // mean either closing the shared connection (taking every other
+        // subscription with it) or waiting for a message that may never come.
+        // A route can simply be removed.
+        let router = router(self.bus)?;
+        router.subscribe(Route {
+            sender: self.destination.clone(),
+            path: self.path.clone(),
+            interface: self.interface.clone(),
+            member: signal.into(),
+        })
+    }
+}
+
+/// What a subscription is listening for.
+///
+/// Matched exactly, on all four, because these rules are built here rather than
+/// parsed from a configuration — so the general case D-Bus match syntax allows
+/// cannot arise, and reimplementing it to handle rules nobody can write would
+/// be reimplementing it badly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Route {
+    sender: String,
+    path: String,
+    interface: String,
+    member: String,
+}
+
+impl Route {
+    fn rule(&self) -> zbus::Result<zbus::MatchRule<'static>> {
+        Ok(zbus::MatchRule::builder()
             .msg_type(zbus::message::Type::Signal)
-            .sender(self.destination.as_str())?
+            .sender(self.sender.as_str())?
             .path(self.path.as_str())?
             .interface(self.interface.as_str())?
-            .member(signal.into())?
-            .build();
-        let iterator = zbus::blocking::MessageIterator::for_match_rule(
-            rule,
-            &connection,
-            // Deep enough that a burst is not dropped between polls, shallow
-            // enough that a subscription nobody reads cannot grow without
-            // bound.
-            Some(64),
-        )?;
+            .member(self.member.as_str())?
+            .build()
+            .to_owned())
+    }
+
+    /// Whether a message is what this route asked for.
+    ///
+    /// The sender is compared against the *well-known* name the subscription
+    /// named, and messages arrive stamped with the sender's unique name — so
+    /// this cannot compare them and does not try. The bus already applied the
+    /// rule, which included the sender; what is left to separate here is which
+    /// of our own routes a delivered signal belongs to.
+    fn matches(&self, header: &zbus::message::Header<'_>) -> bool {
+        header.path().is_some_and(|path| path.as_str() == self.path)
+            && header
+                .interface()
+                .is_some_and(|interface| interface.as_str() == self.interface)
+            && header
+                .member()
+                .is_some_and(|member| member.as_str() == self.member)
+    }
+}
+
+/// One reader per bus, dealing signals to whoever asked for them.
+pub(crate) struct SignalRouter {
+    connection: DbusConnection,
+    routes: Mutex<Vec<(u64, Route, mpsc::Sender<zbus::Message>)>>,
+    next_id: Mutex<u64>,
+}
+
+impl SignalRouter {
+    /// The unique bus name this reader's connection holds.
+    pub(crate) fn connection_name(&self) -> Option<String> {
+        self.connection.unique_name().map(ToString::to_string)
+    }
+
+    fn subscribe(self: &Arc<Self>, route: Route) -> zbus::Result<DbusSignal> {
+        // Ask the bus to deliver these. Rules are reference counted by the bus,
+        // so two subscriptions to the same signal add it twice and it survives
+        // until both have gone.
+        zbus::blocking::fdo::DBusProxy::new(&self.connection)?.add_match_rule(route.rule()?)?;
         let (tx, events) = mpsc::channel();
-        let join = thread::spawn(move || {
-            for message in iterator {
-                // An error here is the connection going away, not one bad
-                // message: ending the thread lets the receiver see the
-                // disconnect rather than spinning on a stream that will not
-                // recover.
-                let Ok(message) = message else { break };
-                if tx.send(message).is_err() {
-                    break;
-                }
-            }
-        });
+        let id = {
+            let mut next = self
+                .next_id
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *next = next.wrapping_add(1);
+            *next
+        };
+        self.routes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((id, route, tx));
         Ok(DbusSignal {
             events,
-            connection: Some(connection),
-            join: Some(join),
+            router: Some(Arc::clone(self)),
+            id,
         })
+    }
+
+    /// Drops a route and tells the bus to stop sending what only it wanted.
+    pub(crate) fn unsubscribe(&self, id: u64) {
+        let mut routes = self
+            .routes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(index) = routes.iter().position(|(held, _, _)| *held == id) else {
+            return;
+        };
+        let (_, route, _) = routes.remove(index);
+        drop(routes);
+        if let Ok(rule) = route.rule()
+            && let Ok(proxy) = zbus::blocking::fdo::DBusProxy::new(&self.connection)
+        {
+            let _ = proxy.remove_match_rule(rule);
+        }
+    }
+
+    /// Hands one message to every route that asked for it.
+    fn deliver(&self, message: &zbus::Message) {
+        let header = message.header();
+        let mut routes = self
+            .routes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // A receiver that has gone is a subscription whose owner dropped it
+        // without the route being removed — possible if a `DbusSignal` leaked.
+        // Clearing them here keeps the list from growing forever.
+        routes.retain(|(_, route, tx)| !route.matches(&header) || tx.send(message.clone()).is_ok());
     }
 }
 
@@ -313,9 +398,9 @@ impl DbusProxy {
 /// on the bus, and there is no reason for a process to hold more than one of
 /// each. Subscriptions are separated by their match rules, not by their
 /// sockets.
-fn shared_connection(bus: Bus) -> zbus::Result<DbusConnection> {
-    static SESSION: OnceLock<Mutex<Option<DbusConnection>>> = OnceLock::new();
-    static SYSTEM: OnceLock<Mutex<Option<DbusConnection>>> = OnceLock::new();
+fn router(bus: Bus) -> zbus::Result<Arc<SignalRouter>> {
+    static SESSION: OnceLock<Mutex<Option<Arc<SignalRouter>>>> = OnceLock::new();
+    static SYSTEM: OnceLock<Mutex<Option<Arc<SignalRouter>>>> = OnceLock::new();
     let slot = match bus {
         Bus::Session => &SESSION,
         Bus::System => &SYSTEM,
@@ -324,13 +409,28 @@ fn shared_connection(bus: Bus) -> zbus::Result<DbusConnection> {
     // A poisoned lock means a previous caller panicked while connecting, which
     // says nothing about whether connecting works now.
     let mut held = slot.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(connection) = held.as_ref() {
-        return Ok(connection.clone());
+    if let Some(router) = held.as_ref() {
+        return Ok(Arc::clone(router));
     }
     let connection = match bus {
         Bus::Session => DbusConnection::session()?,
         Bus::System => DbusConnection::system()?,
     };
-    *held = Some(connection.clone());
-    Ok(connection)
+    let router = Arc::new(SignalRouter {
+        connection: connection.clone(),
+        routes: Mutex::new(Vec::new()),
+        next_id: Mutex::new(0),
+    });
+    // The one reader. It lives as long as the process, which is why nothing
+    // has to be able to interrupt it: subscriptions come and go as routes, and
+    // this never has to be stopped and restarted.
+    let reading = Arc::clone(&router);
+    thread::spawn(move || {
+        for message in zbus::blocking::MessageIterator::from(connection) {
+            let Ok(message) = message else { break };
+            reading.deliver(&message);
+        }
+    });
+    *held = Some(Arc::clone(&router));
+    Ok(router)
 }
