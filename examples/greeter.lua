@@ -201,9 +201,6 @@ local kick_rest, shake_rest, unmount_rest
 -- there is nothing on screen to watch it go.
 local list_up = morf.signal("greeter.up.list", true)
 local prompt_up = morf.signal("greeter.up.prompt", false)
--- What the last key delivered, which is the only way to tell a key that never
--- arrived from one that arrived with no text on it.
-local last_key = morf.signal("greeter.lastkey", "")
 
 local function say(text, bad)
   write(message, text)
@@ -887,8 +884,6 @@ place(ui.MouseArea {
     local BACKSPACE, ESCAPE = 0xff08, 0xff1b
     local UP, DOWN, F1 = 0xff52, 0xff54, 0xffbe
 
-    write(last_key, string.format("0x%04x · text %s", keysym,
-      text == nil and "nil" or ("`" .. text .. "`")))
     if working:get() then return end
 
     local function step_user(by)
@@ -1079,21 +1074,6 @@ unmount_rest = ui.Timer {
     write(prompt_up, asking:get())
   end,
 }
--- What the keyboard is actually delivering. Small, dim, and in the corner: it
--- is a diagnostic, not a feature, and it is here because a login screen that
--- silently ignores a keypress gives you nothing at all to go on.
-place(ui.Text {
-  x = s(32),
-  y = s(24),
-  width = W - s(64),
-  text = function()
-    local seen = last_key:get()
-    return seen == "" and "keyboard: nothing yet" or ("keyboard: " .. seen)
-  end,
-  font_size = s(12),
-  color = "#ffffff55",
-})
-
 
 --------------------------------------------------------------------------------
 -- The keyboard.
