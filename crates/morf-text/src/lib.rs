@@ -462,6 +462,7 @@ fn normalize_font_weight(weight: f64) -> u16 {
     }
 }
 
+mod glyph_corners;
 mod glyph_fields;
 mod glyph_morph;
 pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
@@ -474,5 +475,7 @@ pub use glyph_fields::{
     field_units_per_logical_px,
 };
 
+#[cfg(test)]
+mod probe_tests;
 #[cfg(test)]
 mod tests;

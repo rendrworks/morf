@@ -20,6 +20,7 @@
 
 use cosmic_text::Command;
 
+use crate::glyph_corners::corner_points;
 use crate::glyph_fields::{Segment, flatten};
 
 /// How many points each contour is resampled to.
@@ -39,8 +40,15 @@ pub(crate) struct Contour {
     centre: (f32, f32),
 }
 
-/// Breaks an outline into closed loops of evenly spaced points.
+/// Breaks an outline into closed loops of evenly spaced points, with a point
+/// kept on every corner.
 pub(crate) fn contours(commands: &[Command]) -> Vec<Contour> {
+    // Where the letter actually turns, taken from the curves before they were
+    // broken into pieces. Spacing points evenly along a loop puts none of them
+    // on a corner except by luck, so `W` came back with its apex chamfered by
+    // nine pixels at a headline size while `o`, which has no corner to lose,
+    // came back exact.
+    let sharp = corner_points(commands);
     let mut loops: Vec<Vec<(f32, f32)>> = Vec::new();
     let mut current: Vec<(f32, f32)> = Vec::new();
     let mut last: Option<(f32, f32)> = None;
@@ -65,8 +73,20 @@ pub(crate) fn contours(commands: &[Command]) -> Vec<Contour> {
 
     loops
         .into_iter()
-        .filter_map(|points| {
-            let points = resample(&points, CONTOUR_POINTS)?;
+        .enumerate()
+        .filter_map(|(index, points)| {
+            // A corner belongs to the loop whose flattened vertices it sits on,
+            // which is exact: a corner *is* one of those vertices, being where
+            // two curves meet. Matching that way rather than by position in the
+            // list survives a subpath being dropped for having no area.
+            let corners: Vec<_> = sharp
+                .get(index)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|corner| points.iter().any(|point| distance(*point, *corner) < 0.01))
+                .collect();
+            let points = resample(&points, CONTOUR_POINTS, &corners)?;
             let area = signed_area(&points);
             Some(Contour {
                 centre: centre_of(&points),
@@ -75,6 +95,12 @@ pub(crate) fn contours(commands: &[Command]) -> Vec<Contour> {
             })
         })
         .collect()
+}
+
+/// The points of one contour, for the diagnostics.
+#[cfg(test)]
+pub(crate) fn contour_of(contour: &Contour) -> &[(f32, f32)] {
+    &contour.points
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -102,7 +128,11 @@ fn centre_of(points: &[(f32, f32)]) -> (f32, f32) {
 }
 
 /// Walks a closed loop and drops `count` points on it at equal distances.
-fn resample(points: &[(f32, f32)], count: usize) -> Option<Vec<(f32, f32)>> {
+fn resample(
+    points: &[(f32, f32)],
+    count: usize,
+    corners: &[(f32, f32)],
+) -> Option<Vec<(f32, f32)>> {
     if points.len() < 3 {
         return None;
     }
@@ -133,6 +163,28 @@ fn resample(points: &[(f32, f32)], count: usize) -> Option<Vec<(f32, f32)>> {
             from.0 + (to.0 - from.0) * along,
             from.1 + (to.1 - from.1) * along,
         ));
+    }
+
+    // Pull the nearest walked point onto each corner, rather than inserting one.
+    //
+    // Every contour has to come back the same length: the correspondence
+    // between two letters is positional, and `pair_up`, `best_offset` and
+    // `walk` all read the two lists in step. Snapping keeps the count and gives
+    // up a little of the even spacing locally, which nothing depends on — and
+    // it improves the correspondence rather than costing it, because corner
+    // *i* of one letter now lands on corner *i* of the other, so what lies
+    // between them keeps a corner too.
+    for corner in corners {
+        let mut nearest = 0;
+        let mut best = f32::MAX;
+        for (index, point) in walked.iter().enumerate() {
+            let apart = distance(*point, *corner);
+            if apart < best {
+                best = apart;
+                nearest = index;
+            }
+        }
+        walked[nearest] = *corner;
     }
     Some(walked)
 }

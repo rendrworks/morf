@@ -209,6 +209,52 @@ impl TextSystem {
         Some(key)
     }
 
+    /// Diagnostic: how far the resampled contours stray from the true outline.
+    ///
+    /// One-way Hausdorff, outline to resample, in glyph units. This is the
+    /// number that says whether a corner survived being spaced evenly along a
+    /// loop — a curve resamples to almost nothing, a corner to whatever the
+    /// nearest sample happened to be.
+    #[cfg(test)]
+    pub(crate) fn probe_resample_error(&mut self, glyph: char, reference: f32) -> Option<f32> {
+        let key = self.probe_outline_key(glyph, reference)?;
+        let commands = self.probe_outline_commands(key)?;
+        let contours = crate::glyph_morph::contours(&commands);
+        if contours.is_empty() {
+            return None;
+        }
+        let walked: Vec<(f32, f32)> = contours
+            .iter()
+            .flat_map(crate::glyph_morph::contour_of)
+            .copied()
+            .collect();
+        let mut worst = 0.0_f32;
+        for piece in crate::glyph_fields::flatten(&commands) {
+            for point in [(piece.x0, piece.y0), (piece.x1, piece.y1)] {
+                let mut nearest = f32::MAX;
+                for index in 0..walked.len() {
+                    let a = walked[index];
+                    let b = walked[(index + 1) % walked.len()];
+                    let edge = (b.0 - a.0, b.1 - a.1);
+                    let length = edge.0 * edge.0 + edge.1 * edge.1;
+                    let along = if length <= f32::EPSILON {
+                        0.0
+                    } else {
+                        (((point.0 - a.0) * edge.0 + (point.1 - a.1) * edge.1) / length)
+                            .clamp(0.0, 1.0)
+                    };
+                    let (dx, dy) = (
+                        a.0 + edge.0 * along - point.0,
+                        a.1 + edge.1 * along - point.1,
+                    );
+                    nearest = nearest.min(dx * dx + dy * dy);
+                }
+                worst = worst.max(nearest.sqrt());
+            }
+        }
+        Some(worst)
+    }
+
     #[cfg(test)]
     pub(crate) fn probe_outline_commands(
         &mut self,
