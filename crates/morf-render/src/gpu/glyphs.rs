@@ -165,8 +165,7 @@ pub(crate) struct GlyphAtlasEntry {
 /// The byte that means "nothing here" for a given kind of atlas content.
 pub(crate) fn outside_byte(content: RasterContent) -> u8 {
     match content {
-        // Furthest outside the glyph the encoded spread can express, in every
-        // channel — the median of three "far outside" is far outside.
+        // Furthest outside the glyph the encoded spread can express.
         RasterContent::Field => u8::MAX,
         RasterContent::Mask | RasterContent::Color => 0,
     }
@@ -239,12 +238,6 @@ impl GlyphAtlas {
     /// Coverage and distance are both one byte a pixel, so they share the
     /// single-channel atlas and differ only in how the shader reads them;
     /// colour glyphs need four and have their own.
-    /// Whether this atlas holds that kind of glyph.
-    ///
-    /// A field is three channels and a mask is one, but they share an atlas: it
-    /// is four bytes a texel and linear, and a mask simply uses the first of
-    /// them. A second atlas for the handful of glyphs with no outline to trace
-    /// would cost more than the channels do.
     pub(crate) fn accepts(&self, content: RasterContent) -> bool {
         match self.content {
             RasterContent::Mask | RasterContent::Field => {
@@ -262,9 +255,7 @@ impl GlyphAtlas {
     ) -> Self {
         let (format, bytes_per_pixel, label) = match content {
             RasterContent::Mask | RasterContent::Field => {
-                // Linear, not sRGB: these are distances, and a transfer curve
-                // applied to a distance is a different shape.
-                (wgpu::TextureFormat::Rgba8Unorm, 4, "morf glyph field atlas")
+                (wgpu::TextureFormat::R8Unorm, 1, "morf glyph mask atlas")
             }
             RasterContent::Color => (
                 wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -429,10 +420,10 @@ pub(crate) fn glyph_pixels(glyph: &RasterGlyph) -> Vec<u8> {
             }
             pixels
         }
-        RasterContent::Mask => glyph.data[..pixel_count].to_vec(),
-        // Four bytes a texel: three channels sharing the outline's edges out
-        // between them, and the plain distance alongside.
-        RasterContent::Field | RasterContent::Color => glyph.data[..pixel_count * 4].to_vec(),
+        // One byte a pixel either way: coverage for a mask, distance from the
+        // glyph edge for a field.
+        RasterContent::Mask | RasterContent::Field => glyph.data[..pixel_count].to_vec(),
+        RasterContent::Color => glyph.data[..pixel_count * 4].to_vec(),
     }
 }
 

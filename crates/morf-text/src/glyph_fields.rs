@@ -24,8 +24,6 @@ use std::rc::Rc;
 
 use cosmic_text::Command;
 
-use crate::glyph_msdf::{colour_contour, distances};
-
 /// The size a field is measured at when nothing narrows it down.
 ///
 /// A field records a shape, not a size, so one entry can serve any size — but
@@ -347,20 +345,7 @@ pub(crate) fn field_from_segments(
     let width = (area.right - area.left).ceil().max(1.0) as u32;
     let height = (area.top - area.bottom).ceil().max(1.0) as u32;
 
-    // Each contour's edges are shared out between three channels, so a corner
-    // can break one of them; see `glyph_msdf`.
-    let coloured: Vec<_> = split_contours(segments)
-        .into_iter()
-        .flat_map(colour_contour)
-        .collect();
-
-    let fold = |distance: f32| {
-        // Negative inside, positive outside, then folded into the byte the
-        // shader thresholds: zero is deep inside a stroke and one is further
-        // out than the spread reaches.
-        (((distance + spread) / (spread * 2.0)).clamp(0.0, 1.0) * 255.0).round() as u8
-    };
-    let mut data = Vec::with_capacity((width * height * 4) as usize);
+    let mut data = Vec::with_capacity((width * height) as usize);
     for row in 0..height {
         // Sampled at the centre of the texel, and downwards: the field is read
         // as an image, where the first row is the top, while the outline it is
@@ -368,14 +353,19 @@ pub(crate) fn field_from_segments(
         let y = top - row as f32 - 0.5;
         for column in 0..width {
             let x = left + column as f32 + 0.5;
-            let (channels, overall) = distances(&coloured, x, y);
-            data.push(fold(channels[0]));
-            data.push(fold(channels[1]));
-            data.push(fold(channels[2]));
-            // The plain distance alongside the three, for everything that wants
-            // a distance rather than a contour — softness, and a fallback where
-            // the median has nothing to reconstruct.
-            data.push(fold(overall));
+            let mut nearest = f32::MAX;
+            let mut winding = 0;
+            for segment in segments {
+                nearest = nearest.min(segment.distance_squared(x, y));
+                winding += segment.winding(x, y);
+            }
+            let distance = nearest.sqrt();
+            // Negative inside, positive outside, then folded into the byte the
+            // shader thresholds: zero is deep inside a stroke and one is
+            // further out than the spread reaches.
+            let signed = if winding != 0 { -distance } else { distance };
+            let unit = (signed + spread) / (spread * 2.0);
+            data.push((unit.clamp(0.0, 1.0) * 255.0).round() as u8);
         }
     }
 
@@ -402,33 +392,4 @@ pub(crate) struct FieldImage {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) data: Rc<Vec<u8>>,
-}
-
-/// Splits flattened pieces back into the closed loops they came from.
-///
-/// `flatten` closes every subpath, so a loop ends wherever the next piece does
-/// not continue from the last one. The colouring is per contour: a corner is a
-/// property of two edges meeting, and the last piece of one loop does not meet
-/// the first piece of the next.
-fn split_contours(segments: &[Segment]) -> Vec<Vec<Segment>> {
-    let mut loops = Vec::new();
-    let mut current: Vec<Segment> = Vec::new();
-    for piece in segments {
-        if let Some(last) = current.last() {
-            let apart = (last.x1 - piece.x0).abs() + (last.y1 - piece.y0).abs();
-            if apart > 0.01 {
-                loops.push(std::mem::take(&mut current));
-            }
-        }
-        current.push(Segment {
-            x0: piece.x0,
-            y0: piece.y0,
-            x1: piece.x1,
-            y1: piece.y1,
-        });
-    }
-    if !current.is_empty() {
-        loops.push(current);
-    }
-    loops
 }
