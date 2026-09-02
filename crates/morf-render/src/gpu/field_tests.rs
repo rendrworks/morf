@@ -82,6 +82,8 @@ pub(super) fn read_frame(backend: &mut WgpuBackend, list: &DrawList, size: u32) 
 
 pub(super) fn field_layer(x: f64, y: f64, size: f64, shape: Shape) -> SdfLayer {
     SdfLayer {
+        glyph: None,
+        glyph_morph_to: None,
         bounds: Geometry {
             x,
             y,

@@ -86,11 +86,19 @@ fn shape_layer(
     let Some(bounds) = layout.geometry(node) else {
         return Ok(None);
     };
+    // A named letter decides the family: it is one particular outline, not a
+    // shape with parameters, so there is nothing for `shape` to say about it.
+    let glyph = scene.string_value(node, "glyph")?.chars().next();
+    let glyph_morph_to = scene.string_value(node, "glyph_morph_to")?.chars().next();
     let name = scene.string_value(node, "shape")?;
-    let shape = Shape::parse(name)
-        .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape shape `{name}`")))?;
+    let shape = if glyph.is_some() {
+        Shape::Polygon
+    } else {
+        Shape::parse(name)
+            .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape shape `{name}`")))?
+    };
     let target = scene.string_value(node, "morph_to")?;
-    let morph_to = if target.is_empty() {
+    let morph_to = if target.is_empty() || glyph.is_some() {
         shape
     } else {
         Shape::parse(target)
@@ -100,6 +108,8 @@ fn shape_layer(
     let operation = Operation::parse(operation)
         .ok_or_else(|| RenderError::Scene(format!("unknown SdfShape operation `{operation}`")))?;
     Ok(Some(SdfLayer {
+        glyph,
+        glyph_morph_to,
         bounds,
         color: layer_color(scene, node, defaults)?,
         shape,
@@ -143,6 +153,8 @@ fn rect_layer(
     }
     let blend = layer_blend(scene, node, defaults.blend)?;
     Ok(Some(SdfLayer {
+        glyph: None,
+        glyph_morph_to: None,
         bounds,
         // A rect brings its own colour into the composition, so a fused row of
         // differently coloured rects keeps every one of them and blends across

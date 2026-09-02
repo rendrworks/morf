@@ -57,8 +57,9 @@ impl RenderBackend for WgpuBackend {
             instances: field_instances,
             layers: field_layers,
             materials: field_materials,
+            outlines: field_outlines,
             shaders: field_shaders,
-        } = collect_field_instances(list, scale_120);
+        } = collect_field_instances(list, scale_120, &mut self.text);
         let glyph_batch = create_glyph_batch(
             GlyphBatchContext {
                 queue: &self.queue,
@@ -95,6 +96,7 @@ impl RenderBackend for WgpuBackend {
             field_instances.len().max(1),
             field_layers.len().max(1),
             field_materials.len().max(1),
+            field_outlines.len().max(1),
         );
         if !field_instances.is_empty() {
             self.queue.write_buffer(
@@ -112,6 +114,13 @@ impl RenderBackend for WgpuBackend {
                 0,
                 bytemuck::cast_slice(&field_materials),
             );
+            if !field_outlines.is_empty() {
+                self.queue.write_buffer(
+                    &self.field_outline_buffer,
+                    0,
+                    bytemuck::cast_slice(&field_outlines),
+                );
+            }
         }
         self.write_shader_uniforms(&field_shaders, &list.layers, scale_120);
         if let Some(batch) = &glyph_batch {

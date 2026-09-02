@@ -1,4 +1,5 @@
 use crate::{commands::*, effects::*};
+use glyph_layer::polygon_params;
 use morf_region::Shape;
 
 /// How many layers one field may compose.
@@ -129,9 +130,13 @@ impl SdfFieldInstance {
         scale_120: u32,
         layers: &mut Vec<SdfFieldLayer>,
         materials: &mut Vec<SdfFieldMaterial>,
+        outlines: &mut Vec<[f32; 2]>,
+        text: &mut morf_text::TextSystem,
     ) -> Option<Self> {
         match command {
-            DrawCommand::Field { .. } => Self::from_field(command, scale_120, layers, materials),
+            DrawCommand::Field { .. } => {
+                Self::from_field(command, scale_120, layers, materials, outlines, text)
+            }
             DrawCommand::Quad { .. } => Self::from_quad(command, scale_120, layers, materials),
             _ => None,
         }
@@ -145,6 +150,8 @@ impl SdfFieldInstance {
         scale_120: u32,
         layers: &mut Vec<SdfFieldLayer>,
         materials: &mut Vec<SdfFieldMaterial>,
+        outlines: &mut Vec<[f32; 2]>,
+        text: &mut morf_text::TextSystem,
     ) -> Option<Self> {
         let DrawCommand::Field {
             bounds,
@@ -188,12 +195,7 @@ impl SdfFieldInstance {
                     ((layer.bounds.width / 2.0) * scale) as f32,
                     ((layer.bounds.height / 2.0) * scale) as f32,
                 ],
-                params: [
-                    0.0,
-                    layer.points,
-                    layer.inner_radius,
-                    (f64::from(layer.thickness) * scale) as f32,
-                ],
+                params: polygon_params(layer, scale, outlines, text),
                 extra: [
                     layer.angle,
                     layer.rotation,
@@ -431,6 +433,7 @@ impl SdfFieldInstance {
     }
 }
 
+mod glyph_layer;
 mod reach;
 
 pub use reach::*;

@@ -7,6 +7,7 @@
 use cosmic_text::PhysicalGlyph;
 use morf_scene::NodeHandle;
 
+use crate::glyph_morph::{Contour, contour_points, contours, pair_up, walk};
 use crate::raster_glyph::field_raster;
 use crate::{BufferKey, GlyphPair, RasterGlyph, TextSystem};
 
@@ -122,5 +123,80 @@ impl TextSystem {
             .into_iter()
             .filter_map(|glyph| self.raster_glyph(&glyph, field))
             .collect()
+    }
+}
+
+impl TextSystem {
+    /// One character's outline as points, optionally part way to another.
+    ///
+    /// This is how a letter becomes a shape a distance field can compose with.
+    /// It is not a picture of a letter sampled from an atlas — it is the
+    /// outline itself, so it unions, subtracts and morphs with a circle by the
+    /// same arithmetic a circle does, at whatever size it is drawn.
+    ///
+    /// A morphing pair is walked here rather than in the shader: the
+    /// correspondence between the two letters is a property of the outlines and
+    /// costs a few hundred multiplications to apply, so what reaches the GPU is
+    /// one outline and a morphing letter costs a still one's price.
+    pub fn glyph_outline(
+        &mut self,
+        glyph: char,
+        morph_to: Option<char>,
+        travel: f32,
+    ) -> Vec<(f32, f32)> {
+        let Some(from) = self.outline_points(glyph) else {
+            return Vec::new();
+        };
+        let target = morph_to
+            .filter(|other| *other != glyph && travel > 0.0)
+            .and_then(|other| self.outline_points(other));
+        match target {
+            Some(to) => walk(&pair_up(from, to), travel.clamp(0.0, 1.0)),
+            None => contour_points(&from),
+        }
+    }
+
+    /// The cache key one character's outline is measured under.
+    ///
+    /// A character has to be shaped before a font can be asked for its outline,
+    /// and shaping wants a buffer. This keeps one for the purpose rather than
+    /// borrowing a node's, since a letter used as a shape belongs to no text.
+    fn outline_key(&mut self, glyph: char) -> Option<cosmic_text::CacheKey> {
+        if let Some(known) = self.outline_keys.get(&glyph) {
+            return *known;
+        }
+        let key = self.shape_one(glyph);
+        self.outline_keys.insert(glyph, key);
+        key
+    }
+
+    fn shape_one(&mut self, glyph: char) -> Option<cosmic_text::CacheKey> {
+        let size = crate::glyph_fields::FIELD_REFERENCE_PX;
+        let mut buffer =
+            cosmic_text::Buffer::new(&mut self.fonts, cosmic_text::Metrics::relative(size, 1.2));
+        let family = crate::resolve_family(&self.fonts, "sans-serif");
+        buffer.set_text(
+            glyph.encode_utf8(&mut [0u8; 4]),
+            &cosmic_text::Attrs::new().family(family.family()),
+            cosmic_text::Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut self.fonts, false);
+        let mut key = buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter())
+            .map(|glyph| glyph.physical((0.0, 0.0), 1.0).cache_key)
+            .next()?;
+        key.font_size_bits = size.to_bits();
+        key.x_bin = cosmic_text::SubpixelBin::Zero;
+        key.y_bin = cosmic_text::SubpixelBin::Zero;
+        Some(key)
+    }
+
+    fn outline_points(&mut self, glyph: char) -> Option<Vec<Contour>> {
+        let key = self.outline_key(glyph)?;
+        let commands = self.glyphs.get_outline_commands(&mut self.fonts, key)?;
+        let found = contours(commands);
+        (!found.is_empty()).then_some(found)
     }
 }

@@ -35,4 +35,17 @@ pub struct SdfLayer {
     pub thickness: f32,
     /// Sector sweep in degrees, for `Pie`.
     pub angle: f32,
+    /// The letter this layer is, for `Polygon`.
+    ///
+    /// A glyph is not a family of shape with parameters — it is one particular
+    /// outline — so it reaches the composition as a character and is resolved
+    /// to points when the frame is gathered, where the fonts are. One character
+    /// rather than a string: a layer is one shape, and a word is a row of them.
+    pub glyph: Option<char>,
+    /// The letter it is turning into, interpolated at `morph`.
+    ///
+    /// The points are walked to their opposite numbers on the CPU and the
+    /// result is one outline, so a morphing letter costs the composition
+    /// exactly what a still one does.
+    pub glyph_morph_to: Option<char>,
 }

@@ -46,8 +46,15 @@ fn layers_are_packed_into_the_fields_own_space_and_scaled() {
     let mut layers = Vec::new();
     let mut materials = Vec::new();
     // 240/120 is a doubled surface: every length doubles.
-    let instance =
-        SdfFieldInstance::from_command(command, 240, &mut layers, &mut materials).unwrap();
+    let instance = SdfFieldInstance::from_command(
+        command,
+        240,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
 
     assert_eq!(layers.len(), 1);
     // Centre is (20 + 40, 30 + 30) inside the field, doubled.
@@ -92,8 +99,24 @@ fn layer_runs_are_addressed_per_field_within_one_shared_buffer() {
 
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    let first = SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
-    let second = SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
+    let first = SdfFieldInstance::from_command(
+        command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
+    let second = SdfFieldInstance::from_command(
+        command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
 
     assert_eq!(first.style[2], 0.0);
     assert_eq!(first.style[3], 2.0);
@@ -127,8 +150,15 @@ fn a_composition_past_the_cap_is_truncated_rather_than_unbounded() {
 
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    let instance =
-        SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
+    let instance = SdfFieldInstance::from_command(
+        command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
 
     assert_eq!(layers.len(), MAX_FIELD_LAYERS);
     assert_eq!(instance.style[3], MAX_FIELD_LAYERS as f32);
@@ -187,6 +217,8 @@ fn a_blend_widens_the_area_a_field_may_reach() {
     // the top and bottom of every join sliced off.
     let layers = |blend: f32| {
         vec![SdfLayer {
+            glyph: None,
+            glyph_morph_to: None,
             bounds: Geometry {
                 x: 0.0,
                 y: 0.0,

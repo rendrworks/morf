@@ -117,6 +117,8 @@ pub struct TextSystem {
     /// Separate from `fields` because the box depends on both glyphs, so the
     /// same letter measured against two different partners is two entries.
     field_pairs: FastMap<(u64, u64), Option<MeasuredPair>>,
+    /// Shaped keys for characters used as shapes rather than as text.
+    outline_keys: FastMap<char, Option<cosmic_text::CacheKey>>,
     font_sources: HashSet<String>,
     /// Fields already measured, by the glyph they belong to.
     ///
@@ -192,6 +194,7 @@ impl TextSystem {
             glyphs: SwashCache::new(),
             buffers: FastMap::default(),
             field_pairs: FastMap::default(),
+            outline_keys: FastMap::default(),
             font_sources: HashSet::new(),
             fields: FastMap::default(),
         };
@@ -455,6 +458,7 @@ fn normalize_font_weight(weight: f64) -> u16 {
 
 mod glyph_fields;
 mod glyph_morph;
+pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
 mod glyph_runs;
 mod measure;
 mod raster_glyph;

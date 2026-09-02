@@ -109,7 +109,15 @@ fn color_overlay_propagates_through_a_subtree() {
     assert_eq!(*color_overlay, overlay);
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    SdfFieldInstance::from_command(&list.commands[0], 120, &mut layers, &mut materials).unwrap();
+    SdfFieldInstance::from_command(
+        &list.commands[0],
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
     assert_eq!(materials[0].color_overlay, color_array(overlay));
 }
 

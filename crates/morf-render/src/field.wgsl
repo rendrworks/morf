@@ -60,6 +60,9 @@ struct Material {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> layers: array<Layer>;
 @group(0) @binding(2) var<storage, read> materials: array<Material>;
+// The outlines polygon layers walk. One flat buffer for the whole frame; a
+// layer says where its own run starts and how long it is.
+@group(0) @binding(3) var<storage, read> outline: array<vec2<f32>>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -257,6 +260,47 @@ fn sd_ellipse(point: vec2<f32>, half: vec2<f32>) -> f32 {
     return (length(point / r) - 1.0) * min(r.x, r.y);
 }
 
+/// Distance to a closed outline, with the sign from its winding.
+///
+/// The same measurement the glyph fields use, done per pixel instead of once
+/// into a texture — which is the whole point of a letter being a shape here
+/// rather than a picture. It costs a pass over the points for every pixel, so
+/// it is for the letters a configuration composes with, not for a page of text.
+fn sd_polygon(point: vec2<f32>, first: u32, stride: u32, loops: u32) -> f32 {
+    if stride < 3u || loops == 0u {
+        return 1.0e9;
+    }
+    var nearest = 1.0e9;
+    var winding = 0;
+    let count = stride * loops;
+    for (var index = 0u; index < count; index = index + 1u) {
+        // Each loop closes on itself rather than on the next one along, which
+        // is what lets one layer hold a letter with holes in it: the counters
+        // of `8` are wound against its body and cancel it, so they come out
+        // hollow instead of being threaded onto it.
+        let loop_start = first + (index / stride) * stride;
+        let step = (index % stride + 1u) % stride;
+        let a = outline[first + index];
+        let b = outline[loop_start + step];
+        let edge = b - a;
+        let to_point = point - a;
+        let along = clamp(dot(to_point, edge) / max(dot(edge, edge), 1e-9), 0.0, 1.0);
+        let offset = to_point - edge * along;
+        nearest = min(nearest, dot(offset, offset));
+        // A ray going right: an edge crossing the point's height flips the
+        // count, and the total says inside from outside. Wound the other way,
+        // a letter's counter cancels its body and comes out hollow.
+        let crosses = (a.y <= point.y) != (b.y <= point.y);
+        if crosses {
+            let t = (point.y - a.y) / (b.y - a.y);
+            if a.x + t * edge.x > point.x {
+                winding = winding + select(-1, 1, b.y > a.y);
+            }
+        }
+    }
+    return select(sqrt(nearest), -sqrt(nearest), winding != 0);
+}
+
 fn shape_distance(kind: u32, point: vec2<f32>, layer: Layer) -> f32 {
     let half = layer.rect.zw;
     let radius = min(half.x, half.y);
@@ -270,6 +314,14 @@ fn shape_distance(kind: u32, point: vec2<f32>, layer: Layer) -> f32 {
         case 6u: { return sd_ring(point, radius, layer.params.w); }
         case 7u: { return sd_pie(point, radius, layer.extra.x); }
         case 9u: { return sd_ellipse(point, half); }
+        case 10u: {
+            return sd_polygon(
+                point,
+                u32(layer.params.x),
+                u32(layer.params.y),
+                u32(layer.params.z),
+            );
+        }
         default: { return sd_cross(point, half, layer.params.w); }
     }
 }

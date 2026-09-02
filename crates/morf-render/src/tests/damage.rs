@@ -198,8 +198,15 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
     // inside it.
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    let instance =
-        SdfFieldInstance::from_command(&command, 120, &mut layers, &mut materials).unwrap();
+    let instance = SdfFieldInstance::from_command(
+        &command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
     assert_eq!(instance.bounds, [20.0, 20.0, 40.0, 20.0]);
     assert_eq!(instance.area, [-5.0, -4.0, 51.0, 32.0]);
     assert_eq!(instance.style[..2], [1.0, 2.0]);
@@ -225,7 +232,15 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
     );
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    SdfFieldInstance::from_command(&inner, 120, &mut layers, &mut materials).unwrap();
+    SdfFieldInstance::from_command(
+        &inner,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
     assert_eq!(materials[0].shadow[2], 1.0);
 }
 

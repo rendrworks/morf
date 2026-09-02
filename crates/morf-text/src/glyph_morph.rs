@@ -28,7 +28,7 @@ use crate::glyph_fields::{Segment, flatten};
 /// matching two contours is a handful of arithmetic per pair. Points are spaced
 /// by arc length rather than by parameter, so a long straight stem gets as many
 /// as a tight curve of the same length and neither is favoured when they meet.
-const CONTOUR_POINTS: usize = 96;
+pub const CONTOUR_POINTS: usize = 96;
 
 /// One closed loop of an outline, resampled and measured.
 pub(crate) struct Contour {
@@ -268,4 +268,32 @@ pub(crate) fn between(paired: &[Paired], travel: f32) -> Vec<Segment> {
         }
     }
     segments
+}
+
+/// The points of every contour, end to end.
+///
+/// Each run is exactly `CONTOUR_POINTS` long, because that is what resampling
+/// guarantees — which is what lets one layer hold a letter with a counter in
+/// it: the shader closes each run on itself and sums the windings, so `8` comes
+/// out with two holes rather than as one loop threaded through itself.
+pub(crate) fn contour_points(contours: &[Contour]) -> Vec<(f32, f32)> {
+    let mut points = Vec::with_capacity(contours.len() * CONTOUR_POINTS);
+    for contour in contours {
+        points.extend_from_slice(&contour.points);
+    }
+    points
+}
+
+/// The same, part way towards another letter.
+pub(crate) fn walk(paired: &[Paired], travel: f32) -> Vec<(f32, f32)> {
+    let mut points = Vec::with_capacity(paired.len() * CONTOUR_POINTS);
+    for pair in paired {
+        let count = pair.from.len().min(pair.to.len());
+        for index in 0..count {
+            let a = pair.from[index];
+            let b = pair.to[index];
+            points.push((a.0 + (b.0 - a.0) * travel, a.1 + (b.1 - a.1) * travel));
+        }
+    }
+    points
 }

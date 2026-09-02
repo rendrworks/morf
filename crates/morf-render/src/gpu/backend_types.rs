@@ -96,6 +96,8 @@ pub struct WgpuBackend {
     pub(crate) field_capacity: usize,
     pub(crate) field_layer_buffer: wgpu::Buffer,
     pub(crate) field_material_buffer: wgpu::Buffer,
+    pub(crate) field_outline_capacity: usize,
+    pub(crate) field_outline_buffer: wgpu::Buffer,
     pub(crate) field_material_capacity: usize,
     pub(crate) field_layer_capacity: usize,
     pub(crate) field_bind_group: wgpu::BindGroup,

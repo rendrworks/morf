@@ -52,6 +52,17 @@ pub(crate) fn create_field_layouts(
                 },
                 count: None,
             },
+            // The outline points polygon layers walk.
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let shader_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -172,6 +183,16 @@ pub(crate) fn create_field_layer_buffer(device: &wgpu::Device, capacity: usize) 
     })
 }
 
+/// The outline points every polygon layer in a frame walks.
+pub(crate) fn create_field_outline_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("morf field outlines"),
+        size: (capacity.max(1) * mem::size_of::<[f32; 2]>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 pub(crate) fn create_field_material_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("morf field materials"),
@@ -187,6 +208,7 @@ pub(crate) fn create_field_bind_group(
     viewport: &wgpu::Buffer,
     layers: &wgpu::Buffer,
     materials: &wgpu::Buffer,
+    outlines: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("morf field bind group"),
@@ -203,6 +225,10 @@ pub(crate) fn create_field_bind_group(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: materials.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: outlines.as_entire_binding(),
             },
         ],
     })

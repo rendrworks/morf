@@ -234,6 +234,17 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         Element::SdfShape => {
             properties.extend([
                 string("shape", "circle"),
+                // A letter, as a shape in the composition rather than as text
+                // drawn beside it. Naming one makes this layer that letter's
+                // outline, which then unions, subtracts and morphs with a
+                // circle by the same arithmetic a circle does — so a numeral
+                // cut out of a disc is a subtraction, and the disc becoming a
+                // square while the numeral becomes another is one animation.
+                //
+                // `glyph_morph_to` names the letter it turns into, walked at
+                // `morph_progress` alongside whatever the shapes are doing.
+                string("glyph", ""),
+                string("glyph_morph_to", ""),
                 // The layer's own fill. Fully transparent means "take the
                 // field's", which is what keeps a single-colour composition
                 // from having to repeat itself on every layer.

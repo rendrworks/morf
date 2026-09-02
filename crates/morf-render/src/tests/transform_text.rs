@@ -229,7 +229,15 @@ fn rectangles_emit_normalized_gradient_instances() {
     assert_eq!(list.layers[0].shadow_color.alpha, 0.0);
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    SdfFieldInstance::from_command(&list.commands[0], 120, &mut layers, &mut materials).unwrap();
+    SdfFieldInstance::from_command(
+        &list.commands[0],
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+    )
+    .unwrap();
     assert_eq!(materials[0].gradient_data[0], 1.0);
     assert_eq!(materials[0].gradient_points, [0.0, 0.0, 1.0, 1.0]);
     // The corner radii now belong to the rectangle's own layer, which is where

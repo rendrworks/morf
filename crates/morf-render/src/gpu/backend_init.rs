@@ -141,12 +141,15 @@ impl WgpuBackend {
         let field_layer_buffer = create_field_layer_buffer(&device, field_layer_capacity);
         let field_material_capacity = 1;
         let field_material_buffer = create_field_material_buffer(&device, field_material_capacity);
+        let field_outline_capacity = 1;
+        let field_outline_buffer = create_field_outline_buffer(&device, field_outline_capacity);
         let field_bind_group = create_field_bind_group(
             &device,
             &field_layout,
             &viewport_buffer,
             &field_layer_buffer,
             &field_material_buffer,
+            &field_outline_buffer,
         );
         let (texture, view) = create_target(&device, width, height);
         let surface = surface
@@ -179,6 +182,8 @@ impl WgpuBackend {
             field_layer_capacity,
             field_material_buffer,
             field_material_capacity,
+            field_outline_capacity,
+            field_outline_buffer,
             field_bind_group,
             field_shader_layout,
             field_shader_default,
@@ -256,9 +261,15 @@ impl WgpuBackend {
         self.shaders.contains_key(&program) || self.effect_shaders.contains_key(&program)
     }
 
-    /// Grows the field instance, layer and material buffers, rebinding when
-    /// either of the two storage buffers moves.
-    pub(crate) fn ensure_fields(&mut self, instances: usize, layers: usize, materials: usize) {
+    /// Grows the field instance, layer, material and outline buffers, rebinding
+    /// whenever one of the storage buffers moves.
+    pub(crate) fn ensure_fields(
+        &mut self,
+        instances: usize,
+        layers: usize,
+        materials: usize,
+        outlines: usize,
+    ) {
         if instances > self.field_capacity {
             self.field_capacity = instances.next_power_of_two();
             self.field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
@@ -280,6 +291,12 @@ impl WgpuBackend {
                 create_field_material_buffer(&self.device, self.field_material_capacity);
             rebind = true;
         }
+        if outlines > self.field_outline_capacity {
+            self.field_outline_capacity = outlines.next_power_of_two();
+            self.field_outline_buffer =
+                create_field_outline_buffer(&self.device, self.field_outline_capacity);
+            rebind = true;
+        }
         if rebind {
             // The bind group holds the old buffers, so it has to be rebuilt
             // whenever either storage grows or the shader reads freed memory.
@@ -289,6 +306,7 @@ impl WgpuBackend {
                 &self.viewport_buffer,
                 &self.field_layer_buffer,
                 &self.field_material_buffer,
+                &self.field_outline_buffer,
             );
         }
     }
