@@ -96,6 +96,12 @@ fn main() {
     );
     if let Some(parent) = PathBuf::from(&config).parent() {
         runtime.set_module_roots(vec![parent.to_path_buf()]);
+        // The same root the shell gives a configuration, and for the same
+        // reason: `core.shell_path` is how a configuration names a file beside
+        // itself. Leaving it at the default made this bench resolve those paths
+        // against the working directory instead, so a configuration could pass
+        // every gate here and find nothing at all when the shell ran it.
+        runtime.set_shell_root(parent.to_path_buf());
     }
     let source = std::fs::read(&config).expect("configuration is readable");
     if let Err(error) = runtime.execute(&config, &source) {

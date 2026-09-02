@@ -35,9 +35,11 @@ local INK = "#141821"
 local TEXT = "#e9edf5"
 local MUTED = "#78849a"
 
--- Beside the configuration, the way the other examples name their assets.
+-- Beside the configuration. `core.shell_path` is rooted at the directory the
+-- configuration itself was loaded from, so this holds wherever it is run from
+-- and whatever the working directory happens to be.
 local function asset(name)
-  return core.shell_path("examples/assets/" .. name .. ".svg")
+  return core.shell_path("assets/" .. name .. ".svg")
 end
 
 local HEART, GEAR = asset("sdf-heart"), asset("sdf-gear")

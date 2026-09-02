@@ -63,10 +63,24 @@ impl SvgOutlines {
     /// so a broken path is not re-opened every frame.
     fn read(&mut self, source: &str) -> Option<&Vec<Contour>> {
         if !self.loops.contains_key(source) {
-            let read = outline_of(source)
-                .ok()
-                .map(|outline: Outline| contours(&outline.steps))
-                .filter(|loops| !loops.is_empty());
+            // Said once, and out loud. A drawing that cannot be read is a shape
+            // that is simply not on screen, and a shape that is not on screen
+            // for no stated reason is the hardest kind of thing to find: the
+            // configuration looks right, the field composes, and nothing
+            // appears. The name of the file and the reason cost one line.
+            let read = match outline_of(source) {
+                Ok(outline) => {
+                    let loops = contours(&outline.steps);
+                    if loops.is_empty() {
+                        eprintln!("morf: `{source}` has no outlines in it");
+                    }
+                    Some(loops).filter(|loops| !loops.is_empty())
+                }
+                Err(error) => {
+                    eprintln!("morf: {error} (`{source}`)");
+                    None
+                }
+            };
             self.loops.insert(Box::from(source), read);
         }
         self.loops.get(source).and_then(Option::as_ref)
