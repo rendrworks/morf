@@ -23,6 +23,7 @@ use resvg::tiny_skia::PathSegment;
 use resvg::usvg;
 
 mod cache;
+mod clip;
 mod rewind;
 mod walk;
 
@@ -55,6 +56,12 @@ pub enum SvgError {
     Parse(String),
     /// Parsed, but with nothing in it that has an outline.
     Empty,
+    /// Understood, but not expressible as one outline. A clip is an
+    /// intersection, and a concave or disjoint one needs general polygon
+    /// intersection to take — which this does not do, and will not pretend to:
+    /// a clip half applied comes out as the drawing whole, which is the one
+    /// answer that is certainly wrong.
+    Unsupported(String),
 }
 
 impl fmt::Display for SvgError {
@@ -63,6 +70,9 @@ impl fmt::Display for SvgError {
             Self::Read(error) => write!(formatter, "cannot read the SVG: {error}"),
             Self::Parse(message) => write!(formatter, "cannot parse the SVG: {message}"),
             Self::Empty => write!(formatter, "the SVG has no outlines in it"),
+            Self::Unsupported(what) => {
+                write!(formatter, "the SVG uses a {what} this cannot take exactly")
+            }
         }
     }
 }
@@ -82,7 +92,7 @@ pub fn outline_from_bytes(bytes: &[u8]) -> Result<Outline, SvgError> {
         .map_err(|error| SvgError::Parse(error.to_string()))?;
     let size = tree.size();
     let mut steps = Vec::new();
-    walk::group(tree.root(), &mut steps);
+    walk::group(tree.root(), &mut steps).map_err(|refused| SvgError::Unsupported(refused.0))?;
     if steps.is_empty() {
         return Err(SvgError::Empty);
     }

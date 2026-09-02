@@ -3,25 +3,51 @@
 use morf_outline::Step;
 use resvg::usvg;
 
-use crate::{rewind, steps_of};
+use crate::{clip, rewind, steps_of};
+
+/// Why a document could not be turned into an outline.
+pub(crate) struct Refused(pub(crate) String);
 
 /// Every path under a group, in paint order, already placed.
 ///
 /// `abs_transform` is the whole chain of transforms above a path, so applying
 /// it puts every shape in the document's own coordinates and the nesting stops
-/// mattering. Groups are walked for their children and nothing else: a group's
-/// opacity, blend mode and clip say how a *picture* of it is composited, and
-/// none of that survives into an outline. What a clip path would mean here is a
-/// real question — it is a shape subtracted from a shape, which a field does
-/// natively — but reading one as though it were not there is the wrong answer,
-/// so a clipped group is left to say so rather than quietly drawn whole.
-pub(crate) fn group(group: &usvg::Group, into: &mut Vec<Step>) {
+/// mattering. A group's opacity, blend mode and mask say how a *picture* of it
+/// is composited and none of that survives into an outline, so they are passed
+/// over. A clip does survive — it is an intersection, and an intersection is a
+/// shape — so it is taken here.
+pub(crate) fn group(group: &usvg::Group, into: &mut Vec<Step>) -> Result<(), Refused> {
     for node in group.children() {
         match node {
-            usvg::Node::Group(child) => self::group(child, into),
+            usvg::Node::Group(child) => {
+                let Some(clip) = child.clip_path() else {
+                    self::group(child, into)?;
+                    continue;
+                };
+                let region = clip::region(clip)
+                    .map_err(|_| Refused(format!("clip path `{}`", clip.id())))?;
+                let mut clipped = Vec::new();
+                self::group(child, &mut clipped)?;
+                let kept = clip::apply(&clipped, &region)
+                    .map_err(|_| Refused(format!("clip path `{}`", clip.id())))?;
+                into.extend(kept);
+            }
             usvg::Node::Path(path) => self::path(path, into),
             // An image is pixels, and text has been converted to paths by the
             // parser when a font was available. Neither leaves an outline here.
+            usvg::Node::Image(_) | usvg::Node::Text(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The same walk with clips ignored, for gathering a clip's own shapes — where
+/// a nested clip is handled by the region itself rather than here.
+pub(crate) fn group_into(group: &usvg::Group, into: &mut Vec<Step>) {
+    for node in group.children() {
+        match node {
+            usvg::Node::Group(child) => group_into(child, into),
+            usvg::Node::Path(path) => clip::shape_into(path, into),
             usvg::Node::Image(_) | usvg::Node::Text(_) => {}
         }
     }

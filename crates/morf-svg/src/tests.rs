@@ -95,3 +95,57 @@ fn a_drawing_and_a_shape_walk_onto_each_other() {
     assert_ne!(half, start);
     assert_ne!(half, end);
 }
+
+/// The clip every exporter wraps an icon in: a rectangle the size of the
+/// viewBox, which permits everything and therefore says nothing.
+#[test]
+fn a_clip_that_contains_everything_changes_nothing() {
+    const PLAIN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <path d="M4 4 H20 V20 H4 Z"/>
+    </svg>"#;
+    const CLIPPED: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <defs><clipPath id="all"><rect width="24" height="24"/></clipPath></defs>
+      <g clip-path="url(#all)"><path d="M4 4 H20 V20 H4 Z"/></g>
+    </svg>"#;
+    let plain = outline_from_bytes(PLAIN.as_bytes()).unwrap();
+    let clipped = outline_from_bytes(CLIPPED.as_bytes()).unwrap();
+    assert_eq!(
+        plain.steps, clipped.steps,
+        "a clip that permits everything leaves the curves exactly as they were"
+    );
+}
+
+/// A clip that actually cuts. The square runs to 20 and the window stops at 12,
+/// so what comes back has to stop at 12 too — and used to run to 20, because
+/// the clip was passed over.
+#[test]
+fn a_convex_clip_cuts_what_it_is_applied_to() {
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <defs><clipPath id="half"><rect width="12" height="24"/></clipPath></defs>
+      <g clip-path="url(#half)"><path d="M4 4 H20 V20 H4 Z"/></g>
+    </svg>"#;
+    let outline = outline_from_bytes(SVG.as_bytes()).unwrap();
+    let loops = contours(&outline.steps);
+    assert_eq!(loops.len(), 1);
+    let widest = contour_of(&loops[0])
+        .iter()
+        .fold(f32::MIN, |widest, (x, _)| widest.max(*x));
+    assert!(
+        (widest - 12.0).abs() < 0.01,
+        "the drawing stops where the window does: {widest}"
+    );
+}
+
+/// A clip this cannot take exactly says so. Drawing it whole would be the one
+/// answer that is certainly wrong, and silently.
+#[test]
+fn a_clip_that_cannot_be_taken_exactly_is_refused_by_name() {
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <defs><clipPath id="notch"><path d="M2 2 H22 V22 H12 V10 H2 Z"/></clipPath></defs>
+      <g clip-path="url(#notch)"><path d="M4 4 H20 V20 H4 Z"/></g>
+    </svg>"#;
+    match outline_from_bytes(SVG.as_bytes()) {
+        Err(SvgError::Unsupported(what)) => assert!(what.contains("clip path")),
+        other => panic!("a concave clip must be refused, not guessed at: {other:?}"),
+    }
+}

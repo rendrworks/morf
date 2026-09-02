@@ -14,11 +14,13 @@
 -- picture has pixels and a walk needs points. So the document is read as the
 -- curves it was written as, and never as an image of them.
 --
--- Three files, deliberately unalike. `heart` is one filled path. `gear` is an
+-- Four files, deliberately unalike. `heart` is one filled path. `gear` is an
 -- `evenodd` path with a hole, which is a different rule from the winding count
 -- a field uses and has to be re-wound to agree. `bolt` has no fill at all — it
 -- is a stroke, so the shape on screen is the *outline of the stroke*, widened
--- into a loop of its own before it can be measured.
+-- into a loop of its own before it can be measured. And `clipped` is a heart
+-- inside a `clip-path`, which is an intersection: the drawing kept only where
+-- the window allows, cut against the window's edges rather than drawn whole.
 
 local morf = require("morf")
 local ui = require("morf.ui")
@@ -38,7 +40,8 @@ local function asset(name)
   return core.shell_path("examples/assets/" .. name .. ".svg")
 end
 
-local HEART, GEAR, BOLT = asset("sdf-heart"), asset("sdf-gear"), asset("sdf-bolt")
+local HEART, GEAR = asset("sdf-heart"), asset("sdf-gear")
+local BOLT, CLIPPED = asset("sdf-bolt"), asset("sdf-clipped")
 
 local tree = { width = W, height = H }
 local function place(node) tree[#tree + 1] = node end
@@ -56,32 +59,33 @@ for index, drawing in ipairs({
   { HEART, "one filled path" },
   { GEAR, "evenodd, re-wound" },
   { BOLT, "a stroke, widened" },
+  { CLIPPED, "clipped to a circle" },
 }) do
-  local x = 40 + (index - 1) * 180
+  local x = 40 + (index - 1) * 150
   place(ui.Sdf {
-    x = x, y = 60, width = 140, height = 140, fill_color = "#e0b56a",
-    ui.SdfShape { width = 140, height = 140, source = drawing[1] },
+    x = x, y = 60, width = 130, height = 130, fill_color = "#e0b56a",
+    ui.SdfShape { width = 130, height = 130, source = drawing[1] },
   })
-  caption(x - 20, 214, 180, drawing[2])
+  caption(x - 25, 214, 180, drawing[2])
 end
 
 -- Cut out of a shape, which is what being a field rather than a picture buys.
 place(ui.Sdf {
-  x = 600, y = 60, width = 140, height = 140, fill_color = "#7fc3dd",
-  ui.SdfShape { width = 140, height = 140, shape = "rect", radius = 34 },
-  ui.SdfShape { x = 18, y = 18, width = 104, height = 104,
+  x = 640, y = 60, width = 130, height = 130, fill_color = "#7fc3dd",
+  ui.SdfShape { width = 130, height = 130, shape = "rect", radius = 32 },
+  ui.SdfShape { x = 16, y = 16, width = 98, height = 98,
                 source = HEART, operation = "subtract" },
 })
-caption(580, 214, 180, "subtracted")
+caption(615, 214, 180, "subtracted")
 
 -- And fused with one, by the same smooth union two circles get.
 place(ui.Sdf {
-  x = 790, y = 60, width = 180, height = 140, fill_color = "#c98fd0", blend = 14,
+  x = 810, y = 60, width = 180, height = 140, fill_color = "#c98fd0", blend = 14,
   ui.SdfShape { x = 0, y = 30, width = 90, height = 90, shape = "circle" },
   ui.SdfShape { x = 55, y = 10, width = 120, height = 120,
                 source = BOLT, operation = "smooth_union" },
 })
-caption(790, 214, 180, "fused with a circle")
+caption(810, 214, 180, "fused with a circle")
 
 -- One drawing walking onto another: a real outline morph, not a cross-fade.
 for index = 1, 5 do
