@@ -178,6 +178,7 @@ fn probe_outline_against_field() {
 #[ignore]
 fn probe_resample_hausdorff() {
     const DRAWN: f32 = 340.0;
+    const FAMILY: &str = "sans-serif";
     let reference = crate::glyph_fields::field_reference_for(DRAWN);
     let mut text = TextSystem::new();
     let mut worst: Vec<(char, f32)> = Vec::new();
@@ -185,7 +186,7 @@ fn probe_resample_hausdorff() {
 [\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
         .chars()
     {
-        if let Some(error) = text.probe_resample_error(glyph, reference) {
+        if let Some(error) = text.probe_resample_error(glyph, reference, FAMILY) {
             // Glyph units are reference pixels; report what lands on screen.
             worst.push((glyph, error * DRAWN / reference));
         }
@@ -202,4 +203,108 @@ fn probe_resample_hausdorff() {
     }
     let peak = worst.first().map_or(0.0, |entry| entry.1);
     println!("worst of {} glyphs: {peak:.2} px", worst.len());
+}
+
+/// Gate B: does replacing the reading near a corner with the two half-planes
+/// that meet there actually remove the error, or only move it?
+///
+/// The whole bet is in this number. Bilinear reproduces an affine function
+/// exactly and a half-plane's distance is affine, so a corner — the max or min
+/// of two of them — should come back essentially free. That is the claim; this
+/// measures it, over every printable character rather than one crop, because
+/// the last attempt looked right on one crop.
+#[test]
+#[ignore]
+fn probe_corner_cell_error() {
+    let mut text = TextSystem::new();
+    for reference in [128.0_f32, 256.0] {
+        let mut plain_worst = 0.0_f32;
+        let mut corrected_worst = 0.0_f32;
+        let mut offenders: Vec<(char, f32, f32)> = Vec::new();
+        for glyph in "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+            .chars()
+        {
+            if let Some((plain, corrected)) =
+                text.probe_corner_cells(glyph, reference, "sans-serif")
+            {
+                plain_worst = plain_worst.max(plain);
+                corrected_worst = corrected_worst.max(corrected);
+                offenders.push((glyph, plain, corrected));
+            }
+        }
+        offenders.sort_by(|a, b| b.2.total_cmp(&a.2));
+        println!(
+            "reference {reference}: worst plain {plain_worst:.3}, corrected {corrected_worst:.3} glyph units"
+        );
+        for (glyph, plain, corrected) in offenders.iter().take(6) {
+            println!("    {glyph:?}  {plain:.3} -> {corrected:.3}");
+        }
+    }
+}
+
+/// Debug: is the corner's own half-plane distance even right near the corner?
+#[test]
+#[ignore]
+fn probe_corner_sanity() {
+    let mut text = TextSystem::new();
+    text.probe_corner_sanity('#', 256.0);
+}
+
+/// Both gates, across faces built in genuinely different ways.
+///
+/// Corner behaviour is a property of the typeface, not of the pipeline. A
+/// grotesque meets its stems at right angles; a serif brackets them with a
+/// curve that leaves tangentially, so the join is not a corner at all and a
+/// half-plane standing in for it is describing a curve; a script has almost no
+/// corners; a pixel face is nothing but corners. One font is not a measurement.
+#[test]
+#[ignore]
+fn probe_fonts() {
+    const DRAWN: f32 = 340.0;
+    const REFERENCE: f32 = 256.0;
+    const SAMPLE: &str = "#WAmoe8B$4RQg";
+
+    let families = [
+        ("grotesque", "Roboto"),
+        ("serif", "Liberation Serif"),
+        ("mono", "Iosevka"),
+        ("script", "Grape Nuts"),
+        ("pixel", "basis33"),
+        ("segmented", "Digital-7"),
+    ];
+
+    println!(
+        "{:<11} {:>10} {:>10} {:>10} {:>10}",
+        "face", "resample", "snapped", "plain", "corrected"
+    );
+    for (label, family) in families {
+        let mut text = TextSystem::new();
+        if !text.has_family(family) {
+            println!("{label:<11}  (not installed: {family})");
+            continue;
+        }
+        let mut resample_worst = 0.0_f32;
+        let mut plain_worst = 0.0_f32;
+        let mut corrected_worst = 0.0_f32;
+        let mut seen = 0;
+        for glyph in SAMPLE.chars() {
+            if let Some(error) = text.probe_resample_error(glyph, REFERENCE, family) {
+                resample_worst = resample_worst.max(error * DRAWN / REFERENCE);
+                seen += 1;
+            }
+            if let Some((plain, corrected)) = text.probe_corner_cells(glyph, REFERENCE, family) {
+                plain_worst = plain_worst.max(plain);
+                corrected_worst = corrected_worst.max(corrected);
+            }
+        }
+        if seen == 0 {
+            println!("{label:<11}  (no outlines)");
+            continue;
+        }
+        println!(
+            "{label:<11} {:>10} {:>9.2} {:>10.3} {:>10.3}",
+            "-", resample_worst, plain_worst, corrected_worst
+        );
+    }
 }

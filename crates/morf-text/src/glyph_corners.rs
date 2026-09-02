@@ -17,6 +17,102 @@ use cosmic_text::Command;
 /// shallowest corner a letterform has.
 const CORNER_COSINE: f32 = 0.99;
 
+/// A corner, and the two half-planes that meet there.
+///
+/// Kept for the diagnostic that rejected it. Reconstructing the crease from
+/// these was measured against six differently-built faces and made the field
+/// *worse* on every one — see `probe_corner_cell_error`. It stays so that the
+/// measurement can be re-run rather than re-argued.
+///
+/// A half-plane's distance is affine, and bilinear interpolation reproduces an
+/// affine function exactly — which is the whole reason this is worth carrying.
+/// What bilinear cannot reproduce is the crease where two of them meet, and
+/// that is precisely what these two let the shader rebuild.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Corner {
+    /// Where the two curves meet.
+    pub(crate) at: (f32, f32),
+    /// Outward normals of the arriving and leaving edges.
+    pub(crate) normals: [(f32, f32); 2],
+    /// Whether the shape is locally the *intersection* of the two half-planes
+    /// rather than their union — `max` of the two distances rather than `min`.
+    /// Getting this backwards turns a corner into a notch.
+    pub(crate) convex: bool,
+}
+
+#[cfg(test)]
+impl Corner {
+    /// The distance to the wedge these two half-planes cut out.
+    ///
+    /// Beyond the tip of a convex corner — outside both half-planes at once —
+    /// the nearest point of the shape is the corner itself, so the distance is
+    /// to the point and not to either line. Taking the larger of the two there
+    /// understates it by up to the difference between a side and a diagonal,
+    /// which is a corner rounded off by another name. A reflex corner is the
+    /// same statement inside out.
+    pub(crate) fn distance(&self, x: f32, y: f32) -> f32 {
+        let (dx, dy) = (x - self.at.0, y - self.at.1);
+        let first = dx * self.normals[0].0 + dy * self.normals[0].1;
+        let second = dx * self.normals[1].0 + dy * self.normals[1].1;
+        let to_tip = (dx * dx + dy * dy).sqrt();
+        if self.convex {
+            if first > 0.0 && second > 0.0 {
+                to_tip
+            } else {
+                first.max(second)
+            }
+        } else if first < 0.0 && second < 0.0 {
+            -to_tip
+        } else {
+            first.min(second)
+        }
+    }
+}
+
+/// The corners of each closed subpath, with the half-planes meeting at them.
+///
+/// Diagnostic only; see `Corner`.
+#[cfg(test)]
+pub(crate) fn corners(commands: &[Command]) -> Vec<Corner> {
+    let mut found = Vec::new();
+    for edges in split_subpaths(commands) {
+        if edges.len() < 2 {
+            continue;
+        }
+        // Which way the loop is wound decides which side of an edge is outside,
+        // and a letter's counters are wound against its body.
+        let mut area = 0.0;
+        for index in 0..edges.len() {
+            let a = edges[index].start;
+            let b = edges[(index + 1) % edges.len()].start;
+            area += a.0 * b.1 - b.0 * a.1;
+        }
+        let anticlockwise = area > 0.0;
+        let outward = |direction: (f32, f32)| {
+            if anticlockwise {
+                (direction.1, -direction.0)
+            } else {
+                (-direction.1, direction.0)
+            }
+        };
+        for index in 0..edges.len() {
+            let previous = &edges[(index + edges.len() - 1) % edges.len()];
+            let here = &edges[index];
+            if !turns(previous.leaving, here.entering) {
+                continue;
+            }
+            let cross = previous.leaving.0 * here.entering.1 - previous.leaving.1 * here.entering.0;
+            found.push(Corner {
+                at: here.start,
+                normals: [outward(previous.leaving), outward(here.entering)],
+                convex: (cross > 0.0) == anticlockwise,
+            });
+        }
+    }
+    found
+}
+
 /// The corner vertices of one closed subpath, in the order they are walked.
 pub(crate) fn corner_points(commands: &[Command]) -> Vec<Vec<(f32, f32)>> {
     let mut subpaths = Vec::new();
