@@ -111,6 +111,15 @@ local locked = morf.signal("keyboard.locked", false)
 -- to *replace* its keys, only to re-form as different ones.
 local fusing = morf.signal("keyboard.fusing", false)
 
+-- The layer being travelled towards, and how far along the letters are. While
+-- these differ from `layer` every label carries two glyphs and the renderer
+-- interpolates between them as distance fields — so `q` reaches `1` through
+-- outlines that belong to neither, rather than one letter fading out under
+-- another. When the swap lands, `layer` catches up and both name the same
+-- glyph, which is why the progress can be dropped without anything jumping.
+local target_layer = morf.signal("keyboard.target_layer", LETTERS)
+local travel = morf.signal("keyboard.travel", 0)
+
 local function write(signal, value)
   local ok, error = signal:set(value)
   assert(ok, error)
@@ -150,6 +159,8 @@ local function switch_layer(target)
   if morph_stage ~= 0 then return end
   morph_target = target
   morph_stage = 1
+  write(target_layer, target)
+  write(travel, 1)
   write(fusing, true)
   morph_timer.interval = MORPH_MELT
   morph_timer.running = true
@@ -251,16 +262,20 @@ local function slot(row, slot_index)
   return entry or LAYERS[LETTERS][row][slot_index]
 end
 
+--- What that key prints on a given layer, which is not always the one showing:
+--- a morphing key has to name the letter it is turning into as well.
+local function slot_label(row, slot_index, which)
+  local entry = LAYERS[which][row][slot_index] or LAYERS[LETTERS][row][slot_index]
+  if which == LETTERS and shifted:get() then return entry.label:upper() end
+  return entry.label
+end
+
 local function character_row(row, count)
   local entries = {}
   for index = 1, count do
     entries[#entries + 1] = {
       id = "k" .. row .. "_" .. index,
-      label = function()
-        local entry = slot(row, index)
-        if layer:get() == LETTERS and shifted:get() then return entry.label:upper() end
-        return entry.label
-      end,
+      label = function(which) return slot_label(row, index, which) end,
       tap = function()
         local entry = slot(row, index)
         emit(entry.code, entry.shift)
@@ -283,9 +298,9 @@ local row_three = {
       if layer:get() ~= LETTERS then return "control" end
       return (locked:get() or shifted:get()) and "live" or "control"
     end,
-    label = function()
-      if layer:get() == NUMBERS then return "#+=" end
-      if layer:get() == SYMBOLS then return "123" end
+    label = function(which)
+      if which == NUMBERS then return "#+=" end
+      if which == SYMBOLS then return "123" end
       return locked:get() and "SHIFT" or "shift"
     end,
     -- On the letters layer this is shift, and a second press locks it: the
@@ -323,7 +338,7 @@ lay_row(line, {
     id = "layer",
     units = 1.5,
     tone = "control",
-    label = function() return layer:get() == LETTERS and "123" or "abc" end,
+    label = function(which) return which == LETTERS and "123" or "abc" end,
     tap = function() switch_layer(layer:get() == LETTERS and NUMBERS or LETTERS) end,
   },
   { id = "comma", label = ",", tap = function() emit(COMMA) end },
@@ -346,8 +361,8 @@ local function tone_of(entry)
   return type(entry.tone) == "function" and entry.tone() or entry.tone
 end
 
-local function text_of(entry)
-  return type(entry.label) == "function" and entry.label() or entry.label
+local function text_of(entry, which)
+  return type(entry.label) == "function" and entry.label(which) or entry.label
 end
 
 -- Pass one: each row as its own distance field.
@@ -436,19 +451,19 @@ for _, entry in ipairs(keys) do
     y = entry.y,
     width = entry.width,
     height = entry.height,
-    text = function() return text_of(entry) end,
+    text = function() return text_of(entry, layer:get()) end,
+    -- The letter this one is turning into, and how far it has got. Both are
+    -- ordinary properties, so the morph is animated by the engine and Lua
+    -- writes the target once.
+    morph_to = function() return text_of(entry, target_layer:get()) end,
+    morph_progress = function() return travel:get() end,
     font_size = function()
-      return #text_of(entry) > 2 and math.floor(KEY * 0.26) or math.floor(KEY * 0.40)
+      return #text_of(entry, layer:get()) > 2 and math.floor(KEY * 0.26)
+        or math.floor(KEY * 0.40)
     end,
     font_weight = 500,
     horizontal_alignment = "center",
     vertical_alignment = "center",
-    -- Softening a glyph moves the threshold its distance field is read at, so
-    -- the letter dissolves into its own field rather than fading behind an
-    -- opacity ramp. The field was measured once on the CPU and is only sampled
-    -- differently here, which is why this costs nothing per frame.
-    softness = function() return fusing:get() and math.floor(KEY * 0.16) or 0 end,
-    opacity = function() return fusing:get() and 0 or 1 end,
     color = function()
       if entry.down:get() then return "#0a0e14" end
       if tone_of(entry) == "live" then return LIVE end
@@ -456,10 +471,11 @@ for _, entry in ipairs(keys) do
     end,
     behavior = {
       color = { duration = 110, easing = "out_quad" },
-      softness = { duration = MORPH_MELT, easing = "in_out_quad",
-                   delay = entry.order * MORPH_STAGGER },
-      opacity = { duration = MORPH_MELT, easing = "in_out_quad",
-                  delay = entry.order * MORPH_STAGGER },
+      -- Each letter starts a little after the one to its left, so the change
+      -- reads as a wave crossing the board rather than every key turning over
+      -- at once.
+      morph_progress = { duration = MORPH_MELT, easing = "in_out_quad",
+                         delay = entry.order * MORPH_STAGGER },
     },
   }
 end
@@ -492,6 +508,7 @@ morph_timer = ui.Timer {
       -- The bottom of the melt: nothing legible is on screen, so this is where
       -- the keys become different keys.
       write(layer, morph_target)
+      write(travel, 0)
       write(shifted, false)
       write(locked, false)
       write(fusing, false)

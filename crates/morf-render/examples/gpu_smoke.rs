@@ -75,6 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 distance_field_style: DistanceFieldStyle::default(),
             },
             DrawCommand::Text {
+                morph_to: String::new(),
+                morph_progress: 0.0,
                 node: text,
                 bounds: Geometry {
                     x: 190.0,

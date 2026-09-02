@@ -66,6 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shader: None,
             },
             DrawCommand::Text {
+                morph_to: String::new(),
+                morph_progress: 0.0,
                 node: text_node,
                 bounds: Geometry {
                     x: 12.0,

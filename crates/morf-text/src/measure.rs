@@ -6,13 +6,31 @@ use morf_layout::{Size, TextAlignment, TextMeasurer, TextOptions};
 use morf_scene::NodeHandle;
 
 use crate::{
-    CachedBuffer, TextInput, TextSystem, elided_text, normalize_font_weight, resolve_family,
+    BufferKey, CachedBuffer, TextInput, TextSystem, elided_text, normalize_font_weight,
+    resolve_family,
 };
 
-impl TextMeasurer for TextSystem {
-    fn measure(
+impl TextSystem {
+    /// Shapes and measures the text a node is morphing towards.
+    ///
+    /// The same work as measuring the node's own text, against the node's other
+    /// buffer. It has to be shaped for the morph to have anything to aim at:
+    /// the interpolation is between two sets of glyphs, and the target's are
+    /// only known once it has been through the shaper.
+    pub fn measure_target(
         &mut self,
         node: NodeHandle,
+        text: &str,
+        family: &str,
+        size: f64,
+        options: TextOptions,
+    ) -> Size {
+        self.shape(BufferKey::target(node), text, family, size, options)
+    }
+
+    fn shape(
+        &mut self,
+        key: BufferKey,
         text: &str,
         family: &str,
         size: f64,
@@ -32,7 +50,7 @@ impl TextMeasurer for TextSystem {
             font_weight,
             font_source: options.font_source.clone(),
         };
-        let cached = self.buffers.entry(node).or_insert_with(|| CachedBuffer {
+        let cached = self.buffers.entry(key).or_insert_with(|| CachedBuffer {
             buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),
             input: None,
         });
@@ -76,5 +94,18 @@ impl TextMeasurer for TextSystem {
             width: width as f64,
             height: height as f64,
         }
+    }
+}
+
+impl TextMeasurer for TextSystem {
+    fn measure(
+        &mut self,
+        node: NodeHandle,
+        text: &str,
+        family: &str,
+        size: f64,
+        options: TextOptions,
+    ) -> Size {
+        self.shape(BufferKey::own(node), text, family, size, options)
     }
 }

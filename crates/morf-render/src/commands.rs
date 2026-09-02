@@ -93,6 +93,10 @@ pub enum DrawCommand {
         vertical_alignment: VerticalAlignment,
         /// How the glyph field is thresholded: edge, softness and outline.
         field_style: DistanceFieldStyle,
+        /// Text this run is interpolating towards, empty when it is not.
+        morph_to: String,
+        /// How far between the two, zero at the run's own text.
+        morph_progress: f32,
     },
     /// Rasterized image or theme icon.
     Texture {

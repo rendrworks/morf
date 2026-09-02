@@ -11,6 +11,8 @@ struct VertexOutput {
     @location(8) mask_radii: vec4<f32>,
     @location(9) field: vec4<f32>,
     @location(10) outline_color: vec4<f32>,
+    @location(11) morph_uv: vec2<f32>,
+    @location(12) morph_size: vec2<f32>,
 }
 
 @group(0) @binding(0) var atlas: texture_2d<f32>;
@@ -32,6 +34,7 @@ fn vs_main(
     @location(10) mask_radii: vec4<f32>,
     @location(11) field: vec4<f32>,
     @location(12) outline_color: vec4<f32>,
+    @location(13) morph_bounds: vec4<f32>,
 ) -> VertexOutput {
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
@@ -55,6 +58,8 @@ fn vs_main(
     output.mask_radii = mask_radii;
     output.field = field;
     output.outline_color = outline_color;
+    output.morph_uv = morph_bounds.xy + corner * morph_bounds.zw;
+    output.morph_size = morph_bounds.zw;
     return output;
 }
 
@@ -104,7 +109,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // The field runs from inside to outside across the encoded spread, so
         // the edge is wherever the requested weight sits and a wider outline is
         // simply a second threshold further out.
-        let field = sampled.r;
+        // Two distance fields interpolated and thresholded once, which is what
+        // makes this a morph rather than a crossfade: the edge that gets drawn
+        // is the contour of a field that lies between the two letters, so it
+        // passes through outlines belonging to neither. A zero-sized target
+        // rect means this glyph has nothing opposite it, and the far-outside
+        // value is what it dissolves into.
+        let progress = input.field.w;
+        var field = sampled.r;
+        if progress > 0.0 {
+            var partner = 1.0;
+            if input.morph_size.x > 0.0 && input.morph_size.y > 0.0 {
+                partner = textureSample(atlas, atlas_sampler, input.morph_uv).r;
+            }
+            field = mix(field, partner, progress);
+        }
         let feather = max(fwidth(field), 0.0001) + input.field.y;
         let edge = input.field.x;
         let fill = 1.0 - smoothstep(edge - feather, edge + feather, field);

@@ -66,11 +66,33 @@ struct TextInput {
     font_source: Option<String>,
 }
 
+/// Which of a node's two shaped runs a buffer holds.
+///
+/// A text node that is morphing has two: the text it is, and the text it is
+/// turning into. Both have to stay shaped and measured, because the morph
+/// interpolates between the two sets of glyphs rather than between two
+/// pictures, so one key is not enough.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct BufferKey {
+    pub(crate) node: NodeHandle,
+    pub(crate) morph: bool,
+}
+
+impl BufferKey {
+    pub(crate) fn own(node: NodeHandle) -> Self {
+        Self { node, morph: false }
+    }
+
+    pub(crate) fn target(node: NodeHandle) -> Self {
+        Self { node, morph: true }
+    }
+}
+
 /// Shared font database, per-node shaped buffers, and glyph image cache.
 pub struct TextSystem {
     fonts: FontSystem,
     glyphs: SwashCache,
-    buffers: FastMap<NodeHandle, CachedBuffer>,
+    buffers: FastMap<BufferKey, CachedBuffer>,
     font_sources: HashSet<String>,
     /// Fields already measured, by the glyph they belong to.
     ///
@@ -195,7 +217,9 @@ impl TextSystem {
 
     /// Returns the shaped buffer retained for a text node.
     pub fn buffer(&self, node: NodeHandle) -> Option<&Buffer> {
-        self.buffers.get(&node).map(|cached| &cached.buffer)
+        self.buffers
+            .get(&BufferKey::own(node))
+            .map(|cached| &cached.buffer)
     }
 
     /// Provides mutable access to the glyph rasterization cache and font database.
@@ -205,7 +229,8 @@ impl TextSystem {
 
     /// Drops the shaped buffer belonging to a removed scene node.
     pub fn remove(&mut self, node: NodeHandle) {
-        self.buffers.remove(&node);
+        self.buffers.remove(&BufferKey::own(node));
+        self.buffers.remove(&BufferKey::target(node));
     }
 
     /// Rasterizes one cached text node at a physical origin and scale.
@@ -221,7 +246,29 @@ impl TextSystem {
         scale: f32,
         field: bool,
     ) -> Vec<RasterGlyph> {
-        let Some(buffer) = self.buffers.get(&node) else {
+        self.rasterize_run(BufferKey::own(node), origin, scale, field)
+    }
+
+    /// The glyphs of the text a node is morphing *towards*, positioned the same
+    /// way. Empty when the node is not morphing, because nothing shaped it.
+    pub fn rasterize_target(
+        &mut self,
+        node: NodeHandle,
+        origin: (f32, f32),
+        scale: f32,
+        field: bool,
+    ) -> Vec<RasterGlyph> {
+        self.rasterize_run(BufferKey::target(node), origin, scale, field)
+    }
+
+    fn rasterize_run(
+        &mut self,
+        key: BufferKey,
+        origin: (f32, f32),
+        scale: f32,
+        field: bool,
+    ) -> Vec<RasterGlyph> {
+        let Some(buffer) = self.buffers.get(&key) else {
             return Vec::new();
         };
         let physical: Vec<_> = buffer

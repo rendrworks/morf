@@ -21,10 +21,21 @@ pub(crate) struct GlyphInstance {
     pub(crate) mask_inverse_0: [f32; 4],
     pub(crate) mask_inverse_1: [f32; 4],
     pub(crate) mask_radii: [f32; 4],
-    /// Field edge, feathering, and outline width in sampled-field units.
+    /// Field edge, feathering, outline width, and how far this glyph has
+    /// travelled towards the one it is morphing into.
     pub(crate) field: [f32; 4],
     /// Outline colour composited beneath a distance-field fill.
     pub(crate) outline_color: [f32; 4],
+    /// Atlas rect of the glyph being morphed towards.
+    ///
+    /// Last, and it has to stay last: the vertex attributes are laid out by
+    /// offset, so a field inserted higher up would be read as whichever
+    /// attribute used to sit at that offset.
+    ///
+    /// A zero size means there is nothing opposite this glyph — the text it is
+    /// turning into is shorter — and the shader reads "outside" there instead,
+    /// so an unpaired letter dissolves rather than snapping away.
+    pub(crate) morph_uv: [f32; 4],
 }
 
 pub(crate) fn layer_mask_data(
@@ -117,6 +128,15 @@ impl GlyphKey {
     }
 }
 
+impl PreparedGlyph {
+    /// Every glyph this one needs in the atlas — its own, and the one it is
+    /// morphing into. A partner that is never uploaded is a partner the shader
+    /// samples as empty space.
+    pub(crate) fn sources(&self) -> impl Iterator<Item = &RasterGlyph> {
+        std::iter::once(&self.glyph).chain(self.morph.iter())
+    }
+}
+
 pub(crate) struct GlyphAtlasEntry {
     pub(crate) x: u32,
     pub(crate) y: u32,
@@ -146,6 +166,14 @@ pub(crate) fn outside_byte(content: RasterContent) -> u8 {
 
 pub(crate) struct PreparedGlyph {
     pub(crate) glyph: RasterGlyph,
+    /// The glyph this one is turning into, when it has a partner.
+    pub(crate) morph: Option<RasterGlyph>,
+    /// How far between the two, zero at `glyph` and one at `morph`.
+    ///
+    /// A glyph with no partner still carries a progress: it interpolates
+    /// towards the far-outside value instead, which is how a letter with
+    /// nothing opposite it dissolves.
+    pub(crate) morph_progress: f32,
     pub(crate) color: Color,
     pub(crate) color_overlay: Color,
     pub(crate) transform: Transform2D,
@@ -274,8 +302,7 @@ impl GlyphAtlas {
         self.clock = self.clock.wrapping_add(1);
         let mut requested = HashSet::new();
         let mut missing = Vec::new();
-        for prepared in glyphs {
-            let glyph = &prepared.glyph;
+        for glyph in glyphs.iter().flat_map(PreparedGlyph::sources) {
             if !self.accepts(glyph.content) {
                 continue;
             }
@@ -323,8 +350,7 @@ impl GlyphAtlas {
         let old = std::mem::take(&mut self.entries);
         let mut requested_entries = Vec::new();
         let mut seen = HashSet::new();
-        for prepared in glyphs {
-            let glyph = &prepared.glyph;
+        for glyph in glyphs.iter().flat_map(PreparedGlyph::sources) {
             if !self.accepts(glyph.content) {
                 continue;
             }

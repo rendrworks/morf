@@ -137,6 +137,15 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 number("softness", 0.0),
                 number("outline_width", 0.0),
                 color("outline_color", Color::rgba8(0, 0, 0, 0)),
+                // The text this one turns into, and how far along it is.
+                //
+                // Not a crossfade between two labels: the glyphs are distance
+                // fields, so the two are interpolated as fields and thresholded
+                // once, and the outline travels from one letter's shape to the
+                // other's through shapes that belong to neither. Glyphs pair up
+                // by position, and one with nothing opposite it dissolves.
+                string("morph_to", ""),
+                number("morph_progress", 0.0),
             ]);
         }
         Element::Image => {

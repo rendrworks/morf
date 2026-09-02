@@ -169,6 +169,8 @@ pub(crate) fn append_node(
                 scene.string_value(node, "vertical_alignment")?,
             )?,
             field_style: text_field_style(scene, node)?,
+            morph_to: scene.string_value(node, "morph_to")?.to_owned(),
+            morph_progress: scene.number(node, "morph_progress")?.clamp(0.0, 1.0) as f32,
         }),
         Element::Image => list.commands.push(DrawCommand::Texture {
             node,

@@ -13,6 +13,8 @@ pub(crate) fn text_command(
     field_style: DistanceFieldStyle,
 ) -> DrawCommand {
     DrawCommand::Text {
+        morph_to: String::new(),
+        morph_progress: 0.0,
         node,
         bounds: Geometry {
             x: 0.0,

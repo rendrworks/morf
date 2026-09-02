@@ -35,7 +35,14 @@ fn font_weight_participates_in_the_shaping_cache() {
         },
     );
 
-    assert_eq!(text.buffers[&node].input.as_ref().unwrap().font_weight, 700);
+    assert_eq!(
+        text.buffers[&crate::BufferKey::own(node)]
+            .input
+            .as_ref()
+            .unwrap()
+            .font_weight,
+        700
+    );
     assert_eq!(normalize_font_weight(50.0), 100);
     assert_eq!(normalize_font_weight(950.0), 900);
     assert_eq!(normalize_font_weight(f64::NAN), 400);
@@ -128,7 +135,11 @@ fn text_font_source_loads_once_before_shaping() {
     assert_eq!(text.fonts.db().len(), loaded);
     assert_eq!(text.font_sources.len(), 1);
     assert_eq!(
-        text.buffers[&node].input.as_ref().unwrap().font_source,
+        text.buffers[&crate::BufferKey::own(node)]
+            .input
+            .as_ref()
+            .unwrap()
+            .font_source,
         Some(source)
     );
 }
