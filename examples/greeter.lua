@@ -67,6 +67,11 @@ local morf = require("morf")
 local ui = require("morf.ui")
 local core = require("morf.core")
 local io = require("morf.io")
+-- The keyboard. Not a keyboard drawn to look like it — the same file
+-- `examples/keyboard.lua` puts in a surface of its own. It cannot have one here
+-- because a kiosk compositor shows a single window, so a login screen's second
+-- surface is never seen; drawn into this one it is the same board either way.
+local board = require("lib.board")
 
 local screen = morf.screens[1]
 local W = (screen and screen.width) or 1920
@@ -288,31 +293,10 @@ local function power(method)
   if not called then say(tostring(err), true) end
 end
 
---- Starts the on-screen keyboard, once.
----
---- Its own process, and deliberately: it types through the compositor with the
---- virtual-keyboard protocol, so it needs no agreement with this screen and
---- this screen needs no code to receive it. The keys arrive here exactly as a
---- physical keyboard's would. It also means a machine with a keyboard never
---- pays for one it does not use.
---- The keyboard is part of this screen, not a program beside it.
----
---- It used to start a second `morf` on `examples/keyboard.lua`, which types
---- into whatever has focus through the virtual-keyboard protocol. That is the
---- right shape for a keyboard on a desktop and the wrong one here, twice over:
---- a greeter runs under a kiosk compositor that shows one window, so the second
---- surface is behind this one and invisible; and it needs a protocol the
---- compositor may simply not implement. Either way the keys go nowhere and
---- nothing says so.
----
---- Drawn into this surface there is no second process, no second surface, no
---- protocol and no stacking — the keys call the same function a physical key
---- does. A machine with no keyboard attached is exactly the machine that cannot
---- afford "maybe it appears".
-local board = morf.signal("greeter.board", false)
-
+--- Shows and hides the board.
+local shown = morf.signal("greeter.board", false)
 local function open_keyboard()
-  write(board, not board:get())
+  write(shown, not shown:get())
 end
 
 --------------------------------------------------------------------------------
@@ -535,7 +519,7 @@ local list_view = {
   visible = function() return list_up:get() end,
   opacity = function() return asking:get() and 0.0 or 1.0 end,
   translate_x = function() return asking:get() and -s(90) or 0 end,
-  translate_y = function() return board:get() and -s(150) or 0 end,
+  translate_y = function() return shown:get() and -s(180) or 0 end,
   scale = function() return asking:get() and 0.94 or 1.0 end,
   behavior = {
     -- Springs, not durations. A duration says how long the movement takes and
@@ -545,7 +529,7 @@ local list_view = {
     opacity = { duration = 190, easing = "out_quad" },
     translate_x = { kind = "spring", mass = 1, damping = 21, stiffness = 150,
                     epsilon = 0.05 },
-    translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 180,
+    translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 190,
                     epsilon = 0.05 },
     scale = { kind = "spring", mass = 1, damping = 19, stiffness = 170,
               epsilon = 0.002 },
@@ -700,7 +684,7 @@ local prompt = {
   visible = function() return prompt_up:get() end,
   opacity = function() return asking:get() and 1.0 or 0.0 end,
   translate_x = function() return asking:get() and 0 or s(90) end,
-  translate_y = function() return board:get() and -s(150) or 0 end,
+  translate_y = function() return shown:get() and -s(180) or 0 end,
   scale = function() return asking:get() and 1.0 or 0.94 end,
   behavior = {
     -- Springs, not durations. A duration says how long the movement takes and
@@ -710,7 +694,7 @@ local prompt = {
     opacity = { duration = 190, easing = "out_quad" },
     translate_x = { kind = "spring", mass = 1, damping = 21, stiffness = 150,
                     epsilon = 0.05 },
-    translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 180,
+    translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 190,
                     epsilon = 0.05 },
     scale = { kind = "spring", mass = 1, damping = 19, stiffness = 170,
               epsilon = 0.002 },
@@ -1006,12 +990,12 @@ local function sheet(x, y, width, height, up, here)
     visible = up,
     opacity = function() return here() and 1.0 or 0.0 end,
     scale = function() return here() and 1.0 or 0.94 end,
-    translate_y = function() return board:get() and -s(150) or 0 end,
-    behavior = {
+    translate_y = function() return shown:get() and -s(180) or 0 end,
+      behavior = {
       opacity = { duration = 190, easing = "out_quad" },
       scale = { kind = "spring", mass = 1, damping = 19, stiffness = 170,
                 epsilon = 0.002 },
-      translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 180,
+      translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 190,
                       epsilon = 0.05 },
     },
   }
@@ -1029,7 +1013,10 @@ place(ui.Item(list_view))
 local BUTTON_SIZE = s(48)       -- 16px icon with `to_em(16px)` around it
 local BUTTON_PAD = s(32)
 local BUTTON_GAP = s(16)
-local BUTTON_Y = H - BUTTON_PAD - BUTTON_SIZE
+-- Along the top. They used to sit in GDM's corner, bottom right — which is
+-- exactly where the keyboard comes up, and a row of buttons under a keyboard is
+-- a row of buttons nobody can reach.
+local BUTTON_Y = BUTTON_PAD
 
 local right = W - BUTTON_PAD
 local function place_right(node)
@@ -1109,194 +1096,55 @@ place(ui.Text {
 
 
 --------------------------------------------------------------------------------
--- The keyboard, on the screen it types into.
+-- The keyboard.
 --------------------------------------------------------------------------------
 
-local KEY = s(62)
-local KEY_GAP = s(9)
-local ROWS = { "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm" }
-local shifted = morf.signal("greeter.shifted", false)
+-- evdev, because that is what the board speaks — it hands over a key and
+-- whether it was shifted, and what that means is this screen's business. On a
+-- surface of its own the same call becomes a virtual-keyboard press; here it is
+-- simply the same three functions a physical key already reaches, so the dots,
+-- the ring and the avatar answer a tap exactly as they answer a keystroke.
+local EVDEV_BACKSPACE, EVDEV_ENTER = 14, 28
 
---- One key. Wide keys take a label instead of a character, and every key moves
---- the same way — down and dimmer under the finger — so the whole board reads
---- as one object rather than forty.
-local function key_cap(id, width, label, on_tap, accent)
-  local hot = morf.signal("greeter.key." .. id, false)
-  local held = morf.signal("greeter.keyheld." .. id, false)
-  return ui.Item {
-    width = width,
-    height = KEY,
-    scale = function()
-      if held:get() then return 0.92 end
-      return hot:get() and 1.06 or 1.0
-    end,
-    behavior = {
-      scale = { kind = "spring", mass = 1, damping = 12, stiffness = 480, epsilon = 0.002 },
-    },
-    ui.Rect {
-      anchors = { fill = true },
-      radius = s(12),
-      color = function()
-        if held:get() then return ACCENT_RING end
-        if accent then return hot:get() and BUTTON_HOT or BUTTON end
-        return hot:get() and CARD_HOT or CARD
-      end,
-      border_width = s(1),
-      border_color = "#ffffff14",
-      behavior = { color = { duration = 120, easing = "out_quad" } },
-    },
-    ui.Text {
-      anchors = { fill = true },
-      text = label,
-      font_size = s(18),
-      font_weight = 500,
-      horizontal_alignment = "center",
-      vertical_alignment = "center",
-      color = TEXT,
-    },
-    ui.MouseArea {
-      anchors = { fill = true },
-      on_entered = function() write(hot, true) end,
-      on_exited = function()
-        write(hot, false)
-        write(held, false)
-      end,
-      on_pressed = function() write(held, true) end,
-      on_released = function() write(held, false) end,
-      on_clicked = on_tap,
-    },
-  }
-end
+local board_panel, board_height = board.build {
+  width = W,
+  key = function(code, _shifted, label)
+    if working:get() then return end
+    if code == EVDEV_BACKSPACE then
+      backspace()
+    elseif code == EVDEV_ENTER then
+      if asking:get() then
+        attempt()
+      elseif #users > 0 then
+        choose_user(chosen_user:get())
+      end
+    elseif label and label ~= "" then
+      if not asking:get() then
+        if #users == 0 then return end
+        choose_user(chosen_user:get())
+      end
+      type_character(label)
+    end
+  end,
+}
 
---- A key that types itself, and which is a different letter when shift is down.
-local function letter_cap(row, index, character)
-  local id = "c" .. row .. "_" .. index
-  local hot = morf.signal("greeter.key." .. id, false)
-  local held = morf.signal("greeter.keyheld." .. id, false)
-  local function face()
-    return shifted:get() and character:upper() or character
-  end
-  return ui.Item {
-    width = KEY,
-    height = KEY,
-    scale = function()
-      if held:get() then return 0.92 end
-      return hot:get() and 1.06 or 1.0
-    end,
-    behavior = {
-      scale = { kind = "spring", mass = 1, damping = 12, stiffness = 480, epsilon = 0.002 },
-    },
-    ui.Rect {
-      anchors = { fill = true },
-      radius = s(12),
-      color = function()
-        if held:get() then return ACCENT_RING end
-        return hot:get() and CARD_HOT or CARD
-      end,
-      border_width = s(1),
-      border_color = "#ffffff14",
-      behavior = { color = { duration = 120, easing = "out_quad" } },
-    },
-    ui.Text {
-      anchors = { fill = true },
-      text = face,
-      font_size = s(18),
-      font_weight = 500,
-      horizontal_alignment = "center",
-      vertical_alignment = "center",
-      color = TEXT,
-    },
-    ui.MouseArea {
-      anchors = { fill = true },
-      on_entered = function() write(hot, true) end,
-      on_exited = function()
-        write(hot, false)
-        write(held, false)
-      end,
-      on_pressed = function() write(held, true) end,
-      on_released = function() write(held, false) end,
-      on_clicked = function()
-        -- Straight into the same function a physical key reaches, so the dots,
-        -- the ring and the well all answer a tap exactly as they answer a key.
-        if not asking:get() then
-          if #users == 0 then return end
-          choose_user(chosen_user:get())
-        end
-        type_character(face())
-        write(shifted, false)
-      end,
-    },
-  }
-end
-
-local BOARD_W = 10 * KEY + 9 * KEY_GAP
-local BOARD_H = 5 * KEY + 4 * KEY_GAP + s(48)
-local BOARD_X = math.floor((W - BOARD_W) / 2)
-local BOARD_Y = H - BOARD_H - s(44)
-
-local board_panel = {
-  x = BOARD_X,
-  y = BOARD_Y,
-  width = BOARD_W,
-  height = BOARD_H,
-  visible = function() return board:get() end,
-  -- Comes up from under the edge of the screen and settles, which is where a
-  -- keyboard comes from.
-  opacity = function() return board:get() and 1.0 or 0.0 end,
-  translate_y = function() return board:get() and 0 or s(120) end,
+place(ui.Item {
+  x = 0,
+  y = H - board_height,
+  width = W,
+  height = board_height,
+  visible = function() return shown:get() end,
+  -- Comes up from under the edge of the screen, which is where a keyboard
+  -- comes from.
+  opacity = function() return shown:get() and 1.0 or 0.0 end,
+  translate_y = function() return shown:get() and 0 or board_height end,
   behavior = {
     opacity = { duration = 160, easing = "out_quad" },
     translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 200,
                     epsilon = 0.05 },
   },
-}
-
-board_panel[#board_panel + 1] = ui.Rect {
-  x = -s(20), y = -s(20),
-  width = BOARD_W + s(40), height = BOARD_H + s(40),
-  radius = s(24),
-  color = "#ffffff0e",
-  border_width = s(1),
-  border_color = "#ffffff1c",
-}
-
-for row, letters in ipairs(ROWS) do
-  local count = #letters
-  local left = math.floor((BOARD_W - (count * KEY + (count - 1) * KEY_GAP)) / 2)
-  for index = 1, count do
-    local cap = letter_cap(row, index, letters:sub(index, index))
-    cap.x = left + (index - 1) * (KEY + KEY_GAP)
-    cap.y = (row - 1) * (KEY + KEY_GAP)
-    board_panel[#board_panel + 1] = cap
-  end
-end
-
-do
-  local y = 4 * (KEY + KEY_GAP)
-  local wide = KEY * 2 + KEY_GAP
-  local space = BOARD_W - 2 * (wide + KEY_GAP)
-  local caps = {
-    { "shift", wide, function() return shifted:get() and "SHIFT" or "shift" end,
-      function() write(shifted, not shifted:get()) end, true },
-    { "space", space, "space", function()
-        if not asking:get() then return end
-        type_character(" ")
-      end, false },
-    { "enter", wide, "enter", function()
-        if asking:get() then attempt() elseif #users > 0 then choose_user(chosen_user:get()) end
-      end, true },
-  }
-  local x = 0
-  for _, spec in ipairs(caps) do
-    local cap = key_cap(spec[1], spec[2], spec[3], spec[4], spec[5])
-    cap.x = x
-    cap.y = y
-    board_panel[#board_panel + 1] = cap
-    x = x + spec[2] + KEY_GAP
-  end
-end
-
-place(ui.Item(board_panel))
+  board_panel,
+})
 
 place(kick_rest)
 place(shake_rest)
