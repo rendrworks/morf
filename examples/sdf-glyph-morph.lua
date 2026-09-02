@@ -23,18 +23,17 @@ local morf = require("morf")
 local ui = require("morf.ui")
 local core = require("morf.core")
 
-local screen = morf.screens[1]
-local W = (screen and screen.width) or 1920
-local H = (screen and screen.height) or 1080
-
+-- A window, not a screen. This used to cover the output on the overlay layer
+-- with a click target across the whole of it, which left nothing above it to
+-- click on and no way to reach anything underneath — including whatever you
+-- would have used to close it.
+local W, H = 760, 560
 morf.surface.width = W
 morf.surface.height = H
-morf.surface.anchors = { top = true, left = true, right = true, bottom = true }
-morf.surface.layer = "overlay"
+morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local SCALE = math.max(0.8, math.min(1.8, math.min(W / 1920, H / 1080)))
-local function s(n) return math.floor(n * SCALE) end
+local function s(n) return n end
 
 local INK = "#080b11"
 local TEXT = "#e9edf5"
@@ -253,11 +252,11 @@ ui.Item {
     color = MUTED,
   },
 
+  -- The surface's own area, which is all it has any business claiming.
   ui.MouseArea {
     width = W,
     height = H,
     on_clicked = advance,
-    on_key_pressed = function() advance() end,
   },
 
   -- In the tree, because a timer that is not in it never runs.
