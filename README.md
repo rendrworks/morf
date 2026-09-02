@@ -3,7 +3,6 @@
 morf is a Wayland rendering and shell engine implemented in Rust. It exposes
 native scene, layout, rendering, input, surface, IO, and service primitives
 through Rust and Lua APIs. Widgets and complete shells are downstream projects.
-The implementation follows [PLAN.md](PLAN.md).
 
 The `morf-lua` crate embeds [Luna](https://github.com/onix-os/luna) as a bounded
 configuration and extension interface. Built-in engine modules are preloaded by
