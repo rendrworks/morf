@@ -347,6 +347,7 @@ impl Runtime {
                 }
             }
         }
+        service_changed |= self.sync_pending_views();
         // Whether a repaint is owed is decided after the callbacks below have
         // run, by asking whether the scene actually changed. A callback merely
         // firing is not a reason to render: a 16ms timer that polls a file and

@@ -151,6 +151,11 @@ impl ListModel {
         }
     }
 
+    /// Whether mutations are waiting to be drained.
+    pub fn has_changes(&self) -> bool {
+        !self.changes.is_empty()
+    }
+
     /// Drains mutations since the previous call.
     pub fn take_changes(&mut self) -> Vec<ListChange> {
         std::mem::take(&mut self.changes)
@@ -215,6 +220,8 @@ pub struct VirtualList {
     pub(crate) columns: usize,
     pub(crate) active: HashMap<ModelId, usize>,
     pub(crate) initialized: bool,
+    /// Every item is visible, whatever the viewport: a `Repeater`.
+    pub(crate) unbounded: bool,
 }
 
 impl VirtualList {
@@ -232,7 +239,30 @@ impl VirtualList {
                 columns: 1,
                 active: HashMap::new(),
                 initialized: false,
+                unbounded: false,
             })
+    }
+
+    /// Creates a view that shows every item, with no viewport.
+    ///
+    /// What a `Repeater` is: the same reconciliation as a list view, keyed
+    /// by item identity, with nothing scrolled out of sight.
+    pub fn new_unbounded() -> Self {
+        Self {
+            item_extent: 1.0,
+            viewport_extent: 0.0,
+            offset: 0.0,
+            overscan: 0,
+            columns: 1,
+            active: HashMap::new(),
+            initialized: false,
+            unbounded: true,
+        }
+    }
+
+    /// The current scroll offset.
+    pub fn offset(&self) -> f64 {
+        self.offset
     }
 
     /// Creates a fixed-cell grid virtualizer with a vertical row extent.
@@ -269,6 +299,9 @@ impl VirtualList {
 
     /// Returns indexes requiring live delegates.
     pub fn visible_range(&self, item_count: usize) -> Range<usize> {
+        if self.unbounded {
+            return 0..item_count;
+        }
         let rows = item_count.div_ceil(self.columns);
         let maximum = (rows as f64 * self.item_extent - self.viewport_extent).max(0.0);
         let offset = self.offset.min(maximum);

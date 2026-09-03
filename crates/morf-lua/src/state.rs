@@ -31,6 +31,10 @@ pub(crate) struct LuaVirtualView {
     pub(crate) reuse_limit: usize,
     pub(crate) pool_root: Option<NodeHandle>,
     pub(crate) column_extent: f64,
+    /// Whether the view places its delegates itself (a scrolling view) or
+    /// leaves that to its own node's kind (a `Repeater`, which may be a
+    /// `Row`, a `Column` or a `Grid`).
+    pub(crate) positioned: bool,
 }
 
 pub(crate) struct DelegateInstance {

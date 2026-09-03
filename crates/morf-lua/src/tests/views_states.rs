@@ -184,3 +184,90 @@ fn state_property_bindings_recapture_dependencies() {
     let node = runtime.scene().roots()[0];
     assert_eq!(runtime.scene().number(node, "width").unwrap(), 80.0);
 }
+
+#[test]
+fn a_repeater_follows_its_model_and_keeps_the_rows_it_already_had() {
+    // Built once and never touched again was the whole behaviour: a model
+    // replaced under a Repeater changed the model's count and nothing on
+    // screen. Now the frame loop reconciles it by item identity, so a row
+    // that stayed keeps its node, a row that went is gone, and the order on
+    // screen is the model's order.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "repeater.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local model = morf.list_model({ "one", "two", "three" })
+                ui.Repeater {
+                    as = "column",
+                    model = model,
+                    delegate = function(item) return ui.Text { text = item } end,
+                }
+                morf.ipc.reorder = function()
+                    model:replace({ "three", "one", "four" })
+                end
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let before = runtime.scene().children(root).unwrap().to_vec();
+    assert_eq!(before.len(), 3);
+    assert_eq!(
+        runtime.scene().element(root).unwrap(),
+        morf_scene::Element::Column
+    );
+
+    runtime.call_ipc("reorder", &[]).unwrap();
+    assert!(runtime.poll_services());
+
+    let scene = runtime.scene();
+    let after = scene.children(root).unwrap();
+    let texts = after
+        .iter()
+        .map(|node| scene.string_value(*node, "text").unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["three", "one", "four"]);
+    // "one" and "three" kept their nodes; "two" is gone; "four" is new.
+    assert_eq!(after[0], before[2]);
+    assert_eq!(after[1], before[0]);
+    assert!(!scene.contains(before[1]));
+}
+
+#[test]
+fn a_repeater_delegate_with_an_updater_is_patched_rather_than_rebuilt() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "repeater-update.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local model = morf.list_model({ { id = "a", label = "A" }, { id = "b", label = "B" } })
+                ui.Repeater {
+                    model = model,
+                    delegate = function(item)
+                        local text = ui.Text { text = item.label }
+                        return text, function(next) text.text = next.label end
+                    end,
+                }
+                morf.ipc.rename = function()
+                    model:replace({ { id = "a", label = "A2" }, { id = "b", label = "B" } }, "id")
+                end
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let before = runtime.scene().children(root).unwrap().to_vec();
+
+    runtime.call_ipc("rename", &[]).unwrap();
+    runtime.poll_services();
+
+    let scene = runtime.scene();
+    let after = scene.children(root).unwrap();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(scene.string_value(after[0], "text").unwrap(), "A2");
+    assert_eq!(scene.string_value(after[1], "text").unwrap(), "B");
+}

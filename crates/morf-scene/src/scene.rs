@@ -136,6 +136,38 @@ impl Scene {
         Ok(())
     }
 
+    /// Puts `order` first among a parent's children, in that order.
+    ///
+    /// Children not named keep their relative order after the named ones.
+    /// Handles that are not this parent's children are ignored, so a stale
+    /// list is harmless. What a reconciled view uses to make paint order and
+    /// positioner order follow the model's order.
+    pub fn reorder_children(
+        &mut self,
+        parent: NodeHandle,
+        order: &[NodeHandle],
+    ) -> Result<(), SceneError> {
+        let parent_id = self.live(parent)?;
+        let current = std::mem::take(&mut self.nodes[parent_id].children);
+        let mut arranged = Vec::with_capacity(current.len());
+        for wanted in order {
+            if current.contains(wanted) && !arranged.contains(wanted) {
+                arranged.push(*wanted);
+            }
+        }
+        let changed = arranged.iter().zip(current.iter()).any(|(a, b)| a != b);
+        for child in current {
+            if !arranged.contains(&child) {
+                arranged.push(child);
+            }
+        }
+        if changed {
+            self.layout_revision = self.layout_revision.wrapping_add(1);
+        }
+        self.nodes[parent_id].children = arranged;
+        Ok(())
+    }
+
     /// Returns the current parent handle.
     pub fn parent(&self, node: NodeHandle) -> Result<Option<NodeHandle>, SceneError> {
         Ok(self.nodes[self.live(node)?].parent.map(NodeHandle))

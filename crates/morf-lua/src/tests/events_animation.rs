@@ -381,8 +381,12 @@ fn list_view_builds_only_visible_lua_delegates() {
                 morf.sync_view(view, 8000)
                 morf.sync_view(view, 4000)
                 morf.sync_view(view, 12000)
-                assert(delegate_runs == 27)
-                assert(updater_runs == 13)
+                -- Item 100 is on screen when it changes, and its delegate
+                -- came with an updater: it is patched in place, not rebuilt.
+                -- That is one delegate fewer and one updater call more than
+                -- rebuilding it would have been.
+                assert(delegate_runs == 26, "delegate runs: " .. delegate_runs)
+                assert(updater_runs == 14, "updater runs: " .. updater_runs)
             "#,
         )
         .unwrap();

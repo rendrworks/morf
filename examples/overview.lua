@@ -62,9 +62,6 @@ local TILE = "#1a1f28"
 local TEXT = "#e6e9ef"
 local MUTED = "#8b93a5"
 
--- One tile per grid slot, built once and re-pointed as windows come and go.
--- Rebuilding the tree each refresh would throw away the thumbnails with it,
--- and a grid that flickers every second is worse than one that lags a frame.
 --- One request on Hyprland's control socket, and its reply.
 ---
 --- The socket answers once and closes, so this connects each time. That is
@@ -98,117 +95,117 @@ local function focus(title, app_id)
   end
 end
 
+-- One tile per window, keyed by the window's identifier. The Repeater is
+-- the grid: `as = "grid"` lays the tiles out in rows of COLS, and when the
+-- model is replaced with the current window list it adds, drops and moves
+-- tiles by identity. A tile that stays keeps its node, and with it the
+-- thumbnail it already has; a tile that goes releases its capture.
 local tiles = {}
-local children = { width = W, height = H }
-children[#children + 1] = ui.Rect { width = W, height = H, radius = 18, color = INK }
+local model = morf.list_model({})
 
 local heading = ui.Text {
   x = PAD, y = 14, width = W - PAD * 2,
   text = "windows", font_size = 15, color = MUTED,
 }
-children[#children + 1] = heading
 
-local SLOTS = COLS * 3
-for slot = 1, SLOTS do
-  local column = (slot - 1) % COLS
-  local row = math.floor((slot - 1) / COLS)
-  local x = PAD + column * (CELL_W + GAP)
-  local y = 48 + row * (CELL_H + LABEL + GAP)
+local function capture_name(identifier) return "tile-" .. identifier end
 
-  local frame = ui.Rect {
-    x = x, y = y, width = CELL_W, height = CELL_H,
-    radius = 10, color = TILE, visible = false,
-  }
-  -- `source` is filled in from the capture. Until then it names nothing, which
-  -- an Image treats as having nothing to draw.
+local function tile_for(item)
+  local frame = ui.Rect { width = CELL_W, height = CELL_H, radius = 10, color = TILE }
+  -- `source` is filled in from the capture. Until then it names nothing,
+  -- which an Image treats as having nothing to draw.
   local shot = ui.Image {
-    x = x, y = y, width = CELL_W, height = CELL_H,
+    width = CELL_W, height = CELL_H,
     fill_mode = "preserve_aspect_fit", visible = false,
   }
   local caption = ui.Text {
-    x = x, y = y + CELL_H + 6, width = CELL_W,
-    text = "", font_size = 12, color = TEXT, visible = false,
+    y = CELL_H + 6, width = CELL_W,
+    text = "", font_size = 12, color = TEXT,
   }
-  local tile = { frame = frame, shot = shot, caption = caption, identifier = nil }
-  -- Clicking claims the pointer over the tile, which an overview should: it is
-  -- a thing you are looking at deliberately, and a click on a window in it
-  -- means that window rather than whatever is behind the grid.
-  local hit = ui.MouseArea {
-    x = x, y = y, width = CELL_W, height = CELL_H + LABEL,
+  local tile = { frame = frame, shot = shot, caption = caption, identifier = item.identifier }
+  local function describe(window)
+    tile.title = window.title
+    tile.app_id = window.app_id
+    caption.text = (window.app_id ~= "" and window.app_id or "?") .. " · " .. window.title
+  end
+  describe(item)
+  tiles[item.identifier] = tile
+  -- Clicking claims the pointer over the tile, which an overview should: it
+  -- is a thing you are looking at deliberately, and a click on a window in
+  -- it means that window rather than whatever is behind the grid.
+  local node = ui.MouseArea {
+    width = CELL_W, height = CELL_H + LABEL,
     on_clicked = function()
       if tile.title then focus(tile.title, tile.app_id) end
     end,
+    frame, shot, caption,
   }
-  tiles[slot] = tile
-  children[#children + 1] = frame
-  children[#children + 1] = shot
-  children[#children + 1] = caption
-  children[#children + 1] = hit
+  -- The updater: a window that changed its title keeps its tile and its
+  -- picture, and only the caption is rewritten.
+  return node, describe
 end
 
---- Points the tiles at whatever the compositor currently reports.
+local grid = ui.Repeater {
+  as = "grid",
+  x = PAD, y = 48,
+  columns = COLS, row_spacing = GAP, column_spacing = GAP,
+  model = model,
+  delegate = tile_for,
+}
+
+--- Points the model at whatever the compositor currently reports.
 local function relayout()
   local windows = morf.windows
   heading.text = #windows .. " window" .. (#windows == 1 and "" or "s")
-  for slot, tile in ipairs(tiles) do
-    local window = windows[slot]
-    local shown = window ~= nil
-    tile.frame.visible = shown
-    tile.caption.visible = shown
-    if shown then
-      tile.title = window.title
-      tile.app_id = window.app_id
-      tile.caption.text = (window.app_id ~= "" and window.app_id or "?")
-        .. " · " .. window.title
-      -- A tile that changed which window it holds must drop the old picture,
-      -- or it shows the wrong window until the next capture lands.
-      if tile.identifier ~= window.identifier then
-        tile.identifier = window.identifier
-        tile.shot.visible = false
-      end
-    else
-      tile.identifier = nil
-      tile.title = nil
-      tile.app_id = nil
-      tile.shot.visible = false
+  local rows, present = {}, {}
+  for _, window in ipairs(windows) do
+    rows[#rows + 1] = { identifier = window.identifier, title = window.title, app_id = window.app_id }
+    present[window.identifier] = true
+  end
+  model:replace(rows, "identifier")
+  for identifier in pairs(tiles) do
+    if not present[identifier] then
+      tiles[identifier] = nil
+      morf.screencopy.release("gpu:capture/" .. capture_name(identifier))
     end
   end
 end
 
 --- Asks for a fresh picture of one tile.
 ---
---- One at a time, round-robin. Capturing nine windows at once asks the
---- compositor for nine full-size copies in a frame, which is a stutter for a
---- grid nobody is watching that closely.
-local next_slot = 1
+--- One at a time, round-robin over the model's order. Capturing nine windows
+--- at once asks the compositor for nine full-size copies in a frame, which
+--- is a stutter for a grid nobody is watching that closely.
+local next_index = 1
 local function refresh()
   relayout()
-  local scanned = 0
-  while scanned < #tiles do
-    local tile = tiles[next_slot]
-    local slot = next_slot
-    next_slot = next_slot % #tiles + 1
-    scanned = scanned + 1
-    if tile.identifier then
-      local wanted = tile.identifier
-      morf.screencopy.capture_window(wanted, function(frame, err)
-        -- The window may have closed, or moved to another tile, while the
-        -- capture was in flight. Dropping a late picture is right: the
-        -- alternative is a thumbnail of one window under another's name.
-        if err or tile.identifier ~= wanted then return end
-        tile.shot.source = frame.source
-        tile.shot.visible = true
-      end, { name = "tile" .. slot })
-      return
-    end
-  end
+  local count = model:len()
+  if count == 0 then return end
+  if next_index > count then next_index = 1 end
+  local item = model:get(next_index)
+  next_index = next_index + 1
+  local tile = item and tiles[item.identifier]
+  if not tile then return end
+  local wanted = tile.identifier
+  morf.screencopy.capture_window(wanted, function(frame, err)
+    -- The window may have closed while the capture was in flight. Dropping
+    -- a late picture is right: the alternative is a thumbnail under the
+    -- wrong name.
+    if err or tiles[wanted] ~= tile then return end
+    tile.shot.source = frame.source
+    tile.shot.visible = true
+  end, { gpu = true, name = capture_name(wanted) })
 end
 
-children[#children + 1] = ui.Timer {
-  interval = 700,
-  ["repeat"] = true,
-  running = true,
-  on_triggered = refresh,
+ui.Item {
+  width = W, height = H,
+  ui.Rect { width = W, height = H, radius = 18, color = INK },
+  heading,
+  grid,
+  ui.Timer {
+    interval = 700,
+    ["repeat"] = true,
+    running = true,
+    on_triggered = refresh,
+  },
 }
-
-ui.Item(children)

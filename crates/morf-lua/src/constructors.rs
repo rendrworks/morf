@@ -163,6 +163,33 @@ pub(crate) fn view_constructor<'gc>(
             LuaValue::Function(Function::Closure(delegate)) => ctx.stash(delegate),
             _ => return Err(HostError("view delegate must be a function".to_owned()).into()),
         };
+        // A Repeater lays its delegates out as whatever it is asked to be:
+        // `as = "column"` makes it a Column of them, `as = "grid"` a Grid
+        // with the `columns` and spacings a Grid takes. Without it the
+        // delegates keep their own positions, as before.
+        let element = match kind {
+            ViewKind::Repeater => match properties.get_value(ctx, "as") {
+                LuaValue::Nil => Element::Item,
+                LuaValue::String(name) => match name.display_lossy().to_string().as_str() {
+                    "item" => Element::Item,
+                    "row" => Element::Row,
+                    "column" => Element::Column,
+                    "grid" => Element::Grid,
+                    "row_layout" => Element::RowLayout,
+                    "column_layout" => Element::ColumnLayout,
+                    "grid_layout" => Element::GridLayout,
+                    other => {
+                        return Err(HostError(format!(
+                            "Repeater `as` must be item, row, column, grid, row_layout, column_layout or grid_layout, not `{other}`"
+                        ))
+                        .into());
+                    }
+                },
+                _ => return Err(HostError("Repeater `as` must be a string".to_owned()).into()),
+            },
+            _ => Element::Item,
+        };
+        let repeater_keeps_columns = matches!(element, Element::Grid | Element::GridLayout);
         let clean = Table::new(&ctx);
         for (key, value) in properties.iter(ctx) {
             let special = matches!(
@@ -172,13 +199,13 @@ pub(crate) fn view_constructor<'gc>(
                         name.display_lossy().to_string().as_str(),
                         "model"
                             | "delegate"
+                            | "as"
                             | "item_extent"
                             | "overscan"
                             | "content_y"
                             | "cell_width"
                             | "cell_height"
-                            | "columns"
-                    )
+                    ) || (name.display_lossy().to_string() == "columns" && !repeater_keeps_columns)
             );
             if !special {
                 clean
@@ -189,13 +216,16 @@ pub(crate) fn view_constructor<'gc>(
         if virtualized {
             clean.set_field(ctx, "clip", true);
         }
-        let node = create_node(&state, Element::Item);
+        let node = create_node(&state, element);
         configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
         let model_handle = Rc::clone(&model.model);
         let model = model_handle.borrow();
-        let mut configured_view = None;
+        let configured_view;
         let (range, item_extent, offset, columns, column_extent) = match kind {
-            ViewKind::Repeater => (0..model.len(), 0.0, 0.0, 1, 0.0),
+            ViewKind::Repeater => {
+                configured_view = Some(VirtualList::new_unbounded());
+                (0..model.len(), 0.0, 0.0, 1, 0.0)
+            }
             ViewKind::List => {
                 let item_extent =
                     table_number(ctx, properties, "item_extent", 1.0).map_err(HostError)?;
@@ -286,6 +316,7 @@ pub(crate) fn view_constructor<'gc>(
                     reuse_limit,
                     pool_root: None,
                     column_extent,
+                    positioned: virtualized,
                 },
             );
         }

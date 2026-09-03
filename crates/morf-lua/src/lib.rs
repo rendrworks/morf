@@ -43,6 +43,7 @@ mod runtime_ipc;
 mod runtime_screens;
 mod runtime_services;
 mod runtime_toplevels;
+mod runtime_views;
 mod scene_bindings;
 mod serialization;
 mod state;
