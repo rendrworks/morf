@@ -189,6 +189,20 @@ pub struct Workspace {
     pub hidden: bool,
     /// Whether `morf.workspace.activate` will do anything for it.
     pub activatable: bool,
+    pub removable: bool,
+    pub assignable: bool,
+}
+
+/// What a configuration asked to do to a workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkspaceRequest {
+    Activate(String),
+    Remove(String),
+    /// Move the workspace to the group on the named output.
+    Assign {
+        key: String,
+        output: String,
+    },
 }
 
 /// One window the compositor reports, as handed to a configuration.

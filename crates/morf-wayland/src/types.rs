@@ -326,6 +326,9 @@ pub struct WorkspaceInfo {
     /// it will not switch to, and a bar that offers the click anyway is a bar
     /// with a dead button on it.
     pub activatable: bool,
+    /// Whether `remove` will, and whether `assign` will.
+    pub removable: bool,
+    pub assignable: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

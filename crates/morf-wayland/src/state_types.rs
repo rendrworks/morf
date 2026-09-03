@@ -52,6 +52,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
 
 use crate::toplevel_control::ToplevelControl;
 use wayland_protocols::ext::workspace::v1::client::{
+    ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
     ext_workspace_handle_v1::ExtWorkspaceHandleV1, ext_workspace_manager_v1::ExtWorkspaceManagerV1,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
@@ -221,6 +222,8 @@ pub(crate) struct LayerState {
     /// on. Two maps rather than one because the protocol delivers the two facts
     /// separately and in either order.
     pub(crate) workspace_groups: HashMap<ObjectId, ObjectId>,
+    /// The group handles themselves, so `assign` has something to hand over.
+    pub(crate) workspace_group_handles: HashMap<ObjectId, ExtWorkspaceGroupHandleV1>,
     pub(crate) workspace_group_outputs: HashMap<ObjectId, String>,
     pub(crate) workspaces_changed: bool,
     /// The live inhibitor, if the shell is currently holding the session awake.

@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crate::{
     events::*,
     surface_types::*,
-    types::{LogEntry, LogLevel, ToplevelRequest},
+    types::{LogEntry, LogLevel, ToplevelRequest, WorkspaceRequest},
 };
 // Re-exported, because these moved out of this file only to satisfy the line
 // gate: every consumer reaches for them through `state::*` and there is no
@@ -118,8 +118,8 @@ pub(crate) struct ReactiveState {
     pub(crate) quit_requested: bool,
     /// Whether the configuration is holding the session awake, and whether that
     /// has changed since the compositor was last told.
-    /// The workspace a configuration has asked to switch to, if any.
-    pub(crate) workspace_activation: Option<String>,
+    /// What a configuration asked to do to workspaces this frame.
+    pub(crate) workspace_requests: Vec<WorkspaceRequest>,
     /// What a configuration asked to do to other windows this frame.
     pub(crate) toplevel_requests: Vec<ToplevelRequest>,
     pub(crate) idle_inhibited: bool,
@@ -239,7 +239,7 @@ impl ReactiveState {
             watch_files: true,
             watch_files_changed: false,
             quit_requested: false,
-            workspace_activation: None,
+            workspace_requests: Vec::new(),
             toplevel_requests: Vec::new(),
             idle_inhibited: false,
             idle_inhibit_changed: false,

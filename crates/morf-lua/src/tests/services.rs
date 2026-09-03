@@ -200,7 +200,11 @@ fn a_configuration_reads_workspaces_and_asks_to_switch() {
                     for _, w in ipairs(morf.workspaces) do
                         if w.output == "DP-1" then
                             mine[#mine + 1] = w.name .. (w.active and "*" or "")
-                            if w.name == "2" then morf.workspace.activate(w.key) end
+                            if w.name == "2" then
+                                morf.workspace.activate(w.key)
+                                morf.workspace.assign(w.key, "DP-2")
+                            end
+                            if w.name == "1" and w.removable then morf.workspace.remove(w.key) end
                         end
                     end
                     shown:set(table.concat(mine, ","))
@@ -217,6 +221,7 @@ fn a_configuration_reads_workspaces_and_asks_to_switch() {
             name: "1".into(),
             output: "DP-1".into(),
             active: true,
+            removable: true,
             ..Workspace::default()
         },
         Workspace {
@@ -246,15 +251,21 @@ fn a_configuration_reads_workspaces_and_asks_to_switch() {
         "the configuration sees its own output's workspaces, and which is active"
     );
     assert_eq!(
-        runtime.take_workspace_activation().as_deref(),
-        Some("b"),
-        "and switching asks by key -- not by name, which is not unique, and not \
-         by the compositor's id, which is optional and absent on Hyprland"
+        runtime.take_workspace_requests(),
+        [
+            WorkspaceRequest::Remove("a".into()),
+            WorkspaceRequest::Activate("b".into()),
+            WorkspaceRequest::Assign {
+                key: "b".into(),
+                output: "DP-2".into()
+            },
+        ],
+        "every verb asks by key -- not by name, which is not unique, and not by \
+         the compositor's id, which is optional and absent on Hyprland"
     );
-    assert_eq!(
-        runtime.take_workspace_activation(),
-        None,
-        "the request is taken once"
+    assert!(
+        runtime.take_workspace_requests().is_empty(),
+        "the requests are taken once"
     );
 }
 

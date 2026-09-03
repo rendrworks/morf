@@ -9,7 +9,25 @@ use luna::{Callback, CallbackReturn, Closure, Context, Table};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{scene_bindings::HostError, state::*, types::ToplevelRequest};
+use crate::{
+    scene_bindings::HostError,
+    state::*,
+    types::{ToplevelRequest, WorkspaceRequest},
+};
+
+/// Queues one workspace request, refusing a configuration that queues
+/// hundreds in a frame: that is a loop, not a shell.
+fn push_workspace_request(
+    state: &Rc<RefCell<ReactiveState>>,
+    request: WorkspaceRequest,
+) -> Result<(), HostError> {
+    let mut state = state.borrow_mut();
+    if state.workspace_requests.len() >= 64 {
+        return Err(HostError("workspace request limit reached".into()));
+    }
+    state.workspace_requests.push(request);
+    Ok(())
+}
 
 /// Installs `morf.workspaces`, `morf.workspace` and `morf.toplevel`.
 pub(crate) fn install_compositor_api<'gc>(
@@ -19,14 +37,31 @@ pub(crate) fn install_compositor_api<'gc>(
 ) {
     let workspaces = Table::new(&ctx);
     morf.set_field(ctx, "workspaces", workspaces);
+    // Three verbs on a workspace, and each is honest about being refusable:
+    // the compositor says per workspace which it will honour, and that is what
+    // `activatable`, `removable` and `assignable` on the entry carry.
+    let workspace = Table::new(&ctx);
     let activate_state = Rc::clone(&state);
     let workspace_activate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let id: String = stack.consume(ctx)?;
-        activate_state.borrow_mut().workspace_activation = Some(id);
+        let key: String = stack.consume(ctx)?;
+        push_workspace_request(&activate_state, WorkspaceRequest::Activate(key))?;
         Ok(CallbackReturn::Return)
     });
-    let workspace = Table::new(&ctx);
+    let remove_state = Rc::clone(&state);
+    let workspace_remove = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let key: String = stack.consume(ctx)?;
+        push_workspace_request(&remove_state, WorkspaceRequest::Remove(key))?;
+        Ok(CallbackReturn::Return)
+    });
+    let assign_state = Rc::clone(&state);
+    let workspace_assign = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (key, output): (String, String) = stack.consume(ctx)?;
+        push_workspace_request(&assign_state, WorkspaceRequest::Assign { key, output })?;
+        Ok(CallbackReturn::Return)
+    });
     workspace.set_field(ctx, "activate", workspace_activate);
+    workspace.set_field(ctx, "remove", workspace_remove);
+    workspace.set_field(ctx, "assign", workspace_assign);
     morf.set_field(ctx, "workspace", workspace);
 
     // Acting on somebody else's window. Named for the protocol rather than

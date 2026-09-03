@@ -171,6 +171,7 @@ impl LayerClient {
             workspaces: HashMap::new(),
             workspace_handles: HashMap::new(),
             workspace_groups: HashMap::new(),
+            workspace_group_handles: HashMap::new(),
             workspace_group_outputs: HashMap::new(),
             workspaces_changed: false,
             idle_notifications: Vec::new(),

@@ -216,6 +216,58 @@ impl LayerClient {
         true
     }
 
+    /// Removes a workspace, reporting whether the compositor will.
+    pub fn remove_workspace(&mut self, key: &str) -> bool {
+        let Some(manager) = &self.state.workspace_manager else {
+            return false;
+        };
+        let Some(handle) = self.workspace_handle(key, |info| info.removable) else {
+            return false;
+        };
+        handle.remove();
+        manager.commit();
+        true
+    }
+
+    /// Moves a workspace to the group on `output`, reporting whether it could.
+    pub fn assign_workspace(&mut self, key: &str, output: &str) -> bool {
+        let Some(manager) = &self.state.workspace_manager else {
+            return false;
+        };
+        let Some(group) = self
+            .state
+            .workspace_group_outputs
+            .iter()
+            .find(|(_, name)| name.as_str() == output)
+            .and_then(|(id, _)| self.state.workspace_group_handles.get(id))
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(handle) = self.workspace_handle(key, |info| info.assignable) else {
+            return false;
+        };
+        handle.assign(&group);
+        manager.commit();
+        true
+    }
+
+    /// The handle behind a workspace key, when the compositor allows the act.
+    fn workspace_handle(
+        &self,
+        key: &str,
+        allowed: impl Fn(&WorkspaceInfo) -> bool,
+    ) -> Option<&wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1::ExtWorkspaceHandleV1>
+    {
+        let id = self
+            .state
+            .workspaces
+            .iter()
+            .find(|(_, info)| info.key == key && allowed(info))
+            .map(|(id, _)| id)?;
+        self.state.workspace_handles.get(id)
+    }
+
     /// Holds the session awake, and reports whether the compositor allows it.
     ///
     /// `false` means no compositor support rather than failure to apply: a

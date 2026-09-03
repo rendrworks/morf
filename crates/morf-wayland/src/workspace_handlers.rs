@@ -28,8 +28,12 @@ const STATE_ACTIVE: u32 = 1;
 const STATE_URGENT: u32 = 2;
 const STATE_HIDDEN: u32 = 4;
 
-/// `capabilities` is another, and this is the only bit a configuration acts on.
+/// `capabilities` is another. Activate is the bit a bar acts on; remove and
+/// assign are what a workspace *manager* acts on, and a configuration is
+/// entitled to know which of the three the compositor will honour.
 const CAPABILITY_ACTIVATE: u32 = 1;
+const CAPABILITY_REMOVE: u32 = 4;
+const CAPABILITY_ASSIGN: u32 = 8;
 
 impl Dispatch<ExtWorkspaceManagerV1, ()> for LayerState {
     /// Groups and workspaces appearing, and the point at which they are true.
@@ -60,6 +64,11 @@ impl Dispatch<ExtWorkspaceManagerV1, ()> for LayerState {
                 };
                 state.workspaces.insert(key.clone(), info);
                 state.workspace_handles.insert(key, workspace);
+            }
+            ext_workspace_manager_v1::Event::WorkspaceGroup { workspace_group } => {
+                state
+                    .workspace_group_handles
+                    .insert(workspace_group.id(), workspace_group);
             }
             ext_workspace_manager_v1::Event::Done => state.workspaces_changed = true,
             ext_workspace_manager_v1::Event::Finished => {
@@ -122,6 +131,7 @@ impl Dispatch<ExtWorkspaceGroupHandleV1, ()> for LayerState {
             }
             ext_workspace_group_handle_v1::Event::Removed => {
                 state.workspace_group_outputs.remove(&group.id());
+                state.workspace_group_handles.remove(&group.id());
                 group.destroy();
             }
             _ => {}
@@ -197,8 +207,10 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for LayerState {
             }
             ext_workspace_handle_v1::Event::Capabilities { capabilities } => {
                 let capabilities: u32 = capabilities.into();
-                state.workspaces.entry(key).or_default().activatable =
-                    capabilities & CAPABILITY_ACTIVATE != 0;
+                let entry = state.workspaces.entry(key).or_default();
+                entry.activatable = capabilities & CAPABILITY_ACTIVATE != 0;
+                entry.removable = capabilities & CAPABILITY_REMOVE != 0;
+                entry.assignable = capabilities & CAPABILITY_ASSIGN != 0;
             }
             ext_workspace_handle_v1::Event::Removed => {
                 state.workspaces.remove(&key);

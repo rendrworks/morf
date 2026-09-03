@@ -116,6 +116,8 @@ impl Runtime {
                 entry.set_field(ctx, "urgent", workspace.urgent);
                 entry.set_field(ctx, "hidden", workspace.hidden);
                 entry.set_field(ctx, "activatable", workspace.activatable);
+                entry.set_field(ctx, "removable", workspace.removable);
+                entry.set_field(ctx, "assignable", workspace.assignable);
                 let coordinates = Table::new(&ctx);
                 for (axis, value) in workspace.coordinates.iter().enumerate() {
                     let _ = coordinates.set(ctx, axis as i64 + 1, *value as i64);
@@ -126,8 +128,8 @@ impl Runtime {
         });
     }
 
-    /// Takes the workspace a configuration asked to switch to.
-    pub fn take_workspace_activation(&mut self) -> Option<String> {
-        self.reactive.borrow_mut().workspace_activation.take()
+    /// Takes what a configuration asked to do to workspaces.
+    pub fn take_workspace_requests(&mut self) -> Vec<WorkspaceRequest> {
+        std::mem::take(&mut self.reactive.borrow_mut().workspace_requests)
     }
 }

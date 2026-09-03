@@ -1,5 +1,6 @@
 use morf_lua::{
     LayerSurfaceConfig, Runtime, Toplevel, WindowSurfaceConfig, WindowSurfaceKind, Workspace,
+    WorkspaceRequest,
 };
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
@@ -29,7 +30,7 @@ pub(crate) fn apply_service_requests(runtime: &mut Runtime, client: &mut LayerCl
     apply_text_input_requests(runtime, client);
     publish_windows(runtime, client);
     publish_workspaces(runtime, client);
-    apply_workspace_activation(runtime, client);
+    apply_workspace_requests(runtime, client);
     apply_toplevel_requests(runtime, client);
 }
 
@@ -91,6 +92,8 @@ fn publish_workspaces(runtime: &mut Runtime, client: &mut LayerClient) {
             urgent: workspace.urgent,
             hidden: workspace.hidden,
             activatable: workspace.activatable,
+            removable: workspace.removable,
+            assignable: workspace.assignable,
         })
         .collect();
     runtime.set_workspaces(&workspaces);
@@ -120,10 +123,14 @@ fn apply_toplevel_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     }
 }
 
-/// Switches workspace, if the configuration asked.
-fn apply_workspace_activation(runtime: &mut Runtime, client: &mut LayerClient) {
-    if let Some(id) = runtime.take_workspace_activation() {
-        client.activate_workspace(&id);
+/// Acts on workspaces, if the configuration asked.
+fn apply_workspace_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    for request in runtime.take_workspace_requests() {
+        match request {
+            WorkspaceRequest::Activate(key) => client.activate_workspace(&key),
+            WorkspaceRequest::Remove(key) => client.remove_workspace(&key),
+            WorkspaceRequest::Assign { key, output } => client.assign_workspace(&key, &output),
+        };
     }
 }
 

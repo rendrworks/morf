@@ -30,7 +30,8 @@ static REPORTED: AtomicBool = AtomicBool::new(false);
 ///
 /// `MORF_DISABLE_CRASH_HANDLER` turns it off, for the case where an outer
 /// harness — a debugger, a test runner, a coredump handler — wants the default
-/// behaviour instead.
+/// behaviour instead. `MORF_CRASH_CORE` asks for a core dump as well as the
+/// report, subject to the usual `ulimit -c`.
 pub(crate) fn install() {
     if std::env::var_os("MORF_DISABLE_CRASH_HANDLER").is_some() {
         return;
@@ -57,6 +58,15 @@ pub(crate) fn install() {
                 // a reason to put it where the default hook does not.
                 let _ = writeln!(std::io::stderr(), "{report}");
             }
+        }
+        // A core, when asked for. A backtrace says where; a core says what
+        // every variable held when it got there, and a fault in the renderer
+        // is the kind where that is the difference between a fix and a guess.
+        // Opt-in, because a core of a process holding a GPU context is large
+        // and the kernel's own limits decide whether one appears at all.
+        if std::env::var_os("MORF_CRASH_CORE").is_some() {
+            // SAFETY: a plain signal to ourselves, with no memory arguments.
+            unsafe { libc::abort() };
         }
     }));
 }
