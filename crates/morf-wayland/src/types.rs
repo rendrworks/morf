@@ -270,6 +270,44 @@ pub(crate) fn popup_constraints(
 /// doing, because that is the compositor's business and not a client's. An
 /// overview or a task switcher wants exactly this list, plus a capture of each,
 /// and no more.
+/// One workspace, as `ext-workspace-v1` describes it.
+///
+/// Compositor-neutral by construction: nothing here is Hyprland's or sway's
+/// vocabulary, because the protocol is what both of them speak.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceInfo {
+    /// The field to act on, and the one `activate` takes.
+    ///
+    /// Unique, and lives exactly as long as the workspace does. Not the name --
+    /// names are for people, are not unique, and change.
+    pub key: String,
+    /// The compositor's own cross-session id, when it offers one.
+    ///
+    /// Optional in the protocol and empty on compositors that send none, so it
+    /// is no use as a key. What it is good for is remembering a preference
+    /// against a workspace between sessions, which is exactly what the protocol
+    /// says it is for.
+    pub id: String,
+    /// What to show a person, which is often a number.
+    pub name: String,
+    /// Where it sits in the compositor's arrangement, however many dimensions
+    /// that has. What they mean is the compositor's business; what a shell does
+    /// with them is sort by them.
+    pub coordinates: Vec<u32>,
+    /// The output whose group it belongs to, so a per-screen bar can show its
+    /// own workspaces rather than all of them.
+    pub output: String,
+    pub active: bool,
+    /// The workspace is asking for attention.
+    pub urgent: bool,
+    /// The compositor would rather it were not listed.
+    pub hidden: bool,
+    /// Whether `activate` will do anything. A compositor may list a workspace
+    /// it will not switch to, and a bar that offers the click anyway is a bar
+    /// with a dead button on it.
+    pub activatable: bool,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ToplevelInfo {
     /// Stable for the life of the window, and unique on this compositor.

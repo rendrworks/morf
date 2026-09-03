@@ -58,4 +58,66 @@ impl Runtime {
             }
         });
     }
+
+    /// Replaces `morf.workspaces` with the compositor's current workspace list.
+    ///
+    /// Updated in place and rebuilt only when the compositor says something
+    /// changed, exactly like `morf.windows` above.
+    ///
+    /// Nothing here is any one compositor's vocabulary: the list comes from
+    /// `ext-workspace-v1`, which is what makes a workspace indicator written
+    /// against it work on every compositor that speaks it rather than on the
+    /// one it was written for.
+    pub fn set_workspaces(&mut self, workspaces: &[Workspace]) {
+        self.lua.enter(|ctx| {
+            let Ok(morf) = ctx.get_global::<Table>("morf") else {
+                return;
+            };
+            let LuaValue::Table(table) = morf.get_value(ctx, "workspaces") else {
+                return;
+            };
+            let previous = table.length(&ctx);
+            for index in 1..=previous {
+                let _ = table.set(ctx, index, LuaValue::Nil);
+            }
+            for (index, workspace) in workspaces.iter().enumerate() {
+                let entry = Table::new(&ctx);
+                entry.set_field(
+                    ctx,
+                    "key",
+                    LuaValue::String(ctx.intern(workspace.key.as_bytes())),
+                );
+                entry.set_field(
+                    ctx,
+                    "id",
+                    LuaValue::String(ctx.intern(workspace.id.as_bytes())),
+                );
+                entry.set_field(
+                    ctx,
+                    "name",
+                    LuaValue::String(ctx.intern(workspace.name.as_bytes())),
+                );
+                entry.set_field(
+                    ctx,
+                    "output",
+                    LuaValue::String(ctx.intern(workspace.output.as_bytes())),
+                );
+                entry.set_field(ctx, "active", workspace.active);
+                entry.set_field(ctx, "urgent", workspace.urgent);
+                entry.set_field(ctx, "hidden", workspace.hidden);
+                entry.set_field(ctx, "activatable", workspace.activatable);
+                let coordinates = Table::new(&ctx);
+                for (axis, value) in workspace.coordinates.iter().enumerate() {
+                    let _ = coordinates.set(ctx, axis as i64 + 1, *value as i64);
+                }
+                entry.set_field(ctx, "coordinates", coordinates);
+                let _ = table.set(ctx, index as i64 + 1, entry);
+            }
+        });
+    }
+
+    /// Takes the workspace a configuration asked to switch to.
+    pub fn take_workspace_activation(&mut self) -> Option<String> {
+        self.reactive.borrow_mut().workspace_activation.take()
+    }
 }

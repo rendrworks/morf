@@ -19,6 +19,7 @@ mod surface_handlers;
 mod surface_types;
 mod toplevel_handlers;
 mod types;
+mod workspace_handlers;
 
 pub use client_layer::*;
 pub use helpers::*;

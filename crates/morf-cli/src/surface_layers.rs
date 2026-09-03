@@ -1,4 +1,6 @@
-use morf_lua::{LayerSurfaceConfig, Runtime, Toplevel, WindowSurfaceConfig, WindowSurfaceKind};
+use morf_lua::{
+    LayerSurfaceConfig, Runtime, Toplevel, WindowSurfaceConfig, WindowSurfaceKind, Workspace,
+};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
 use morf_wayland::{
@@ -25,6 +27,8 @@ pub(crate) fn apply_service_requests(runtime: &mut Runtime, client: &mut LayerCl
     apply_input_method_requests(runtime, client);
     apply_text_input_requests(runtime, client);
     publish_windows(runtime, client);
+    publish_workspaces(runtime, client);
+    apply_workspace_activation(runtime, client);
 }
 
 /// Hands the compositor's window list to the configuration, when it changed.
@@ -47,6 +51,39 @@ fn publish_windows(runtime: &mut Runtime, client: &mut LayerClient) {
         })
         .collect();
     runtime.set_windows(&windows);
+}
+
+/// Hands the compositor's workspace list to the configuration, when it changed.
+///
+/// The same contract as the window list above, and rebuilt the same way for the
+/// same reason.
+fn publish_workspaces(runtime: &mut Runtime, client: &mut LayerClient) {
+    if !client.take_workspaces_changed() {
+        return;
+    }
+    let workspaces: Vec<Workspace> = client
+        .workspaces()
+        .into_iter()
+        .map(|workspace| Workspace {
+            key: workspace.key,
+            id: workspace.id,
+            name: workspace.name,
+            coordinates: workspace.coordinates,
+            output: workspace.output,
+            active: workspace.active,
+            urgent: workspace.urgent,
+            hidden: workspace.hidden,
+            activatable: workspace.activatable,
+        })
+        .collect();
+    runtime.set_workspaces(&workspaces);
+}
+
+/// Switches workspace, if the configuration asked.
+fn apply_workspace_activation(runtime: &mut Runtime, client: &mut LayerClient) {
+    if let Some(id) = runtime.take_workspace_activation() {
+        client.activate_workspace(&id);
+    }
 }
 
 /// First identifier of the four internal edge reservers.

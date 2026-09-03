@@ -341,6 +341,8 @@ pub(crate) struct ReactiveState {
     pub(crate) quit_requested: bool,
     /// Whether the configuration is holding the session awake, and whether that
     /// has changed since the compositor was last told.
+    /// The workspace a configuration has asked to switch to, if any.
+    pub(crate) workspace_activation: Option<String>,
     pub(crate) idle_inhibited: bool,
     pub(crate) idle_inhibit_changed: bool,
     pub(crate) reload_completed_callbacks: Vec<StashedClosure>,
@@ -433,6 +435,7 @@ impl ReactiveState {
             watch_files: true,
             watch_files_changed: false,
             quit_requested: false,
+            workspace_activation: None,
             idle_inhibited: false,
             idle_inhibit_changed: false,
             reload_completed_callbacks: Vec::new(),

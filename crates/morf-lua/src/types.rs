@@ -69,6 +69,31 @@ pub struct Runtime {
     pub(crate) module_roots: Rc<RefCell<Vec<PathBuf>>>,
 }
 
+/// One workspace, as the engine hands it to a configuration.
+///
+/// Mirrors `morf_wayland::WorkspaceInfo` rather than re-exporting it, so the
+/// Lua runtime does not depend on the Wayland crate — the same separation the
+/// window list beside it keeps.
+#[derive(Clone, Debug, Default)]
+pub struct Workspace {
+    /// The field to act on, and what `morf.workspace.activate` takes.
+    pub key: String,
+    /// The compositor's cross-session id, when it offers one. Often empty --
+    /// the protocol makes it optional and Hyprland sends none.
+    pub id: String,
+    /// What to show a person.
+    pub name: String,
+    /// Where it sits in the compositor's arrangement.
+    pub coordinates: Vec<u32>,
+    /// The output it belongs to, so a per-screen bar can filter to its own.
+    pub output: String,
+    pub active: bool,
+    pub urgent: bool,
+    pub hidden: bool,
+    /// Whether `morf.workspace.activate` will do anything for it.
+    pub activatable: bool,
+}
+
 /// One window the compositor reports, as handed to a configuration.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Toplevel {

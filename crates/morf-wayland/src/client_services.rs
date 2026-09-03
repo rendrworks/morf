@@ -66,6 +66,51 @@ impl LayerClient {
         self.state.idle_notifier.is_some()
     }
 
+    /// Every workspace the compositor reports, in a stable order.
+    ///
+    /// Sorted by coordinates and then id, because the protocol delivers them in
+    /// whatever order it happens to and a bar whose workspaces reshuffle
+    /// between frames is unusable.
+    pub fn workspaces(&self) -> Vec<WorkspaceInfo> {
+        let mut workspaces = self.state.workspaces.values().cloned().collect::<Vec<_>>();
+        workspaces.sort_by(|a, b| a.coordinates.cmp(&b.coordinates).then(a.key.cmp(&b.key)));
+        workspaces
+    }
+
+    /// Whether the workspace list changed since this was last asked.
+    pub fn take_workspaces_changed(&mut self) -> bool {
+        std::mem::take(&mut self.state.workspaces_changed)
+    }
+
+    /// Switches to a workspace by its key, reporting whether it could.
+    ///
+    /// `false` covers three different disappointments a configuration would
+    /// otherwise have to guess between: no such workspace, a compositor that
+    /// will not switch to it, or no workspace protocol at all.
+    pub fn activate_workspace(&mut self, key: &str) -> bool {
+        let Some(manager) = &self.state.workspace_manager else {
+            return false;
+        };
+        let Some(key) = self
+            .state
+            .workspaces
+            .iter()
+            .find(|(_, info)| info.key == key && info.activatable)
+            .map(|(key, _)| key.clone())
+        else {
+            return false;
+        };
+        let Some(handle) = self.state.workspace_handles.get(&key) else {
+            return false;
+        };
+        handle.activate();
+        // Nothing happens until the manager is told to apply it. The protocol
+        // batches, so a configuration that activated one workspace and
+        // deactivated another gets both or neither.
+        manager.commit();
+        true
+    }
+
     /// Holds the session awake, and reports whether the compositor allows it.
     ///
     /// `false` means no compositor support rather than failure to apply: a

@@ -174,3 +174,86 @@ fn a_proxy_takes_a_call_timeout_and_enumerates_managed_objects() {
         );
     }
 }
+
+#[test]
+fn a_configuration_reads_workspaces_and_asks_to_switch() {
+    // `ext-workspace-v1` is the compositor-neutral answer to workspaces, and
+    // binding it is what lets an indicator written once work on every
+    // compositor that speaks it. Before this, morf's own examples reached for
+    // `/dispatch workspace N` at Hyprland's socket, because there was nothing
+    // neutral to reach for.
+    //
+    // The list is the engine's to fill, so here it is filled directly: what is
+    // under test is the shape a configuration sees and the request it can make
+    // back, not the protocol, which the wayland smoke covers against a live
+    // compositor.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "workspaces.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local shown = morf.signal("ws.shown", "none")
+                morf.timer(1, function()
+                    local mine = {}
+                    for _, w in ipairs(morf.workspaces) do
+                        if w.output == "DP-1" then
+                            mine[#mine + 1] = w.name .. (w.active and "*" or "")
+                            if w.name == "2" then morf.workspace.activate(w.key) end
+                        end
+                    end
+                    shown:set(table.concat(mine, ","))
+                end, false)
+                ui.Text { text = function() return shown:get() end }
+            "#,
+        )
+        .unwrap();
+    // Two outputs' worth, so the per-output filter in the config above is doing
+    // something rather than passing everything through.
+    runtime.set_workspaces(&[
+        Workspace {
+            key: "a".into(),
+            name: "1".into(),
+            output: "DP-1".into(),
+            active: true,
+            ..Workspace::default()
+        },
+        Workspace {
+            key: "b".into(),
+            name: "2".into(),
+            output: "DP-1".into(),
+            activatable: true,
+            ..Workspace::default()
+        },
+        Workspace {
+            key: "c".into(),
+            name: "1".into(),
+            output: "DP-2".into(),
+            ..Workspace::default()
+        },
+    ]);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while !runtime.poll_services() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let root = runtime.scene().roots()[0];
+    assert_eq!(
+        runtime.scene().string_value(root, "text").unwrap(),
+        "1*,2",
+        "the configuration sees its own output's workspaces, and which is active"
+    );
+    assert_eq!(
+        runtime.take_workspace_activation().as_deref(),
+        Some("b"),
+        "and switching asks by key -- not by name, which is not unique, and not \
+         by the compositor's id, which is optional and absent on Hyprland"
+    );
+    assert_eq!(
+        runtime.take_workspace_activation(),
+        None,
+        "the request is taken once"
+    );
+}

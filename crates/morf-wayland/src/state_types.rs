@@ -45,6 +45,9 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
     ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
 };
+use wayland_protocols::ext::workspace::v1::client::{
+    ext_workspace_handle_v1::ExtWorkspaceHandleV1, ext_workspace_manager_v1::ExtWorkspaceManagerV1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::WpFractionalScaleV1,
@@ -163,6 +166,19 @@ pub(crate) struct LayerState {
     pub(crate) keyboard_surface: Option<SurfaceRole>,
     pub(crate) idle_notifier: Option<ExtIdleNotifierV1>,
     pub(crate) idle_inhibit_manager: Option<ZwpIdleInhibitManagerV1>,
+    pub(crate) workspace_manager: Option<ExtWorkspaceManagerV1>,
+    /// Every workspace the compositor reports, keyed by its protocol object.
+    pub(crate) workspaces: HashMap<ObjectId, WorkspaceInfo>,
+    /// The handles behind them, so `activate` has something to call. A
+    /// configuration is only ever given strings, so the engine is what finds
+    /// its way back from an id to the object the compositor knows.
+    pub(crate) workspace_handles: HashMap<ObjectId, ExtWorkspaceHandleV1>,
+    /// Which group each workspace belongs to, and which output each group is
+    /// on. Two maps rather than one because the protocol delivers the two facts
+    /// separately and in either order.
+    pub(crate) workspace_groups: HashMap<ObjectId, ObjectId>,
+    pub(crate) workspace_group_outputs: HashMap<ObjectId, String>,
+    pub(crate) workspaces_changed: bool,
     /// The live inhibitor, if the shell is currently holding the session awake.
     ///
     /// Its existence *is* the inhibition — the protocol has no "off", only a
