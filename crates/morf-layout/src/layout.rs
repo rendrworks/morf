@@ -28,9 +28,8 @@ pub struct Layout {
     /// Resolving it means reading five properties and parsing the attached
     /// layout map, and every node is asked at least twice in a pass — once
     /// while its parent measures, once while its parent places it, and again
-    /// for a node inside a `RowLayout` or `ColumnLayout`. The answer cannot
-    /// change between those, so it is worked out where the implicit size is and
-    /// looked up thereafter.
+    /// for a leaf inside a `Flex`. The answer cannot change between those, so
+    /// it is worked out where the implicit size is and looked up thereafter.
     pub(crate) requested: FastMap<NodeHandle, Size>,
     /// Widths to measure text at on the second pass.
     ///
