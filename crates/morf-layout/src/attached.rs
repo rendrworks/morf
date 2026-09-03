@@ -52,8 +52,32 @@ pub(crate) struct Attached {
 }
 
 impl Attached {
-    /// Reads a node's map.
+    /// Reads a node's map. A key that no container reads is an error that
+    /// names it, so a word from another vocabulary is never quietly ignored.
     pub(crate) fn read(map: &BTreeMap<String, Value>) -> Result<Self, LayoutError> {
+        const KNOWN: [&str; 15] = [
+            "grow",
+            "shrink",
+            "basis",
+            "align_self",
+            "margin",
+            "width",
+            "height",
+            "minimum_width",
+            "minimum_height",
+            "maximum_width",
+            "maximum_height",
+            "column",
+            "row",
+            "column_span",
+            "row_span",
+        ];
+        if let Some(unknown) = map.keys().find(|key| !KNOWN.contains(&key.as_str())) {
+            return Err(LayoutError::Scene(format!(
+                "unknown layout key `{unknown}`: the keys are {}",
+                KNOWN.join(", ")
+            )));
+        }
         let number = |key: &str| match map.get(key) {
             Some(Value::Number(value)) if value.is_finite() => Some(value.max(0.0)),
             _ => None,

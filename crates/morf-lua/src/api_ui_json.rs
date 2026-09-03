@@ -60,6 +60,21 @@ pub(crate) fn install_ui_json_api<'gc>(
         Ok(CallbackReturn::Return)
     });
     ui.set_field(ctx, "each", each);
+    // A kind that does not exist is named, not a nil that fails to call.
+    let unknown_kind = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let (_, key): (Table, LuaValue) = stack.consume(ctx)?;
+        let key = match key {
+            LuaValue::String(name) => name.display_lossy().to_string(),
+            other => format!("{other:?}"),
+        };
+        Err(HostError(format!(
+            "no ui kind `{key}`: the kinds are Item, Inset, Rect, ClipRect, Text, Image, Icon, Sdf, SdfShape, MouseArea, Row, Column, Grid, Flex, Flickable, Loader, Timer, Layout, Repeater, ListView, GridView, each"
+        ))
+        .into())
+    });
+    let ui_metatable = Table::new(&ctx);
+    ui_metatable.set_field(ctx, "__index", unknown_kind);
+    ui.set_metatable(ctx, Some(ui_metatable));
     ui.set_field(
         ctx,
         "Layout",

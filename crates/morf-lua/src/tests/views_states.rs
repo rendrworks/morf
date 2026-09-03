@@ -392,3 +392,19 @@ fn a_repeater_can_lay_its_rows_out_as_a_flex() {
     assert_eq!(scene.string_value(root, "direction").unwrap(), "column");
     assert_eq!(scene.children(root).unwrap().len(), 2);
 }
+
+#[test]
+fn a_ui_kind_that_does_not_exist_is_named() {
+    let mut runtime = Runtime::default();
+    let error = runtime
+        .execute(
+            "no-kind.lua",
+            br#"
+                local ui = require("morf.ui")
+                ui.RowLayout { }
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no ui kind `RowLayout`"), "{error}");
+}

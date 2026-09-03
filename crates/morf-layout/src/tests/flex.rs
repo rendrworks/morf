@@ -218,3 +218,29 @@ fn a_flex_child_may_not_anchor_and_a_bad_word_is_named() {
         "{error}"
     );
 }
+
+#[test]
+fn a_layout_key_from_another_vocabulary_is_named_not_ignored() {
+    let mut scene = Scene::new();
+    let flex = sized(&mut scene, Element::Flex, 100.0, 10.0);
+    let child = sized(&mut scene, Element::Rect, 10.0, 10.0);
+    attached(&mut scene, child, &[("fill_width", Value::Bool(true))]);
+    scene.reparent(child, Some(flex)).unwrap();
+
+    let error = Layout::compute(
+        &scene,
+        flex,
+        Size {
+            width: 100.0,
+            height: 10.0,
+        },
+        &mut FixedText,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unknown layout key `fill_width`"),
+        "{error}"
+    );
+}
