@@ -69,6 +69,103 @@ pub struct Runtime {
     pub(crate) module_roots: Rc<RefCell<Vec<PathBuf>>>,
 }
 
+/// How much a log line matters.
+///
+/// Ordered, so a filter is a comparison: asking for warnings gets errors too.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum LogLevel {
+    /// Something a person tuning a configuration wants and nobody else does.
+    Debug,
+    /// What happened, when it is worth saying.
+    Info,
+    /// Something went wrong and the shell carried on.
+    Warn,
+    /// Something went wrong and did not.
+    Error,
+}
+
+impl LogLevel {
+    /// The name on the wire and on the command line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+
+    /// Reads a level back, for `--level` and for the wire.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warn" | "warning" => Some(Self::Warn),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+/// One line of the shell's log.
+///
+/// Carries when and how much rather than only what. A flat list of strings is
+/// unreadable by the time it matters: a shell that has been running for a day
+/// has thousands of them and no way to ask which are serious, or recent.
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+    pub level: LogLevel,
+    /// Milliseconds since the epoch. A number rather than a formatted time, so
+    /// whoever shows it decides how.
+    pub at_ms: u64,
+    pub message: String,
+}
+
+impl std::fmt::Display for LogEntry {
+    /// Level and message, which is what a person reading one wants.
+    ///
+    /// Not the timestamp: it is a number of milliseconds and whoever shows it
+    /// decides how, which is the whole reason it is stored as one.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:<5} {}", self.level.name(), self.message)
+    }
+}
+
+impl LogEntry {
+    /// Packs an entry into one wire string.
+    ///
+    /// Unit separators, because they cannot occur in a log message and so need
+    /// no escaping -- and a log format that needs escaping gets it wrong on the
+    /// one line you most wanted to read.
+    pub fn to_wire(&self) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}",
+            self.level.name(),
+            self.at_ms,
+            self.message
+        )
+    }
+
+    /// Reads one back, tolerating a line that was never packed.
+    pub fn from_wire(line: &str) -> Self {
+        let mut parts = line.splitn(3, '\u{1f}');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(level), Some(at), Some(message)) => Self {
+                level: LogLevel::parse(level).unwrap_or(LogLevel::Info),
+                at_ms: at.parse().unwrap_or(0),
+                message: message.to_owned(),
+            },
+            // An unpacked line came from somewhere else, and losing it would be
+            // worse than showing it without a level.
+            _ => Self {
+                level: LogLevel::Info,
+                at_ms: 0,
+                message: line.to_owned(),
+            },
+        }
+    }
+}
+
 /// One workspace, as the engine hands it to a configuration.
 ///
 /// Mirrors `morf_wayland::WorkspaceInfo` rather than re-exporting it, so the

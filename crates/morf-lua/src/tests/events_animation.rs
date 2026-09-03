@@ -53,7 +53,11 @@ fn handler_fuel_failure_is_nonfatal() {
     let node = runtime.scene().roots()[0];
 
     assert!(runtime.dispatch_ui_event(node, UiEvent::Clicked));
-    assert!(runtime.take_logs()[0].contains("handler fuel exhausted"));
+    assert!(
+        runtime.take_logs()[0]
+            .message
+            .contains("handler fuel exhausted")
+    );
     assert!(runtime.scene().contains(node));
 }
 

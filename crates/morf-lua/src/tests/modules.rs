@@ -137,7 +137,7 @@ fn list_handlers_preserve_order_and_isolate_failures() {
         runtime.call_ipc("calls", &[]).unwrap(),
         [IpcValue::String("ab".into())]
     );
-    assert!(runtime.take_logs()[0].contains("broken"));
+    assert!(runtime.take_logs()[0].message.contains("broken"));
 }
 
 #[test]

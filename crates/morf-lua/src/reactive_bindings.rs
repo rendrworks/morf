@@ -257,12 +257,12 @@ pub(crate) fn flush_reactive(
                 .map(|error| format!("{}: {}", error.effect, error.message))
                 .collect::<Vec<_>>()
                 .join("; ");
-            state.logs.push(message.clone());
+            state.log(LogLevel::Warn, message.clone());
             Err(message)
         }
         Err(error) => {
             let message = error.to_string();
-            state.logs.push(message.clone());
+            state.log(LogLevel::Warn, message.clone());
             Err(message)
         }
     }

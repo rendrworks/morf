@@ -123,10 +123,10 @@ pub(crate) fn finish_retained_destroy(
     if let Some(callback) = callback
         && let Err(error) = execute_handler_args(ctx, &callback, &[], limits)
     {
-        state
-            .borrow_mut()
-            .logs
-            .push(format!("Retainable about_to_destroy: {error}"));
+        state.borrow_mut().log(
+            LogLevel::Warn,
+            format!("Retainable about_to_destroy: {error}"),
+        );
     }
     remove_scene_subtree(&mut state.borrow_mut(), node);
 }
@@ -155,8 +155,7 @@ pub(crate) fn drop_retainable(
     {
         state
             .borrow_mut()
-            .logs
-            .push(format!("Retainable dropped: {error}"));
+            .log(LogLevel::Warn, format!("Retainable dropped: {error}"));
     }
     if state
         .borrow()
@@ -188,9 +187,10 @@ pub(crate) fn register_reloadable_value(
             value
         }
         Some(_) => {
-            state.logs.push(format!(
-                "reloadable `{name}` changed value type; using its new default"
-            ));
+            state.log(
+                LogLevel::Warn,
+                format!("reloadable `{name}` changed value type; using its new default"),
+            );
             initial
         }
         None => initial,

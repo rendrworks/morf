@@ -19,7 +19,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
-use crate::{events::*, surface_types::*, types::ToplevelRequest};
+use crate::{
+    events::*,
+    surface_types::*,
+    types::{LogEntry, LogLevel, ToplevelRequest},
+};
 // Re-exported, because these moved out of this file only to satisfy the line
 // gate: every consumer reaches for them through `state::*` and there is no
 // reason to make them all learn a second module name.
@@ -316,7 +320,7 @@ pub(crate) struct ReactiveState {
     pub(crate) effects: HashMap<u64, LuaEffect>,
     pub(crate) next_effect: u64,
     pub(crate) active: Option<Capture>,
-    pub(crate) logs: Vec<String>,
+    pub(crate) logs: Vec<LogEntry>,
     /// Shaders the configuration registered, by name.
     ///
     /// Compiled once at load. The renderer is handed the generated WGSL when
@@ -381,6 +385,24 @@ pub(crate) struct ReactiveState {
 }
 
 impl ReactiveState {
+    /// Records one line, stamped with when it happened.
+    ///
+    /// The one way in, so every entry gets a level and a time rather than the
+    /// flat strings this used to hold -- a shell running for a day accumulates
+    /// thousands, and without either there is no way to ask which are serious
+    /// or recent.
+    pub(crate) fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or(0);
+        self.logs.push(LogEntry {
+            level,
+            at_ms,
+            message: message.into(),
+        });
+    }
+
     pub(crate) fn new() -> Self {
         let mut graph = Graph::default();
         let initial_clock = IpcValue::String(String::new());

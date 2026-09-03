@@ -1,5 +1,5 @@
 use morf_io::{IpcReply, IpcRequest, IpcValue as WireValue};
-use morf_lua::{Limits, Runtime, Screen};
+use morf_lua::{Limits, LogEntry, Runtime, Screen};
 use morf_wayland::ScreenInfo;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -201,7 +201,15 @@ pub(crate) fn handle_worker_command(
             WorkerUpdate::default()
         }
         WorkerCommand::Logs(reply) => {
-            let _ = reply.send(runtime.take_logs());
+            // Packed here rather than at the socket, because the entry is
+            // structured on this side and a string by the time it leaves.
+            let _ = reply.send(
+                runtime
+                    .take_logs()
+                    .iter()
+                    .map(LogEntry::to_wire)
+                    .collect::<Vec<_>>(),
+            );
             WorkerUpdate::default()
         }
         WorkerCommand::Bindings(reply) => {

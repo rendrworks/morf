@@ -26,7 +26,7 @@ fn runaway_lua_effect_exhausts_its_own_fuel() {
             "#,
         )
         .unwrap();
-    assert!(runtime.take_logs()[0].contains("runaway"));
+    assert!(runtime.take_logs()[0].message.contains("runaway"));
 }
 
 #[test]

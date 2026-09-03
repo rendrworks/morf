@@ -320,3 +320,38 @@ fn a_panic_leaves_a_report_behind() {
     );
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn log_levels_order_and_survive_the_wire() {
+    // Logging was a flat list of strings -- no level, no time, no filter -- so
+    // a shell that had been running for a day gave you thousands of lines and
+    // no way to ask which were serious, or recent.
+    use morf_lua::{LogEntry, LogLevel};
+
+    assert!(
+        LogLevel::Debug < LogLevel::Warn,
+        "levels compare, so a filter is a comparison rather than a set"
+    );
+    assert_eq!(LogLevel::parse("warning"), Some(LogLevel::Warn));
+    assert_eq!(LogLevel::parse("shouty"), None);
+
+    let entry = LogEntry {
+        level: LogLevel::Warn,
+        at_ms: 1_700_000_000_000,
+        message: "a message with a : colon and a - dash".to_owned(),
+    };
+    let round_tripped = LogEntry::from_wire(&entry.to_wire());
+    assert_eq!(round_tripped.level, LogLevel::Warn);
+    assert_eq!(round_tripped.at_ms, entry.at_ms);
+    assert_eq!(
+        round_tripped.message, entry.message,
+        "unit separators cannot occur in a message, so punctuation needs no \
+         escaping and survives"
+    );
+
+    // A line that was never packed came from somewhere else, and losing it
+    // would be worse than showing it without a level.
+    let bare = LogEntry::from_wire("something printed the old way");
+    assert_eq!(bare.level, LogLevel::Info);
+    assert_eq!(bare.message, "something printed the old way");
+}

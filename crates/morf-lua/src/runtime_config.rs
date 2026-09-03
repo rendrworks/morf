@@ -152,7 +152,7 @@ impl Runtime {
     }
 
     /// Drains non-fatal binding diagnostics produced since the previous call.
-    pub fn take_logs(&mut self) -> Vec<String> {
+    pub fn take_logs(&mut self) -> Vec<LogEntry> {
         std::mem::take(&mut self.reactive.borrow_mut().logs)
     }
 
@@ -260,8 +260,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("reload callback: {message}"));
+                    .log(LogLevel::Warn, format!("reload callback: {message}"));
             }
         }
         !callbacks.is_empty()

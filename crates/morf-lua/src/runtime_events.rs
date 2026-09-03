@@ -88,8 +88,7 @@ impl Runtime {
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("idle callback: {message}"));
+                    .log(LogLevel::Warn, format!("idle callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -124,8 +123,7 @@ impl Runtime {
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("clipboard callback: {message}"));
+                    .log(LogLevel::Warn, format!("clipboard callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -156,8 +154,7 @@ impl Runtime {
         {
             self.reactive
                 .borrow_mut()
-                .logs
-                .push(format!("screencopy callback: {message}"));
+                .log(LogLevel::Warn, format!("screencopy callback: {message}"));
         }
         true
     }
@@ -201,8 +198,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("input method callback: {message}"));
+                    .log(LogLevel::Warn, format!("input method callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -249,8 +245,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("text input callback: {message}"));
+                    .log(LogLevel::Warn, format!("text input callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -320,11 +315,10 @@ impl Runtime {
             .lua
             .enter(|ctx| execute_handler_args(ctx, &handler, args, self.limits));
         if let Err(message) = result {
-            self.reactive.borrow_mut().logs.push(format!(
-                "{:?}.{}: {message}",
-                node,
-                event.property()
-            ));
+            self.reactive.borrow_mut().log(
+                LogLevel::Warn,
+                format!("{:?}.{}: {message}", node, event.property()),
+            );
         }
         true
     }

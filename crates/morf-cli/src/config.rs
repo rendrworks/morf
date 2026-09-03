@@ -1,4 +1,5 @@
 use morf_io::{IpcRequest, IpcValue as WireValue, ipc_call};
+use morf_lua::{LogEntry, LogLevel};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -6,7 +7,7 @@ use std::path::PathBuf;
 use crate::{lock::*, supervisor::*};
 
 pub(crate) fn usage() -> &'static str {
-    "morf - reactive Wayland shell runtime\n\nusage: morf [--no-plugin | --clean] [shell.lua]\n       morf [--no-plugin | --clean] -c <name>\n       morf lock [lock.lua]\n       morf ipc call <target> [args...]\n       morf ipc verbs\n       morf log [--bindings]\n       morf kill\n       morf --help\n       morf --version"
+    "morf - reactive Wayland shell runtime\n\nusage: morf [--no-plugin | --clean] [shell.lua]\n       morf [--no-plugin | --clean] -c <name>\n       morf lock [lock.lua]\n       morf ipc call <target> [args...]\n       morf ipc verbs\n       morf log [-f|--follow] [--level <debug|info|warn|error>]\n       morf log --bindings\n       morf kill\n       morf --help\n       morf --version"
 }
 
 pub(crate) fn run() -> Result<(), String> {
@@ -27,6 +28,7 @@ pub(crate) fn run() -> Result<(), String> {
                 .map_err(|error| format!("could not read {}: {error}", path.display()))?;
             run_lock(&path, &source)?;
         }
+        Command::Log { follow, level } => follow_logs(follow, level)?,
         Command::Client(request) => {
             let reply = ipc_call(socket_path()?, &request).map_err(|error| error.to_string())?;
             println!(
@@ -38,6 +40,63 @@ pub(crate) fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// Prints the shell's log, once or until interrupted.
+///
+/// Following is a poll rather than a stream, and deliberately: the IPC is one
+/// request and one reply by design, and a socket that pushes would be a second
+/// protocol to get right. It works because reading the log *drains* it, so each
+/// pass returns only what arrived since the last -- which is exactly what
+/// following means.
+fn follow_logs(follow: bool, level: LogLevel) -> Result<(), String> {
+    loop {
+        let reply = ipc_call(socket_path()?, &IpcRequest::Log).map_err(|e| e.to_string())?;
+        if let Some(error) = &reply.error {
+            return Err(error.clone());
+        }
+        for value in &reply.result {
+            let WireValue::String(line) = value else {
+                continue;
+            };
+            let entry = LogEntry::from_wire(line.as_str());
+            if entry.level < level {
+                continue;
+            }
+            println!("{:<5} {}", entry.level.name(), entry.message);
+        }
+        if !follow {
+            return Ok(());
+        }
+        // Slow enough that an idle shell costs nothing, quick enough that a
+        // person watching a reload does not wonder whether it is working.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+/// Reads the options `morf log` takes.
+///
+/// Its own function because it is the only subcommand with more than one, and
+/// folding it into the match above would put four cases of flag parsing in the
+/// middle of a table of shapes.
+fn parse_log(rest: &[&str]) -> Result<Command, String> {
+    let mut follow = false;
+    let mut level = LogLevel::Debug;
+    let mut rest = rest.iter();
+    while let Some(argument) = rest.next() {
+        match *argument {
+            "-f" | "--follow" => follow = true,
+            "--level" => {
+                let Some(name) = rest.next() else {
+                    return Err("--level wants a name".to_owned());
+                };
+                level =
+                    LogLevel::parse(name).ok_or_else(|| format!("unknown log level `{name}`"))?;
+            }
+            other => return Err(format!("unknown option `{other}` for `morf log`")),
+        }
+    }
+    Ok(Command::Log { follow, level })
+}
+
 pub(crate) enum Command {
     Help,
     Version,
@@ -45,6 +104,11 @@ pub(crate) enum Command {
     /// arguments that are the configuration's own rather than morf's.
     Run(PathBuf, LoadPolicy, Vec<String>),
     Lock(PathBuf),
+    /// Reading the shell's log, once or until interrupted.
+    Log {
+        follow: bool,
+        level: LogLevel,
+    },
     Client(IpcRequest),
 }
 
@@ -103,8 +167,8 @@ pub(crate) fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, Stri
                 .map(|value| WireValue::String((*value).to_owned()))
                 .collect(),
         })),
-        ["log"] => Ok(Command::Client(IpcRequest::Log)),
         ["log", "--bindings"] => Ok(Command::Client(IpcRequest::Bindings)),
+        ["log", rest @ ..] => parse_log(rest),
         ["kill"] => Ok(Command::Client(IpcRequest::Kill)),
         [] => Ok(Command::Run(
             config_root()?.join("shell.lua"),

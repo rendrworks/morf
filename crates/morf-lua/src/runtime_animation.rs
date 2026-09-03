@@ -53,8 +53,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("{source} on_finished: {message}"));
+                    .log(LogLevel::Warn, format!("{source} on_finished: {message}"));
             }
         }
         Ok(frame)

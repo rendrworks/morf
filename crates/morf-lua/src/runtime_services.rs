@@ -76,7 +76,7 @@ impl Runtime {
                     changed = true;
                 }
                 Ok(false) => {}
-                Err(error) => state.logs.push(format!("transform watcher: {error}")),
+                Err(error) => state.log(LogLevel::Warn, format!("transform watcher: {error}")),
             }
         }
         state.transform_watchers = watchers;
@@ -152,7 +152,7 @@ impl Runtime {
                         interval: duration,
                         node: Some(node),
                     }),
-                    Err(error) => state.logs.push(format!("Timer: {error}")),
+                    Err(error) => state.log(LogLevel::Warn, format!("Timer: {error}")),
                 }
                 service_changed = true;
             }
@@ -242,11 +242,9 @@ impl Runtime {
                     }
                 }
             }
-            state.logs.extend(
-                udev_errors
-                    .into_iter()
-                    .map(|error| format!("udev: {error}")),
-            );
+            for error in udev_errors {
+                state.log(LogLevel::Warn, format!("udev: {error}"));
+            }
             let mut status_errors = Vec::new();
             for subscription in &mut state.status_notifiers {
                 match subscription.host.poll_changed() {
@@ -255,11 +253,9 @@ impl Runtime {
                     Err(error) => status_errors.push(error.to_string()),
                 }
             }
-            state.logs.extend(
-                status_errors
-                    .into_iter()
-                    .map(|error| format!("status notifier: {error}")),
-            );
+            for error in status_errors {
+                state.log(LogLevel::Warn, format!("status notifier: {error}"));
+            }
             retained_destroys.extend(state.retained_destroy_queue.drain());
             for watcher in state.transform_watchers.values_mut() {
                 if watcher.pending {
@@ -322,7 +318,7 @@ impl Runtime {
                         "active_async",
                         SceneValue::Bool(false),
                     );
-                    state.logs.push(format!("Loader: {error}"));
+                    state.log(LogLevel::Warn, format!("Loader: {error}"));
                 }
             }
         }
@@ -350,8 +346,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("PAM callback: {message}"));
+                    .log(LogLevel::Warn, format!("PAM callback: {message}"));
             }
         }
         for callback in timers {
@@ -361,8 +356,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("timer callback: {message}"));
+                    .log(LogLevel::Warn, format!("timer callback: {message}"));
             }
         }
         for (callback, revision) in transform_callbacks {
@@ -376,8 +370,7 @@ impl Runtime {
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("transform callback: {message}"));
+                    .log(LogLevel::Warn, format!("transform callback: {message}"));
             }
         }
         for (callback, call) in dbus_calls {
@@ -387,8 +380,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("D-Bus call: {message}"));
+                    .log(LogLevel::Warn, format!("D-Bus call: {message}"));
             }
         }
         for (callback, value) in dbus_signals {
@@ -397,8 +389,7 @@ impl Runtime {
                 Err(message) => {
                     self.reactive
                         .borrow_mut()
-                        .logs
-                        .push(format!("D-Bus signal: {message}"));
+                        .log(LogLevel::Warn, format!("D-Bus signal: {message}"));
                     continue;
                 }
             };
@@ -408,8 +399,7 @@ impl Runtime {
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("D-Bus callback: {message}"));
+                    .log(LogLevel::Warn, format!("D-Bus callback: {message}"));
             }
         }
         for (callback, event) in udev_events {
@@ -418,18 +408,17 @@ impl Runtime {
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("udev callback: {message}"));
+                    .log(LogLevel::Warn, format!("udev callback: {message}"));
             }
         }
         for (callback, items) in status_updates {
             if let Err(message) = self.lua.enter(|ctx| {
                 execute_dbus_handler(ctx, &callback, status_notifier_value(items), self.limits)
             }) {
-                self.reactive
-                    .borrow_mut()
-                    .logs
-                    .push(format!("status notifier callback: {message}"));
+                self.reactive.borrow_mut().log(
+                    LogLevel::Warn,
+                    format!("status notifier callback: {message}"),
+                );
             }
         }
         service_changed || self.reactive.borrow().scene_revision != revision_before
