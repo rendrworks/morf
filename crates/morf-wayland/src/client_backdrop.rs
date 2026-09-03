@@ -124,7 +124,11 @@ impl LayerClient {
     /// By identifier rather than by index or title: an index means something
     /// different the moment a window opens, and two windows of one application
     /// share a title as readily as an app id.
-    pub fn capture_window(&mut self, request_id: u64, identifier: &str) -> bool {
+    ///
+    /// With `gpu`, the session's dmabuf offer is reported as a `CaptureOffer`
+    /// instead of being answered with shared memory, so the renderer can hand
+    /// over a buffer the compositor draws into directly.
+    pub fn capture_window(&mut self, request_id: u64, identifier: &str, gpu: bool) -> bool {
         let (Some(manager), Some(sources)) = (
             self.state.capture_manager.clone(),
             self.state.toplevel_source_manager.clone(),
@@ -139,12 +143,12 @@ impl LayerClient {
         }
         let qh = self.queue.handle();
         let source = sources.create_source(&handle, &qh, ());
-        self.start_capture(request_id, &manager, &source, &qh);
+        self.start_capture(request_id, gpu, &manager, &source, &qh);
         true
     }
 
     /// Captures an output through the newer protocol.
-    pub fn capture_output_image(&mut self, request_id: u64) -> bool {
+    pub fn capture_output_image(&mut self, request_id: u64, gpu: bool) -> bool {
         let (Some(manager), Some(sources)) = (
             self.state.capture_manager.clone(),
             self.state.output_source_manager.clone(),
@@ -164,7 +168,7 @@ impl LayerClient {
         }
         let qh = self.queue.handle();
         let source = sources.create_source(&output, &qh, ());
-        self.start_capture(request_id, &manager, &source, &qh);
+        self.start_capture(request_id, gpu, &manager, &source, &qh);
         true
     }
 
@@ -176,6 +180,7 @@ impl LayerClient {
     fn start_capture(
         &mut self,
         request_id: u64,
+        gpu: bool,
         manager: &ExtImageCopyCaptureManagerV1,
         source: &ExtImageCaptureSourceV1,
         qh: &wayland_client::QueueHandle<crate::state_types::LayerState>,
@@ -198,6 +203,13 @@ impl LayerClient {
             pool: None,
             buffer: None,
             started: false,
+            // Only an offer the compositor can honour is worth making: with
+            // no dmabuf global there is no way to hand it a buffer.
+            gpu: gpu && self.state.linux_dmabuf.is_some(),
+            offered: false,
+            dmabuf_device: None,
+            dmabuf_formats: Vec::new(),
+            dmabuf_buffer: None,
         });
     }
 }

@@ -10,7 +10,7 @@ use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::{config::*, paint::*, services::*, supervisor::*, surface_layers::*, surfaces::*};
+use crate::{capture::*, config::*, paint::*, supervisor::*, surface_layers::*, surfaces::*};
 
 pub(crate) struct Worker {
     pub(crate) stop: Arc<AtomicBool>,
@@ -185,6 +185,28 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 }
                 LayerEvent::Screencopy { request_id, result } => {
                     repaint |= dispatch_screencopy(&mut runtime, None, request_id, result);
+                }
+                LayerEvent::CaptureOffer {
+                    request_id,
+                    width,
+                    height,
+                    device,
+                    formats,
+                } => {
+                    // A lock screen draws one renderer per output, none of
+                    // them the one a capture would name: shared memory.
+                    repaint |= answer_capture_offer(
+                        &mut runtime,
+                        None,
+                        &mut client,
+                        OfferedCapture {
+                            request_id,
+                            width,
+                            height,
+                            device,
+                            formats,
+                        },
+                    );
                 }
                 LayerEvent::InputMethod(state) => {
                     repaint |= runtime.dispatch_input_method(

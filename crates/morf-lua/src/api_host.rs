@@ -97,8 +97,13 @@ pub(crate) fn install_host_service_api<'gc>(
     clipboard.set_field(ctx, "subscribe", clipboard_subscribe);
     morf.set_field(ctx, "clipboard", clipboard);
     let screencopy_state = Rc::clone(&state);
+    // `capture(include_cursor, handler, options)`: `options.gpu` asks for
+    // the picture to stay on the GPU, which is the difference between a
+    // thumbnail that costs two copies of the screen and one that costs none.
     let screencopy_capture = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (include_cursor, callback): (bool, Closure) = stack.consume(ctx)?;
+        let (include_cursor, callback, options): (bool, Closure, Option<Table>) =
+            stack.consume(ctx)?;
+        let gpu = wants_gpu(ctx, options);
         let mut state = screencopy_state.borrow_mut();
         if state.screencopy_callbacks.len() >= 4 {
             return Err(HostError("screencopy request limit reached".into()).into());
@@ -109,6 +114,7 @@ pub(crate) fn install_host_service_api<'gc>(
             id,
             include_cursor,
             window: None,
+            gpu,
         });
         state.screencopy_callbacks.insert(id, ctx.stash(callback));
         Ok(CallbackReturn::Return)
@@ -119,7 +125,9 @@ pub(crate) fn install_host_service_api<'gc>(
     // rather than an extra argument to it because the two can fail for
     // different reasons and a configuration wants to know which.
     let screencopy_window = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (identifier, callback): (String, Closure) = stack.consume(ctx)?;
+        let (identifier, callback, options): (String, Closure, Option<Table>) =
+            stack.consume(ctx)?;
+        let gpu = wants_gpu(ctx, options);
         let mut state = window_state.borrow_mut();
         if state.screencopy_callbacks.len() >= 4 {
             return Err(HostError("screencopy request limit reached".into()).into());
@@ -130,6 +138,7 @@ pub(crate) fn install_host_service_api<'gc>(
             id,
             include_cursor: false,
             window: Some(identifier),
+            gpu,
         });
         state.screencopy_callbacks.insert(id, ctx.stash(callback));
         Ok(CallbackReturn::Return)
@@ -465,4 +474,9 @@ pub(crate) fn screen_entry<'gc>(ctx: Context<'gc>, screen: &Screen) -> Table<'gc
     );
     value.set_field(ctx, "serial_number", LuaValue::Nil);
     value
+}
+
+/// Whether a capture's `options` table asks for the GPU.
+fn wants_gpu<'gc>(ctx: Context<'gc>, options: Option<Table<'gc>>) -> bool {
+    options.is_some_and(|options| matches!(options.get_value(ctx, "gpu"), LuaValue::Boolean(true)))
 }

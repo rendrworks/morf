@@ -8,8 +8,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::{
-    config::*, lock::*, pacing::*, paint::*, services::*, supervisor::*, surface_actions::*,
-    surface_events::*, surface_layers::*, surfaces::*, workers::*,
+    capture::*, config::*, lock::*, pacing::*, paint::*, services::*, supervisor::*,
+    surface_actions::*, surface_events::*, surface_layers::*, surfaces::*, workers::*,
 };
 
 /// What this output can do, as name = value pairs.
@@ -34,6 +34,10 @@ fn capabilities_of(
         ("screencopy", client.supports_screencopy()),
         ("image_capture", client.supports_image_capture()),
         ("window_capture", client.supports_window_capture()),
+        (
+            "dmabuf_capture",
+            client.supports_dmabuf_capture() && info.dmabuf,
+        ),
         ("backdrop_blur", client.supports_backdrop_blur()),
         ("toplevels", client.supports_toplevels()),
         ("toplevel_control", client.supports_toplevel_control()),
@@ -99,6 +103,27 @@ pub(crate) fn run_surface(
                 }
                 LayerEvent::Screencopy { request_id, result } => {
                     dispatch_screencopy(&mut runtime, None, request_id, result);
+                }
+                LayerEvent::CaptureOffer {
+                    request_id,
+                    width,
+                    height,
+                    device,
+                    formats,
+                } => {
+                    // No renderer yet to export against: shared memory.
+                    answer_capture_offer(
+                        &mut runtime,
+                        None,
+                        &mut client,
+                        OfferedCapture {
+                            request_id,
+                            width,
+                            height,
+                            device,
+                            formats,
+                        },
+                    );
                 }
                 LayerEvent::Configure { .. }
                 | LayerEvent::Closed { .. }

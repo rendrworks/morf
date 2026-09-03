@@ -357,11 +357,13 @@ fn screencopy_bridges_bounded_requests_and_pixels() {
                 id: 0,
                 include_cursor: true,
                 window: None,
+                gpu: false,
             },
             ScreencopyRequest {
                 id: 1,
                 include_cursor: false,
                 window: None,
+                gpu: false,
             },
         ]
     );
@@ -374,6 +376,7 @@ fn screencopy_bridges_bounded_requests_and_pixels() {
             stride: 8,
             format: "argb8888".to_owned(),
             y_invert: false,
+            gpu: false,
             source: "memory:capture/0".to_owned(),
             pixels: vec![7; 8],
         })

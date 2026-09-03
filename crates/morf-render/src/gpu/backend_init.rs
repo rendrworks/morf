@@ -280,6 +280,7 @@ impl WgpuBackend {
             },
             dmabuf,
             external_textures: HashMap::new(),
+            pending_exports: HashMap::new(),
         })
     }
 

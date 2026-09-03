@@ -4,7 +4,7 @@ use morf_render::{RenderEngine, WgpuBackend};
 use morf_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, SurfaceRole, physical_size};
 use std::sync::mpsc;
 
-use crate::{lock::*, paint::*, services::*, surface_layers::*, surface_touch::*, surfaces::*};
+use crate::{capture::*, lock::*, paint::*, surface_layers::*, surface_touch::*, surfaces::*};
 
 pub(crate) fn handle_surface_event(
     runtime: &mut Runtime,
@@ -16,6 +16,12 @@ pub(crate) fn handle_surface_event(
     name: &str,
 ) -> Result<bool, String> {
     let mut repaint = false;
+    // Captures first: they are the events that need the renderer and the
+    // client at once, and they are handled where the rest of capture lives.
+    let event = match handle_capture_event(runtime, renderer, client, event) {
+        Ok(repaint) => return Ok(repaint),
+        Err(event) => event,
+    };
     match event {
         LayerEvent::Configure { id, .. } | LayerEvent::Scale { id, .. } if id == PRIMARY_LAYER => {
             let (width, height) = client.physical_size();
@@ -107,9 +113,8 @@ pub(crate) fn handle_surface_event(
         LayerEvent::Clipboard { text } => {
             repaint |= runtime.dispatch_clipboard(text);
         }
-        LayerEvent::Screencopy { request_id, result } => {
-            repaint |= dispatch_screencopy(runtime, Some(renderer), request_id, result);
-        }
+        // Already taken above; named so a new event cannot slip past unmatched.
+        LayerEvent::Screencopy { .. } | LayerEvent::CaptureOffer { .. } => {}
         LayerEvent::InputMethod(state) => {
             repaint |= runtime.dispatch_input_method(
                 state.active,

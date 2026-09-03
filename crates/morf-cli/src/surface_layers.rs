@@ -10,7 +10,7 @@ use morf_wayland::{
 };
 use std::collections::{HashMap, HashSet};
 
-use crate::{paint::*, services::*, surfaces::*};
+use crate::{capture::*, paint::*, services::*, surfaces::*};
 
 /// Hands every request a configuration has queued to the compositor.
 ///

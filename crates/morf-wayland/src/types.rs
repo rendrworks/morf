@@ -112,7 +112,37 @@ pub struct ScreencopyFrame {
     /// Whether rows are ordered bottom-to-top.
     pub y_invert: bool,
     /// Captured bytes including stride padding.
+    ///
+    /// Empty when `dmabuf` is set: the picture is then in the buffer that was
+    /// attached for this capture, on the GPU, and was never copied out.
     pub pixels: Vec<u8>,
+    /// Whether the compositor drew into the attached dmabuf rather than into
+    /// shared memory.
+    pub dmabuf: bool,
+}
+
+/// A dmabuf to capture into, described the way `zwp_linux_dmabuf_v1` wants it.
+///
+/// One plane, because that is what the capture protocol carries; the renderer
+/// that exported it says where the plane starts and how wide a row is, and
+/// which modifier the driver laid it out with -- which the compositor needs
+/// to read the memory the same way.
+#[derive(Debug)]
+pub struct CaptureBuffer<'a> {
+    /// The dmabuf's file descriptor, borrowed for the duration of the call.
+    pub fd: std::os::fd::BorrowedFd<'a>,
+    /// Pixel width.
+    pub width: u32,
+    /// Pixel height.
+    pub height: u32,
+    /// DRM fourcc of the pixels.
+    pub fourcc: u32,
+    /// DRM format modifier the memory is laid out with.
+    pub modifier: u64,
+    /// Byte offset of the plane within the dmabuf.
+    pub offset: u32,
+    /// Bytes between adjacent rows.
+    pub stride: u32,
 }
 
 /// Geometry for a popup anchored to a layer surface.

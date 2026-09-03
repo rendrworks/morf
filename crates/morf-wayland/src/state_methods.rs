@@ -191,6 +191,7 @@ impl LayerState {
                 .ok_or_else(|| "screencopy format is missing".to_owned())?,
             y_invert: pending.y_invert,
             pixels,
+            dmabuf: false,
         })
     }
 

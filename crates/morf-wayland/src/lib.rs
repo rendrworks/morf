@@ -1,5 +1,6 @@
 //! Wayland layer surfaces, fractional scale, and compositor frame callbacks.
 
+mod capture_dmabuf;
 mod capture_handlers;
 mod client_backdrop;
 mod client_connection;

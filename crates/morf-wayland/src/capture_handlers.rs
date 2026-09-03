@@ -70,8 +70,25 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for LayerState {
                     state.captures[index].format = Some(format);
                 }
             }
+            ext_image_copy_capture_session_v1::Event::DmabufDevice { device } => {
+                state.captures[index].dmabuf_device = dev_t_of(&device);
+            }
+            ext_image_copy_capture_session_v1::Event::DmabufFormat { format, modifiers } => {
+                let modifiers = modifiers
+                    .chunks_exact(8)
+                    .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap_or([0; 8])))
+                    .collect();
+                state.captures[index]
+                    .dmabuf_formats
+                    .push((format, modifiers));
+            }
             ext_image_copy_capture_session_v1::Event::Done => {
-                state.begin_capture_frame(index, queue);
+                // A capture wanted on the GPU is offered to the renderer first;
+                // everything else, and a session that named no dmabuf format,
+                // goes to shared memory as before.
+                if !state.offer_capture(index) {
+                    state.begin_capture_frame(index, queue);
+                }
             }
             ext_image_copy_capture_session_v1::Event::Stopped => {
                 state.fail_capture(index, "capture session stopped".to_owned());
@@ -107,6 +124,15 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for LayerState {
             _ => {}
         }
     }
+}
+
+/// A `dev_t` as the protocol carries it: the kernel's own bytes, in an array.
+///
+/// Eight on every Linux this runs on; anything else is not a `dev_t` and is
+/// treated as no device rather than as a guess.
+fn dev_t_of(bytes: &[u8]) -> Option<u64> {
+    let array: [u8; 8] = bytes.try_into().ok()?;
+    Some(u64::from_ne_bytes(array))
 }
 
 impl LayerState {
@@ -150,11 +176,36 @@ impl LayerState {
     }
 
     /// Reads the captured pixels out and hands them to the event queue.
+    ///
+    /// Or, for a capture into a dmabuf, reads nothing: the picture is already
+    /// where the renderer will draw it from, and all that travels is the word
+    /// that it is there.
     pub(crate) fn finish_capture(&mut self, index: usize) {
         let mut capture = self.captures.remove(index);
         let request_id = capture.request_id;
+        if let Some(frame) = capture.frame.take() {
+            frame.destroy();
+        }
         let result = (|| {
             let (width, height) = capture.size.ok_or("capture has no size")?;
+            if let Some((buffer, fourcc)) = capture.dmabuf_buffer.take() {
+                // The protocol object goes; the memory it named stays with
+                // the image the renderer exported.
+                buffer.destroy();
+                return Ok(ScreencopyFrame {
+                    width,
+                    height,
+                    stride: 0,
+                    format: if fourcc == crate::capture_dmabuf::FOURCC_XRGB8888 {
+                        ScreencopyFormat::Xrgb8888
+                    } else {
+                        ScreencopyFormat::Argb8888
+                    },
+                    y_invert: false,
+                    pixels: Vec::new(),
+                    dmabuf: true,
+                });
+            }
             let format = capture.format.ok_or("capture has no format")?;
             let mut pool = capture.pool.take().ok_or("capture has no pool")?;
             let buffer = capture.buffer.take().ok_or("capture has no buffer")?;
@@ -177,6 +228,7 @@ impl LayerState {
                 // than to guess at now.
                 y_invert: false,
                 pixels,
+                dmabuf: false,
             })
         })();
         capture.session.destroy();
@@ -191,7 +243,13 @@ impl LayerState {
         if index >= self.captures.len() {
             return;
         }
-        let capture = self.captures.remove(index);
+        let mut capture = self.captures.remove(index);
+        if let Some(frame) = capture.frame.take() {
+            frame.destroy();
+        }
+        if let Some((buffer, _)) = capture.dmabuf_buffer.take() {
+            buffer.destroy();
+        }
         capture.session.destroy();
         self.events.push_back(LayerEvent::Screencopy {
             request_id: capture.request_id,

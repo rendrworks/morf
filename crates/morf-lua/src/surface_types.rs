@@ -261,6 +261,8 @@ pub struct Screencopy {
     pub format: String,
     /// Whether rows are ordered bottom-to-top.
     pub y_invert: bool,
+    /// Whether the picture is on the GPU, with `pixels` empty.
+    pub gpu: bool,
     /// A source string `ui.Image` resolves, holding this capture's pixels.
     ///
     /// The point of it: a configuration that wants the picture on screen sets
@@ -291,6 +293,13 @@ pub struct ScreencopyRequest {
     /// the moment a window opens, and two windows of one application share a
     /// title as readily as an app id.
     pub window: Option<String>,
+    /// Whether the picture should stay on the GPU.
+    ///
+    /// The compositor then draws into memory the renderer exported, and the
+    /// frame's `source` is a texture rather than pixels: nothing is copied
+    /// out and nothing uploaded back. Honoured where the compositor and the
+    /// GPU allow it, and quietly shared memory where they do not.
+    pub gpu: bool,
 }
 
 impl IpcValue {

@@ -154,6 +154,12 @@ pub struct WgpuBackend {
     /// straight into GPU memory, published under a name `ui.Image` resolves
     /// as `gpu:<name>`. The GPU-side twin of `ImageCache`'s `memory:` images.
     pub(crate) external_textures: HashMap<String, ExternalTexture>,
+    /// Exported images handed to a compositor and not yet drawn into, by
+    /// capture request.
+    ///
+    /// Held here because the image is this device's: it cannot outlive the
+    /// device, and nothing outside the backend should be asked to keep it.
+    pub(crate) pending_exports: HashMap<u64, super::dmabuf::DmabufImage>,
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
     pub(crate) surface: Option<SurfaceState>,

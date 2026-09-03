@@ -218,6 +218,27 @@ pub enum LayerEvent {
     },
     /// The compositor clipboard selection changed.
     Clipboard { text: Option<String> },
+    /// A capture asked for on the GPU has been described by its session.
+    ///
+    /// The compositor has said what size it will produce, which device the
+    /// buffer must live on, and which formats and modifiers it will draw into.
+    /// Nothing is allocated yet: the renderer answers with a dmabuf through
+    /// `attach_capture_dmabuf`, or falls back to shared memory through
+    /// `attach_capture_shm`, and the capture continues either way.
+    CaptureOffer {
+        /// Runtime-local request identifier.
+        request_id: u64,
+        /// Pixel width the compositor will produce.
+        width: u32,
+        /// Pixel height the compositor will produce.
+        height: u32,
+        /// The `dev_t` of the device the buffer must be allocated on, when
+        /// the compositor named one.
+        device: Option<u64>,
+        /// DRM fourcc codes and, for each, the modifiers the compositor can
+        /// draw with, in its order of preference.
+        formats: Vec<(u32, Vec<u64>)>,
+    },
     /// An output capture completed or failed.
     Screencopy {
         /// Runtime-local request identifier.

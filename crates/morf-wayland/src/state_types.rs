@@ -24,6 +24,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Instant;
 use wayland_client::Proxy;
 use wayland_client::backend::ObjectId;
+use wayland_client::protocol::wl_buffer;
 use wayland_client::protocol::{
     wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface, wl_touch,
 };
@@ -45,6 +46,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
     ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
 };
+use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
     zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
@@ -309,6 +311,13 @@ pub(crate) struct LayerState {
     pub(crate) toplevel_source_manager: Option<ExtForeignToplevelImageCaptureSourceManagerV1>,
     /// Captures in flight on the newer protocol.
     pub(crate) captures: Vec<PendingCapture>,
+    /// `zwp_linux_dmabuf_v1`, when the compositor offers it.
+    ///
+    /// The one thing it is used for here is to turn a dmabuf the renderer
+    /// exported into a `wl_buffer` a capture frame can be given. The formats
+    /// it advertises on its own are not consulted: the capture session says
+    /// what *it* will draw into, which is the narrower and the right answer.
+    pub(crate) linux_dmabuf: Option<ZwpLinuxDmabufV1>,
     pub(crate) session_locks: SessionLockState,
     pub(crate) session_lock: Option<SessionLock>,
     pub(crate) lock_surfaces: Vec<LockSurface>,
@@ -347,6 +356,16 @@ pub(crate) struct PendingCapture {
     pub(crate) buffer: Option<ShmBuffer>,
     /// Whether the frame has been created and told to capture.
     pub(crate) started: bool,
+    /// Whether the configuration asked for the picture on the GPU.
+    pub(crate) gpu: bool,
+    /// Whether a `CaptureOffer` has gone out and is awaiting a buffer.
+    pub(crate) offered: bool,
+    /// The device the compositor wants the dmabuf on, from `dmabuf_device`.
+    pub(crate) dmabuf_device: Option<u64>,
+    /// Every dmabuf format the session offered, with its modifiers.
+    pub(crate) dmabuf_formats: Vec<(u32, Vec<u64>)>,
+    /// The dmabuf `wl_buffer` the frame was given, and its fourcc.
+    pub(crate) dmabuf_buffer: Option<(wl_buffer::WlBuffer, u32)>,
 }
 
 pub(crate) struct LockSurface {

@@ -32,6 +32,7 @@ use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manage
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
+use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
 use crate::{helpers::*, state_types::*, surface_types::*, types::*};
@@ -135,6 +136,10 @@ impl LayerClient {
         let screencopy_manager = globals
             .bind::<ZwlrScreencopyManagerV1, _, _>(&qh, 1..=3, ())
             .ok();
+        // Version 2 is where `create_immed` arrived, and nothing newer is
+        // needed: the capture session, not this global, says which formats
+        // a capture can use.
+        let linux_dmabuf = globals.bind::<ZwpLinuxDmabufV1, _, _>(&qh, 2..=5, ()).ok();
         let session_locks = SessionLockState::new(&globals, &qh);
         let (clipboard_tx, clipboard_rx) = mpsc::channel();
         let mut state = LayerState {
@@ -212,6 +217,7 @@ impl LayerClient {
             output_source_manager,
             toplevel_source_manager,
             captures: Vec::new(),
+            linux_dmabuf,
             background_effect,
             // Assumed absent until the manager says otherwise: the capability
             // arrives as an event, so anything sent before it would be a guess.

@@ -80,6 +80,21 @@ impl WgpuBackend {
         Ok(())
     }
 
+    /// Keeps an exported image while the compositor draws into it.
+    ///
+    /// Its file descriptor has been handed over by then; what is kept is the
+    /// image itself, so that when the compositor says the picture is there,
+    /// there is a texture to publish. Replacing an export under the same id
+    /// frees the old one, which is right: it was never going to be filled.
+    pub fn stash_export(&mut self, request_id: u64, image: DmabufImage) {
+        self.pending_exports.insert(request_id, image);
+    }
+
+    /// Takes back an image stashed by `stash_export`.
+    pub fn take_export(&mut self, request_id: u64) -> Option<DmabufImage> {
+        self.pending_exports.remove(&request_id)
+    }
+
     /// Drops a published texture, and says whether there was one.
     pub fn forget_texture(&mut self, name: &str) -> bool {
         self.external_textures.remove(name).is_some()
