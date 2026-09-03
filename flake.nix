@@ -151,7 +151,6 @@
             pkgs.rust-analyzer
             pkgs.git-cliff
             pkgs.clang
-            pkgs.morf
             pkgs.pkg-config
 
             nixGLAlias
