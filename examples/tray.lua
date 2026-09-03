@@ -11,6 +11,7 @@
 local morf = require("morf")
 local ui = require("morf.ui")
 local tray_watcher = require("lib.tray_watcher")
+local dbusmenu = require("lib.dbusmenu")
 
 morf.surface.height = 40
 
@@ -34,6 +35,37 @@ morf.ipc.tray = function()
 end
 morf.ipc.watcher = function()
   return watcher and table.concat(watcher.list(), ",") or "no watcher"
+end
+
+-- The first item's menu, read when asked. `morf ipc call menu` describes it
+-- one entry per line -- label, id, and what kind of entry -- and
+-- `morf ipc call click <id>` sends the click the application is waiting on.
+local open_menu
+local function describe(entries, depth)
+  local lines = {}
+  for _, entry in ipairs(entries) do
+    local kind = entry.separator and "separator"
+      or entry.children and "submenu"
+      or entry.button_type and (entry.button_type .. ":" .. tostring(entry.checked))
+      or "item"
+    lines[#lines + 1] = string.rep("  ", depth) .. entry.text .. "(" .. entry.id .. ") " .. kind
+    if entry.children then
+      for _, line in ipairs(describe(entry.children, depth + 1)) do lines[#lines + 1] = line end
+    end
+  end
+  return lines
+end
+morf.ipc.menu = function()
+  if not addresses[1] then return "no items" end
+  local menu, why = dbusmenu.for_item(addresses[1])
+  if not menu then return tostring(why) end
+  open_menu = menu
+  return table.concat(describe(menu.entries(), 0), "\n")
+end
+morf.ipc.click = function(id)
+  if not open_menu then return "open the menu first" end
+  open_menu.click(tonumber(id))
+  return "clicked " .. tostring(id)
 end
 
 ui.Rect {
