@@ -64,6 +64,9 @@ pub enum Element {
     Loader,
     /// Non-painting periodic callback object.
     Timer,
+    /// A flexbox container: its children are placed by grow, shrink, basis,
+    /// wrap and alignment rather than by their own `x` and `y`.
+    Flex,
 }
 
 impl Element {
@@ -88,6 +91,7 @@ impl Element {
             Self::Flickable => "Flickable",
             Self::Loader => "Loader",
             Self::Timer => "Timer",
+            Self::Flex => "Flex",
         }
     }
 }

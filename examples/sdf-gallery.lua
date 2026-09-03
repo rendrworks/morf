@@ -102,9 +102,10 @@ local families = {
 }
 
 --- One labelled cell holding a single field.
-local function cell(index, name, caption, extra)
-  local column = (index - 1) % COLUMNS
-  local row = math.floor((index - 1) / COLUMNS)
+---
+--- The cell knows its own size and nothing about where it goes: the grid
+--- below places it, in five equal tracks.
+local function cell(name, caption, extra)
   local layer = {
     x = 35,
     y = 25,
@@ -115,8 +116,6 @@ local function cell(index, name, caption, extra)
   for key, value in pairs(extra) do layer[key] = value end
 
   return ui.Item {
-    x = column * CELL,
-    y = row * (CELL + LABEL),
     width = CELL,
     height = CELL + LABEL,
     ui.Rect { x = 6, y = 6, width = CELL - 12, height = CELL + LABEL - 12, radius = 14, color = PANEL },
@@ -143,23 +142,29 @@ local function cell(index, name, caption, extra)
   }
 end
 
-local cells = { width = COLUMNS * CELL, height = 2 * (CELL + LABEL) }
-cells[#cells + 1] = ui.Rect {
+-- Five equal columns; the rows are as tall as the cells. Nine cells fill
+-- the grid in order, wrapping after the fifth, and nobody computes an x.
+local cells = {
   width = COLUMNS * CELL,
   height = 2 * (CELL + LABEL),
-  color = INK,
+  template_columns = { "repeat(" .. COLUMNS .. ", 1fr)" },
 }
-for index, family in ipairs(families) do
-  cells[#cells + 1] = cell(index, family[1], family[2], family[3])
+for _, family in ipairs(families) do
+  cells[#cells + 1] = cell(family[1], family[2], family[3])
 end
-cells[#cells + 1] = ui.Timer {
-  interval = 1800,
-  ["repeat"] = true,
-  running = true,
-  on_triggered = function()
-    local ok, error = phase:set(phase:get() > 0.5 and 0 or 1)
-    assert(ok, error)
-  end,
-}
 
-ui.Item(cells)
+ui.Item {
+  width = COLUMNS * CELL,
+  height = 2 * (CELL + LABEL),
+  ui.Rect { width = COLUMNS * CELL, height = 2 * (CELL + LABEL), color = INK },
+  ui.Grid(cells),
+  ui.Timer {
+    interval = 1800,
+    ["repeat"] = true,
+    running = true,
+    on_triggered = function()
+      local ok, error = phase:set(phase:get() > 0.5 and 0 or 1)
+      assert(ok, error)
+    end,
+  },
+}

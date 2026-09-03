@@ -271,7 +271,8 @@ pub(crate) fn append_node(
         | Element::GridLayout
         | Element::Flickable
         | Element::Loader
-        | Element::Timer => {}
+        | Element::Timer
+        | Element::Flex => {}
     }
     let content_layer = if element == Element::ClipRect
         && scene.number(node, "border_width")? > 0.0

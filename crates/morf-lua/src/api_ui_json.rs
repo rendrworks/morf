@@ -30,6 +30,7 @@ pub(crate) fn install_ui_json_api<'gc>(
         ("RowLayout", Element::RowLayout),
         ("ColumnLayout", Element::ColumnLayout),
         ("GridLayout", Element::GridLayout),
+        ("Flex", Element::Flex),
     ] {
         ui.set_field(
             ctx,

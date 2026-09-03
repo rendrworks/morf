@@ -1,32 +1,5 @@
 use super::*;
 
-/// Measures like `FixedText`, but wraps: given a width, the text folds into
-/// as many lines as it needs.
-struct WrapText;
-
-impl TextMeasurer for WrapText {
-    fn measure(
-        &mut self,
-        _node: NodeHandle,
-        text: &str,
-        _family: &str,
-        size: f64,
-        options: TextOptions,
-    ) -> Size {
-        let full = text.len() as f64 * size / 2.0;
-        match options.width.filter(|_| options.wrap) {
-            Some(width) if width > 0.0 => Size {
-                width: full.min(width),
-                height: (full / width).ceil().max(1.0) * size,
-            },
-            _ => Size {
-                width: full,
-                height: size,
-            },
-        }
-    }
-}
-
 fn sized(scene: &mut Scene, element: Element, width: f64, height: f64) -> NodeHandle {
     let node = scene.create(element);
     scene.assign(node, "width", width).unwrap();

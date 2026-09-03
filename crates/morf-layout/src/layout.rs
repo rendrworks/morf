@@ -4,11 +4,12 @@ use crate::helpers::clamp_layout;
 use crate::helpers::flag;
 use crate::helpers::layout_number;
 use crate::helpers::reject_axis_conflict;
-use std::collections::BTreeMap;
 
-use morf_scene::{Behavior, Element, FastMap, NodeHandle, Scene, Value};
+use morf_scene::{Element, FastMap, NodeHandle, Scene};
 
 use crate::distribute::{align_across, distribute};
+use crate::flex::FlexTree;
+use crate::flex_style::is_flex_root;
 use crate::geometry::TextOptions;
 use crate::geometry::{Geometry, Size, TextMeasurer};
 use crate::helpers::{
@@ -57,16 +58,6 @@ pub struct TransformWatcher {
     pub(crate) signature: Option<u64>,
 }
 
-/// Inputs for an animated parent and anchor change.
-pub struct ReparentTransition {
-    pub root: NodeHandle,
-    pub node: NodeHandle,
-    pub new_parent: NodeHandle,
-    pub anchors: Option<BTreeMap<String, Value>>,
-    pub available: Size,
-    pub behavior: Behavior,
-}
-
 impl Layout {
     /// Resolves the layout rooted at `root` into the supplied surface area.
     pub fn compute(
@@ -104,7 +95,7 @@ impl Layout {
                 ..Geometry::default()
             },
         );
-        self.resolve_children(scene, root)
+        self.resolve_children(scene, root, text)
     }
 
     /// Text nodes whose resolved width is not the width they were measured
@@ -145,43 +136,6 @@ impl Layout {
         self.implicit.get(&node).copied()
     }
 
-    /// Reparents a node and animates its resolved position through a shared coordinate space.
-    pub fn transition_reparent(
-        scene: &mut Scene,
-        text: &mut impl TextMeasurer,
-        transition: ReparentTransition,
-    ) -> Result<Self, LayoutError> {
-        let before = Self::compute(scene, transition.root, transition.available, text)?
-            .geometry(transition.node)
-            .ok_or_else(|| LayoutError::Scene("transition node has no geometry".into()))?;
-        scene.assign(transition.node, "transition_x", 0.0)?;
-        scene.assign(transition.node, "transition_y", 0.0)?;
-        if let Some(anchors) = transition.anchors {
-            scene.assign(transition.node, "anchors", Value::Map(anchors))?;
-        }
-        if scene.parent(transition.node)? != Some(transition.new_parent) {
-            scene.reparent(transition.node, Some(transition.new_parent))?;
-        }
-        let target = Self::compute(scene, transition.root, transition.available, text)?
-            .geometry(transition.node)
-            .ok_or_else(|| LayoutError::Scene("transition target has no geometry".into()))?;
-        scene.animate_from(
-            transition.node,
-            "transition_x",
-            before.x - target.x,
-            0.0,
-            transition.behavior,
-        )?;
-        scene.animate_from(
-            transition.node,
-            "transition_y",
-            before.y - target.y,
-            0.0,
-            transition.behavior,
-        )?;
-        Self::compute(scene, transition.root, transition.available, text)
-    }
-
     fn measure_implicit(
         &mut self,
         scene: &Scene,
@@ -197,6 +151,24 @@ impl Layout {
             child_sizes.push(requested);
         }
 
+        if is_flex_root(scene, node)? {
+            // Taffy sizes the whole subtree at once: unconstrained here, for
+            // the implicit size, and again at the resolved size when the
+            // node is placed.
+            let mut flex = FlexTree::build(scene, node)?;
+            flex.compute(
+                scene,
+                taffy::prelude::Size {
+                    width: taffy::prelude::AvailableSpace::MaxContent,
+                    height: taffy::prelude::AvailableSpace::MaxContent,
+                },
+                &self.requested,
+                text,
+            )?;
+            let size = flex.size();
+            self.implicit.insert(node, size);
+            return Ok(size);
+        }
         let size = match scene.element(node)? {
             Element::Text => text.measure(
                 node,
@@ -278,7 +250,8 @@ impl Layout {
             | Element::MouseArea
             | Element::Flickable
             | Element::Loader
-            | Element::Timer => {
+            | Element::Timer
+            | Element::Flex => {
                 let mut bounds = Size::default();
                 for (child, size) in children.iter().zip(child_sizes) {
                     bounds.width = bounds.width.max(scene.number(*child, "x")? + size.width);
@@ -321,9 +294,17 @@ impl Layout {
         })
     }
 
-    fn resolve_children(&mut self, scene: &Scene, parent: NodeHandle) -> Result<(), LayoutError> {
+    fn resolve_children(
+        &mut self,
+        scene: &Scene,
+        parent: NodeHandle,
+        text: &mut impl TextMeasurer,
+    ) -> Result<(), LayoutError> {
         let mut parent_geometry = self.geometry[&parent];
         let parent_element = scene.element(parent)?;
+        if is_flex_root(scene, parent)? {
+            return self.resolve_flex(scene, parent, parent_geometry, text);
+        }
         if parent_element == Element::ClipRect
             && scene.bool_value(parent, "content_inside_border")?
         {
@@ -465,7 +446,38 @@ impl Layout {
             geometry.x += scene.number(child, "transition_x")?;
             geometry.y += scene.number(child, "transition_y")?;
             self.geometry.insert(child, geometry);
-            self.resolve_children(scene, child)?;
+            self.resolve_children(scene, child, text)?;
+        }
+        Ok(())
+    }
+
+    /// Places everything under a flex root from one Taffy pass at the
+    /// root's resolved size, then lets each leaf place its own children.
+    fn resolve_flex(
+        &mut self,
+        scene: &Scene,
+        root: NodeHandle,
+        geometry: Geometry,
+        text: &mut impl TextMeasurer,
+    ) -> Result<(), LayoutError> {
+        let mut flex = FlexTree::build(scene, root)?;
+        flex.compute(
+            scene,
+            taffy::prelude::Size {
+                width: taffy::prelude::AvailableSpace::Definite(geometry.width as f32),
+                height: taffy::prelude::AvailableSpace::Definite(geometry.height as f32),
+            },
+            &self.requested,
+            text,
+        )?;
+        let placed = flex.geometries(scene, geometry)?;
+        for (node, mut placed, leaf) in placed {
+            placed.x += scene.number(node, "transition_x")?;
+            placed.y += scene.number(node, "transition_y")?;
+            self.geometry.insert(node, placed);
+            if leaf {
+                self.resolve_children(scene, node, text)?;
+            }
         }
         Ok(())
     }

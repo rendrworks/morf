@@ -32,6 +32,9 @@ impl fmt::Display for LayoutError {
             Self::InvalidCommonParent => {
                 f.write_str("transform common parent must contain both nodes")
             }
+            Self::AxisConflict { axis: "flex" } => f.write_str(
+                "anchors inside a Flex or track Grid: the container places its children",
+            ),
             Self::AxisConflict { axis } => {
                 write!(f, "anchors and positioner both control the {axis} axis")
             }

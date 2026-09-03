@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 morf-scene.workspace = true
+taffy = "0.14"

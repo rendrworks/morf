@@ -1,10 +1,13 @@
 //! Three-stage layout for morf scene nodes.
 
 mod distribute;
+mod flex;
+mod flex_style;
 mod geometry;
 mod helpers;
 mod hit;
 mod layout;
+mod reparent;
 mod transform;
 
 pub use geometry::{
@@ -13,7 +16,8 @@ pub use geometry::{
 };
 pub use helpers::LayoutError;
 pub use hit::Hit;
-pub use layout::{Layout, ReparentTransition, TransformTracker, TransformWatcher};
+pub use layout::{Layout, TransformTracker, TransformWatcher};
+pub use reparent::ReparentTransition;
 pub use transform::node_transform;
 #[cfg(test)]
 mod tests;
