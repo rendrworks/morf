@@ -49,6 +49,28 @@ pub enum Bus {
 /// enough that a bad one costs a stutter rather than a hang.
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_millis(1000);
 
+/// A reply that has not arrived yet.
+///
+/// Answered by [`DbusProxy::get_later`] and [`DbusProxy::call_later_with`];
+/// ask with [`PendingReply::try_take`] from a poll.
+pub struct PendingReply {
+    rx: std::sync::mpsc::Receiver<Result<DbusValue, String>>,
+}
+
+impl PendingReply {
+    /// The reply if it is in, `None` while it is not. A reply whose thread
+    /// vanished is an error rather than a wait that never ends.
+    pub fn try_take(&self) -> Option<Result<DbusValue, String>> {
+        match self.rx.try_recv() {
+            Ok(reply) => Some(reply),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err("the D-Bus reply was lost".to_owned()))
+            }
+        }
+    }
+}
+
 /// Typed generic D-Bus method and property client.
 #[derive(Clone, Debug)]
 pub struct DbusProxy {
@@ -177,6 +199,34 @@ impl DbusProxy {
     }
 
     /// Reads one property for an interpreter-facing facade.
+    /// Reads a property without waiting for it.
+    ///
+    /// The blocking read holds the calling thread for the reply, and when the
+    /// reply has to come from *this* process -- a tray host asking a watcher
+    /// served from the same configuration -- the thread that would answer is
+    /// the one waiting. The read happens on a thread of its own and the answer
+    /// is collected later, from a poll.
+    pub fn get_later(&self, property: &str) -> PendingReply {
+        let proxy = self.clone();
+        let property = property.to_owned();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(proxy.get_value(&property));
+        });
+        PendingReply { rx }
+    }
+
+    /// Calls a method without waiting for it, for the same reason.
+    pub fn call_later_with(&self, method: &str, value: DbusValue) -> PendingReply {
+        let proxy = self.clone();
+        let method = method.to_owned();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(proxy.call_value_with(&method, &value));
+        });
+        PendingReply { rx }
+    }
+
     pub fn get_value(&self, property: &str) -> Result<DbusValue, String> {
         let value: OwnedValue = self
             .proxy

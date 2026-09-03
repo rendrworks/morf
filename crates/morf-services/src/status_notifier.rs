@@ -3,7 +3,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
 
-use morf_io::{Bus, DbusProxy, DbusSignal, DbusValue};
+use morf_io::{Bus, DbusProxy, DbusSignal, DbusValue, PendingReply};
 
 /// Session-bus destination and object path for one tray item.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,28 +52,50 @@ impl StdError for StatusNotifierError {}
 
 /// Registered host and nonblocking watcher event streams.
 pub struct StatusNotifierHost {
-    _watcher: DbusProxy,
+    watcher: DbusProxy,
     registered: DbusSignal,
     unregistered: DbusSignal,
     items: BTreeMap<String, StatusNotifierAddress>,
     initial: bool,
+    /// Whether the watcher has answered once: its item list read and this
+    /// host registered with it. Done from the poll rather than from
+    /// `connect_to`, and the reason matters twice over. A watcher served by
+    /// *this* process can only answer between frames, so a blocking fetch at
+    /// connect time waited on itself; and a watcher that is not running yet
+    /// used to make connecting an error, when what a shell wants is an empty
+    /// tray that fills the moment one appears.
+    bootstrapped: bool,
+    /// Polls to wait before asking again. Zero means ask now.
+    retry_in: u32,
+    /// The item list, asked for and not yet answered.
+    pending_items: Option<PendingReply>,
+    /// The namespaces to look under, and which one the proxy is on now.
+    ///
+    /// A subscription needs no owner, so connecting to `org.freedesktop`
+    /// succeeds whether or not anybody serves it; only the fetch finds out.
+    /// When it finds out, the host moves on to the next namespace and asks
+    /// there, which is how it ends up on `org.kde` where the watchers are.
+    namespaces: Vec<String>,
+    current: usize,
+    /// The host registration, in flight. Kept only so the thread's answer has
+    /// somewhere to go; nothing reads it.
+    _pending_register: Option<PendingReply>,
 }
 
 impl StatusNotifierHost {
-    /// The bus namespace this engine will look under on its own.
+    /// The bus namespaces this engine will look under on its own.
     ///
-    /// One, and it is the vendor-neutral one. The tray specification has a
-    /// second well-known name carrying a desktop environment's own prefix, and
-    /// most implementations answer to that one instead — but which watcher to
-    /// talk to is a fact about the machine a configuration is running on, not
-    /// about this engine, and hard-coding somebody's desktop into a Wayland
-    /// engine is how a Wayland engine stops being one. A configuration that
-    /// needs another name passes it; see [`Self::connect_to`].
-    pub const DEFAULT_NAMESPACE: &str = "org.freedesktop";
+    /// `org.kde` first: the specification says `org.freedesktop`, and every
+    /// item in the wild registers under `org.kde`, because that is where the
+    /// specification came from and nobody renamed. A host that asked only
+    /// under the specified name found an empty tray on a desk full of icons.
+    /// The neutral name stays as the fallback, and a configuration can name
+    /// its own order.
+    pub const DEFAULT_NAMESPACES: [&str; 2] = ["org.kde", "org.freedesktop"];
 
-    /// Registers a host with the vendor-neutral watcher.
+    /// Registers a host with the first default watcher that answers.
     pub fn connect() -> Result<Self, StatusNotifierError> {
-        Self::connect_to(&[Self::DEFAULT_NAMESPACE])
+        Self::connect_to(&Self::DEFAULT_NAMESPACES)
     }
 
     /// Registers a host with the first of `namespaces` that answers.
@@ -84,9 +106,23 @@ impl StatusNotifierHost {
     /// a permanent assumption baked into the engine.
     pub fn connect_to(namespaces: &[&str]) -> Result<Self, StatusNotifierError> {
         let mut last_error = None;
-        for namespace in namespaces {
+        for (index, namespace) in namespaces.iter().enumerate() {
             match Self::connect_namespace(namespace) {
-                Ok(host) => return Ok(host),
+                Ok((watcher, registered, unregistered)) => {
+                    return Ok(Self {
+                        watcher,
+                        registered,
+                        unregistered,
+                        items: BTreeMap::new(),
+                        initial: true,
+                        bootstrapped: false,
+                        retry_in: 0,
+                        pending_items: None,
+                        _pending_register: None,
+                        namespaces: namespaces.iter().map(|n| (*n).to_owned()).collect(),
+                        current: index,
+                    });
+                }
                 Err(error) => last_error = Some(error),
             }
         }
@@ -95,7 +131,9 @@ impl StatusNotifierHost {
         }))
     }
 
-    fn connect_namespace(namespace: &str) -> Result<Self, StatusNotifierError> {
+    fn connect_namespace(
+        namespace: &str,
+    ) -> Result<(DbusProxy, DbusSignal, DbusSignal), StatusNotifierError> {
         let interface = format!("{namespace}.StatusNotifierWatcher");
         let watcher = DbusProxy::connect(
             Bus::Session,
@@ -110,27 +148,52 @@ impl StatusNotifierHost {
         let unregistered = watcher
             .subscribe("StatusNotifierItemUnregistered")
             .map_err(|error| StatusNotifierError(error.to_string()))?;
-        let items = notifier_items(
-            watcher
-                .get_value("RegisteredStatusNotifierItems")
-                .map_err(StatusNotifierError)?,
-        )?;
-        let unique_name = watcher
+        Ok((watcher, registered, unregistered))
+    }
+
+    /// Reads the watcher's list and registers this host, once it answers.
+    ///
+    /// Asked for off-thread and collected here on a later poll -- never waited
+    /// on. `false` while there is no answer yet or the last one was a refusal;
+    /// the poll asks again after a pause.
+    fn bootstrap(&mut self) -> Result<bool, StatusNotifierError> {
+        let pending = self
+            .pending_items
+            .get_or_insert_with(|| self.watcher.get_later("RegisteredStatusNotifierItems"));
+        let Some(reply) = pending.try_take() else {
+            return Ok(false);
+        };
+        self.pending_items = None;
+        let Ok(value) = reply else {
+            // Nobody answered under this name. Try the next namespace soon,
+            // and once every name has been tried, wait about a second between
+            // rounds: a session with no watcher at all should cost a little,
+            // not a poll.
+            self.current = (self.current + 1) % self.namespaces.len().max(1);
+            if let Ok((watcher, registered, unregistered)) =
+                Self::connect_namespace(&self.namespaces[self.current])
+            {
+                self.watcher = watcher;
+                self.registered = registered;
+                self.unregistered = unregistered;
+            }
+            self.retry_in = if self.current == 0 { 60 } else { 5 };
+            return Ok(false);
+        };
+        for item in notifier_items(value)? {
+            self.items.insert(item.key(), item);
+        }
+        let unique_name = self
+            .watcher
             .unique_name()
             .ok_or_else(|| StatusNotifierError("session bus supplied no unique name".to_owned()))?;
-        watcher
-            .call_value_with(
-                "RegisterStatusNotifierHost",
-                &DbusValue::String(unique_name),
-            )
-            .map_err(StatusNotifierError)?;
-        Ok(Self {
-            _watcher: watcher,
-            registered,
-            unregistered,
-            items: items.into_iter().map(|item| (item.key(), item)).collect(),
-            initial: true,
-        })
+        // Best effort: a watcher that lists items but refuses hosts still has
+        // items worth showing.
+        self._pending_register = Some(
+            self.watcher
+                .call_later_with("RegisterStatusNotifierHost", DbusValue::String(unique_name)),
+        );
+        Ok(true)
     }
 
     /// Drains watcher signals and returns a new complete item snapshot.
@@ -138,6 +201,14 @@ impl StatusNotifierHost {
         &mut self,
     ) -> Result<Option<Vec<StatusNotifierAddress>>, StatusNotifierError> {
         let mut changed = std::mem::take(&mut self.initial);
+        if !self.bootstrapped {
+            if self.retry_in > 0 {
+                self.retry_in -= 1;
+            } else if self.bootstrap()? {
+                self.bootstrapped = true;
+                changed = true;
+            }
+        }
         for _ in 0..64 {
             let Some(value) = self.registered.next_value(Duration::ZERO) else {
                 break;
@@ -217,10 +288,12 @@ mod tests {
         // is the vendor-neutral name and nothing else; anything with somebody's
         // project in it is a fact about a particular session, which is the
         // configuration's to supply.
-        assert_eq!(StatusNotifierHost::DEFAULT_NAMESPACE, "org.freedesktop");
+        assert_eq!(
+            StatusNotifierHost::DEFAULT_NAMESPACES,
+            ["org.kde", "org.freedesktop"]
+        );
         assert!(
-            !StatusNotifierHost::DEFAULT_NAMESPACE.contains("kde")
-                && !StatusNotifierHost::DEFAULT_NAMESPACE.contains("gnome"),
+            StatusNotifierHost::DEFAULT_NAMESPACES.contains(&"org.freedesktop"),
             "the default watcher name belongs to no desktop environment",
         );
     }

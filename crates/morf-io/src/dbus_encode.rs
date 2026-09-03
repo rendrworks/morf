@@ -26,7 +26,15 @@ fn dbus_scalar_value<'a>(value: &'a DbusValue, role: &str) -> Result<Value<'a>, 
 }
 
 pub(crate) fn dbus_argument_value(value: &DbusValue) -> Result<Value<'_>, String> {
-    dbus_scalar_value(value, "positional D-Bus argument")
+    match value {
+        // A list of strings and a string-keyed map have one shape each on the
+        // bus -- `as` and `a{sv}` -- and asking for a signature to say so is
+        // asking the obvious. Anything less obvious still has to say.
+        DbusValue::List(_) | DbusValue::Map(_) => inferred_dbus_value(value).map_err(|_| {
+            "a compound positional D-Bus argument needs an explicit signature".to_owned()
+        }),
+        other => dbus_scalar_value(other, "positional D-Bus argument"),
+    }
 }
 
 pub(crate) fn typed_dbus_value<'a>(
@@ -153,8 +161,41 @@ fn dbus_map_key<'a>(signature: &Signature, key: &'a str) -> Result<Value<'a>, St
     }
 }
 
+/// What goes inside a variant when nobody said.
+///
+/// A scalar is itself. A value that carries its own signature is that -- which
+/// is how a property of type `as` travels inside the `v` a `Get` reply wants.
+/// A list of strings is `as` because that is the only thing a list of strings
+/// ever is on the bus, and a string-keyed map is `a{sv}` with each value
+/// inferred in turn, because that is what `GetAll` and every hints dictionary
+/// are. Anything else has to say what it is.
 fn inferred_dbus_value(value: &DbusValue) -> Result<Value<'_>, String> {
-    dbus_scalar_value(value, "D-Bus variant")
+    match value {
+        DbusValue::Typed { signature, value } => typed_dbus_value(signature, value),
+        DbusValue::List(values) if values.iter().all(|v| matches!(v, DbusValue::String(_))) => {
+            let mut array = Array::new(&Signature::Str);
+            for value in values {
+                if let DbusValue::String(text) = value {
+                    array
+                        .append(Value::from(text.as_str()))
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Ok(Value::Array(array))
+        }
+        DbusValue::Map(entries) => {
+            let mut dict = Dict::new(&Signature::Str, &Signature::Variant);
+            for (key, value) in entries {
+                dict.append(
+                    Value::from(key.as_str()),
+                    Value::Value(Box::new(inferred_dbus_value(value)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(Value::Dict(dict))
+        }
+        other => dbus_scalar_value(other, "D-Bus variant"),
+    }
 }
 
 pub(crate) fn decode_message_value(message: &zbus::Message) -> Result<DbusValue, String> {

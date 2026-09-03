@@ -322,3 +322,133 @@ fn a_calls_arguments_are_always_a_list_of_them() {
         )
     );
 }
+
+#[test]
+fn a_property_reply_carries_a_list_inside_its_variant() {
+    // `org.freedesktop.DBus.Properties.Get` answers with a `v`, and a tray
+    // watcher's `RegisteredStatusNotifierItems` is an `as` inside it. The
+    // variant used to take scalars only, so no list-valued property could be
+    // served at all.
+    const NAME: &str = "org.morf.PropShape";
+    const PATH: &str = "/org/morf/PropShape";
+    const INTERFACE: &str = "org.morf.PropShape";
+    let Ok((mut service, _)) = DbusService::own(Bus::Session, NAME, PATH, true) else {
+        return;
+    };
+    let caller = thread::spawn(|| {
+        let proxy = DbusProxy::connect_with_timeout(
+            Bus::Session,
+            NAME,
+            PATH,
+            INTERFACE,
+            Duration::from_secs(5),
+        )
+        .expect("a caller can connect");
+        proxy.get_value("Items")
+    });
+    let items = DbusValue::List(vec![
+        DbusValue::String(":1.5/StatusNotifierItem".into()),
+        DbusValue::String(":1.9/StatusNotifierItem".into()),
+    ]);
+    // A proxy asks `GetAll` first to fill its cache and `Get` only if that
+    // fails, so a served object has to answer both -- `GetAll` with an
+    // `a{sv}`, which a string-keyed map infers to, and `Get` with a `v`.
+    // The proxy asks `GetAll` and reads the cache; `Get` only follows if that
+    // fails. Answer whatever arrives until the caller is satisfied, without
+    // waiting on a second call that a well-behaved proxy never makes.
+    let mut answered = 0;
+    while answered < 2 {
+        let Some(call) = service.next_call(Duration::from_millis(200)) else {
+            break;
+        };
+        assert_eq!(call.interface, "org.freedesktop.DBus.Properties");
+        let reply = match call.member.as_str() {
+            "GetAll" => DbusValue::Map(std::collections::BTreeMap::from([(
+                "Items".to_owned(),
+                items.clone(),
+            )])),
+            "Get" => DbusValue::Typed {
+                signature: "v".into(),
+                value: Box::new(items.clone()),
+            },
+            other => panic!("unexpected {other}"),
+        };
+        service.reply(call.id, &reply).unwrap();
+        answered += 1;
+    }
+    assert_eq!(
+        caller.join().unwrap().unwrap(),
+        DbusValue::List(vec![
+            DbusValue::String(":1.5/StatusNotifierItem".into()),
+            DbusValue::String(":1.9/StatusNotifierItem".into()),
+        ])
+    );
+}
+
+#[test]
+fn a_list_nobody_can_infer_is_refused_rather_than_guessed() {
+    // `as` and `a{sv}` are inferred because they are the only thing a list of
+    // strings or a string-keyed map ever is. A list of mixed things is not one
+    // thing, and the answer is an error naming the fix -- not a guess, and not
+    // a hang.
+    let mixed = DbusValue::List(vec![DbusValue::String("a".into()), DbusValue::Integer(1)]);
+    let error = crate::dbus_encode::dbus_argument_value(&mixed).unwrap_err();
+    assert!(error.contains("explicit signature"), "{error}");
+    let nested = DbusValue::Typed {
+        signature: "v".into(),
+        value: Box::new(mixed),
+    };
+    assert!(crate::dbus_encode::dbus_argument_value(&nested).is_err());
+}
+
+#[test]
+fn a_deferred_read_answers_from_a_poll_and_never_waits() {
+    // A tray host asking a watcher served from its own process: the thread
+    // that would answer is the one that used to wait. The read goes to a
+    // thread of its own and the answer is collected later.
+    const NAME: &str = "org.morf.Deferred";
+    const PATH: &str = "/org/morf/Deferred";
+    const INTERFACE: &str = "org.morf.Deferred";
+    let Ok((mut service, _)) = DbusService::own(Bus::Session, NAME, PATH, true) else {
+        return;
+    };
+    let proxy = DbusProxy::connect(Bus::Session, NAME, PATH, INTERFACE).unwrap();
+    let pending = proxy.get_later("Count");
+    assert!(
+        pending.try_take().is_none(),
+        "nothing yet: the service has not been polled"
+    );
+    // Now play the service, on this same thread, which is exactly what the
+    // blocking read could never allow.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut answered = false;
+    while !answered && std::time::Instant::now() < deadline {
+        if let Some(call) = service.next_call(Duration::from_millis(50)) {
+            let reply = match call.member.as_str() {
+                "GetAll" => DbusValue::Map(std::collections::BTreeMap::from([(
+                    "Count".to_owned(),
+                    DbusValue::Typed {
+                        signature: "u".into(),
+                        value: Box::new(DbusValue::Integer(3)),
+                    },
+                )])),
+                _ => DbusValue::Typed {
+                    signature: "v".into(),
+                    value: Box::new(DbusValue::Typed {
+                        signature: "u".into(),
+                        value: Box::new(DbusValue::Integer(3)),
+                    }),
+                },
+            };
+            service.reply(call.id, &reply).unwrap();
+            answered = true;
+        }
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut got = None;
+    while got.is_none() && std::time::Instant::now() < deadline {
+        got = pending.try_take();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(got.unwrap().unwrap(), DbusValue::Unsigned(3));
+}

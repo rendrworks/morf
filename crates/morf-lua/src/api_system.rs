@@ -156,7 +156,10 @@ pub(crate) fn install_system_service_api<'gc>(
                     _ => None,
                 })
                 .collect(),
-            None => vec![StatusNotifierHost::DEFAULT_NAMESPACE.to_owned()],
+            None => StatusNotifierHost::DEFAULT_NAMESPACES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
         };
         if names.is_empty() {
             return Err(HostError("status notifier needs at least one watcher name".into()).into());
