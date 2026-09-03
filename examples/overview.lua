@@ -110,8 +110,23 @@ local heading = ui.Text {
 
 local function capture_name(identifier) return "tile-" .. identifier end
 
+local TILE_HOVER = "#242b36"
+
 local function tile_for(item)
-  local frame = ui.Rect { width = CELL_W, height = CELL_H, radius = 10, color = TILE }
+  -- Hover is a state that chooses itself: `when` reads the signal, and the
+  -- transition eases the colour either way. No handler writes a colour.
+  local hovered = morf.signal("overview.hover." .. item.identifier, false)
+  local frame = ui.Rect {
+    width = CELL_W, height = CELL_H, radius = 10, color = TILE,
+    states = {
+      default = { property_changes = { color = TILE } },
+      hovered = {
+        when = function() return hovered:get() end,
+        property_changes = { color = TILE_HOVER },
+      },
+    },
+    transitions = { { from = "*", to = "*", duration = 120, easing = "out_quad" } },
+  }
   -- `source` is filled in from the capture. Until then it names nothing,
   -- which an Image treats as having nothing to draw.
   local shot = ui.Image {
@@ -135,6 +150,8 @@ local function tile_for(item)
   -- it means that window rather than whatever is behind the grid.
   local node = ui.MouseArea {
     width = CELL_W, height = CELL_H + LABEL,
+    on_entered = function() hovered:set(true) end,
+    on_exited = function() hovered:set(false) end,
     on_clicked = function()
       if tile.title then focus(tile.title, tile.app_id) end
     end,

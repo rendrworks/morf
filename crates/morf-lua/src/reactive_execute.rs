@@ -87,6 +87,9 @@ pub(crate) fn evaluate_effect(
     {
         match value {
             IpcValue::String(name) => apply_state(state, ctx, limits, frame_remaining, node, name),
+            // No state chose itself and none is the default: the node stays
+            // as it is.
+            IpcValue::Nil => Ok(()),
             _ => Err("state binding must return a string".into()),
         }
     } else {

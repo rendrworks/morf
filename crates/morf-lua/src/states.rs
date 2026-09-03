@@ -14,6 +14,8 @@ pub(crate) struct StateDefinition {
     pub(crate) properties: Vec<(String, StateValue)>,
     pub(crate) anchors: Option<std::collections::BTreeMap<String, SceneValue>>,
     pub(crate) parent: Option<NodeHandle>,
+    /// A binding that, when true, selects this state on its own.
+    pub(crate) when: Option<StashedClosure>,
 }
 
 #[derive(Clone)]

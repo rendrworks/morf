@@ -1,13 +1,11 @@
 use crate::api_shader::attach_shader;
-use crate::states::StateValue;
-use crate::states::*;
+use crate::configure_states::configure_states;
 use luna::{Context, Function, Table, Value as LuaValue};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use morf_scene::{Behavior, NodeHandle, Physics, Repeat, RotationDirection, Value as SceneValue};
+use morf_scene::{Behavior, NodeHandle, Physics, Repeat, RotationDirection};
 
 use crate::{
     events::*, lua_values::*, reactive_bindings::*, scene_bindings::*, state::*, table_menu::*,
@@ -51,12 +49,13 @@ pub(crate) fn configure_element<'gc>(
         .iter()
         .find(|(name, _)| name == "behavior")
         .map(|(_, value)| *value);
+    let mut state_selector = None;
     if let Some((_, states)) = named.iter().find(|(name, _)| name == "states") {
         let transitions = named
             .iter()
             .find(|(name, _)| name == "transitions")
             .map_or(LuaValue::Nil, |(_, value)| *value);
-        configure_states(state, ctx, node, *states, transitions)?;
+        state_selector = configure_states(state, ctx, limits, node, *states, transitions)?;
     }
     // A shader is resolved here rather than kept as a property: the name is
     // looked up once, at configuration time, so painting never consults a
@@ -137,6 +136,12 @@ pub(crate) fn configure_element<'gc>(
             .reparent(child, Some(node))
             .map_err(|error| error.to_string())?;
     }
+    if let Some(selector) = state_selector {
+        if state_value.is_some() {
+            return Err("states with `when` choose themselves; drop `state`".into());
+        }
+        register_state_binding(state, ctx, limits, node, selector);
+    }
     if let Some(value) = state_value {
         match value {
             LuaValue::Function(Function::Closure(closure)) => {
@@ -164,130 +169,6 @@ pub(crate) fn handler_event(property: &str) -> Option<UiEvent> {
         .iter()
         .find(|(_, name)| *name == property)
         .map(|(event, _)| *event)
-}
-
-pub(crate) fn configure_states<'gc>(
-    state: &Rc<RefCell<ReactiveState>>,
-    ctx: Context<'gc>,
-    node: NodeHandle,
-    states: LuaValue<'gc>,
-    transitions: LuaValue<'gc>,
-) -> Result<(), String> {
-    let LuaValue::Table(states) = states else {
-        return Err("states must be a name-keyed table".into());
-    };
-    let mut definitions = HashMap::new();
-    for (name, definition) in states.iter(ctx) {
-        let LuaValue::String(name) = name else {
-            return Err("state names must be strings".into());
-        };
-        let LuaValue::Table(definition) = definition else {
-            return Err("each state must be a table".into());
-        };
-        let mut properties = Vec::new();
-        let mut anchors = None;
-        let mut parent = None;
-        for (key, value) in definition.iter(ctx) {
-            let LuaValue::String(key) = key else {
-                return Err("state fields must be strings".into());
-            };
-            match key.display_lossy().to_string().as_str() {
-                "property_changes" => {
-                    let LuaValue::Table(changes) = value else {
-                        return Err("property_changes must be a table".into());
-                    };
-                    for (property, value) in changes.iter(ctx) {
-                        let LuaValue::String(property) = property else {
-                            return Err("property_changes keys must be strings".into());
-                        };
-                        let property = property.display_lossy().to_string();
-                        if !state
-                            .borrow()
-                            .scene
-                            .has_property(node, &property)
-                            .map_err(|error| error.to_string())?
-                        {
-                            return Err(format!("state changes unknown property `{property}`"));
-                        }
-                        let value = match value {
-                            LuaValue::Function(Function::Closure(closure)) => {
-                                StateValue::Binding(ctx.stash(closure))
-                            }
-                            value => StateValue::Value(lua_to_scene(ctx, value, 0)?),
-                        };
-                        properties.push((property, value));
-                    }
-                }
-                "anchors" | "anchor_changes" => {
-                    let SceneValue::Map(value) = lua_to_scene(ctx, value, 0)? else {
-                        return Err("anchor_changes must be a table".into());
-                    };
-                    anchors = Some(value);
-                }
-                "parent" | "parent_change" => {
-                    let LuaValue::UserData(value) = value else {
-                        return Err("parent_change must be a morf node".into());
-                    };
-                    parent = Some(
-                        value
-                            .downcast_static::<NodeToken>()
-                            .map_err(|_| "parent_change must be a morf node".to_owned())?
-                            .handle,
-                    );
-                }
-                field => return Err(format!("unknown state field `{field}`")),
-            }
-        }
-        definitions.insert(
-            name.display_lossy().to_string(),
-            StateDefinition {
-                properties,
-                anchors,
-                parent,
-            },
-        );
-    }
-    let mut parsed_transitions = Vec::new();
-    if let LuaValue::Table(transitions) = transitions {
-        for (_, transition) in transitions.iter(ctx) {
-            let LuaValue::Table(transition) = transition else {
-                return Err("each transition must be a table".into());
-            };
-            let from = table_string(ctx, transition, "from", "*")?;
-            let to = table_string(ctx, transition, "to", "*")?;
-            let reversible = match transition.get_value(ctx, "reversible") {
-                LuaValue::Nil => false,
-                LuaValue::Boolean(value) => value,
-                _ => return Err("transition reversible must be boolean".into()),
-            };
-            let duration = table_number(ctx, transition, "duration", 250.0)?;
-            if duration < 0.0 {
-                return Err("transition duration cannot be negative".into());
-            }
-            parsed_transitions.push(StateTransition {
-                from,
-                to,
-                reversible,
-                behavior: Behavior {
-                    duration: Duration::from_secs_f64(duration / 1_000.0),
-                    easing: parse_easing(ctx, transition.get_value(ctx, "easing"))?,
-                    rotation_direction: parse_rotation_direction(ctx, transition)?,
-                    ..Behavior::default()
-                },
-            });
-        }
-    } else if !matches!(transitions, LuaValue::Nil) {
-        return Err("transitions must be an array table".into());
-    }
-    state.borrow_mut().states.insert(
-        node,
-        StateSet {
-            definitions,
-            transitions: parsed_transitions,
-            current: None,
-        },
-    );
-    Ok(())
 }
 
 pub(crate) fn configure_behaviors<'gc>(
