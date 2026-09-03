@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 mod config;
+mod crash;
 mod lock;
 mod pacing;
 mod paint;
@@ -18,6 +19,8 @@ mod workers;
 use config::*;
 
 fn main() -> ExitCode {
+    // First, so a fault anywhere after this line leaves something to read.
+    crash::install();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

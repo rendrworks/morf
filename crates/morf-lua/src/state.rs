@@ -4,8 +4,8 @@ use luna::{StashedClosure, StashedTable, UserRef};
 use morf_desktop::DesktopEntries;
 use morf_image::ImageRect as QuantizeRect;
 use morf_io::{
-    DbusProxy, DbusSignal, FileDocument, FileView, FileWatcher, Process, ProcessConfig, Socket,
-    SocketServer, SplitParser, StreamCollector, Timer as IoTimer,
+    DbusProxy, DbusService, DbusSignal, FileDocument, FileView, FileWatcher, Process,
+    ProcessConfig, Socket, SocketServer, SplitParser, StreamCollector, Timer as IoTimer,
 };
 use morf_layout::{TransformTracker, TransformWatcher as NativeTransformWatcher};
 use morf_lifecycle::Retention;
@@ -96,6 +96,10 @@ pub(crate) struct GroupToken {
 #[derive(Debug)]
 pub(crate) struct DbusToken {
     pub(crate) proxy: DbusProxy,
+}
+
+pub(crate) struct DbusServiceToken {
+    pub(crate) service: Rc<RefCell<DbusService>>,
 }
 
 pub(crate) struct GreetdToken {
@@ -243,6 +247,17 @@ pub(crate) struct PendingDbusSignal {
     pub(crate) callback: StashedClosure,
 }
 
+/// A bus name this configuration owns, and who answers calls on it.
+///
+/// The service is shared rather than owned here because it is reachable from
+/// two directions at once: the runtime polls it for arriving calls, and the
+/// configuration replies through the same handle from inside the callback
+/// those calls are delivered to.
+pub(crate) struct PendingDbusService {
+    pub(crate) service: Rc<RefCell<DbusService>>,
+    pub(crate) callback: StashedClosure,
+}
+
 pub(crate) struct PendingUdev {
     pub(crate) monitor: UdevMonitor,
     pub(crate) callback: StashedClosure,
@@ -319,6 +334,11 @@ pub(crate) struct ReactiveState {
     pub(crate) reload_request: Option<bool>,
     pub(crate) watch_files: bool,
     pub(crate) watch_files_changed: bool,
+    /// Whether the configuration has asked the shell to stop.
+    ///
+    /// One-way: nothing clears it but the supervisor reading it, and by then
+    /// the process is on its way out. A configuration cannot un-quit.
+    pub(crate) quit_requested: bool,
     pub(crate) reload_completed_callbacks: Vec<StashedClosure>,
     pub(crate) reload_failed_callbacks: Vec<StashedClosure>,
     pub(crate) effects: HashMap<u64, LuaEffect>,
@@ -380,6 +400,7 @@ pub(crate) struct ReactiveState {
     pub(crate) transform_watchers: HashMap<u64, LuaTransformWatcher>,
     pub(crate) next_transform_watcher: u64,
     pub(crate) dbus_signals: Vec<PendingDbusSignal>,
+    pub(crate) dbus_services: Vec<PendingDbusService>,
     pub(crate) udev_monitors: Vec<PendingUdev>,
     pub(crate) status_notifiers: Vec<PendingStatusNotifier>,
     pub(crate) session_unlock_requested: bool,
@@ -407,6 +428,7 @@ impl ReactiveState {
             reload_request: None,
             watch_files: true,
             watch_files_changed: false,
+            quit_requested: false,
             reload_completed_callbacks: Vec::new(),
             reload_failed_callbacks: Vec::new(),
             effects: HashMap::new(),
@@ -457,6 +479,7 @@ impl ReactiveState {
             transform_watchers: HashMap::new(),
             next_transform_watcher: 0,
             dbus_signals: Vec::new(),
+            dbus_services: Vec::new(),
             udev_monitors: Vec::new(),
             status_notifiers: Vec::new(),
             session_unlock_requested: false,

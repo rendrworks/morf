@@ -88,6 +88,7 @@ impl Runtime {
         let mut ready = Vec::new();
         let mut timers = Vec::new();
         let mut dbus_signals = Vec::new();
+        let mut dbus_calls = Vec::new();
         let mut udev_events = Vec::new();
         let mut status_updates = Vec::new();
         let mut loaders = Vec::new();
@@ -209,6 +210,21 @@ impl Runtime {
             for subscription in &state.dbus_signals {
                 while let Some(value) = subscription.signal.next_value(Duration::ZERO) {
                     dbus_signals.push((subscription.callback.clone(), value));
+                }
+            }
+            // Bounded per frame, unlike the signal drain above. A signal that
+            // arrives faster than it is read is the sender's problem; a *call*
+            // that does is ours, because the caller is blocked until we answer
+            // and answering happens after this loop. Taking them all would let
+            // one chatty peer hold the frame open.
+            // How many calls one service may hand over per frame.
+            const MAX_CALLS_PER_FRAME: usize = 32;
+            for entry in &state.dbus_services {
+                for _ in 0..MAX_CALLS_PER_FRAME {
+                    let Some(call) = entry.service.borrow_mut().next_call(Duration::ZERO) else {
+                        break;
+                    };
+                    dbus_calls.push((entry.callback.clone(), call));
                 }
             }
             let mut udev_errors = Vec::new();
@@ -362,6 +378,17 @@ impl Runtime {
                     .borrow_mut()
                     .logs
                     .push(format!("transform callback: {message}"));
+            }
+        }
+        for (callback, call) in dbus_calls {
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_dbus_call_handler(ctx, &callback, call, self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .logs
+                    .push(format!("D-Bus call: {message}"));
             }
         }
         for (callback, value) in dbus_signals {

@@ -202,6 +202,15 @@ pub(crate) fn run_surface(
             tx.send(SupervisorMessage::Reload { hard })
                 .map_err(|_| "output supervisor stopped".to_owned())?;
         }
+        if runtime.quit_requested() {
+            // Told once, and then this output stops driving frames. The
+            // supervisor takes the others down; returning here rather than
+            // waiting for it keeps this thread from painting a shell that is
+            // already leaving.
+            tx.send(SupervisorMessage::Quit)
+                .map_err(|_| "output supervisor stopped".to_owned())?;
+            return Ok(());
+        }
         if let Some(enabled) = runtime.take_watch_files_change() {
             tx.send(SupervisorMessage::WatchFiles(enabled))
                 .map_err(|_| "output supervisor stopped".to_owned())?;

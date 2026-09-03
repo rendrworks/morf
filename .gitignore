@@ -23,3 +23,7 @@ __pycache__/
 compile_commands.json
 .complog
 .quickfix
+
+# Notes for us, not for the repo.
+/COMPARISON.md
+/xtra

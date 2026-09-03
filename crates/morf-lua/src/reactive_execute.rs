@@ -1,6 +1,6 @@
 use crate::states::Capture;
 use luna::{Context, Executor, Fuel, StashedClosure, Table, Value as LuaValue, Variadic};
-use morf_io::DbusValue;
+use morf_io::{DbusCall, DbusValue};
 use morf_reactive::EffectContext;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -238,6 +238,38 @@ pub(crate) fn execute_dbus_handler(
 ) -> Result<(), String> {
     let argument = dbus_value_to_lua(ctx, value)?;
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), Variadic(vec![argument]));
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Hands one arriving method call to its Lua handler.
+///
+/// The call arrives as a table rather than as positional arguments because most
+/// handlers dispatch on `member` and ignore the rest, and a handler that has to
+/// name five parameters to read the second reads worse than one that does not.
+/// `id` is opaque and only meaningful to `service:reply`.
+pub(crate) fn execute_dbus_call_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    call: DbusCall,
+    limits: Limits,
+) -> Result<(), String> {
+    let table = Table::new(&ctx);
+    table.set_field(ctx, "id", call.id as i64);
+    table.set_field(ctx, "interface", call.interface.as_str());
+    table.set_field(ctx, "member", call.member.as_str());
+    table.set_field(ctx, "path", call.path.as_str());
+    table.set_field(ctx, "sender", call.sender.as_str());
+    table.set_field(ctx, "arguments", dbus_value_to_lua(ctx, call.arguments)?);
+    let executor = Executor::start(
+        ctx,
+        ctx.fetch(closure).into(),
+        Variadic(vec![LuaValue::Table(table)]),
+    );
     drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
     match executor.take_result::<()>(ctx) {
         Ok(Ok(())) => Ok(()),

@@ -285,6 +285,17 @@ pub(crate) fn install_shell_api<'gc>(
         Ok(CallbackReturn::Return)
     });
     morf.set_field(ctx, "watch_files", watch_files);
+    let quit_state = Rc::clone(&state);
+    // Asking to stop, rather than stopping. The call returns and the rest of
+    // the handler runs; the shell goes down at the top of the next frame, once
+    // the supervisor has seen the request and taken every output down with it.
+    // Exiting from inside a Lua callback would unwind the runtime that is
+    // running the callback.
+    let quit = Callback::from_fn(&ctx, move |_, _, _| {
+        quit_state.borrow_mut().quit_requested = true;
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "quit", quit);
     let working_directory = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let path: Option<String> = stack.consume(ctx)?;
         if let Some(path) = path {

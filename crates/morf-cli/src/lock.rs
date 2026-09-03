@@ -41,8 +41,12 @@ pub(crate) enum WorkerCommand {
 pub(crate) enum SupervisorMessage {
     Worker(WorkerMessage),
     Ipc(IpcIncoming),
-    Reload { hard: bool },
+    Reload {
+        hard: bool,
+    },
     WatchFiles(bool),
+    /// The configuration asked the shell to stop.
+    Quit,
 }
 
 pub(crate) enum WorkerMessage {

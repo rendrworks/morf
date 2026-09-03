@@ -158,6 +158,14 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
                 }
                 Err(error) => daemon_logs.push(format!("reload: {error}")),
             },
+            Ok(SupervisorMessage::Quit) => {
+                // The same shutdown `morf kill` performs, asked for from the
+                // inside. A greeter that has launched its session has nothing
+                // left to draw, and until now had no way to say so.
+                stop_workers(workers);
+                drop(server);
+                return Ok(());
+            }
             Ok(SupervisorMessage::WatchFiles(enabled)) => {
                 watch_files.store(enabled, Ordering::Release);
             }

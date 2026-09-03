@@ -38,6 +38,13 @@ function board.build(options)
   -- three across instead of ten, with a key that opens the full one.
   local keypad = options.keypad or false
   local on_full = options.on_full
+  -- Signals are named, and a name is the whole of their identity. Two boards in
+  -- one process — a keypad and the full keyboard, say — would otherwise share
+  -- every one of them: the same `layer`, the same `shifted`, the same `down`
+  -- per key. They would move as one board wearing two faces, and the process
+  -- would not survive the second one being built.
+  local NAME = options.prefix or "keyboard"
+  local function named(suffix) return NAME .. "." .. suffix end
   local ORIGIN_X = options.x or 0
   local ORIGIN_Y = options.y or 0
 
@@ -94,16 +101,16 @@ function board.build(options)
   -- Emitting.
   --------------------------------------------------------------------------------
 
-  local layer = morf.signal("keyboard.layer", LETTERS)
-  local shifted = morf.signal("keyboard.shifted", false)
-  local locked = morf.signal("keyboard.locked", false)
+  local layer = morf.signal(named("layer"), LETTERS)
+  local shifted = morf.signal(named("shifted"), false)
+  local locked = morf.signal(named("locked"), false)
 
   -- Whether the board is mid-morph. While it is, every key swells past its
   -- neighbours and the row's field fuses them into one bar, and the letters melt
   -- out of their own distance fields. The layer is swapped at the bottom of that,
   -- where there is nothing legible on screen to swap — so the board is never seen
   -- to *replace* its keys, only to re-form as different ones.
-  local fusing = morf.signal("keyboard.fusing", false)
+  local fusing = morf.signal(named("fusing"), false)
 
   -- The layer being travelled towards, and how far along the letters are. While
   -- these differ from `layer` every label carries two glyphs and the renderer
@@ -111,8 +118,8 @@ function board.build(options)
   -- outlines that belong to neither, rather than one letter fading out under
   -- another. When the swap lands, `layer` catches up and both name the same
   -- glyph, which is why the progress can be dropped without anything jumping.
-  local target_layer = morf.signal("keyboard.target_layer", LETTERS)
-  local travel = morf.signal("keyboard.travel", 0)
+  local target_layer = morf.signal(named("target_layer"), LETTERS)
+  local travel = morf.signal(named("travel"), 0)
 
   local function write(signal, value)
     local ok, error = signal:set(value)
@@ -206,7 +213,7 @@ function board.build(options)
   local rows = {}
 
   local function place(entry)
-    entry.down = morf.signal("keyboard.down." .. entry.id, false)
+    entry.down = morf.signal(named("down." .. entry.id), false)
     keys[#keys + 1] = entry
     return entry
   end

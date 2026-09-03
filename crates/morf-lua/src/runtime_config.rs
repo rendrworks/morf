@@ -226,6 +226,11 @@ impl Runtime {
         })
     }
 
+    /// Whether the configuration has asked the shell to stop.
+    pub fn quit_requested(&self) -> bool {
+        self.reactive.borrow().quit_requested
+    }
+
     pub fn dispatch_reload_completed(&mut self) -> bool {
         self.dispatch_reload_callbacks(true, None)
     }

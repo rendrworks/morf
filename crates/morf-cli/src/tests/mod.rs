@@ -281,3 +281,42 @@ fn an_unknown_leading_option_is_still_refused() {
     let args = ["--colour", "red"].map(std::ffi::OsString::from);
     assert!(parse_command(&args).is_err());
 }
+
+#[test]
+fn a_panic_leaves_a_report_behind() {
+    // A shell is the thing drawing the screen, so when it faults there is
+    // usually no terminal watching. Before this, morf installed no hook at all
+    // and a renderer fault left the user with a vanished panel and nothing to
+    // read.
+    let directory = std::env::temp_dir().join(format!("morf-crash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    // SAFETY: single-threaded at this point in the test, and both variables are
+    // read by the hook rather than by anything running concurrently.
+    unsafe {
+        std::env::set_var("XDG_STATE_HOME", &directory);
+        std::env::remove_var("MORF_DISABLE_CRASH_HANDLER");
+    }
+    crate::crash::install();
+
+    let panicked = std::panic::catch_unwind(|| panic!("a deliberate fault"));
+    assert!(panicked.is_err(), "the panic happened");
+
+    let reports = directory.join("morf").join("crashes");
+    let written = std::fs::read_dir(&reports)
+        .expect("the crash directory was created")
+        .filter_map(Result::ok)
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(written.len(), 1, "one report, not one per thread");
+    let report = &written[0];
+    assert!(
+        report.contains("a deliberate fault"),
+        "it says what: {report}"
+    );
+    assert!(report.contains("mod.rs"), "and where: {report}");
+    assert!(
+        report.contains("a_panic_leaves_a_report_behind"),
+        "and carries a real backtrace naming this frame: {report}"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}

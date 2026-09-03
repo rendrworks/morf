@@ -1158,11 +1158,13 @@ end
 local keypad_panel, keypad_height = board.build {
   width = W,
   keypad = true,
+  prefix = "greeter.keypad",
   key = board_key,
   on_full = function() write(numeric, false) end,
 }
 local full_panel, full_height = board.build {
   width = W,
+  prefix = "greeter.keys",
   key = board_key,
 }
 local board_height = math.max(keypad_height, full_height)

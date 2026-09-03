@@ -101,6 +101,7 @@ pub(crate) fn install_system_service_api<'gc>(
     });
     let dbus = Table::new(&ctx);
     dbus.set_field(ctx, "proxy", dbus_proxy);
+    crate::api_dbus_serve::install_dbus_serve_api(ctx, Rc::clone(&state), dbus);
     morf.set_field(ctx, "dbus", dbus);
 
     let udev_state = Rc::clone(&state);
