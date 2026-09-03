@@ -66,7 +66,7 @@ local function bar(y, blend)
   cells[#cells + 1] = ui.Row {
     x = 0,
     y = 17,
-    spacing = GAP,
+    gap = GAP,
     -- Every child here is a plain rect. The row lays them out; the field
     -- composes whatever the row produced.
     ui.Rect { width = TAB_W, height = TAB_H, radius = 18, color = TABS[1][2] },

@@ -36,7 +36,7 @@ ui.MouseArea {
   ui.Rect {
     color = "#3a1414",
     ui.Column {
-      spacing = 4,
+      gap = 4,
       anchors = { left = true, top = true, margins = 12 },
       ui.Text { text = "morf stopped", color = "#ffffff", font_size = 20, font_weight = 700 },
       ui.Repeater {

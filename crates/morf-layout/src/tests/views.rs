@@ -149,8 +149,8 @@ fn grid_places_children_in_fixed_columns() {
     let mut scene = Scene::new();
     let grid = scene.create(Element::Grid);
     scene.assign(grid, "columns", 2.0).unwrap();
-    scene.assign(grid, "column_spacing", 5.0).unwrap();
-    scene.assign(grid, "row_spacing", 7.0).unwrap();
+    scene.assign(grid, "column_gap", 5.0).unwrap();
+    scene.assign(grid, "row_gap", 7.0).unwrap();
     let children = (0..4)
         .map(|_| {
             let child = scene.create(Element::Rect);
@@ -178,11 +178,10 @@ fn grid_places_children_in_fixed_columns() {
 }
 
 #[test]
-fn a_flex_row_distributes_remaining_width_to_fillers_named_the_old_way() {
-    // `fill_width = true` is the older word for `grow = 1`, and still is.
+fn a_flex_row_distributes_remaining_width_to_growers() {
     let mut scene = Scene::new();
     let row = scene.create(Element::Flex);
-    scene.assign(row, "spacing", 10.0).unwrap();
+    scene.assign(row, "gap", 10.0).unwrap();
     let fixed = scene.create(Element::Rect);
     scene.assign(fixed, "width", 30.0).unwrap();
     scene.assign(fixed, "height", 10.0).unwrap();
@@ -193,7 +192,7 @@ fn a_flex_row_distributes_remaining_width_to_fillers_named_the_old_way() {
         .assign(
             fill,
             "layout",
-            Value::Map(BTreeMap::from([("fill_width".into(), Value::Bool(true))])),
+            Value::Map(BTreeMap::from([("grow".into(), Value::Number(1.0))])),
         )
         .unwrap();
     scene.reparent(fixed, Some(row)).unwrap();

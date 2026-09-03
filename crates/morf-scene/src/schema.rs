@@ -303,13 +303,9 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         Element::Row | Element::Column => {
             properties.extend([
                 // One vocabulary for every packing container: `gap` between
-                // children, `align` across the packed axis, `justify` along
-                // it. `spacing` and `alignment` are the older words for the
-                // first two and still read.
+                // children, `align` across the packed axis, `justify` along it.
                 number("gap", 0.0),
-                number("spacing", 0.0),
                 string("align", "start"),
-                string("alignment", "start"),
                 string("justify", "start"),
             ]);
         }
@@ -317,8 +313,8 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
             properties.extend([
                 number("columns", 1.0),
                 number("gap", 0.0),
-                number("row_spacing", 0.0),
-                number("column_spacing", 0.0),
+                number("row_gap", 0.0),
+                number("column_gap", 0.0),
                 // Track lists turn a fixed-column grid into a CSS one:
                 // `{ "1fr", "auto", 40, { min = 40, max = "1fr" },
                 // "repeat(2, 1fr)" }`. Children then place themselves with
@@ -326,7 +322,6 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 any("template_columns", Value::List(Vec::new())),
                 any("template_rows", Value::List(Vec::new())),
                 string("align", "stretch"),
-                string("alignment", "start"),
                 string("justify", "start"),
             ]);
         }
@@ -336,14 +331,12 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 string("direction", "row"),
                 boolean("wrap", false),
                 number("gap", 0.0),
-                number("spacing", 0.0),
                 number("padding", 0.0),
                 // `align` is across the direction, `justify` along it, and
                 // `align_content` is how wrapped lines share the cross axis.
                 // A layout stretches by default, as CSS does; a positioner
                 // (`Row`, `Column`) leaves children their own size.
                 string("align", "stretch"),
-                string("alignment", "start"),
                 string("justify", "start"),
                 string("align_content", "stretch"),
             ]);

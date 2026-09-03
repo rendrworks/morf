@@ -165,7 +165,7 @@ end
 local grid = ui.Repeater {
   as = "grid",
   x = PAD, y = 48,
-  columns = COLS, row_spacing = GAP, column_spacing = GAP,
+  columns = COLS, row_gap = GAP, column_gap = GAP,
   model = model,
   delegate = tile_for,
 }

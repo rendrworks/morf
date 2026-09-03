@@ -102,7 +102,7 @@ fn a_field_reaches_through_the_positioners_that_laid_its_shapes_out() {
     scene.assign(root, "height", 80.0).unwrap();
     scene.assign(root, "blend", 18.0).unwrap();
     let row = scene.create(Element::Row);
-    scene.assign(row, "spacing", 12.0).unwrap();
+    scene.assign(row, "gap", 12.0).unwrap();
     scene.reparent(row, Some(root)).unwrap();
     for _ in 0..3 {
         let cell = scene.create(Element::Rect);

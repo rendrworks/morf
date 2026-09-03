@@ -12,8 +12,8 @@ use crate::flex_style::is_flex_root;
 use crate::geometry::TextOptions;
 use crate::geometry::{Geometry, Size, TextMeasurer};
 use crate::helpers::{
-    LayoutError, align_of, attached_layout, gap_of, grid_columns, grid_size, justify_run, positive,
-    sum_with_spacing, text_alignment, text_elide,
+    LayoutError, attached_layout, grid_columns, grid_size, justify_run, positive, sum_with_spacing,
+    text_alignment, text_elide,
 };
 use crate::resolve_containers::grid_gaps;
 use crate::transform::{distributed_margin, inset_margin};
@@ -216,7 +216,7 @@ impl Layout {
                 Size { width, height }
             }
             Element::Row => Size {
-                width: sum_with_spacing(&child_sizes, gap_of(scene, node)?, true),
+                width: sum_with_spacing(&child_sizes, scene.number(node, "gap")?, true),
                 height: child_sizes
                     .iter()
                     .map(|size| size.height)
@@ -227,15 +227,15 @@ impl Layout {
                     .iter()
                     .map(|size| size.width)
                     .fold(0.0, f64::max),
-                height: sum_with_spacing(&child_sizes, gap_of(scene, node)?, false),
+                height: sum_with_spacing(&child_sizes, scene.number(node, "gap")?, false),
             },
             Element::Grid => {
-                let (column_spacing, row_spacing) = grid_gaps(scene, node)?;
+                let (column_gap, row_gap) = grid_gaps(scene, node)?;
                 grid_size(
                     &child_sizes,
                     grid_columns(scene.number(node, "columns")?),
-                    column_spacing,
-                    row_spacing,
+                    column_gap,
+                    row_gap,
                 )
             }
             Element::Inset => {
@@ -286,7 +286,7 @@ impl Layout {
         node: NodeHandle,
         implicit: Size,
     ) -> Result<Size, LayoutError> {
-        let attached = Attached::read(attached_layout(scene.current(node, "layout")?)?, true)?;
+        let attached = Attached::read(attached_layout(scene.current(node, "layout")?)?)?;
         // Percent bounds need a parent to be a percent of; here, before
         // placement, only lengths apply. A Flex or Grid resolves the rest.
         let length = |bound: Option<crate::attached::Bound>| match bound {
@@ -340,7 +340,11 @@ impl Layout {
         }
         let children = scene.children(parent)?;
         let packed = matches!(parent_element, Element::Row | Element::Column);
-        let spacing = if packed { gap_of(scene, parent)? } else { 0.0 };
+        let spacing = if packed {
+            scene.number(parent, "gap")?
+        } else {
+            0.0
+        };
         // `justify`: where the run starts along the packed axis and what
         // extra goes between children, from the room left over.
         let (mut cursor, extra) = if packed {
@@ -388,7 +392,11 @@ impl Layout {
                 grid_heights[index / columns] = grid_heights[index / columns].max(size.height);
             }
         }
-        let alignment = packed.then(|| align_of(scene, parent)).transpose()?;
+        let alignment = if packed {
+            Some(scene.string_value(parent, "align")?.to_owned())
+        } else {
+            None
+        };
 
         for (position, &child) in children.iter().enumerate() {
             let size = self.requested[&child];
@@ -400,7 +408,7 @@ impl Layout {
                 width: size.width,
                 height: size.height,
             };
-            let attached = Attached::read(attached_layout(scene.current(child, "layout")?)?, true)?;
+            let attached = Attached::read(attached_layout(scene.current(child, "layout")?)?)?;
             if parent_element == Element::Inset {
                 let left = inset_margin(scene, parent, "left_margin")?;
                 let right = inset_margin(scene, parent, "right_margin")?;

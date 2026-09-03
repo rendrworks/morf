@@ -348,48 +348,6 @@ fn a_when_state_and_a_state_binding_together_are_refused() {
 }
 
 #[test]
-fn the_older_layout_kinds_are_flex_and_track_grids_under_their_old_names() {
-    let mut runtime = Runtime::default();
-    runtime
-        .execute(
-            "aliases.lua",
-            br#"
-                local ui = require("morf.ui")
-                local row = ui.RowLayout { spacing = 4, ui.Rect { width = 10, height = 10 } }
-                local column = ui.ColumnLayout { ui.Rect { width = 10, height = 10 } }
-                local grid = ui.GridLayout { columns = 3, ui.Rect { width = 10, height = 10 } }
-                ui.Item { row, column, grid }
-            "#,
-        )
-        .unwrap();
-    let scene = runtime.scene();
-    let root = scene.roots()[0];
-    let children = scene.children(root).unwrap();
-    assert_eq!(
-        scene.element(children[0]).unwrap(),
-        morf_scene::Element::Flex
-    );
-    assert_eq!(scene.string_value(children[0], "direction").unwrap(), "row");
-    assert_eq!(scene.number(children[0], "spacing").unwrap(), 4.0);
-    assert_eq!(
-        scene.element(children[1]).unwrap(),
-        morf_scene::Element::Flex
-    );
-    assert_eq!(
-        scene.string_value(children[1], "direction").unwrap(),
-        "column"
-    );
-    assert_eq!(
-        scene.element(children[2]).unwrap(),
-        morf_scene::Element::Grid
-    );
-    assert_eq!(
-        scene.current(children[2], "template_columns").unwrap(),
-        &SceneValue::List(vec![SceneValue::String("repeat(3, auto)".into())])
-    );
-}
-
-#[test]
 fn a_state_with_order_is_asked_before_its_alphabetical_betters() {
     let mut runtime = Runtime::default();
     runtime

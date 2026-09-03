@@ -15,7 +15,7 @@ use taffy::style::{
 };
 
 use crate::attached::{Attached, Bound};
-use crate::helpers::{LayoutError, align_of, attached_layout, gap_of, positive};
+use crate::helpers::{LayoutError, attached_layout, positive};
 
 fn bad(what: &str, value: &str) -> LayoutError {
     LayoutError::Scene(format!("unknown {what} `{value}`"))
@@ -242,7 +242,7 @@ pub(crate) fn container_style(
             } else {
                 FlexWrap::NoWrap
             };
-            let gap = gap_of(scene, node)?.max(0.0) as f32;
+            let gap = scene.number(node, "gap")?.max(0.0) as f32;
             style.gap = Size {
                 width: LengthPercentage::length(gap),
                 height: LengthPercentage::length(gap),
@@ -254,7 +254,7 @@ pub(crate) fn container_style(
                 top: LengthPercentage::length(padding),
                 bottom: LengthPercentage::length(padding),
             };
-            style.align_items = align_items(&align_of(scene, node)?)?;
+            style.align_items = align_items(scene.string_value(node, "align")?)?;
             style.justify_content = align_content(scene.string_value(node, "justify")?)?;
             style.align_content = align_content(scene.string_value(node, "align_content")?)?;
         }
@@ -262,11 +262,10 @@ pub(crate) fn container_style(
             style.display = Display::Grid;
             style.grid_template_columns = tracks(scene.current(node, "template_columns")?)?;
             style.grid_template_rows = tracks(scene.current(node, "template_rows")?)?;
+            let (column_gap, row_gap) = crate::resolve_containers::grid_gaps(scene, node)?;
             style.gap = Size {
-                width: LengthPercentage::length(
-                    scene.number(node, "column_spacing")?.max(0.0) as f32
-                ),
-                height: LengthPercentage::length(scene.number(node, "row_spacing")?.max(0.0) as f32),
+                width: LengthPercentage::length(column_gap.max(0.0) as f32),
+                height: LengthPercentage::length(row_gap.max(0.0) as f32),
             };
             style.align_items = align_items(scene.string_value(node, "align")?)?;
             style.justify_content = align_content(scene.string_value(node, "justify")?)?;
@@ -283,14 +282,7 @@ pub(crate) fn container_style(
 /// else auto -- a leaf is then measured. The rest is the attached map.
 pub(crate) fn item_style(scene: &Scene, node: NodeHandle) -> Result<Style<String>, LayoutError> {
     let attached = attached_layout(scene.current(node, "layout")?)?;
-    let horizontal = match scene.parent(node)? {
-        Some(parent) => match scene.element(parent)? {
-            Element::Flex => scene.string_value(parent, "direction")?.starts_with("row"),
-            _ => true,
-        },
-        None => true,
-    };
-    let read = Attached::read(attached, horizontal)?;
+    let read = Attached::read(attached)?;
     let mut style = Style::<String>::default();
     let as_dimension = |bound: Option<Bound>| match bound {
         Some(Bound::Length(value)) => Dimension::length(value as f32),

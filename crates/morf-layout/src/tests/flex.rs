@@ -127,7 +127,7 @@ fn a_grid_with_tracks_places_children_in_fractions_and_spans() {
             Value::List(vec![Value::String("repeat(2, 1fr)".into())]),
         )
         .unwrap();
-    scene.assign(grid, "column_spacing", 20.0).unwrap();
+    scene.assign(grid, "column_gap", 20.0).unwrap();
     let wide = scene.create(Element::Rect);
     attached(
         &mut scene,

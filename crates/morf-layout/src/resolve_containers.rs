@@ -129,12 +129,12 @@ impl Layout {
     }
 }
 
-/// A positioner grid's gaps: the specific spacing, or `gap` for both.
+/// A grid's gaps: `column_gap` and `row_gap`, or `gap` for both.
 pub(crate) fn grid_gaps(scene: &Scene, node: NodeHandle) -> Result<(f64, f64), LayoutError> {
     let gap = scene.number(node, "gap")?;
     let pick = |specific: f64| if specific > 0.0 { specific } else { gap };
     Ok((
-        pick(scene.number(node, "column_spacing")?),
-        pick(scene.number(node, "row_spacing")?),
+        pick(scene.number(node, "column_gap")?),
+        pick(scene.number(node, "row_gap")?),
     ))
 }

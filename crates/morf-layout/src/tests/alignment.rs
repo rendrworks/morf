@@ -19,20 +19,20 @@ fn attached(scene: &mut Scene, node: NodeHandle, entries: &[(&str, Value)]) {
 fn a_row_aligns_its_children_across_its_axis() {
     let mut scene = Scene::new();
     let row = sized(&mut scene, Element::Row, 100.0, 40.0);
-    scene.assign(row, "alignment", "center").unwrap();
+    scene.assign(row, "align", "center").unwrap();
     let short = sized(&mut scene, Element::Rect, 10.0, 20.0);
     let tall = sized(&mut scene, Element::Rect, 10.0, 40.0);
     let ended = sized(&mut scene, Element::Rect, 10.0, 10.0);
     attached(
         &mut scene,
         ended,
-        &[("alignment", Value::String("end".into()))],
+        &[("align_self", Value::String("end".into()))],
     );
     let stretched = sized(&mut scene, Element::Rect, 10.0, 10.0);
     attached(
         &mut scene,
         stretched,
-        &[("alignment", Value::String("stretch".into()))],
+        &[("align_self", Value::String("stretch".into()))],
     );
     for child in [short, tall, ended, stretched] {
         scene.reparent(child, Some(row)).unwrap();
@@ -57,12 +57,10 @@ fn a_row_aligns_its_children_across_its_axis() {
 }
 
 #[test]
-fn a_row_justifies_its_children_along_its_axis_with_the_old_and_new_words() {
-    // `gap` and `spacing` are one thing, `align` and `alignment` are one
-    // thing, and `justify` distributes what is left over.
+fn a_row_justifies_its_children_along_its_axis() {
     let mut scene = Scene::new();
     let row = sized(&mut scene, Element::Row, 100.0, 20.0);
-    scene.assign(row, "spacing", 10.0).unwrap();
+    scene.assign(row, "gap", 10.0).unwrap();
     scene.assign(row, "justify", "space_between").unwrap();
     let a = sized(&mut scene, Element::Rect, 10.0, 10.0);
     let b = sized(&mut scene, Element::Rect, 10.0, 10.0);

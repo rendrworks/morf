@@ -44,7 +44,7 @@ server = server or { dismiss = function() end }
 ui.Rect {
   color = "#101418",
   ui.Row {
-    spacing = 18,
+    gap = 18,
     anchors = { left = true, margins = 12 },
     ui.Text {
       color = "#8a94a0",
@@ -66,7 +66,7 @@ ui.Rect {
             ui.Inset {
               margin = 6,
               ui.Row {
-                spacing = 8,
+                gap = 8,
                 ui.Text { text = entry.app, color = "#8a94a0", font_size = 14 },
                 ui.Text { text = entry.summary, color = "#ffffff", font_size = 16 },
                 ui.Text { text = entry.body, color = "#c0c8d0", font_size = 14 },

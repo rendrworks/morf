@@ -75,7 +75,7 @@ fn clip_rect_keeps_content_inside_its_border() {
 fn implicit_sizes_resolve_bottom_up_before_rows_distribute() {
     let mut scene = Scene::new();
     let row = scene.create(Element::Row);
-    scene.assign(row, "spacing", 5.0).unwrap();
+    scene.assign(row, "gap", 5.0).unwrap();
     let first = scene.create(Element::Text);
     scene.assign(first, "text", "aa").unwrap();
     scene.assign(first, "font_size", 10.0).unwrap();

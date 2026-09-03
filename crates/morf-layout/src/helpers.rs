@@ -196,32 +196,6 @@ pub(crate) fn apply_anchors(
     }
 }
 
-/// `gap`, or the older `spacing` when `gap` is unset.
-pub(crate) fn gap_of(
-    scene: &morf_scene::Scene,
-    node: morf_scene::NodeHandle,
-) -> Result<f64, LayoutError> {
-    let gap = scene.number(node, "gap")?;
-    Ok(if gap > 0.0 {
-        gap
-    } else {
-        scene.number(node, "spacing")?
-    })
-}
-
-/// `align`, unless the older `alignment` was set instead.
-pub(crate) fn align_of(
-    scene: &morf_scene::Scene,
-    node: morf_scene::NodeHandle,
-) -> Result<String, LayoutError> {
-    let alias = scene.string_value(node, "alignment")?;
-    Ok(if alias != "start" {
-        alias.to_owned()
-    } else {
-        scene.string_value(node, "align")?.to_owned()
-    })
-}
-
 /// Where a packed run starts and how much extra goes between children,
 /// for `justify`.
 pub(crate) fn justify_run(

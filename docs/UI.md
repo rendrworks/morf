@@ -35,7 +35,7 @@ ui.Rect {
 | painting | `Rect`, `ClipRect`, `Text`, `Image`, `Icon`, `Sdf`, `SdfShape` |
 | input | `MouseArea` (the only kind the pointer can hit) |
 | positioners | `Row`, `Column`, `Grid` with `columns` |
-| layouts | `Flex`, `Grid` with tracks (`RowLayout`, `ColumnLayout`, `GridLayout` are their older names) |
+| layouts | `Flex`, `Grid` with tracks |
 | lists | `Repeater`, `ListView`, `GridView`, `each` |
 | other | `Timer`; `reparent`, `spring`, `smoothed` |
 
@@ -51,7 +51,7 @@ whatever its place in the tree.
 ## 2. Sizes
 
 A node's requested size is, in order: its own `width`/`height` when
-positive; `layout.preferred_width`/`preferred_height`; its
+positive; `layout.width`/`layout.height`; its
 `implicit_width`/`implicit_height` when positive; else its measured
 implicit size. Then it is clamped by `layout.minimum_*` and `maximum_*`.
 
@@ -113,11 +113,6 @@ along it: `start`, `center`, `end`, `space_between`, `space_around`,
 `space_evenly`. A child overrides `align` with `layout = { align_self =
 "end" }`, and asks for leftover room with `layout = { grow = 1 }`.
 
-The older words still work and mean the same: `spacing` is `gap`,
-`alignment` is `align`, `layout.alignment` is `align_self`,
-`layout.fill_width`/`fill_height` is `grow = 1` (or, across the axis,
-`align_self = "stretch"`), and `layout.stretch` is `grow`.
-
 ### Positioners
 
 `Row` and `Column` pack children at their own sizes: `gap` between,
@@ -157,13 +152,13 @@ ui.Flex {
 track is `"1fr"`, `"auto"`, a number, `"min_content"`, `"max_content"`,
 `{ min = 40, max = "1fr" }`, or `"repeat(3, 1fr)"`. Children place
 themselves with `layout = { column = 2, row = 1, column_span = 2 }`;
-without placement they flow in order. `column_spacing`/`row_spacing` are
-the gaps. Sizes in the child's `layout` may be a number, a percent string
+without placement they flow in order. `gap`, or `column_gap` and
+`row_gap`, are the gaps. Sizes in the child's `layout` may be a number, a percent string
 or `"auto"`.
 
 ```lua
 ui.Grid {
-  template_columns = { "repeat(3, 1fr)" }, column_spacing = 20, row_spacing = 20,
+  template_columns = { "repeat(3, 1fr)" }, gap = 20,
   cell(), cell(), cell(), cell(), cell(),
 }
 ```
@@ -177,9 +172,6 @@ in the same pass; anything else is a leaf, sized by the rules above, whose
 own children then follow the ordinary rules. A card in a grid cell still
 anchors its label.
 
-`ui.RowLayout`, `ui.ColumnLayout` and `ui.GridLayout` are the older names:
-a `Flex` in that direction, and a `Grid` whose numeric `columns` becomes
-that many `auto` tracks.
 
 ### Your own container
 
@@ -232,7 +224,7 @@ out as that container, with its properties.
 ```lua
 local windows = morf.list_model({})
 ui.Repeater {
-  as = "grid", columns = 3, row_spacing = 20, column_spacing = 20,
+  as = "grid", columns = 3, gap = 20,
   model = windows,
   delegate = function(window)
     local caption = ui.Text { text = window.title }
@@ -343,7 +335,7 @@ destination, or use a `morf.transform_watcher` for the moving value.
 
 ## 7. Idioms to prefer
 
-- Reach for a container before a coordinate: a `Row` with `alignment`, a
+- Reach for a container before a coordinate: a `Row` with `align`, a
   `Flex` with `gap`, a `Grid` with tracks, a `Layout` of your own.
 - Read `layout_width` instead of recomputing a parent's arithmetic.
 - Keep a shape in one `morf.state`, change it in one place, and let

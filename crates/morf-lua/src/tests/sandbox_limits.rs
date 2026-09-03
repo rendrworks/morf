@@ -40,7 +40,7 @@ fn lua_builds_a_scene_tree_with_bound_properties() {
                 local ui = require("morf.ui")
                 local clock = morf.signal("clock", "12:00")
                 ui.Row {
-                    spacing = 6,
+                    gap = 6,
                     ui.Text {
                         text = function() return clock:get() end,
                         color = "#ffffff",

@@ -124,7 +124,7 @@ local Card = component.define {
         ui.Rect {
           x = 8, y = 8, width = W - 16, height = OPEN_HEIGHT - 16, radius = 12, color = CARD,
           ui.Column {
-            x = 18, y = 14, width = W - 52, spacing = 6,
+            x = 18, y = 14, width = W - 52, gap = 6,
             ui.Text {
               text = function() return model.title end,
               color = TEXT, font_size = 15, font_weight = 600, width = W - 52, wrap = true,
@@ -136,9 +136,9 @@ local Card = component.define {
               color = tone, font_size = 12, width = W - 52, wrap = true, max_lines = 2,
             },
             ui.Row {
-              spacing = 10,
+              gap = 10,
               -- The label sits on the field's centre line, not its top edge.
-              alignment = "center",
+              align = "center",
               ui.Text {
                 text = function() return model.prompt ~= "" and model.prompt or "Password:" end,
                 color = TEXT, font_size = 13, width = 90,
