@@ -11,6 +11,7 @@ mod api_host;
 mod api_image;
 mod api_menu;
 mod api_module;
+mod api_pam;
 mod api_process;
 mod api_retention;
 mod api_shader;

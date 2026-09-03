@@ -12,7 +12,7 @@ use morf_lifecycle::Retention;
 use morf_menu::Menu;
 use morf_reactive::{Graph, SignalId};
 use morf_scene::{Easing, GroupId, ListModel, ModelId, NodeHandle, Scene, VirtualList};
-use morf_services::GreetdClient;
+use morf_services::{GreetdClient, PamSession};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -108,6 +108,10 @@ pub(crate) struct DbusToken {
 
 pub(crate) struct DbusServiceToken {
     pub(crate) service: Rc<RefCell<DbusService>>,
+}
+
+pub(crate) struct PamSessionToken {
+    pub(crate) session: Rc<RefCell<PamSession>>,
 }
 
 pub(crate) struct GreetdToken {
@@ -349,6 +353,7 @@ pub(crate) struct ReactiveState {
     pub(crate) text_input_callbacks: Vec<StashedClosure>,
     pub(crate) views: HashMap<NodeHandle, LuaVirtualView>,
     pub(crate) pam_tasks: Vec<PendingPam>,
+    pub(crate) pam_sessions: Vec<PendingPamSession>,
     pub(crate) timers: Vec<PendingTimer>,
     pub(crate) timer_callbacks: HashMap<NodeHandle, StashedClosure>,
     pub(crate) animation_callbacks: HashMap<(NodeHandle, String), StashedClosure>,
@@ -457,6 +462,7 @@ impl ReactiveState {
             text_input_callbacks: Vec::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
+            pam_sessions: Vec::new(),
             timers: Vec::new(),
             timer_callbacks: HashMap::new(),
             animation_callbacks: HashMap::new(),

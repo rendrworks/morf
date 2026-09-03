@@ -78,6 +78,13 @@
         crossLibs = [ crossPkgs.wayland crossPkgs.libxkbcommon ];
 
         guiLibs = with pkgs; [
+          # Linux-PAM, so authentication works from this shell at all. A binary
+          # built against Nix's glibc uses Nix's loader, and that loader never
+          # searches /usr/lib: the system's libpam resolves by path and then
+          # cannot find libaudit beside it. This one brings its own chain, and
+          # its own modules under lib/security, which is where a service file
+          # naming `pam_exec.so` will be looked up.
+          pam
           alsa-lib
           udev
           vulkan-loader

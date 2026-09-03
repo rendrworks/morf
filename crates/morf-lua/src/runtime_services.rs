@@ -1,3 +1,4 @@
+use morf_services::PamEvent;
 use std::time::Duration;
 
 use morf_io::Timer as IoTimer;
@@ -89,6 +90,7 @@ impl Runtime {
         let mut timers = Vec::new();
         let mut dbus_signals = Vec::new();
         let mut dbus_calls = Vec::new();
+        let mut pam_messages = Vec::new();
         let mut udev_events = Vec::new();
         let mut status_updates = Vec::new();
         let mut loaders = Vec::new();
@@ -212,6 +214,24 @@ impl Runtime {
                     dbus_signals.push((subscription.callback.clone(), value));
                 }
             }
+            // A conversation says a few things per turn and then waits on a
+            // person, so this never runs long. A finished session leaves the
+            // list after its verdict is delivered, which is why the verdict is
+            // collected first and the removal follows it.
+            state.pam_sessions.retain(|entry| {
+                let mut finished = false;
+                for _ in 0..8 {
+                    let Some(event) = entry.session.borrow_mut().next(Duration::ZERO) else {
+                        break;
+                    };
+                    finished |= matches!(event, PamEvent::Finished(_));
+                    pam_messages.push((entry.callback.clone(), event));
+                    if finished {
+                        break;
+                    }
+                }
+                !finished
+            });
             // Bounded per frame, unlike the signal drain above. A signal that
             // arrives faster than it is read is the sender's problem; a *call*
             // that does is ours, because the caller is blocked until we answer
@@ -371,6 +391,16 @@ impl Runtime {
                 self.reactive
                     .borrow_mut()
                     .log(LogLevel::Warn, format!("transform callback: {message}"));
+            }
+        }
+        for (callback, event) in pam_messages {
+            if let Err(message) = self
+                .lua
+                .enter(|ctx| execute_pam_session_handler(ctx, &callback, event, self.limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("PAM session: {message}"));
             }
         }
         for (callback, call) in dbus_calls {

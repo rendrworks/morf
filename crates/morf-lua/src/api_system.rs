@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use morf_services::{GreetdClient, PamAuthenticator, StatusNotifierHost, UdevMonitor, XkbKeymap};
+use morf_services::{GreetdClient, StatusNotifierHost, UdevMonitor, XkbKeymap};
 
 use crate::{lua_values::*, scene_bindings::*, serialization::*, state::*, table_menu::*};
 
@@ -251,32 +251,7 @@ pub(crate) fn install_system_service_api<'gc>(
     greetd.set_field(ctx, "connect", greetd_connect);
     morf.set_field(ctx, "greetd", greetd);
 
-    let pam_state = Rc::clone(&state);
-    let pam_authenticate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (service, username, password, callback): (String, String, String, Closure) =
-            stack.consume(ctx)?;
-        pam_state.borrow_mut().pam_tasks.push(PendingPam {
-            task: PamAuthenticator::authenticate_async(service, username, password),
-            callback: ctx.stash(callback),
-            unlock_on_success: false,
-        });
-        Ok(CallbackReturn::Return)
-    });
-    let pam = Table::new(&ctx);
-    pam.set_field(ctx, "authenticate", pam_authenticate);
-    let pam_unlock_state = Rc::clone(&state);
-    let pam_authenticate_unlock = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (service, username, password, callback): (String, String, String, Closure) =
-            stack.consume(ctx)?;
-        pam_unlock_state.borrow_mut().pam_tasks.push(PendingPam {
-            task: PamAuthenticator::authenticate_async(service, username, password),
-            callback: ctx.stash(callback),
-            unlock_on_success: true,
-        });
-        Ok(CallbackReturn::Return)
-    });
-    pam.set_field(ctx, "authenticate_unlock", pam_authenticate_unlock);
-    morf.set_field(ctx, "pam", pam);
+    crate::api_pam::install_pam_api(ctx, Rc::clone(&state), morf);
 
     let xkb_compile = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let options: Table = stack.consume(ctx)?;

@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use morf_services::{StatusNotifierAddress, UdevEvent};
+use morf_services::{PamEvent, PamPrompt, StatusNotifierAddress, UdevEvent};
 
 use crate::{
     reactive_bindings::*, scene_bindings::*, serialization::*, state::*, surface_types::*, types::*,
@@ -265,6 +265,57 @@ pub(crate) fn execute_dbus_call_handler(
     table.set_field(ctx, "path", call.path.as_str());
     table.set_field(ctx, "sender", call.sender.as_str());
     table.set_field(ctx, "arguments", dbus_value_to_lua(ctx, call.arguments)?);
+    let executor = Executor::start(
+        ctx,
+        ctx.fetch(closure).into(),
+        Variadic(vec![LuaValue::Table(table)]),
+    );
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Shows a configuration one thing a PAM module said.
+///
+/// A table rather than positional arguments, keyed on `kind`, because a
+/// handler dispatches on what happened and reads the rest: `prompt` carries
+/// `text` and `echo`, `info` and `error` carry `text`, and `finished` carries
+/// `ok` with `error` and `code` when it is not.
+pub(crate) fn execute_pam_session_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    event: PamEvent,
+    limits: Limits,
+) -> Result<(), String> {
+    let table = Table::new(&ctx);
+    match event {
+        PamEvent::Message(PamPrompt::Prompt { text, echo }) => {
+            table.set_field(ctx, "kind", "prompt");
+            table.set_field(ctx, "text", text.as_str());
+            table.set_field(ctx, "echo", echo);
+        }
+        PamEvent::Message(PamPrompt::Info(text)) => {
+            table.set_field(ctx, "kind", "info");
+            table.set_field(ctx, "text", text.as_str());
+        }
+        PamEvent::Message(PamPrompt::Error(text)) => {
+            table.set_field(ctx, "kind", "error");
+            table.set_field(ctx, "text", text.as_str());
+        }
+        PamEvent::Finished(verdict) => {
+            table.set_field(ctx, "kind", "finished");
+            table.set_field(ctx, "ok", verdict.is_ok());
+            if let Err(error) = verdict {
+                table.set_field(ctx, "error", error.to_string().as_str());
+                if let Some(code) = error.code() {
+                    table.set_field(ctx, "code", i64::from(code));
+                }
+            }
+        }
+    }
     let executor = Executor::start(
         ctx,
         ctx.fetch(closure).into(),

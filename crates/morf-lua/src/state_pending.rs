@@ -8,7 +8,7 @@
 use luna::StashedClosure;
 use morf_io::{DbusService, DbusSignal, Timer as IoTimer};
 use morf_scene::NodeHandle;
-use morf_services::{PamTask, StatusNotifierHost, UdevMonitor};
+use morf_services::{PamSession, PamTask, StatusNotifierHost, UdevMonitor};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -40,6 +40,16 @@ pub(crate) struct PendingDbusSignal {
 /// those calls are delivered to.
 pub(crate) struct PendingDbusService {
     pub(crate) service: Rc<RefCell<DbusService>>,
+    pub(crate) callback: StashedClosure,
+}
+
+/// A PAM conversation in progress, and who is shown its messages.
+///
+/// Shared with the token for the same reason the D-Bus service is: the runtime
+/// polls it for what the module said, and the configuration answers through
+/// the same handle from inside the callback that showed it the question.
+pub(crate) struct PendingPamSession {
+    pub(crate) session: Rc<RefCell<PamSession>>,
     pub(crate) callback: StashedClosure,
 }
 
