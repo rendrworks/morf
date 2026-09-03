@@ -126,6 +126,9 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 string("font_source", ""),
                 boolean("wrap", false),
                 string("elide", "none"),
+                // Wrapped text stops after this many lines, the last one
+                // elided. Zero is no limit.
+                number("max_lines", 0.0),
                 string("horizontal_alignment", "left"),
                 string("vertical_alignment", "top"),
                 // Glyphs are distance fields, so the edge is a threshold rather
@@ -298,7 +301,14 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
             ]);
         }
         Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
-            properties.push(number("spacing", 0.0));
+            properties.extend([
+                number("spacing", 0.0),
+                // Where children sit across the axis the positioner packs
+                // along: `start`, `center`, `end`, or `stretch` to the
+                // positioner's own extent. A child's `layout.alignment`
+                // overrides it for that child.
+                string("alignment", "start"),
+            ]);
         }
         Element::Grid | Element::GridLayout => {
             properties.extend([

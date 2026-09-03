@@ -1,5 +1,6 @@
 //! Three-stage layout for morf scene nodes.
 
+mod distribute;
 mod geometry;
 mod helpers;
 mod hit;

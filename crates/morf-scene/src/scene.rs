@@ -173,9 +173,35 @@ impl Scene {
         Ok(self.nodes[self.live(node)?].parent.map(NodeHandle))
     }
 
-    /// Returns child handles in paint order.
+    /// Returns child handles in tree order.
+    ///
+    /// Tree order is what positioners lay out by and what key focus walks.
+    /// Paint and hit testing use [`Scene::paint_order`], which is this order
+    /// with `z` applied.
     pub fn children(&self, node: NodeHandle) -> Result<&[NodeHandle], SceneError> {
         Ok(&self.nodes[self.live(node)?].children)
+    }
+
+    /// Returns child handles in paint order: tree order, stably sorted by
+    /// `z`, so a child with a higher `z` paints over, and is hit before, its
+    /// siblings whatever its place in the tree.
+    ///
+    /// Borrowed when no child sets `z`, which is nearly always.
+    pub fn paint_order(
+        &self,
+        node: NodeHandle,
+    ) -> Result<std::borrow::Cow<'_, [NodeHandle]>, SceneError> {
+        let children = self.children(node)?;
+        let z = |child: &NodeHandle| match self.current(*child, "z") {
+            Ok(Value::Number(z)) => *z,
+            _ => 0.0,
+        };
+        if children.iter().all(|child| z(child) == 0.0) {
+            return Ok(std::borrow::Cow::Borrowed(children));
+        }
+        let mut sorted = children.to_vec();
+        sorted.sort_by(|a, b| z(a).total_cmp(&z(b)));
+        Ok(std::borrow::Cow::Owned(sorted))
     }
 
     /// Removes a node and all descendants, invalidating their handles.

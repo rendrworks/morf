@@ -49,6 +49,7 @@ impl TextSystem {
             elide: options.elide,
             font_weight,
             font_source: options.font_source.clone(),
+            max_lines: options.max_lines,
         };
         let cached = self.buffers.entry(key).or_insert_with(|| CachedBuffer {
             buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),

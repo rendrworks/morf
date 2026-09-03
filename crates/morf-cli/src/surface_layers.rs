@@ -353,7 +353,7 @@ pub(crate) fn sync_layer_surfaces(
 
 /// Applies one compositor configure to a configured layer surface.
 pub(crate) fn layer_surface_configure(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     state: &mut SurfaceEventState,
     layer: u64,
@@ -393,7 +393,7 @@ pub(crate) fn layer_surface_configure(
 
 /// Resizes one configured layer surface after its preferred scale changed.
 pub(crate) fn layer_surface_scale(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     state: &mut SurfaceEventState,
     layer: u64,
@@ -422,7 +422,7 @@ pub(crate) fn layer_surface_scale(
 
 /// Paints one configured layer surface when the compositor permits a frame.
 pub(crate) fn layer_surface_frame(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     state: &mut SurfaceEventState,
     layer: u64,

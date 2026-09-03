@@ -127,6 +127,18 @@ pub(crate) fn attached_layout(value: &Value) -> Result<&BTreeMap<String, Value>,
     }
 }
 
+pub(crate) fn layout_string<'a>(map: &'a BTreeMap<String, Value>, key: &str) -> Option<&'a str> {
+    match map.get(key) {
+        Some(Value::String(value)) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+/// A weight from the attached layout map: finite, non-negative, else `default`.
+pub(crate) fn layout_weight(map: &BTreeMap<String, Value>, key: &str, default: f64) -> f64 {
+    layout_number(map, key).unwrap_or(default)
+}
+
 pub(crate) fn layout_number(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
     number(map, key).filter(|value| value.is_finite() && *value >= 0.0)
 }

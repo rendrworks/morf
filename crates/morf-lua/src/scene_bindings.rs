@@ -14,6 +14,9 @@ pub(crate) fn create_node(state: &Rc<RefCell<ReactiveState>>, element: Element) 
     state.scene.create(element)
 }
 
+/// The pseudo-property a binding depends on when it reads `layout_*`.
+pub(crate) const LAYOUT_GEOMETRY: &str = "layout_geometry";
+
 pub(crate) fn bump_property_signal(
     state: &mut ReactiveState,
     node: NodeHandle,
@@ -189,6 +192,34 @@ pub(crate) fn node_metatable<'gc>(
         } else {
             key
         };
+        // The laid-out rectangle, as the last frame resolved it. Distinct
+        // from `width`, which is what the node asked for and is zero for a
+        // node sized by its parent or its children. A binding that reads
+        // one of these re-runs when the frame moves it.
+        if let Some(axis) = key.strip_prefix("layout_")
+            && matches!(axis, "x" | "y" | "width" | "height")
+        {
+            let mut state = read_state.borrow_mut();
+            if let Some(active) = &mut state.active {
+                active
+                    .property_reads
+                    .insert((node.handle, LAYOUT_GEOMETRY.to_owned(), false));
+            }
+            let value =
+                state
+                    .transform_tracker
+                    .geometry(node.handle)
+                    .map_or(LuaValue::Nil, |geometry| {
+                        LuaValue::Number(match axis {
+                            "x" => geometry.x,
+                            "y" => geometry.y,
+                            "width" => geometry.width,
+                            _ => geometry.height,
+                        })
+                    });
+            stack.replace(ctx, value);
+            return Ok(CallbackReturn::Return);
+        }
         let (property, target) = key
             .strip_suffix("_target")
             .map_or((key.as_str(), false), |property| (property, true));

@@ -85,6 +85,8 @@ pub enum DrawCommand {
         color_overlay: Color,
         /// Whether lines wrap at the resolved width.
         wrap: bool,
+        /// Lines kept when wrapping, the last elided; zero keeps all.
+        max_lines: usize,
         /// Ellipsis placement for an overflowing unwrapped line.
         elide: TextElide,
         /// Horizontal line alignment.

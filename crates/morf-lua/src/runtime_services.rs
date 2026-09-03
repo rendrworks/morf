@@ -2,7 +2,6 @@ use morf_services::PamEvent;
 use std::time::Duration;
 
 use morf_io::Timer as IoTimer;
-use morf_layout::Layout;
 use morf_scene::{NodeHandle, Value as SceneValue};
 
 use crate::{
@@ -11,79 +10,6 @@ use crate::{
 };
 
 impl Runtime {
-    /// Updates native transform watchers from one rendered surface layout.
-    pub fn observe_layout(&self, layout: &Layout) -> bool {
-        let mut state = self.reactive.borrow_mut();
-        state.transform_tracker.update(layout);
-        let anchors = state
-            .popup_node_anchors
-            .iter()
-            .map(|(id, anchor)| (*id, anchor.clone()))
-            .collect::<Vec<_>>();
-        for (id, anchor) in anchors {
-            let Some(geometry) = state.transform_tracker.geometry(anchor.node) else {
-                continue;
-            };
-            let node_width = geometry_i32(geometry.width).max(1);
-            let node_height = geometry_i32(geometry.height).max(1);
-            let resolved = (
-                geometry_i32(geometry.x)
-                    .saturating_add(anchor.x)
-                    .saturating_sub(anchor.margin_left),
-                geometry_i32(geometry.y)
-                    .saturating_add(anchor.y)
-                    .saturating_sub(anchor.margin_top),
-                anchor
-                    .width
-                    .unwrap_or(node_width)
-                    .saturating_add(anchor.margin_left)
-                    .saturating_add(anchor.margin_right)
-                    .max(1),
-                anchor
-                    .height
-                    .unwrap_or(node_height)
-                    .saturating_add(anchor.margin_top)
-                    .saturating_add(anchor.margin_bottom)
-                    .max(1),
-            );
-            if let Some(WindowSurfaceConfig {
-                kind: WindowSurfaceKind::Popup(config),
-                ..
-            }) = state.window_surfaces.get_mut(&id)
-                && (
-                    config.anchor_x,
-                    config.anchor_y,
-                    config.anchor_width,
-                    config.anchor_height,
-                ) != resolved
-            {
-                config.anchor_x = resolved.0;
-                config.anchor_y = resolved.1;
-                config.anchor_width = resolved.2;
-                config.anchor_height = resolved.3;
-                state.window_surfaces_changed = true;
-            }
-        }
-        let mut watchers = std::mem::take(&mut state.transform_watchers);
-        let mut changed = false;
-        for watcher in watchers.values_mut() {
-            match watcher
-                .watcher
-                .observe(&state.scene, &state.transform_tracker)
-            {
-                Ok(true) => {
-                    watcher.revision = watcher.revision.wrapping_add(1);
-                    watcher.pending = true;
-                    changed = true;
-                }
-                Ok(false) => {}
-                Err(error) => state.log(LogLevel::Warn, format!("transform watcher: {error}")),
-            }
-        }
-        state.transform_watchers = watchers;
-        changed
-    }
-
     /// Polls native service jobs and runs completed callbacks with bounded fuel.
     pub fn poll_services(&mut self) -> bool {
         self.flush_lint();

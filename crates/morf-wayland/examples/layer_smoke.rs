@@ -96,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 color: Color::rgba8(255, 255, 255, 255),
                 color_overlay: Color::rgba8(0, 0, 0, 0),
                 wrap: false,
+                max_lines: 0,
                 elide: TextElide::None,
                 horizontal_alignment: TextAlignment::Left,
                 vertical_alignment: VerticalAlignment::Top,

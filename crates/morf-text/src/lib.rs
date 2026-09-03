@@ -5,12 +5,9 @@ use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
-use cosmic_text::{
-    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
-};
-use morf_layout::{TextAlignment, TextElide, TextOptions};
+use cosmic_text::{Buffer, Family, FontSystem, SwashCache};
+use morf_layout::{TextAlignment, TextElide};
 use morf_scene::{FastMap, NodeHandle};
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::glyph_fields::FieldImage;
 
@@ -64,6 +61,7 @@ struct TextInput {
     elide: TextElide,
     font_weight: u16,
     font_source: Option<String>,
+    max_lines: usize,
 }
 
 /// Two glyphs measured over one box, and how much of them fails to overlap.
@@ -271,81 +269,7 @@ impl TextSystem {
         self.buffers.remove(&BufferKey::target(node));
     }
 }
-fn elided_text(
-    fonts: &mut FontSystem,
-    text: &str,
-    family: &str,
-    size: f32,
-    options: &TextOptions,
-) -> String {
-    let Some(width) = options
-        .width
-        .filter(|_| !options.wrap && options.elide != TextElide::None)
-    else {
-        return text.to_owned();
-    };
-    if shaped_width(fonts, text, family, size, options.font_weight) <= width as f32 {
-        return text.to_owned();
-    }
-    let graphemes: Vec<&str> = text.graphemes(true).collect();
-    let mut low = 0;
-    let mut high = graphemes.len();
-    while low < high {
-        let middle = (low + high).div_ceil(2);
-        let candidate = elide_candidate(&graphemes, middle, options.elide);
-        if shaped_width(fonts, &candidate, family, size, options.font_weight) <= width as f32 {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
-    elide_candidate(&graphemes, low, options.elide)
-}
-
-fn elide_candidate(graphemes: &[&str], kept: usize, mode: TextElide) -> String {
-    let kept = kept.min(graphemes.len());
-    match mode {
-        TextElide::None => graphemes.concat(),
-        TextElide::Left => format!("…{}", graphemes[graphemes.len() - kept..].concat()),
-        TextElide::Right => format!("{}…", graphemes[..kept].concat()),
-        TextElide::Middle => {
-            let left = kept.div_ceil(2);
-            let right = kept - left;
-            format!(
-                "{}…{}",
-                graphemes[..left].concat(),
-                graphemes[graphemes.len() - right..].concat()
-            )
-        }
-    }
-}
-
-fn shaped_width(
-    fonts: &mut FontSystem,
-    text: &str,
-    family: &str,
-    size: f32,
-    font_weight: f64,
-) -> f32 {
-    let family = resolve_family(fonts, family);
-    let mut buffer = Buffer::new(fonts, Metrics::relative(size, 1.2));
-    buffer.set_wrap(Wrap::None);
-    buffer.set_text(
-        text,
-        &Attrs::new()
-            .family(family.family())
-            .weight(Weight(normalize_font_weight(font_weight))),
-        Shaping::Advanced,
-        Some(Align::Left),
-    );
-    buffer.shape_until_scroll(fonts, false);
-    buffer
-        .layout_runs()
-        .map(|run| run.line_w)
-        .fold(0.0, f32::max)
-}
-
-fn resolve_family(fonts: &FontSystem, requested: &str) -> ResolvedFamily {
+pub(crate) fn resolve_family(fonts: &FontSystem, requested: &str) -> ResolvedFamily {
     for candidate in requested
         .split(',')
         .map(clean_family)
@@ -458,7 +382,7 @@ fn preferred_family(
         })
 }
 
-fn normalize_font_weight(weight: f64) -> u16 {
+pub(crate) fn normalize_font_weight(weight: f64) -> u16 {
     if weight.is_finite() {
         weight.round().clamp(100.0, 900.0) as u16
     } else {
@@ -466,6 +390,7 @@ fn normalize_font_weight(weight: f64) -> u16 {
     }
 }
 
+mod elide;
 mod families;
 mod glyph_fields;
 #[cfg(test)]
@@ -479,6 +404,7 @@ pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
 pub use morf_outline::Contour;
 mod glyph_runs;
 mod measure;
+pub(crate) use elide::elided_text;
 mod raster_glyph;
 
 pub use glyph_fields::{

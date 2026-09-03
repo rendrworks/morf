@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::{surface_layers::*, surfaces::*};
 
 pub(crate) fn paint(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &LayerClient,
     root: NodeHandle,
@@ -80,7 +80,7 @@ impl std::ops::Deref for CachedLayout {
 }
 
 pub(crate) fn paint_layer(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &LayerClient,
     layer: u64,
@@ -249,7 +249,7 @@ pub(crate) fn paint_layer(
 
 /// Paints one configured layer surface into its own renderer.
 pub(crate) fn paint_layer_surface(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {
@@ -356,7 +356,7 @@ impl AuxiliaryKind {
 }
 
 pub(crate) fn paint_popup_surface(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {
@@ -364,7 +364,7 @@ pub(crate) fn paint_popup_surface(
 }
 
 pub(crate) fn paint_floating_surface(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {
@@ -374,7 +374,7 @@ pub(crate) fn paint_floating_surface(
 /// Paints one popup or floating surface.
 pub(crate) fn paint_auxiliary_surface(
     kind: AuxiliaryKind,
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {

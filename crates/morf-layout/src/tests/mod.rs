@@ -51,6 +51,7 @@ impl TextMeasurer for WeightText {
     }
 }
 
+mod alignment;
 mod basic;
 mod transforms;
 mod views;

@@ -71,3 +71,43 @@ fn a_bare_property_write_in_a_handler_reaches_the_bindings_that_read_it() {
 
     assert_eq!(runtime.scene().string_value(label, "text").unwrap(), "b!");
 }
+
+#[test]
+fn a_binding_on_layout_width_follows_the_frame() {
+    // `node.width` is what a node asked for, and zero for one sized by its
+    // parent. `node.layout_width` is what the frame gave it, and a binding
+    // that reads it is re-run when a frame moves it.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "layout.lua",
+            br#"
+                local ui = require("morf.ui")
+                local box = ui.Item { width = 200, height = 50 }
+                local half = ui.Rect { height = 10, width = function()
+                    return (box.layout_width or 0) / 2
+                end }
+                _G.box, _G.half = box, half
+            "#,
+        )
+        .unwrap();
+    let (root, half) = {
+        let scene = runtime.scene();
+        (scene.roots()[0], scene.roots()[1])
+    };
+    assert_eq!(runtime.scene().number(half, "width").unwrap(), 0.0);
+
+    let layout = morf_layout::Layout::compute(
+        &runtime.scene(),
+        root,
+        morf_layout::Size {
+            width: 200.0,
+            height: 50.0,
+        },
+        &mut super::NoText,
+    )
+    .unwrap();
+    runtime.observe_layout(&layout);
+
+    assert_eq!(runtime.scene().number(half, "width").unwrap(), 100.0);
+}

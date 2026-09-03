@@ -4,10 +4,11 @@ use crate::helpers::clamp_layout;
 use crate::helpers::flag;
 use crate::helpers::layout_number;
 use crate::helpers::reject_axis_conflict;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use morf_scene::{Behavior, Element, FastMap, NodeHandle, Scene, Value};
 
+use crate::distribute::{align_across, distribute};
 use crate::geometry::TextOptions;
 use crate::geometry::{Geometry, Size, TextMeasurer};
 use crate::helpers::{
@@ -30,6 +31,15 @@ pub struct Layout {
     /// change between those, so it is worked out where the implicit size is and
     /// looked up thereafter.
     pub(crate) requested: FastMap<NodeHandle, Size>,
+    /// Widths to measure text at on the second pass.
+    ///
+    /// A `Text` with no width of its own is measured unconstrained, then
+    /// placed at whatever width its parent gives it -- an `Inset`, a fill, a
+    /// stretch. If it wraps or elides, that is the width it should have
+    /// been measured at: its height is different, and so is its parent's.
+    /// The first pass records those widths here; the second measures with
+    /// them. Two passes, never more.
+    pub(crate) text_widths: FastMap<NodeHandle, f64>,
 }
 
 /// Cached layout geometry used by native transform watchers.
@@ -66,8 +76,27 @@ impl Layout {
         text: &mut impl TextMeasurer,
     ) -> Result<Self, LayoutError> {
         let mut layout = Self::default();
-        layout.measure_implicit(scene, root, text)?;
-        layout.geometry.insert(
+        layout.pass(scene, root, available, text)?;
+        let constrained = layout.texts_to_remeasure(scene)?;
+        if !constrained.is_empty() {
+            layout.text_widths = constrained;
+            layout.geometry.clear();
+            layout.implicit.clear();
+            layout.requested.clear();
+            layout.pass(scene, root, available, text)?;
+        }
+        Ok(layout)
+    }
+
+    fn pass(
+        &mut self,
+        scene: &Scene,
+        root: NodeHandle,
+        available: Size,
+        text: &mut impl TextMeasurer,
+    ) -> Result<(), LayoutError> {
+        self.measure_implicit(scene, root, text)?;
+        self.geometry.insert(
             root,
             Geometry {
                 width: available.width,
@@ -75,8 +104,28 @@ impl Layout {
                 ..Geometry::default()
             },
         );
-        layout.resolve_children(scene, root)?;
-        Ok(layout)
+        self.resolve_children(scene, root)
+    }
+
+    /// Text nodes whose resolved width is not the width they were measured
+    /// at, and to whom that matters.
+    fn texts_to_remeasure(&self, scene: &Scene) -> Result<FastMap<NodeHandle, f64>, LayoutError> {
+        let mut widths = FastMap::default();
+        for (node, geometry) in &self.geometry {
+            if scene.element(*node)? != Element::Text {
+                continue;
+            }
+            if positive(scene.number(*node, "width")?).is_some() {
+                continue;
+            }
+            let wraps =
+                scene.bool_value(*node, "wrap")? || scene.string_value(*node, "elide")? != "none";
+            let measured = self.implicit.get(node).map_or(0.0, |size| size.width);
+            if wraps && geometry.width > 0.0 && (geometry.width - measured).abs() > 0.5 {
+                widths.insert(*node, geometry.width);
+            }
+        }
+        Ok(widths)
     }
 
     /// Returns the resolved geometry for a node in the computed tree.
@@ -155,7 +204,11 @@ impl Layout {
                 scene.string_value(node, "font_family")?,
                 scene.number(node, "font_size")?,
                 TextOptions {
-                    width: positive(scene.number(node, "width")?),
+                    width: self
+                        .text_widths
+                        .get(&node)
+                        .copied()
+                        .or(positive(scene.number(node, "width")?)),
                     wrap: scene.bool_value(node, "wrap")?,
                     alignment: text_alignment(scene.string_value(node, "horizontal_alignment")?)?,
                     elide: text_elide(scene.string_value(node, "elide")?)?,
@@ -164,6 +217,7 @@ impl Layout {
                         "" => None,
                         source => Some(source.to_owned()),
                     },
+                    max_lines: scene.number(node, "max_lines")?.max(0.0) as usize,
                 },
             ),
             Element::Image | Element::Icon => {
@@ -311,36 +365,20 @@ impl Layout {
                 grid_heights[index / columns] = grid_heights[index / columns].max(size.height);
             }
         }
-        let mut growth = HashMap::new();
-        if matches!(parent_element, Element::RowLayout | Element::ColumnLayout) {
-            let horizontal = parent_element == Element::RowLayout;
-            let mut occupied = spacing * children.len().saturating_sub(1) as f64;
-            let mut fillers = Vec::new();
-            for &child in children {
-                let size = self.requested[&child];
-                occupied += if horizontal { size.width } else { size.height };
-                let attached = attached_layout(scene.current(child, "layout")?)?;
-                if flag(
-                    attached,
-                    if horizontal {
-                        "fill_width"
-                    } else {
-                        "fill_height"
-                    },
-                ) {
-                    fillers.push(child);
-                }
+        let growth = distribute(
+            &self.requested,
+            scene,
+            parent_element,
+            children,
+            spacing,
+            parent_geometry,
+        )?;
+        let alignment = match parent_element {
+            Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
+                Some(scene.string_value(parent, "alignment")?.to_owned())
             }
-            let available = if horizontal {
-                parent_geometry.width
-            } else {
-                parent_geometry.height
-            };
-            let share = ((available - occupied).max(0.0) / fillers.len().max(1) as f64).max(0.0);
-            for child in fillers {
-                growth.insert(child, share);
-            }
-        }
+            _ => None,
+        };
 
         for (position, &child) in children.iter().enumerate() {
             let size = self.requested[&child];
@@ -370,15 +408,26 @@ impl Layout {
                         distributed_margin(parent_geometry.height - geometry.height, top, bottom);
                 }
             } else if parent_element == Element::RowLayout {
-                geometry.width += growth.get(&child).copied().unwrap_or(0.0);
+                geometry.width =
+                    (geometry.width + growth.get(&child).copied().unwrap_or(0.0)).max(0.0);
                 if flag(attached, "fill_height") {
                     geometry.height = parent_geometry.height;
                 }
             } else if parent_element == Element::ColumnLayout {
-                geometry.height += growth.get(&child).copied().unwrap_or(0.0);
+                geometry.height =
+                    (geometry.height + growth.get(&child).copied().unwrap_or(0.0)).max(0.0);
                 if flag(attached, "fill_width") {
                     geometry.width = parent_geometry.width;
                 }
+            }
+            if let Some(alignment) = &alignment {
+                align_across(
+                    parent_element,
+                    alignment,
+                    attached,
+                    parent_geometry,
+                    &mut geometry,
+                )?;
             }
             apply_anchors(parent_geometry, anchors, &mut geometry);
             match parent_element {

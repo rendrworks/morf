@@ -179,7 +179,7 @@ pub(crate) fn run_surface(
         .map_err(|error| error.to_string())?;
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let primary_root = primary_surface_root(&runtime)?;
-    let layout = paint(&runtime, &mut renderer, &client, primary_root, None)?;
+    let layout = paint(&mut runtime, &mut renderer, &client, primary_root, None)?;
     let mut popup_surfaces = HashMap::new();
     let mut floating_surfaces = HashMap::new();
     let mut layer_surfaces = HashMap::new();
@@ -345,7 +345,7 @@ pub(crate) fn run_surface(
             }
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             state.layout = paint(
-                &runtime,
+                &mut runtime,
                 &mut renderer,
                 &client,
                 state.primary_root,
@@ -356,21 +356,21 @@ pub(crate) fn run_surface(
                 .values_mut()
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_popup_surface(&runtime, &client, surface)?;
+                paint_popup_surface(&mut runtime, &client, surface)?;
             }
             for surface in state
                 .floating_surfaces
                 .values_mut()
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_floating_surface(&runtime, &client, surface)?;
+                paint_floating_surface(&mut runtime, &client, surface)?;
             }
             for surface in state
                 .layer_surfaces
                 .values_mut()
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_layer_surface(&runtime, &client, surface)?;
+                paint_layer_surface(&mut runtime, &client, surface)?;
             }
             // What this frame actually cost, which is what the next one is
             // paced against.

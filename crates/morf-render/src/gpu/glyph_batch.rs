@@ -43,6 +43,7 @@ pub(crate) fn create_glyph_batch(
             color_overlay,
             wrap,
             elide,
+            max_lines,
             horizontal_alignment,
             vertical_alignment,
             field_style,
@@ -65,6 +66,7 @@ pub(crate) fn create_glyph_batch(
                 elide: *elide,
                 font_weight: *font_weight,
                 font_source: (!font_source.is_empty()).then(|| font_source.clone()),
+                max_lines: *max_lines,
             },
         );
         let spare_height = (bounds.height - measured.height).max(0.0);
@@ -124,6 +126,7 @@ pub(crate) fn create_glyph_batch(
                     elide: *elide,
                     font_weight: *font_weight,
                     font_source: (!font_source.is_empty()).then(|| font_source.clone()),
+                    max_lines: *max_lines,
                 },
             );
             // Paired glyphs come back already measured over one shared box, so

@@ -165,6 +165,8 @@ ui.MouseArea {
         },
         ui.Row {
           spacing = 10,
+          -- The label sits on the field's centre line, not its top edge.
+          alignment = "center",
           ui.Text {
             text = function() return prompt:get() ~= "" and prompt:get() or "Password:" end,
             color = TEXT, font_size = 13, width = 90,

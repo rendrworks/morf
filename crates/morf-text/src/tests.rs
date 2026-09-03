@@ -1,7 +1,9 @@
 use cosmic_text::fontdb::Source;
 use morf_scene::{Element, Scene};
 
-use morf_layout::TextMeasurer;
+use morf_layout::{TextMeasurer, TextOptions};
+
+use crate::elide::shaped_width;
 
 use super::*;
 
@@ -365,4 +367,45 @@ fn installed_face_unlike(from: &str, text: &mut TextSystem) -> Option<String> {
         .into_iter()
         .find(|face| text.glyph_outline('8', None, 0.0, face, face) != reference)
         .map(str::to_owned)
+}
+
+#[test]
+fn max_lines_keeps_that_many_lines_and_elides_the_last() {
+    let mut scene = Scene::new();
+    let node = scene.create(Element::Text);
+    let mut text = TextSystem::new();
+    let long = "word ".repeat(40);
+    let unlimited = text.measure(
+        node,
+        &long,
+        "sans-serif",
+        16.0,
+        TextOptions {
+            width: Some(120.0),
+            wrap: true,
+            ..TextOptions::default()
+        },
+    );
+    let limited = text.measure(
+        node,
+        &long,
+        "sans-serif",
+        16.0,
+        TextOptions {
+            width: Some(120.0),
+            wrap: true,
+            max_lines: 2,
+            ..TextOptions::default()
+        },
+    );
+
+    assert!(unlimited.height > limited.height * 3.0);
+    assert!((limited.height - 2.0 * 16.0 * 1.2).abs() < 1.0);
+    let shown = text.buffers[&crate::BufferKey::own(node)]
+        .buffer
+        .lines
+        .iter()
+        .map(|line| line.text().to_owned())
+        .collect::<String>();
+    assert!(shown.ends_with('…'), "{shown:?}");
 }

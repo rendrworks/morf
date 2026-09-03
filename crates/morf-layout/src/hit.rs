@@ -176,7 +176,7 @@ impl Layout {
         if !inside && scene.bool_value(node, "clip")? {
             return Ok(None);
         }
-        for &child in scene.children(node)?.iter().rev() {
+        for &child in scene.paint_order(node)?.iter().rev() {
             if let Some(hit) = self.hit_node(scene, child, transform, x, y)? {
                 return Ok(Some(hit));
             }

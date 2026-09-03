@@ -171,6 +171,7 @@ pub(crate) fn append_node(
             color: scene.color_value(node, "color")?,
             color_overlay,
             wrap: scene.bool_value(node, "wrap")?,
+            max_lines: scene.number(node, "max_lines")?.max(0.0) as usize,
             elide: render_text_elide(scene.string_value(node, "elide")?)?,
             horizontal_alignment: render_text_alignment(
                 scene.string_value(node, "horizontal_alignment")?,
@@ -305,7 +306,7 @@ pub(crate) fn append_node(
     } else {
         None
     };
-    for &child in scene.children(node)? {
+    for &child in scene.paint_order(node)?.iter() {
         let child_clip = content_layer.map_or(clip, |(_, inner)| {
             let inner = transform.bounds(inner);
             Some(clip.map_or(inner, |clip| intersect_geometry(clip, inner)))
