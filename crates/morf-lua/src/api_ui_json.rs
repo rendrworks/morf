@@ -40,6 +40,11 @@ pub(crate) fn install_ui_json_api<'gc>(
     }
     ui.set_field(
         ctx,
+        "Layout",
+        crate::constructors_layout::layout_constructor(ctx, Rc::clone(&state), limits),
+    );
+    ui.set_field(
+        ctx,
         "Repeater",
         view_constructor(ctx, Rc::clone(&state), limits, ViewKind::Repeater),
     );

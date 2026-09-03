@@ -88,32 +88,32 @@ pub(crate) fn paint_layer(
     config: &LayerSurfaceConfig,
     cache: Option<&CachedLayout>,
 ) -> Result<CachedLayout, String> {
-    let scene = runtime.scene();
     let (width, height) = client
         .layer_logical_size(layer)
         .ok_or_else(|| "layer surface disappeared while painting".to_owned())?;
     let scale_120 = client.layer_scale_120(layer).unwrap_or(120);
-    let revision = scene.layout_revision();
+    let revision = runtime.scene().layout_revision();
     let reusable = cache.filter(|cached| cached.still_valid(revision, (width, height), scale_120));
     let layout = match reusable {
         Some(cached) => cached.layout.clone(),
         None => {
-            let layout = Layout::compute(
-                &scene,
+            // Before the scene is borrowed for painting: a `ui.Layout`
+            // container's functions run in Lua during the pass.
+            let layout = runtime.compute_layout(
                 root,
                 Size {
                     width: width as f64,
                     height: height as f64,
                 },
                 renderer.backend_mut(),
-            )
-            .map_err(|error| error.to_string())?;
+            )?;
             // Only on a fresh layout: it is the one moment the answer can have
             // changed, and the cached one has already been looked at.
             runtime.lint_layout(&layout, root);
             layout
         }
     };
+    let scene = runtime.scene();
     let input = if let Some(regions) = &config.input_regions {
         // A configured mask is a static surface setting — nothing animates it —
         // so rasterising it and re-sending it every paint asks the compositor
@@ -381,8 +381,7 @@ pub(crate) fn paint_auxiliary_surface(
     let Some(renderer) = &mut surface.renderer else {
         return Ok(());
     };
-    let scene = runtime.scene();
-    let revision = scene.layout_revision();
+    let revision = runtime.scene().layout_revision();
     let size = (surface.width, surface.height);
     // This surface's own scale, not the bar's. A popup opened from a panel on a
     // 1x screen but shown on a 2x one was drawn at 1x and stretched -- and on a
@@ -393,17 +392,16 @@ pub(crate) fn paint_auxiliary_surface(
     });
     let layout = match reusable {
         Some(cached) => cached.layout.clone(),
-        None => Layout::compute(
-            &scene,
+        None => runtime.compute_layout(
             surface.root,
             Size {
                 width: surface.width as f64,
                 height: surface.height as f64,
             },
             renderer.backend_mut(),
-        )
-        .map_err(|error| error.to_string())?,
+        )?,
     };
+    let scene = runtime.scene();
     let (width, height) = physical_size((surface.width, surface.height), scale_120);
     kind.damage(client, surface.id, width, height)?;
     let damage = renderer

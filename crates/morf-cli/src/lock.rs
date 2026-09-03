@@ -1,5 +1,5 @@
 use morf_io::IpcIncoming;
-use morf_layout::{Layout, Size};
+use morf_layout::Size;
 use morf_lua::{IpcValue, Runtime};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::{Element, NodeHandle};
@@ -309,16 +309,16 @@ pub(crate) fn paint_lock(
     {
         return Err("lock configuration root must cover the output".to_owned());
     }
-    let layout = Layout::compute(
-        &scene,
+    drop(scene);
+    let layout = runtime.compute_layout(
         root,
         Size {
             width: width as f64,
             height: height as f64,
         },
         renderer.backend_mut(),
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
+    let scene = runtime.scene();
     client.request_lock_frame(index);
     let scale = client.lock_scale_120(index).unwrap_or(120);
     let damage = renderer

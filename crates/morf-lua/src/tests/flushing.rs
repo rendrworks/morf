@@ -111,3 +111,97 @@ fn a_binding_on_layout_width_follows_the_frame() {
 
     assert_eq!(runtime.scene().number(half, "width").unwrap(), 100.0);
 }
+
+#[test]
+fn a_lua_layout_container_places_its_children_with_its_own_functions() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "layout-fn.lua",
+            br#"
+                local ui = require("morf.ui")
+                -- Right-aligned stack: each child at the right edge, one under
+                -- the other, and the container as wide as its widest child.
+                ui.Layout {
+                    width = 200,
+                    measure = function(available, children)
+                        local width, height = 0, 0
+                        for _, child in ipairs(children) do
+                            width = math.max(width, child.width)
+                            height = height + child.height
+                        end
+                        return width, height
+                    end,
+                    place = function(bounds, children)
+                        local placements, y = {}, 0
+                        for index, child in ipairs(children) do
+                            placements[index] = { x = bounds.width - child.width, y = y }
+                            y = y + child.height
+                        end
+                        return placements
+                    end,
+                    ui.Rect { width = 50, height = 10 },
+                    ui.Rect { width = 80, height = 20 },
+                }
+            "#,
+        )
+        .unwrap();
+    let (root, first, second) = {
+        let scene = runtime.scene();
+        let root = scene.roots()[0];
+        let children = scene.children(root).unwrap();
+        (root, children[0], children[1])
+    };
+
+    let layout = runtime
+        .compute_layout(
+            root,
+            morf_layout::Size {
+                width: 200.0,
+                height: 100.0,
+            },
+            &mut super::NoText,
+        )
+        .unwrap();
+
+    assert_eq!(layout.geometry(root).unwrap().height, 100.0);
+    assert_eq!(layout.implicit_size(root).unwrap().height, 30.0);
+    let first = layout.geometry(first).unwrap();
+    assert_eq!((first.x, first.y), (150.0, 0.0));
+    let second = layout.geometry(second).unwrap();
+    assert_eq!((second.x, second.y), (120.0, 10.0));
+}
+
+#[test]
+fn a_layout_function_that_writes_to_a_node_is_refused_not_crashed() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "layout-write.lua",
+            br#"
+                local ui = require("morf.ui")
+                local box = ui.Rect { width = 10, height = 10 }
+                ui.Layout {
+                    width = 100,
+                    measure = function() box.width = 20; return 100, 10 end,
+                    place = function() return {} end,
+                    box,
+                }
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+
+    let error = runtime
+        .compute_layout(
+            root,
+            morf_layout::Size {
+                width: 100.0,
+                height: 100.0,
+            },
+            &mut super::NoText,
+        )
+        .unwrap_err();
+
+    assert!(error.contains("inside a layout function"), "{error}");
+}

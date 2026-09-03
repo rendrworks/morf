@@ -1,0 +1,88 @@
+//! Placing the children of the two containers that place their own.
+//!
+//! Split from `layout` at the line gate: a flex root hands its whole
+//! subtree to Taffy, a custom container hands its children to the host's
+//! `place`, and both then let each leaf place its own children by the
+//! engine's ordinary rules.
+
+use morf_scene::{NodeHandle, Scene};
+
+use crate::custom::CustomLayout;
+use crate::flex::FlexTree;
+use crate::geometry::{Geometry, Size, TextMeasurer};
+use crate::helpers::LayoutError;
+use crate::layout::Layout;
+
+impl Layout {
+    /// Places everything under a flex root from one Taffy pass at the
+    /// root's resolved size, then lets each leaf place its own children.
+    pub(crate) fn resolve_flex(
+        &mut self,
+        scene: &Scene,
+        root: NodeHandle,
+        geometry: Geometry,
+        text: &mut impl TextMeasurer,
+        host: &mut dyn CustomLayout,
+    ) -> Result<(), LayoutError> {
+        let mut flex = FlexTree::build(scene, root)?;
+        flex.compute(
+            scene,
+            taffy::prelude::Size {
+                width: taffy::prelude::AvailableSpace::Definite(geometry.width as f32),
+                height: taffy::prelude::AvailableSpace::Definite(geometry.height as f32),
+            },
+            &self.requested,
+            text,
+        )?;
+        let placed = flex.geometries(scene, geometry)?;
+        for (node, mut placed, leaf) in placed {
+            placed.x += scene.number(node, "transition_x")?;
+            placed.y += scene.number(node, "transition_y")?;
+            self.geometry.insert(node, placed);
+            if leaf {
+                self.resolve_children(scene, node, text, host)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Places a custom container's children where its `place` function says.
+    pub(crate) fn resolve_custom(
+        &mut self,
+        scene: &Scene,
+        parent: NodeHandle,
+        geometry: Geometry,
+        text: &mut impl TextMeasurer,
+        host: &mut dyn CustomLayout,
+    ) -> Result<(), LayoutError> {
+        let children = scene.children(parent)?.to_vec();
+        let sizes = children
+            .iter()
+            .map(|child| self.requested[child])
+            .collect::<Vec<_>>();
+        let bounds = Size {
+            width: geometry.width,
+            height: geometry.height,
+        };
+        let placed = host
+            .place(parent, bounds, &sizes)
+            .map_err(LayoutError::Scene)?;
+        for (index, &child) in children.iter().enumerate() {
+            let relative = placed.get(index).copied().unwrap_or(Geometry {
+                x: 0.0,
+                y: 0.0,
+                width: sizes[index].width,
+                height: sizes[index].height,
+            });
+            let child_geometry = Geometry {
+                x: geometry.x + relative.x + scene.number(child, "transition_x")?,
+                y: geometry.y + relative.y + scene.number(child, "transition_y")?,
+                width: relative.width,
+                height: relative.height,
+            };
+            self.geometry.insert(child, child_geometry);
+            self.resolve_children(scene, child, text, host)?;
+        }
+        Ok(())
+    }
+}

@@ -7,6 +7,7 @@ use crate::helpers::reject_axis_conflict;
 
 use morf_scene::{Element, FastMap, NodeHandle, Scene};
 
+use crate::custom::{CustomLayout, NoCustom};
 use crate::distribute::{align_across, distribute};
 use crate::flex::FlexTree;
 use crate::flex_style::is_flex_root;
@@ -60,21 +61,35 @@ pub struct TransformWatcher {
 
 impl Layout {
     /// Resolves the layout rooted at `root` into the supplied surface area.
+    ///
+    /// Without a host for `Custom` containers: a scene that has one fails
+    /// here, and a host that can run its functions uses `compute_with`.
     pub fn compute(
         scene: &Scene,
         root: NodeHandle,
         available: Size,
         text: &mut impl TextMeasurer,
     ) -> Result<Self, LayoutError> {
+        Self::compute_with(scene, root, available, text, &mut NoCustom)
+    }
+
+    /// Resolves the layout, with `host` answering for `Custom` containers.
+    pub fn compute_with(
+        scene: &Scene,
+        root: NodeHandle,
+        available: Size,
+        text: &mut impl TextMeasurer,
+        host: &mut dyn CustomLayout,
+    ) -> Result<Self, LayoutError> {
         let mut layout = Self::default();
-        layout.pass(scene, root, available, text)?;
+        layout.pass(scene, root, available, text, host)?;
         let constrained = layout.texts_to_remeasure(scene)?;
         if !constrained.is_empty() {
             layout.text_widths = constrained;
             layout.geometry.clear();
             layout.implicit.clear();
             layout.requested.clear();
-            layout.pass(scene, root, available, text)?;
+            layout.pass(scene, root, available, text, host)?;
         }
         Ok(layout)
     }
@@ -85,8 +100,9 @@ impl Layout {
         root: NodeHandle,
         available: Size,
         text: &mut impl TextMeasurer,
+        host: &mut dyn CustomLayout,
     ) -> Result<(), LayoutError> {
-        self.measure_implicit(scene, root, text)?;
+        self.measure_implicit(scene, root, text, host)?;
         self.geometry.insert(
             root,
             Geometry {
@@ -95,7 +111,7 @@ impl Layout {
                 ..Geometry::default()
             },
         );
-        self.resolve_children(scene, root, text)
+        self.resolve_children(scene, root, text, host)
     }
 
     /// Text nodes whose resolved width is not the width they were measured
@@ -141,16 +157,30 @@ impl Layout {
         scene: &Scene,
         node: NodeHandle,
         text: &mut impl TextMeasurer,
+        host: &mut dyn CustomLayout,
     ) -> Result<Size, LayoutError> {
         let children = scene.children(node)?;
         let mut child_sizes = Vec::with_capacity(children.len());
         for &child in children {
-            let implicit = self.measure_implicit(scene, child, text)?;
+            let implicit = self.measure_implicit(scene, child, text, host)?;
             let requested = self.requested_size(scene, child, implicit)?;
             self.requested.insert(child, requested);
             child_sizes.push(requested);
         }
 
+        if scene.element(node)? == Element::Custom {
+            // Unconstrained here: the room on offer is whatever the node
+            // asked for, or no limit. The place pass says what it got.
+            let available = Size {
+                width: positive(scene.number(node, "width")?).unwrap_or(f64::INFINITY),
+                height: positive(scene.number(node, "height")?).unwrap_or(f64::INFINITY),
+            };
+            let size = host
+                .measure(node, available, &child_sizes)
+                .map_err(LayoutError::Scene)?;
+            self.implicit.insert(node, size);
+            return Ok(size);
+        }
         if is_flex_root(scene, node)? {
             // Taffy sizes the whole subtree at once: unconstrained here, for
             // the implicit size, and again at the resolved size when the
@@ -251,7 +281,8 @@ impl Layout {
             | Element::Flickable
             | Element::Loader
             | Element::Timer
-            | Element::Flex => {
+            | Element::Flex
+            | Element::Custom => {
                 let mut bounds = Size::default();
                 for (child, size) in children.iter().zip(child_sizes) {
                     bounds.width = bounds.width.max(scene.number(*child, "x")? + size.width);
@@ -294,16 +325,20 @@ impl Layout {
         })
     }
 
-    fn resolve_children(
+    pub(crate) fn resolve_children(
         &mut self,
         scene: &Scene,
         parent: NodeHandle,
         text: &mut impl TextMeasurer,
+        host: &mut dyn CustomLayout,
     ) -> Result<(), LayoutError> {
         let mut parent_geometry = self.geometry[&parent];
         let parent_element = scene.element(parent)?;
         if is_flex_root(scene, parent)? {
-            return self.resolve_flex(scene, parent, parent_geometry, text);
+            return self.resolve_flex(scene, parent, parent_geometry, text, host);
+        }
+        if parent_element == Element::Custom {
+            return self.resolve_custom(scene, parent, parent_geometry, text, host);
         }
         if parent_element == Element::ClipRect
             && scene.bool_value(parent, "content_inside_border")?
@@ -446,38 +481,7 @@ impl Layout {
             geometry.x += scene.number(child, "transition_x")?;
             geometry.y += scene.number(child, "transition_y")?;
             self.geometry.insert(child, geometry);
-            self.resolve_children(scene, child, text)?;
-        }
-        Ok(())
-    }
-
-    /// Places everything under a flex root from one Taffy pass at the
-    /// root's resolved size, then lets each leaf place its own children.
-    fn resolve_flex(
-        &mut self,
-        scene: &Scene,
-        root: NodeHandle,
-        geometry: Geometry,
-        text: &mut impl TextMeasurer,
-    ) -> Result<(), LayoutError> {
-        let mut flex = FlexTree::build(scene, root)?;
-        flex.compute(
-            scene,
-            taffy::prelude::Size {
-                width: taffy::prelude::AvailableSpace::Definite(geometry.width as f32),
-                height: taffy::prelude::AvailableSpace::Definite(geometry.height as f32),
-            },
-            &self.requested,
-            text,
-        )?;
-        let placed = flex.geometries(scene, geometry)?;
-        for (node, mut placed, leaf) in placed {
-            placed.x += scene.number(node, "transition_x")?;
-            placed.y += scene.number(node, "transition_y")?;
-            self.geometry.insert(node, placed);
-            if leaf {
-                self.resolve_children(scene, node, text)?;
-            }
+            self.resolve_children(scene, child, text, host)?;
         }
         Ok(())
     }

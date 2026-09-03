@@ -255,8 +255,13 @@ pub(crate) fn node_metatable<'gc>(
     let new_index = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (node, property, value): (UserRef<NodeToken>, String, LuaValue) = stack.consume(ctx)?;
         let value = lua_to_scene(ctx, value, 0).map_err(HostError)?;
-        assign_scene_property(&mut state.borrow_mut(), node.handle, &property, value)
-            .map_err(HostError)?;
+        // A write while the scene is borrowed by a layout pass -- from
+        // inside a `ui.Layout` function -- is refused rather than allowed to
+        // change the tree the pass is walking.
+        let mut state = state.try_borrow_mut().map_err(|_| {
+            HostError("nodes cannot be written to from inside a layout function".to_owned())
+        })?;
+        assign_scene_property(&mut state, node.handle, &property, value).map_err(HostError)?;
         Ok(CallbackReturn::Return)
     });
     let metatable = Table::new(&ctx);

@@ -37,6 +37,13 @@ pub(crate) struct LuaVirtualView {
     pub(crate) positioned: bool,
 }
 
+/// What a `ui.Layout` container answers layout with.
+#[derive(Clone)]
+pub(crate) struct CustomLayoutFns {
+    pub(crate) measure: StashedClosure,
+    pub(crate) place: StashedClosure,
+}
+
 pub(crate) struct DelegateInstance {
     pub(crate) node: NodeHandle,
     pub(crate) updater: Option<StashedClosure>,
@@ -196,6 +203,8 @@ pub(crate) struct ReactiveState {
     pub(crate) animation_callbacks: HashMap<(NodeHandle, String), StashedClosure>,
     pub(crate) group_callbacks: HashMap<GroupId, StashedClosure>,
     pub(crate) loader_factories: HashMap<NodeHandle, StashedClosure>,
+    /// The `measure` and `place` functions of every `ui.Layout` container.
+    pub(crate) custom_layouts: HashMap<NodeHandle, CustomLayoutFns>,
     pub(crate) loaded_loaders: HashSet<NodeHandle>,
     pub(crate) retention: Retention<NodeHandle>,
     pub(crate) retain_callbacks: HashMap<NodeHandle, RetainCallbacks>,
@@ -321,6 +330,7 @@ impl ReactiveState {
             animation_callbacks: HashMap::new(),
             group_callbacks: HashMap::new(),
             loader_factories: HashMap::new(),
+            custom_layouts: HashMap::new(),
             loaded_loaders: HashSet::new(),
             retention: Retention::default(),
             retain_callbacks: HashMap::new(),

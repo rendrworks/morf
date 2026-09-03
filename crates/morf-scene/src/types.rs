@@ -67,6 +67,9 @@ pub enum Element {
     /// A flexbox container: its children are placed by grow, shrink, basis,
     /// wrap and alignment rather than by their own `x` and `y`.
     Flex,
+    /// A container whose measure and placement are functions the
+    /// configuration wrote.
+    Custom,
 }
 
 impl Element {
@@ -92,6 +95,7 @@ impl Element {
             Self::Loader => "Loader",
             Self::Timer => "Timer",
             Self::Flex => "Flex",
+            Self::Custom => "Layout",
         }
     }
 }

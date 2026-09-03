@@ -10,6 +10,7 @@
 
 local morf = require("morf")
 local ui = require("morf.ui")
+local align = require("lib.align")
 local tray_watcher = require("lib.tray_watcher")
 local dbusmenu = require("lib.dbusmenu")
 
@@ -68,15 +69,22 @@ morf.ipc.click = function(id)
   return "clicked " .. tostring(id)
 end
 
+-- The watcher's state at the left, the count at the right, the clock in
+-- the middle: the bar layout, from `lib/align.lua`, filling the surface.
 ui.Rect {
   color = "#101418",
-  ui.Row {
-    spacing = 16,
-    anchors = { left = true, margins = 12 },
+  align.bar {
+    anchors = { fill = true },
+    gap = 12,
     ui.Text {
       color = "#8a94a0",
       font_size = 16,
       text = function() return status:get() end,
+    },
+    ui.Text {
+      color = "#ffffff",
+      font_size = 16,
+      text = function() return morf.clock:get() end,
     },
     ui.Text {
       color = "#ffffff",

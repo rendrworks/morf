@@ -325,6 +325,7 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 string("justify", "start"),
             ]);
         }
+        Element::Custom => {}
         Element::Flex => {
             properties.extend([
                 string("direction", "row"),
