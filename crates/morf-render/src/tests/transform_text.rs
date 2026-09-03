@@ -129,7 +129,9 @@ fn text_commands_preserve_wrap_and_alignment() {
     scene.assign(text, "width", 200.0).unwrap();
     scene.assign(text, "height", 80.0).unwrap();
     scene.assign(text, "wrap", true).unwrap();
-    scene.assign(text, "elide", "right").unwrap();
+    // Wrapped text takes `max_lines`; `elide` is for a single line, and
+    // the two together are refused at layout.
+    scene.assign(text, "max_lines", 2.0).unwrap();
     scene.assign(text, "font_weight", 700.0).unwrap();
     scene
         .assign(text, "font_source", "file:///tmp/test.ttf")
@@ -153,6 +155,7 @@ fn text_commands_preserve_wrap_and_alignment() {
     let DrawCommand::Text {
         wrap,
         elide,
+        max_lines,
         font_weight,
         ref font_source,
         horizontal_alignment,
@@ -163,7 +166,8 @@ fn text_commands_preserve_wrap_and_alignment() {
         panic!("text did not emit a text command");
     };
     assert!(wrap);
-    assert_eq!(elide, TextElide::Right);
+    assert_eq!(elide, TextElide::None);
+    assert_eq!(max_lines, 2);
     assert_eq!(font_weight, 700.0);
     assert_eq!(font_source, "file:///tmp/test.ttf");
     assert_eq!(horizontal_alignment, TextAlignment::Center);

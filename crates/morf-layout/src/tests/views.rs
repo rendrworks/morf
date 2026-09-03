@@ -178,9 +178,10 @@ fn grid_places_children_in_fixed_columns() {
 }
 
 #[test]
-fn row_layout_distributes_remaining_width_to_fillers() {
+fn a_flex_row_distributes_remaining_width_to_fillers_named_the_old_way() {
+    // `fill_width = true` is the older word for `grow = 1`, and still is.
     let mut scene = Scene::new();
-    let row = scene.create(Element::RowLayout);
+    let row = scene.create(Element::Flex);
     scene.assign(row, "spacing", 10.0).unwrap();
     let fixed = scene.create(Element::Rect);
     scene.assign(fixed, "width", 30.0).unwrap();

@@ -100,3 +100,26 @@ fn ui_each_follows_a_state_list() {
     let after = scene.children(root).unwrap();
     assert_eq!(scene.string_value(after[0], "text").unwrap(), "B2");
 }
+
+#[test]
+fn a_reloadable_state_table_keeps_its_scalars_across_a_reload() {
+    let source = br#"
+        local morf = require("morf")
+        local model = morf.state({ count = 1, who = { name = "a" }, rows = { "x" } }, { reloadable = "app" })
+        morf.ipc.bump = function() model.count = model.count + 1; model.who.name = "b" end
+        morf.ipc.read = function() return model.count, model.who.name end
+    "#;
+    let mut first = Runtime::default();
+    first.execute("state-reload.lua", source).unwrap();
+    first.call_ipc("bump", &[]).unwrap();
+    let carried = first.reloadable_state();
+    assert_eq!(carried.get("app.count"), Some(&IpcValue::Integer(2)));
+
+    let mut second = Runtime::default();
+    second.restore_reloadable_state(carried);
+    second.execute("state-reload.lua", source).unwrap();
+    assert_eq!(
+        second.call_ipc("read", &[]).unwrap(),
+        [IpcValue::Integer(2), IpcValue::String("b".into())]
+    );
+}

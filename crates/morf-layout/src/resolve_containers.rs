@@ -5,12 +5,12 @@
 //! `place`, and both then let each leaf place its own children by the
 //! engine's ordinary rules.
 
-use morf_scene::{NodeHandle, Scene};
+use morf_scene::{Element, FastMap, NodeHandle, Scene};
 
 use crate::custom::CustomLayout;
 use crate::flex::FlexTree;
 use crate::geometry::{Geometry, Size, TextMeasurer};
-use crate::helpers::LayoutError;
+use crate::helpers::{LayoutError, positive};
 use crate::layout::Layout;
 
 impl Layout {
@@ -25,6 +25,7 @@ impl Layout {
         host: &mut dyn CustomLayout,
     ) -> Result<(), LayoutError> {
         let mut flex = FlexTree::build(scene, root)?;
+        flex.set_root_size(geometry.width, geometry.height)?;
         flex.compute(
             scene,
             taffy::prelude::Size {
@@ -85,4 +86,55 @@ impl Layout {
         }
         Ok(())
     }
+
+    /// Text nodes whose resolved width is not the width they were measured
+    /// at, and to whom that matters.
+    pub(crate) fn texts_to_remeasure(
+        &self,
+        scene: &Scene,
+    ) -> Result<FastMap<NodeHandle, f64>, LayoutError> {
+        let mut widths = FastMap::default();
+        for (node, geometry) in &self.geometry {
+            if scene.element(*node)? != Element::Text {
+                continue;
+            }
+            if positive(scene.number(*node, "width")?).is_some() {
+                continue;
+            }
+            let wraps =
+                scene.bool_value(*node, "wrap")? || scene.string_value(*node, "elide")? != "none";
+            let measured = self.implicit.get(node).map_or(0.0, |size| size.width);
+            if wraps && geometry.width > 0.0 && (geometry.width - measured).abs() > 0.5 {
+                widths.insert(*node, geometry.width);
+            }
+        }
+        Ok(widths)
+    }
+
+    /// Returns the resolved geometry for a node in the computed tree.
+    pub fn geometry(&self, node: NodeHandle) -> Option<Geometry> {
+        self.geometry.get(&node).copied()
+    }
+
+    /// Iterates over every resolved node geometry.
+    pub fn geometries(&self) -> impl Iterator<Item = (NodeHandle, Geometry)> + '_ {
+        self.geometry
+            .iter()
+            .map(|(node, geometry)| (*node, *geometry))
+    }
+
+    /// Returns the bottom-up implicit size for a node.
+    pub fn implicit_size(&self, node: NodeHandle) -> Option<Size> {
+        self.implicit.get(&node).copied()
+    }
+}
+
+/// A positioner grid's gaps: the specific spacing, or `gap` for both.
+pub(crate) fn grid_gaps(scene: &Scene, node: NodeHandle) -> Result<(f64, f64), LayoutError> {
+    let gap = scene.number(node, "gap")?;
+    let pick = |specific: f64| if specific > 0.0 { specific } else { gap };
+    Ok((
+        pick(scene.number(node, "column_spacing")?),
+        pick(scene.number(node, "row_spacing")?),
+    ))
 }

@@ -27,15 +27,23 @@ pub(crate) fn install_ui_json_api<'gc>(
         ("Row", Element::Row),
         ("Column", Element::Column),
         ("Grid", Element::Grid),
-        ("RowLayout", Element::RowLayout),
-        ("ColumnLayout", Element::ColumnLayout),
-        ("GridLayout", Element::GridLayout),
         ("Flex", Element::Flex),
     ] {
         ui.set_field(
             ctx,
             name,
             element_constructor(ctx, Rc::clone(&state), limits, element),
+        );
+    }
+    for (name, direction) in [
+        ("RowLayout", Some("row")),
+        ("ColumnLayout", Some("column")),
+        ("GridLayout", None),
+    ] {
+        ui.set_field(
+            ctx,
+            name,
+            layout_alias_constructor(ctx, Rc::clone(&state), limits, direction),
         );
     }
     // `ui.each(list, delegate, options)`: a Repeater over a list, which is

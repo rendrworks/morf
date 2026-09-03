@@ -48,6 +48,33 @@ fn a_flex_row_grows_its_fillers_around_fixed_children_with_gaps() {
 }
 
 #[test]
+fn a_flex_row_shrinks_by_size_and_honours_a_percent_minimum() {
+    let mut scene = Scene::new();
+    let flex = sized(&mut scene, Element::Flex, 100.0, 10.0);
+    let a = sized(&mut scene, Element::Rect, 60.0, 10.0);
+    // A flex item will not shrink below its content on its own; say so.
+    attached(&mut scene, a, &[("minimum_width", Value::Number(0.0))]);
+    let b = sized(&mut scene, Element::Rect, 60.0, 10.0);
+    attached(&mut scene, b, &[("shrink", Value::Number(0.0))]);
+    let c = sized(&mut scene, Element::Rect, 60.0, 10.0);
+    attached(
+        &mut scene,
+        c,
+        &[("minimum_width", Value::String("50%".into()))],
+    );
+    for child in [a, b, c] {
+        scene.reparent(child, Some(flex)).unwrap();
+    }
+
+    let layout = compute(&scene, flex, 100.0, 10.0);
+
+    // b refuses to shrink and c stops at half the row; a takes the rest.
+    assert_eq!(layout.geometry(b).unwrap().width, 60.0);
+    assert_eq!(layout.geometry(c).unwrap().width, 50.0);
+    assert_eq!(layout.geometry(a).unwrap().width, 0.0);
+}
+
+#[test]
 fn a_flex_column_wraps_text_at_the_width_it_gives_it_and_is_that_tall() {
     // The Flex has no height of its own: it is as tall as its content, and
     // its content is text shaped at the Flex's width.

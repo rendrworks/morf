@@ -34,6 +34,49 @@ pub(crate) fn element_constructor<'gc>(
     })
 }
 
+/// The older layout kinds, as the containers they were: `RowLayout` and
+/// `ColumnLayout` are a `Flex` in that direction, `GridLayout` a `Grid`
+/// whose numeric `columns` becomes that many `auto` tracks. Every key they
+/// read -- `fill_width`, `spacing`, `alignment` -- still means what it did.
+pub(crate) fn layout_alias_constructor<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+    direction: Option<&'static str>,
+) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let properties: Table = stack.consume(ctx)?;
+        let element = match direction {
+            Some(direction) => {
+                if matches!(properties.get_value(ctx, "direction"), LuaValue::Nil) {
+                    properties.set_field(ctx, "direction", direction);
+                }
+                Element::Flex
+            }
+            None => {
+                if let LuaValue::Integer(columns) = properties.get_value(ctx, "columns")
+                    && matches!(properties.get_value(ctx, "template_columns"), LuaValue::Nil)
+                {
+                    let tracks = Table::new(&ctx);
+                    tracks
+                        .set(
+                            ctx,
+                            1,
+                            ctx.intern(format!("repeat({columns}, auto)").as_bytes()),
+                        )
+                        .map_err(|error| HostError(error.to_string()))?;
+                    properties.set_field(ctx, "template_columns", tracks);
+                }
+                Element::Grid
+            }
+        };
+        let node = create_node(&state, element);
+        configure_element(&state, ctx, limits, node, properties).map_err(HostError)?;
+        stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
+        Ok(CallbackReturn::Return)
+    })
+}
+
 pub(crate) fn loader_constructor<'gc>(
     ctx: Context<'gc>,
     state: Rc<RefCell<ReactiveState>>,
@@ -191,12 +234,10 @@ pub(crate) fn construct_view<'gc>(
                     "row" => Element::Row,
                     "column" => Element::Column,
                     "grid" => Element::Grid,
-                    "row_layout" => Element::RowLayout,
-                    "column_layout" => Element::ColumnLayout,
-                    "grid_layout" => Element::GridLayout,
+                    "flex" => Element::Flex,
                     other => {
                         return Err(HostError(format!(
-                            "Repeater `as` must be item, row, column, grid, row_layout, column_layout or grid_layout, not `{other}`"
+                            "Repeater `as` must be item, row, column, grid or flex, not `{other}`"
                         ))
                         .into());
                     }
@@ -205,7 +246,7 @@ pub(crate) fn construct_view<'gc>(
             },
             _ => Element::Item,
         };
-        let repeater_keeps_columns = matches!(element, Element::Grid | Element::GridLayout);
+        let repeater_keeps_columns = element == Element::Grid;
         let clean = Table::new(&ctx);
         for (key, value) in properties.iter(ctx) {
             let special = matches!(

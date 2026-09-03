@@ -1,5 +1,6 @@
 //! Three-stage layout for morf scene nodes.
 
+mod attached;
 mod custom;
 mod distribute;
 mod flex;

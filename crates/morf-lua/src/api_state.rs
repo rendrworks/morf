@@ -14,7 +14,10 @@ use morf_scene::{ListModel, Value as SceneValue};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{reactive_bindings::*, scene_bindings::*, state::*, surface_types::*, types::*};
+use crate::{
+    reactive_bindings::*, runtime_helpers::*, scene_bindings::*, state::*, surface_types::*,
+    types::*,
+};
 
 /// Whether a Lua table is an array: every key a positive integer, or none.
 fn is_array<'gc>(ctx: Context<'gc>, table: Table<'gc>) -> bool {
@@ -28,6 +31,7 @@ fn build<'gc>(
     state: &Rc<RefCell<ReactiveState>>,
     metatable: &luna::StashedTable,
     path: &str,
+    reloadable: Option<&str>,
     seed: Table<'gc>,
 ) -> Result<UserData<'gc>, String> {
     let mut fields = StateFields::default();
@@ -60,7 +64,8 @@ fn build<'gc>(
                 fields.lists.insert(key, (ctx.stash(userdata), model));
             }
             LuaValue::Table(table) => {
-                let child = build(ctx, state, metatable, &name, table)?;
+                let child_reload = reloadable.map(|prefix| format!("{prefix}.{key}"));
+                let child = build(ctx, state, metatable, &name, child_reload.as_deref(), table)?;
                 fields.tables.insert(key, ctx.stash(child));
             }
             LuaValue::Function(_) | LuaValue::UserData(_) => {
@@ -71,13 +76,23 @@ fn build<'gc>(
             scalar => {
                 let value = IpcValue::from_lua(scalar)?;
                 let mut state = state.borrow_mut();
-                let id = state
-                    .graph
-                    .as_mut()
-                    .ok_or("reactive graph is already running")?
-                    .signal(name, value.clone());
-                state.values.insert(id, value);
-                state.signals.push(id);
+                let id = match reloadable {
+                    // Named, and so kept across a configuration reload like
+                    // a `morf.reloadable` signal is.
+                    Some(prefix) => {
+                        register_reloadable_value(&mut state, format!("{prefix}.{key}"), value)?.0
+                    }
+                    None => {
+                        let id = state
+                            .graph
+                            .as_mut()
+                            .ok_or("reactive graph is already running")?
+                            .signal(name, value.clone());
+                        state.values.insert(id, value);
+                        state.signals.push(id);
+                        id
+                    }
+                };
                 fields.scalars.insert(key, id);
             }
         }
@@ -194,8 +209,23 @@ pub(crate) fn install_state_api<'gc>(
     let create = Callback::from_fn(&ctx, {
         let state = Rc::clone(&state);
         move |ctx, _, mut stack| {
-            let seed: Table = stack.consume(ctx)?;
-            let userdata = build(ctx, &state, &metatable, "state", seed).map_err(HostError)?;
+            // `morf.state(table, { reloadable = "name" })` keeps the scalar
+            // fields across a reload under that name; lists start afresh.
+            let (seed, options): (Table, Option<Table>) = stack.consume(ctx)?;
+            let reloadable =
+                options.and_then(|options| match options.get_value(ctx, "reloadable") {
+                    LuaValue::String(name) => Some(name.display_lossy().to_string()),
+                    _ => None,
+                });
+            let userdata = build(
+                ctx,
+                &state,
+                &metatable,
+                "state",
+                reloadable.as_deref(),
+                seed,
+            )
+            .map_err(HostError)?;
             stack.replace(ctx, userdata);
             Ok(CallbackReturn::Return)
         }

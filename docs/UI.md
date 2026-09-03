@@ -34,8 +34,8 @@ ui.Rect {
 | containers | `Item`, `Inset`, `Flickable`, `Loader`, `Layout` |
 | painting | `Rect`, `ClipRect`, `Text`, `Image`, `Icon`, `Sdf`, `SdfShape` |
 | input | `MouseArea` (the only kind the pointer can hit) |
-| positioners | `Row`, `Column`, `Grid` |
-| layouts | `RowLayout`, `ColumnLayout`, `GridLayout`, `Flex`, `Grid` with tracks |
+| positioners | `Row`, `Column`, `Grid` with `columns` |
+| layouts | `Flex`, `Grid` with tracks (`RowLayout`, `ColumnLayout`, `GridLayout` are their older names) |
 | lists | `Repeater`, `ListView`, `GridView`, `each` |
 | other | `Timer`; `reparent`, `spring`, `smoothed` |
 
@@ -73,9 +73,10 @@ local box = ui.Item { anchors = { fill = true } }
 ui.Rect { height = 10, width = function() return (box.layout_width or 0) / 2 end }
 ```
 
-Text: `wrap`, `elide = "left" | "middle" | "right"`, `max_lines` (wrapped
-text keeps that many lines and elides the last), `horizontal_alignment`,
-`vertical_alignment`.
+Text: `wrap`, `elide = "left" | "middle" | "right"` for a single line,
+`max_lines` for wrapped text (it keeps that many lines and elides the
+last), `horizontal_alignment`, `vertical_alignment`. `max_lines` without
+`wrap`, or `elide` with it, is an error rather than nothing.
 
 ## 3. Placement
 
@@ -85,9 +86,8 @@ particular keys on them. The wrong kind's keys are errors.
 | parent kind | what places the child | child-side keys |
 |---|---|---|
 | `Item`, `Rect`, any plain node | the child's own `x`, `y`, `anchors` | `anchors` |
-| `Row`, `Column`, `Grid` (fixed `columns`) | packing order, `spacing`, `alignment` | `layout.alignment` |
-| `RowLayout`, `ColumnLayout`, `GridLayout` | packing plus fill | `layout.fill_width/fill_height`, `stretch`, `shrink`, `minimum_*`, `maximum_*` |
-| `Flex`, `Grid` with `template_columns/rows` | flexbox, grid tracks | `layout.grow`, `shrink`, `basis`, `align_self`, `margin`, `width`, `height`, `column`, `row`, `column_span`, `row_span` |
+| `Row`, `Column`, `Grid` (fixed `columns`) | packing order, `gap`, `align`, `justify` | `layout.align_self` |
+| `Flex`, `Grid` with `template_columns/rows` | flexbox, grid tracks | `layout.grow`, `shrink`, `basis`, `align_self`, `margin`, `width`, `height`, `minimum_*`, `maximum_*`, `column`, `row`, `column_span`, `row_span` |
 | `Inset` | margins around its one child | — |
 | `Layout { measure, place }` | your two functions | whatever they read |
 
@@ -104,29 +104,36 @@ ui.Rect { anchors = { left = true, right = true, top = true, margins = 8 }, heig
 Anchors inside a positioner on the axis it packs, or anywhere inside a
 `Flex` or a track `Grid`, are errors: one kind places a node.
 
+### One vocabulary
+
+Every container that packs children reads the same three words. `gap` is
+the space between children. `align` places them across the packed axis:
+`start`, `center`, `end`, `stretch`. `justify` distributes leftover room
+along it: `start`, `center`, `end`, `space_between`, `space_around`,
+`space_evenly`. A child overrides `align` with `layout = { align_self =
+"end" }`, and asks for leftover room with `layout = { grow = 1 }`.
+
+The older words still work and mean the same: `spacing` is `gap`,
+`alignment` is `align`, `layout.alignment` is `align_self`,
+`layout.fill_width`/`fill_height` is `grow = 1` (or, across the axis,
+`align_self = "stretch"`), and `layout.stretch` is `grow`.
+
 ### Positioners
 
-`Row` and `Column` pack children with `spacing`. `alignment = "start" |
-"center" | "end" | "stretch"` places them across the packed axis, and a
-child overrides it with `layout = { alignment = "end" }`. `Grid` with a
-numeric `columns` fills row-major; tracks are as wide as their widest cell.
+`Row` and `Column` pack children at their own sizes: `gap` between,
+`align` across, `justify` along. They never resize a child (`align =
+"stretch"` is the one exception). `Grid` with a numeric `columns` fills
+row-major; tracks are as wide as their widest cell.
 
 ```lua
 ui.Row {
-  spacing = 10, alignment = "center",
+  gap = 10, align = "center", justify = "space_between",
   ui.Text { text = "Password:", width = 90 },
   ui.Rect { width = 300, height = 30, radius = 6 },
 }
 ```
 
-### Layouts with fill
-
-`RowLayout`/`ColumnLayout` give leftover space to children that say
-`layout = { fill_width = true }` (or `fill_height`), in proportion to
-`layout.stretch` (one by default). When the children overflow, the
-shortfall comes out of them in proportion to `layout.shrink` times their
-size, down to `layout.minimum_width`. `GridLayout` snaps fillers to their
-track.
+Reach for `Flex` the moment a child should take leftover space.
 
 ### Flex and track grids
 
@@ -161,10 +168,18 @@ ui.Grid {
 }
 ```
 
+A layout stretches children across its axis by default, as CSS does; a
+positioner does not. A flex item never shrinks below its content unless
+it says `layout = { minimum_width = 0 }`, also as CSS does.
+
 Everything under a `Flex` or track `Grid` that is itself one is laid out
 in the same pass; anything else is a leaf, sized by the rules above, whose
 own children then follow the ordinary rules. A card in a grid cell still
 anchors its label.
+
+`ui.RowLayout`, `ui.ColumnLayout` and `ui.GridLayout` are the older names:
+a `Flex` in that direction, and a `Grid` whose numeric `columns` becomes
+that many `auto` tracks.
 
 ### Your own container
 
@@ -211,7 +226,7 @@ model: rows that go are destroyed, rows that come are built, rows that
 move are moved, and the children's order is the model's. A delegate may
 return a second value, an updater `function(row, index)`, in which case a
 changed row is patched in place rather than rebuilt: a caption changes, a
-thumbnail stays. `as = "row" | "column" | "grid" | ...` lays the delegates
+thumbnail stays. `as = "row" | "column" | "grid" | "flex"` lays the delegates
 out as that container, with its properties.
 
 ```lua
@@ -250,6 +265,8 @@ scalar. It never runs per frame.
 `morf.state(table)` keeps a shape: each named field is a signal read and
 written through the proxy, a nested table is nested, an array is a list
 model. Fields are fixed at creation; an unknown name is an error.
+`morf.state(table, { reloadable = "name" })` keeps the scalar fields
+across a configuration reload under that name, like `morf.reloadable`.
 
 ```lua
 local model = morf.state { screen = "list", typed = 0, user = { name = "" }, rows = {} }
@@ -297,8 +314,9 @@ ui.Rect {
 }
 ```
 
-States with `when` are asked in name order; the first true wins; none
-true selects `default` if there is one, else the node stays as it is.
+States with `when` are asked by `order` (lowest first, ties by name); the
+first true wins; none true selects `default` if there is one, else the
+node stays as it is.
 
 ### Animation
 

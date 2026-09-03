@@ -14,7 +14,8 @@ use taffy::style::{
     MaxTrackSizingFunction, MinTrackSizingFunction, RepetitionCount, TrackSizingFunction,
 };
 
-use crate::helpers::{LayoutError, attached_layout, positive};
+use crate::attached::{Attached, Bound};
+use crate::helpers::{LayoutError, align_of, attached_layout, gap_of, positive};
 
 fn bad(what: &str, value: &str) -> LayoutError {
     LayoutError::Scene(format!("unknown {what} `{value}`"))
@@ -241,7 +242,7 @@ pub(crate) fn container_style(
             } else {
                 FlexWrap::NoWrap
             };
-            let gap = scene.number(node, "gap")?.max(0.0) as f32;
+            let gap = gap_of(scene, node)?.max(0.0) as f32;
             style.gap = Size {
                 width: LengthPercentage::length(gap),
                 height: LengthPercentage::length(gap),
@@ -253,7 +254,7 @@ pub(crate) fn container_style(
                 top: LengthPercentage::length(padding),
                 bottom: LengthPercentage::length(padding),
             };
-            style.align_items = align_items(scene.string_value(node, "align")?)?;
+            style.align_items = align_items(&align_of(scene, node)?)?;
             style.justify_content = align_content(scene.string_value(node, "justify")?)?;
             style.align_content = align_content(scene.string_value(node, "align_content")?)?;
         }
@@ -282,45 +283,54 @@ pub(crate) fn container_style(
 /// else auto -- a leaf is then measured. The rest is the attached map.
 pub(crate) fn item_style(scene: &Scene, node: NodeHandle) -> Result<Style<String>, LayoutError> {
     let attached = attached_layout(scene.current(node, "layout")?)?;
+    let horizontal = match scene.parent(node)? {
+        Some(parent) => match scene.element(parent)? {
+            Element::Flex => scene.string_value(parent, "direction")?.starts_with("row"),
+            _ => true,
+        },
+        None => true,
+    };
+    let read = Attached::read(attached, horizontal)?;
     let mut style = Style::<String>::default();
-    let own = |property: &str| -> Result<Option<Dimension>, LayoutError> {
+    let as_dimension = |bound: Option<Bound>| match bound {
+        Some(Bound::Length(value)) => Dimension::length(value as f32),
+        Some(Bound::Percent(fraction)) => Dimension::percent(fraction as f32),
+        None => Dimension::auto(),
+    };
+    let as_bound = |bound: Option<Bound>| match bound {
+        Some(Bound::Length(value)) => LengthPercentageAuto::length(value as f32),
+        Some(Bound::Percent(fraction)) => LengthPercentageAuto::percent(fraction as f32),
+        None => LengthPercentageAuto::auto(),
+    };
+    let own = |property: &str, preferred: Option<Bound>| -> Result<Dimension, LayoutError> {
         if let Some(pixels) = positive(scene.number(node, property)?) {
-            return Ok(Some(Dimension::length(pixels as f32)));
+            return Ok(Dimension::length(pixels as f32));
         }
-        attached
-            .get(property)
-            .map(|value| dimension(value, property))
-            .transpose()
+        if let Some(word) = attached.get(property)
+            && matches!(word, Value::String(_))
+        {
+            return dimension(word, property);
+        }
+        Ok(as_dimension(preferred))
     };
     style.size = Size {
-        width: own("width")?.unwrap_or(Dimension::auto()),
-        height: own("height")?.unwrap_or(Dimension::auto()),
-    };
-    let bound = |key: &str| -> Result<LengthPercentageAuto, LayoutError> {
-        attached
-            .get(key)
-            .map(|value| length_percentage_auto(value, key))
-            .transpose()
-            .map(|value| value.unwrap_or(LengthPercentageAuto::auto()))
+        width: own("width", read.preferred_width)?,
+        height: own("height", read.preferred_height)?,
     };
     style.min_size = Size {
-        width: bound("minimum_width")?,
-        height: bound("minimum_height")?,
+        width: as_bound(read.minimum_width),
+        height: as_bound(read.minimum_height),
     };
     style.max_size = Size {
-        width: bound("maximum_width")?,
-        height: bound("maximum_height")?,
+        width: as_bound(read.maximum_width),
+        height: as_bound(read.maximum_height),
     };
-    let number = |key: &str, default: f32| match attached.get(key) {
-        Some(Value::Number(value)) if value.is_finite() => *value as f32,
-        _ => default,
-    };
-    style.flex_grow = number("grow", 0.0).max(0.0);
-    style.flex_shrink = number("shrink", 1.0).max(0.0);
+    style.flex_grow = read.grow as f32;
+    style.flex_shrink = read.shrink as f32;
     if let Some(basis) = attached.get("basis") {
         style.flex_basis = dimension(basis, "basis")?;
     }
-    if let Some(Value::String(word)) = attached.get("align_self") {
+    if let Some(word) = &read.align_self {
         style.align_self = align_items(word)?;
     }
     if let Some(margin) = attached.get("margin") {

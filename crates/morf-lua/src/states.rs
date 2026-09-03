@@ -16,6 +16,8 @@ pub(crate) struct StateDefinition {
     pub(crate) parent: Option<NodeHandle>,
     /// A binding that, when true, selects this state on its own.
     pub(crate) when: Option<StashedClosure>,
+    /// Which `when` is asked first: lowest first, ties by name.
+    pub(crate) order: f64,
 }
 
 #[derive(Clone)]

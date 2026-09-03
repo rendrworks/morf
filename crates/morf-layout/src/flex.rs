@@ -74,6 +74,24 @@ impl FlexTree {
         Ok(id)
     }
 
+    /// Gives the root the box the engine resolved for it, so a Flex with no
+    /// size of its own fills what its parent gave it rather than shrinking
+    /// to its content.
+    pub(crate) fn set_root_size(&mut self, width: f64, height: f64) -> Result<(), LayoutError> {
+        let mut style = self
+            .tree
+            .style(self.root)
+            .map_err(|error| LayoutError::Scene(error.to_string()))?
+            .clone();
+        style.size = Size {
+            width: Dimension::length(width as f32),
+            height: Dimension::length(height as f32),
+        };
+        self.tree
+            .set_style(self.root, style)
+            .map_err(|error| LayoutError::Scene(error.to_string()))
+    }
+
     /// Lays the tree out in `available`, measuring leaves as the engine does.
     pub(crate) fn compute(
         &mut self,

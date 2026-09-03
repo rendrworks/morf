@@ -52,12 +52,6 @@ pub enum Element {
     Column,
     /// Fixed-column two-dimensional positioner.
     Grid,
-    /// Horizontal positioner honoring attached layout constraints.
-    RowLayout,
-    /// Vertical positioner honoring attached layout constraints.
-    ColumnLayout,
-    /// Two-dimensional positioner honoring attached layout constraints.
-    GridLayout,
     /// Clipped viewport over movable content.
     Flickable,
     /// Non-painting container for a lazily constructed child.
@@ -88,9 +82,6 @@ impl Element {
             Self::Row => "Row",
             Self::Column => "Column",
             Self::Grid => "Grid",
-            Self::RowLayout => "RowLayout",
-            Self::ColumnLayout => "ColumnLayout",
-            Self::GridLayout => "GridLayout",
             Self::Flickable => "Flickable",
             Self::Loader => "Loader",
             Self::Timer => "Timer",

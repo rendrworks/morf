@@ -57,58 +57,56 @@ fn a_row_aligns_its_children_across_its_axis() {
 }
 
 #[test]
-fn a_row_layout_shares_leftover_space_by_stretch_and_shrinks_by_size() {
+fn a_row_justifies_its_children_along_its_axis_with_the_old_and_new_words() {
+    // `gap` and `spacing` are one thing, `align` and `alignment` are one
+    // thing, and `justify` distributes what is left over.
     let mut scene = Scene::new();
-    let row = sized(&mut scene, Element::RowLayout, 100.0, 10.0);
-    let fixed = sized(&mut scene, Element::Rect, 10.0, 10.0);
-    let one = sized(&mut scene, Element::Rect, 10.0, 10.0);
-    attached(&mut scene, one, &[("fill_width", Value::Bool(true))]);
-    let three = sized(&mut scene, Element::Rect, 10.0, 10.0);
-    attached(
-        &mut scene,
-        three,
-        &[
-            ("fill_width", Value::Bool(true)),
-            ("stretch", Value::Number(3.0)),
-        ],
-    );
-    for child in [fixed, one, three] {
-        scene.reparent(child, Some(row)).unwrap();
-    }
-    let available = Size {
-        width: 100.0,
-        height: 10.0,
-    };
-    let layout = Layout::compute(&scene, row, available, &mut FixedText).unwrap();
-    // 70 left over: one share to `one`, three to `three`.
-    assert_eq!(layout.geometry(fixed).unwrap().width, 10.0);
-    assert_eq!(layout.geometry(one).unwrap().width, 10.0 + 17.5);
-    assert_eq!(layout.geometry(three).unwrap().width, 10.0 + 52.5);
-
-    // Now too little room: 30 requested in 24, and one child refuses to
-    // give anything up.
-    let narrow = sized(&mut scene, Element::RowLayout, 24.0, 10.0);
+    let row = sized(&mut scene, Element::Row, 100.0, 20.0);
+    scene.assign(row, "spacing", 10.0).unwrap();
+    scene.assign(row, "justify", "space_between").unwrap();
     let a = sized(&mut scene, Element::Rect, 10.0, 10.0);
     let b = sized(&mut scene, Element::Rect, 10.0, 10.0);
     let c = sized(&mut scene, Element::Rect, 10.0, 10.0);
-    attached(&mut scene, c, &[("shrink", Value::Number(0.0))]);
     for child in [a, b, c] {
-        scene.reparent(child, Some(narrow)).unwrap();
+        scene.reparent(child, Some(row)).unwrap();
     }
-    let layout = Layout::compute(
+    let layout = compute_row(&scene, row);
+    assert_eq!(layout.geometry(a).unwrap().x, 0.0);
+    assert_eq!(layout.geometry(b).unwrap().x, 45.0);
+    assert_eq!(layout.geometry(c).unwrap().x, 90.0);
+
+    scene.assign(row, "justify", "center").unwrap();
+    scene.assign(row, "gap", 5.0).unwrap();
+    let layout = compute_row(&scene, row);
+    // 40 used with 5-gaps, 60 free, half of it before the first child.
+    assert_eq!(layout.geometry(a).unwrap().x, 30.0);
+    assert_eq!(layout.geometry(c).unwrap().x, 60.0);
+
+    scene.assign(row, "justify", "sideways").unwrap();
+    let error = Layout::compute(
         &scene,
-        narrow,
+        row,
         Size {
-            width: 24.0,
-            height: 10.0,
+            width: 100.0,
+            height: 20.0,
         },
         &mut FixedText,
     )
-    .unwrap();
-    assert_eq!(layout.geometry(a).unwrap().width, 7.0);
-    assert_eq!(layout.geometry(b).unwrap().width, 7.0);
-    assert_eq!(layout.geometry(c).unwrap().width, 10.0);
-    assert_eq!(layout.geometry(c).unwrap().x, 14.0);
+    .unwrap_err();
+    assert!(error.to_string().contains("sideways"), "{error}");
+}
+
+fn compute_row(scene: &Scene, row: NodeHandle) -> Layout {
+    Layout::compute(
+        scene,
+        row,
+        Size {
+            width: 100.0,
+            height: 20.0,
+        },
+        &mut FixedText,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -173,4 +171,24 @@ fn z_puts_a_child_over_its_later_siblings_for_hit_testing() {
         scene.paint_order(root).unwrap().as_ref(),
         &[over, under][..]
     );
+}
+
+#[test]
+fn text_options_that_would_do_nothing_are_refused() {
+    let mut scene = Scene::new();
+    let text = scene.create(Element::Text);
+    scene.assign(text, "text", "hello").unwrap();
+    scene.assign(text, "max_lines", 2.0).unwrap();
+    let size = Size {
+        width: 100.0,
+        height: 100.0,
+    };
+    let error = Layout::compute(&scene, text, size, &mut FixedText).unwrap_err();
+    assert!(error.to_string().contains("max_lines"), "{error}");
+
+    scene.assign(text, "max_lines", 0.0).unwrap();
+    scene.assign(text, "wrap", true).unwrap();
+    scene.assign(text, "elide", "right").unwrap();
+    let error = Layout::compute(&scene, text, size, &mut FixedText).unwrap_err();
+    assert!(error.to_string().contains("elide"), "{error}");
 }

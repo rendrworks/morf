@@ -44,6 +44,7 @@ pub(crate) fn configure_states<'gc>(
         let mut anchors = None;
         let mut parent = None;
         let mut when = None;
+        let mut order = 0.0;
         for (key, value) in definition.iter(ctx) {
             let LuaValue::String(key) = key else {
                 return Err("state fields must be strings".into());
@@ -81,6 +82,12 @@ pub(crate) fn configure_states<'gc>(
                     };
                     anchors = Some(value);
                 }
+                "order" => {
+                    let LuaValue::Integer(value) = value else {
+                        return Err("a state's `order` must be an integer".into());
+                    };
+                    order = value as f64;
+                }
                 "when" => {
                     let LuaValue::Function(Function::Closure(closure)) = value else {
                         return Err("a state's `when` must be a function".into());
@@ -108,6 +115,7 @@ pub(crate) fn configure_states<'gc>(
                 anchors,
                 parent,
                 when,
+                order,
             },
         );
     }
@@ -157,9 +165,9 @@ pub(crate) fn configure_states<'gc>(
 
 /// One Lua function that asks each `when` in turn, built once per node.
 ///
-/// Name order rather than declaration order, because a Lua table has no
-/// declaration order to offer; two states true at once are the author's
-/// to sort out.
+/// By `order`, lowest first, then by name -- a Lua table has no
+/// declaration order to offer, so a state that must be asked before
+/// another says so.
 fn build_state_selector<'gc>(
     ctx: Context<'gc>,
     limits: Limits,
@@ -167,15 +175,20 @@ fn build_state_selector<'gc>(
 ) -> Result<Option<Closure<'gc>>, String> {
     let mut conditional = definitions
         .iter()
-        .filter_map(|(name, definition)| definition.when.as_ref().map(|when| (name, when)))
+        .filter_map(|(name, definition)| {
+            definition
+                .when
+                .as_ref()
+                .map(|when| (name, when, definition.order))
+        })
         .collect::<Vec<_>>();
     if conditional.is_empty() {
         return Ok(None);
     }
-    conditional.sort_by(|(a, _), (b, _)| a.cmp(b));
+    conditional.sort_by(|(a, _, ao), (b, _, bo)| ao.total_cmp(bo).then_with(|| a.cmp(b)));
     let names = Table::new(&ctx);
     let tests = Table::new(&ctx);
-    for (index, (name, when)) in conditional.iter().enumerate() {
+    for (index, (name, when, _)) in conditional.iter().enumerate() {
         names
             .set(ctx, index as i64 + 1, ctx.intern(name.as_bytes()))
             .map_err(|error| error.to_string())?;

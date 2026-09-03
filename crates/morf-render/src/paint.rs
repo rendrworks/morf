@@ -266,9 +266,6 @@ pub(crate) fn append_node(
         | Element::Row
         | Element::Column
         | Element::Grid
-        | Element::RowLayout
-        | Element::ColumnLayout
-        | Element::GridLayout
         | Element::Flickable
         | Element::Loader
         | Element::Timer
