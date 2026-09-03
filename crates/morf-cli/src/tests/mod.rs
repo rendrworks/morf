@@ -449,3 +449,35 @@ fn an_instance_is_named_by_its_display() {
     let args = ["-i", "wayland-7", "-i", "wayland-8", "kill"].map(std::ffi::OsString::from);
     assert_eq!(parse_command(&args).unwrap_err(), "-i given twice");
 }
+
+#[test]
+fn the_crash_screen_is_started_as_a_shell_with_the_report_as_its_argument() {
+    // A crash screen on top of a crash: the report exists, and now something
+    // draws it. Started through `sh` with a delay because the dying process
+    // still holds the socket, and with every path as its own argument so a
+    // space in one cannot split it.
+    let command = crate::crash::crash_screen_command(
+        std::path::Path::new("/opt/morf bin/morf"),
+        std::path::Path::new("/home/me/crash screen.lua"),
+        std::path::Path::new("/tmp/report 1.log"),
+    );
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(command.get_program(), "sh");
+    assert_eq!(args[0], "-c");
+    assert!(
+        args[1].contains("sleep 1; exec \"$0\" -d -- \"$1\" \"$2\""),
+        "{}",
+        args[1]
+    );
+    assert_eq!(
+        &args[2..],
+        [
+            "/opt/morf bin/morf",
+            "/home/me/crash screen.lua",
+            "/tmp/report 1.log"
+        ]
+    );
+}

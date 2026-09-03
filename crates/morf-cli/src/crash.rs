@@ -52,6 +52,7 @@ pub(crate) fn install() {
                     "morf: crash report written to {}",
                     path.display()
                 );
+                show_screen(&path);
             }
             None => {
                 // Nowhere to write is not a reason to lose the backtrace; it is
@@ -69,6 +70,50 @@ pub(crate) fn install() {
             unsafe { libc::abort() };
         }
     }));
+}
+
+/// Puts a crash screen up, when the session asked for one.
+///
+/// `MORF_CRASH_SCREEN` names a configuration -- `examples/crash.lua` is one --
+/// and it is started as a new shell with the report's path as its argument.
+/// Started through a shell with a one-second delay, because the process this
+/// runs in is the one dying: it still holds the IPC socket, and a replacement
+/// started this instant would find the display taken. A second later the
+/// socket is stale and the replacement reclaims it. Opt-in, because a crash
+/// screen on top of a crash is only right when there is a screen to draw on.
+fn show_screen(report: &Path) {
+    let Some(config) = std::env::var_os("MORF_CRASH_SCREEN") else {
+        return;
+    };
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let mut command = crash_screen_command(&executable, Path::new(&config), report);
+    // Detached from this process entirely: no inherited stdio, no wait.
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _ = command.spawn();
+}
+
+/// The command that starts the crash screen, built where it can be checked.
+pub(crate) fn crash_screen_command(
+    executable: &Path,
+    config: &Path,
+    report: &Path,
+) -> std::process::Command {
+    let mut command = std::process::Command::new("sh");
+    command
+        .arg("-c")
+        // `$0` is the executable, `$1` the configuration, `$2` the report:
+        // nothing is interpolated into the script, so a path with a space or
+        // a quote in it is still one argument.
+        .arg("sleep 1; exec \"$0\" -d -- \"$1\" \"$2\"")
+        .arg(executable)
+        .arg(config)
+        .arg(report);
+    command
 }
 
 /// The report body.
