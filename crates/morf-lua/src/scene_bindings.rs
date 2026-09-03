@@ -75,6 +75,10 @@ pub(crate) fn assign_scene_property(
         != &old_target;
     if current_changed || target_changed {
         state.scene_revision = state.scene_revision.wrapping_add(1);
+        // A binding that reads this property is now stale. Inside a handler
+        // the flush comes when the handler returns; outside one, at the next
+        // signal write or clock tick, as it always did.
+        state.flush_pending = true;
     }
     if current_changed {
         bump_property_signal(state, node, property, false)?;

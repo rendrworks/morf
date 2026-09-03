@@ -37,6 +37,7 @@ mod runtime_animation;
 mod runtime_config;
 mod runtime_default;
 mod runtime_events;
+mod runtime_handlers;
 mod runtime_helpers;
 mod runtime_input;
 mod runtime_ipc;

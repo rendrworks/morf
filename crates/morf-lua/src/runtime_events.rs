@@ -84,8 +84,8 @@ impl Runtime {
             .cloned()
             .unwrap_or_default();
         for callback in &callbacks {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_handler_args(ctx, callback, &[IpcValue::Boolean(idle)], self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, &[IpcValue::Boolean(idle)], limits)
             }) {
                 self.reactive
                     .borrow_mut()
@@ -123,8 +123,8 @@ impl Runtime {
     pub fn dispatch_shortcuts_inhibited(&mut self, active: bool) -> bool {
         let callbacks = self.reactive.borrow().shortcuts_callbacks.clone();
         for callback in &callbacks {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_handler_args(ctx, callback, &[IpcValue::Boolean(active)], self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, &[IpcValue::Boolean(active)], limits)
             }) {
                 self.reactive
                     .borrow_mut()
@@ -144,8 +144,8 @@ impl Runtime {
         let callbacks = self.reactive.borrow().clipboard_callbacks.clone();
         let value = text.map_or(IpcValue::Nil, IpcValue::String);
         for callback in &callbacks {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_handler_args(ctx, callback, std::slice::from_ref(&value), self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, std::slice::from_ref(&value), limits)
             }) {
                 self.reactive
                     .borrow_mut()
@@ -190,8 +190,7 @@ impl Runtime {
             return false;
         };
         if let Err(message) = self
-            .lua
-            .enter(|ctx| execute_screencopy_handler(ctx, &callback, result, self.limits))
+            .run_handler(|ctx, limits| execute_screencopy_handler(ctx, &callback, result, limits))
         {
             self.reactive
                 .borrow_mut()
@@ -233,9 +232,8 @@ impl Runtime {
             IpcValue::Integer(i64::from(serial)),
         ];
         for callback in &callbacks {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
@@ -280,9 +278,8 @@ impl Runtime {
             IpcValue::Integer(i64::from(serial)),
         ];
         for callback in &callbacks {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
@@ -352,9 +349,8 @@ impl Runtime {
         let Some(handler) = handler else {
             return false;
         };
-        let result = self
-            .lua
-            .enter(|ctx| execute_handler_args(ctx, &handler, args, self.limits));
+        let result =
+            self.run_handler(|ctx, limits| execute_handler_args(ctx, &handler, args, limits));
         if let Err(message) = result {
             self.reactive.borrow_mut().log(
                 LogLevel::Warn,

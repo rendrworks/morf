@@ -56,6 +56,13 @@ pub(crate) fn install_signal_api<'gc>(
                     .write(signal.id, value.clone())
                     .map_err(|error| HostError(error.to_string()))?;
                 state.values.insert(signal.id, value);
+                // Inside a handler the write is enough: the graph is flushed
+                // once, when the handler returns, however many writes it made.
+                if state.handler_depth > 0 {
+                    state.flush_pending = true;
+                    stack.replace(ctx, true);
+                    return Ok(CallbackReturn::Return);
+                }
             }
             replace_status(ctx, &mut stack, flush_reactive(&state, ctx, limits));
             Ok(CallbackReturn::Return)

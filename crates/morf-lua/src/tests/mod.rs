@@ -25,6 +25,7 @@ mod core_api;
 mod diagnostics;
 mod events_animation;
 mod examples;
+mod flushing;
 mod idle_input;
 mod input_api;
 mod layer_surfaces;

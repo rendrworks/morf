@@ -366,9 +366,8 @@ impl Runtime {
                     IpcValue::String(error.to_string()),
                 ],
             };
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, &callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, &callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
@@ -376,9 +375,8 @@ impl Runtime {
             }
         }
         for callback in timers {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, &callback, &[], self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, &callback, &[], limits))
             {
                 self.reactive
                     .borrow_mut()
@@ -386,12 +384,12 @@ impl Runtime {
             }
         }
         for (callback, revision) in transform_callbacks {
-            if let Err(message) = self.lua.enter(|ctx| {
+            if let Err(message) = self.run_handler(|ctx, limits| {
                 execute_handler_args(
                     ctx,
                     &callback,
                     &[IpcValue::Integer(revision as i64)],
-                    self.limits,
+                    limits,
                 )
             }) {
                 self.reactive
@@ -400,10 +398,9 @@ impl Runtime {
             }
         }
         for (callback, event) in pam_messages {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_pam_session_handler(ctx, &callback, event, self.limits))
-            {
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_pam_session_handler(ctx, &callback, event, limits)
+            }) {
                 self.reactive
                     .borrow_mut()
                     .log(LogLevel::Warn, format!("PAM session: {message}"));
@@ -411,8 +408,7 @@ impl Runtime {
         }
         for (callback, call) in dbus_calls {
             if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_dbus_call_handler(ctx, &callback, call, self.limits))
+                .run_handler(|ctx, limits| execute_dbus_call_handler(ctx, &callback, call, limits))
             {
                 self.reactive
                     .borrow_mut()
@@ -429,9 +425,8 @@ impl Runtime {
                     continue;
                 }
             };
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_dbus_handler(ctx, &callback, value, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_dbus_handler(ctx, &callback, value, limits))
             {
                 self.reactive
                     .borrow_mut()
@@ -439,8 +434,8 @@ impl Runtime {
             }
         }
         for (callback, event) in udev_events {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_dbus_handler(ctx, &callback, udev_event_value(event), self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_dbus_handler(ctx, &callback, udev_event_value(event), limits)
             }) {
                 self.reactive
                     .borrow_mut()
@@ -448,8 +443,8 @@ impl Runtime {
             }
         }
         for (callback, items) in status_updates {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_dbus_handler(ctx, &callback, status_notifier_value(items), self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_dbus_handler(ctx, &callback, status_notifier_value(items), limits)
             }) {
                 self.reactive.borrow_mut().log(
                     LogLevel::Warn,

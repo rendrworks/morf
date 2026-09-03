@@ -147,6 +147,14 @@ pub(crate) struct ReactiveState {
     pub(crate) effects: HashMap<u64, LuaEffect>,
     pub(crate) next_effect: u64,
     pub(crate) active: Option<Capture>,
+    /// How many Lua handlers are on the stack: an event handler, a timer, an
+    /// IPC verb, a D-Bus call. While one runs, a signal write or a property
+    /// write marks the graph dirty and nothing more; the one flush happens
+    /// when the outermost handler returns. Three writes in a handler used to
+    /// be three full flushes, and a bare property write was none at all.
+    pub(crate) handler_depth: u32,
+    /// Whether something wrote while a handler was running.
+    pub(crate) flush_pending: bool,
     pub(crate) logs: Vec<LogEntry>,
     /// Shaders the configuration registered, by name.
     ///
@@ -278,6 +286,8 @@ impl ReactiveState {
             effects: HashMap::new(),
             next_effect: 0,
             active: None,
+            handler_depth: 0,
+            flush_pending: false,
             logs: Vec::new(),
             shaders: HashMap::new(),
             scene: Scene::new(),

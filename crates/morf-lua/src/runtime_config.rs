@@ -358,9 +358,8 @@ impl Runtime {
         };
         let args = error.map(IpcValue::String).into_iter().collect::<Vec<_>>();
         for callback in &callbacks {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()

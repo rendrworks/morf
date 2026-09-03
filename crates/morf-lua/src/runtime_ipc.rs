@@ -28,8 +28,7 @@ impl Runtime {
             .get(verb)
             .cloned()
             .ok_or_else(|| Error::Runtime(format!("unknown IPC verb `{verb}`")))?;
-        self.lua
-            .enter(|ctx| execute_ipc_handler(ctx, &handler, args, self.limits))
+        self.run_handler(|ctx, limits| execute_ipc_handler(ctx, &handler, args, limits))
             .map_err(Error::Runtime)
     }
 }
