@@ -190,3 +190,34 @@ fn shell_surface_geometry_accepts_interpolated_numbers() {
     assert_eq!(config.margin_top, -4);
     assert_eq!(config.width, 640);
 }
+
+#[test]
+fn a_surface_can_claim_to_be_opaque() {
+    // A hint the compositor uses to skip blending a few hundred thousand
+    // pixels a frame. Off by default, because a bar with one transparent
+    // corner that claims otherwise draws garbage in it -- so it is a claim the
+    // configuration makes, and reads back, rather than one the engine infers.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "opaque.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local before = morf.surface.opaque
+                morf.surface.opaque = true
+                ui.Text { text = tostring(before) .. "," .. tostring(morf.surface.opaque) }
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    assert_eq!(
+        runtime.scene().string_value(root, "text").unwrap(),
+        "false,true"
+    );
+    assert!(runtime.layer_surface_config().opaque);
+    assert!(
+        runtime.take_layer_surface_change(),
+        "and the claim reaches the compositor on the next frame"
+    );
+}

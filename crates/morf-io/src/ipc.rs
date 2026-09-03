@@ -28,8 +28,13 @@ pub enum IpcValue {
 /// One decoded IPC operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum IpcRequest {
-    Call { target: String, args: Vec<IpcValue> },
+    Call {
+        target: String,
+        args: Vec<IpcValue>,
+    },
     Verbs,
+    /// Who this instance is: pid, configuration path, and when it started.
+    Info,
     Log,
     Bindings,
     Kill,
@@ -296,6 +301,7 @@ pub(crate) fn encode_ipc_request(request: &IpcRequest) -> io::Result<Vec<u8>> {
             "args": args.iter().map(ipc_value_to_json).collect::<Vec<_>>(),
         }),
         IpcRequest::Verbs => serde_json::json!({ "op": "verbs" }),
+        IpcRequest::Info => serde_json::json!({ "op": "info" }),
         IpcRequest::Log => serde_json::json!({ "op": "log" }),
         IpcRequest::Bindings => serde_json::json!({ "op": "bindings" }),
         IpcRequest::Kill => serde_json::json!({ "op": "kill" }),
@@ -341,6 +347,7 @@ pub(crate) fn decode_ipc_request(bytes: &[u8]) -> io::Result<IpcRequest> {
             })
         }
         "verbs" => Ok(IpcRequest::Verbs),
+        "info" => Ok(IpcRequest::Info),
         "log" => Ok(IpcRequest::Log),
         "bindings" => Ok(IpcRequest::Bindings),
         "kill" => Ok(IpcRequest::Kill),

@@ -1,4 +1,4 @@
-use morf_io::{IpcReply, IpcRequest, IpcServer};
+use morf_io::{IpcReply, IpcRequest, IpcServer, IpcValue as WireValue};
 use morf_lua::{LogEntry, LogLevel, Runtime, Screen};
 use morf_wayland::{LayerClient, ScreenInfo};
 use std::collections::BTreeMap;
@@ -67,6 +67,7 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
             }
         }
     });
+    let started = std::time::Instant::now();
     let (ipc_tx, ipc_rx) = mpsc::channel();
     let socket = socket_path()?;
     let server = IpcServer::bind(&socket, ipc_tx).map_err(|error| {
@@ -140,7 +141,18 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
                     continue;
                 }
                 let kill = matches!(incoming.request, IpcRequest::Kill);
-                let reply = handle_ipc(&workers, &mut daemon_logs, &incoming.request);
+                // Answered here rather than in `handle_ipc`, because the
+                // supervisor is the one thing that knows which configuration
+                // it is running and when it began.
+                let reply = if matches!(incoming.request, IpcRequest::Info) {
+                    IpcReply::success(vec![
+                        WireValue::Integer(i64::from(std::process::id())),
+                        WireValue::String(path.to_string_lossy().into_owned()),
+                        WireValue::Integer(started.elapsed().as_secs() as i64),
+                    ])
+                } else {
+                    handle_ipc(&workers, &mut daemon_logs, &incoming.request)
+                };
                 incoming.reply(reply);
                 if kill {
                     stop_workers(workers);

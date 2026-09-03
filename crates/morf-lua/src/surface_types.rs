@@ -72,6 +72,10 @@ pub struct LayerSurfaceConfig {
     pub keyboard_focus: String,
     pub input_regions: Option<Vec<Region>>,
     pub reserve: SurfaceReserve,
+    /// Whether the whole surface is opaque, so the compositor can skip
+    /// blending whatever is behind it. False by default, because a bar with a
+    /// transparent corner that claims otherwise draws garbage there.
+    pub opaque: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,6 +173,7 @@ impl Default for LayerSurfaceConfig {
             keyboard_focus: "on_demand".to_owned(),
             input_regions: None,
             reserve: SurfaceReserve::default(),
+            opaque: false,
         }
     }
 }

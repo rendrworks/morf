@@ -232,6 +232,7 @@ pub(crate) fn run_surface(
                 reserve = config.reserve;
                 open_reserve_layers(&mut client, &config, &name)?;
             }
+            apply_primary_opaque(&runtime, &client);
             // The mask lives in the same configuration and is re-derived when
             // the surface paints, so the new geometry owes one frame even when
             // the compositor has no configure to send back.

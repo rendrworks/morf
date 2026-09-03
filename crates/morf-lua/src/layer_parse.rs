@@ -117,6 +117,12 @@ pub(crate) fn apply_layer_setting<'gc>(
             }
             Ok(assign_layer_setting(&mut config.layer, value))
         }
+        "opaque" => {
+            let LuaValue::Boolean(value) = value else {
+                return Err("surface opaque must be a boolean".into());
+            };
+            Ok(assign_layer_setting(&mut config.opaque, value))
+        }
         "keyboard_focus" => {
             let LuaValue::String(value) = value else {
                 return Err("surface keyboard_focus must be a string".into());

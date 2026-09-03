@@ -26,6 +26,7 @@ pub(crate) fn install_shell_api<'gc>(
             "margin_left" => LuaValue::Integer(i64::from(config.margin_left)),
             "layer" => LuaValue::String(ctx.intern(config.layer.as_bytes())),
             "keyboard_focus" => LuaValue::String(ctx.intern(config.keyboard_focus.as_bytes())),
+            "opaque" => LuaValue::Boolean(config.opaque),
             "anchors" => {
                 let anchors = Table::new(&ctx);
                 anchors.set_field(ctx, "top", config.anchors.top);

@@ -157,6 +157,9 @@ pub(crate) fn handle_ipc(
             IpcReply::success(bindings.into_iter().map(WireValue::String).collect())
         }
         IpcRequest::Kill => IpcReply::success(Vec::new()),
+        // The supervisor answers this before it reaches here; it is the one
+        // thing that knows which configuration it is running.
+        IpcRequest::Info => IpcReply::refused("info is answered by the supervisor"),
     }
 }
 

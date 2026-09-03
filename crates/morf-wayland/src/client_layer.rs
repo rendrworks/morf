@@ -303,6 +303,30 @@ impl LayerClient {
         })
     }
 
+    /// Tells the compositor the whole surface is opaque, or stops claiming so.
+    ///
+    /// A hint, and one worth giving: a compositor blends every pixel of a
+    /// surface it cannot prove opaque, and a full-width bar is a few hundred
+    /// thousand of them every frame. Sized to the surface's current logical
+    /// size, so it has to be re-applied after a configure.
+    pub fn set_layer_opaque(&self, id: u64, opaque: bool) {
+        let Some(surface) = self.layer_surface(id) else {
+            return;
+        };
+        if !opaque {
+            surface.set_opaque_region(None);
+            return;
+        }
+        let Some((width, height)) = self.layer_logical_size(id) else {
+            return;
+        };
+        let qh = self.queue.handle();
+        let region = self.state.compositor.wl_compositor().create_region(&qh, ());
+        region.add(0, 0, width as i32, height as i32);
+        surface.set_opaque_region(Some(&region));
+        region.destroy();
+    }
+
     /// Applies the default, empty, or rectangular input region to one surface.
     pub fn set_layer_input_region(&self, id: u64, rectangles: Option<&[InputRect]>) {
         let Some(surface) = self.layer_surface(id) else {

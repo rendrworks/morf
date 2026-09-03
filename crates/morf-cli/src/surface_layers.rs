@@ -33,6 +33,16 @@ pub(crate) fn apply_service_requests(runtime: &mut Runtime, client: &mut LayerCl
     apply_toplevel_requests(runtime, client);
 }
 
+/// Re-states the primary surface's opacity claim.
+///
+/// Called wherever its size or its configuration can have changed, because the
+/// claim is a region of a particular size and a stale one is worse than none:
+/// a bar that grew keeps a smaller opaque region, and the compositor is right
+/// to blend the difference.
+pub(crate) fn apply_primary_opaque(runtime: &Runtime, client: &LayerClient) {
+    client.set_layer_opaque(PRIMARY_LAYER, runtime.layer_surface_config().opaque);
+}
+
 /// Hands the compositor's window list to the configuration, when it changed.
 ///
 /// Only when it changed. The list is rebuilt from scratch each time — cheap for

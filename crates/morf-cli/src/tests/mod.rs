@@ -126,21 +126,21 @@ fn command_parser_exposes_ipc_and_legacy_config_path() {
     );
 
     let args = [std::ffi::OsString::from("custom.lua")];
-    let Command::Run(path, policy, _) = parse_command(&args).unwrap() else {
+    let Command::Run(path, policy, _, _) = parse_command(&args).unwrap() else {
         panic!("expected config path");
     };
     assert_eq!(path, PathBuf::from("custom.lua"));
     assert_eq!(policy, LoadPolicy::default());
 
     let args = ["--no-plugin", "custom.lua"].map(std::ffi::OsString::from);
-    let Command::Run(_, policy, _) = parse_command(&args).unwrap() else {
+    let Command::Run(_, policy, _, _) = parse_command(&args).unwrap() else {
         panic!("expected config path");
     };
     assert!(!policy.plugins);
     assert!(policy.external_roots);
 
     let args = ["--clean", "custom.lua"].map(std::ffi::OsString::from);
-    let Command::Run(_, policy, _) = parse_command(&args).unwrap() else {
+    let Command::Run(_, policy, _, _) = parse_command(&args).unwrap() else {
         panic!("expected config path");
     };
     assert!(!policy.plugins);
@@ -254,7 +254,7 @@ fn clean_policy_keeps_only_the_config_root() {
 #[test]
 fn arguments_after_the_configuration_are_the_configurations_own() {
     let args = ["--clean", "custom.lua", "--numbers-only", "-n", "5"].map(std::ffi::OsString::from);
-    let Command::Run(path, policy, arguments) = parse_command(&args).unwrap() else {
+    let Command::Run(path, policy, arguments, _) = parse_command(&args).unwrap() else {
         panic!("a configuration to run");
     };
     assert_eq!(path, std::path::PathBuf::from("custom.lua"));
@@ -267,7 +267,7 @@ fn arguments_after_the_configuration_are_the_configurations_own() {
 #[test]
 fn a_separator_hands_the_rest_over_untouched() {
     let args = ["custom.lua", "--", "--help"].map(std::ffi::OsString::from);
-    let Command::Run(_, _, arguments) = parse_command(&args).unwrap() else {
+    let Command::Run(_, _, arguments, _) = parse_command(&args).unwrap() else {
         panic!("a configuration to run");
     };
     assert_eq!(arguments, ["--help"]);
@@ -377,4 +377,75 @@ fn an_auxiliary_surface_is_addressed_by_its_own_kind() {
         SurfaceRole::Layer(1),
         "the same number, a different surface"
     );
+}
+
+#[test]
+fn leading_options_combine_and_the_command_sees_none_of_them() {
+    // `--no-plugin`, `--clean`, `-d` and `-i` are about how morf runs rather
+    // than what it runs. They stack in any order, and by the time the command
+    // is parsed they are gone.
+    let args = ["-d", "--no-plugin", "shell.lua", "--numbers-only"].map(std::ffi::OsString::from);
+    let Command::Run(path, policy, rest, daemonize) = parse_command(&args).unwrap() else {
+        panic!("a run");
+    };
+    assert_eq!(path, std::path::PathBuf::from("shell.lua"));
+    assert!(!policy.plugins);
+    assert_eq!(rest, ["--numbers-only"]);
+    assert!(daemonize, "and the shell was asked to go to the background");
+
+    let args = ["--daemonize", "-c", "bar"].map(std::ffi::OsString::from);
+    assert!(matches!(
+        parse_command(&args),
+        Ok(Command::Run(_, _, _, true))
+    ));
+}
+
+#[test]
+fn list_takes_its_two_flags_and_nothing_else() {
+    let args = ["list"].map(std::ffi::OsString::from);
+    assert!(matches!(
+        parse_command(&args),
+        Ok(Command::List {
+            json: false,
+            show_dead: false
+        })
+    ));
+    let args = ["list", "--json", "--show-dead"].map(std::ffi::OsString::from);
+    assert!(matches!(
+        parse_command(&args),
+        Ok(Command::List {
+            json: true,
+            show_dead: true
+        })
+    ));
+    let args = ["list", "--verbose"].map(std::ffi::OsString::from);
+    assert_eq!(
+        parse_command(&args).unwrap_err(),
+        "unknown option `--verbose` for `morf list`"
+    );
+}
+
+#[test]
+fn an_instance_is_named_by_its_display() {
+    // `-i` picks which socket a client command talks to. The socket directory
+    // is the registry -- one file per WAYLAND_DISPLAY -- so naming an instance
+    // is naming a display.
+    // SAFETY: this test alone touches XDG_RUNTIME_DIR, and reads it back
+    // through the function under test rather than concurrently.
+    unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/run/morf-test") };
+    assert_eq!(
+        socket_path_for(Some("wayland-7")).unwrap(),
+        std::path::PathBuf::from("/run/morf-test/morf/wayland-7.sock")
+    );
+    assert_eq!(
+        socket_path_for(Some("../escape")).unwrap_err(),
+        "WAYLAND_DISPLAY must be one path component"
+    );
+    let args = ["-i", "wayland-7", "kill"].map(std::ffi::OsString::from);
+    assert!(matches!(
+        parse_command(&args),
+        Ok(Command::Client(IpcRequest::Kill))
+    ));
+    let args = ["-i", "wayland-7", "-i", "wayland-8", "kill"].map(std::ffi::OsString::from);
+    assert_eq!(parse_command(&args).unwrap_err(), "-i given twice");
 }

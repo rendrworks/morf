@@ -36,6 +36,8 @@ pub(crate) fn handle_surface_event(
                     renderer.resize(width, height);
                 }
             }
+            // The opaque region is a size, so it follows the new one.
+            apply_primary_opaque(runtime, client);
             repaint = true;
         }
         LayerEvent::Configure { id, width, height } => {

@@ -11,6 +11,8 @@ name = "morf"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
+serde_json.workspace = true
 jiff.workspace = true
 morf-layout.workspace = true
 morf-lua.workspace = true
