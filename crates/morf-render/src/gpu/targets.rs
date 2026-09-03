@@ -120,6 +120,9 @@ pub(crate) struct SurfaceState {
     pub(crate) texture_layout: wgpu::BindGroupLayout,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) bind_group: wgpu::BindGroup,
+    /// Whether the surface asked to be reconfigured while a frame was still in
+    /// hand, so it has to be done before the next one is acquired.
+    pub(crate) stale: bool,
 }
 
 pub(crate) fn create_surface_state(
@@ -229,6 +232,7 @@ pub(crate) fn create_surface_state(
         cache: None,
     });
     Ok(SurfaceState {
+        stale: false,
         surface,
         config,
         pipeline,
@@ -276,10 +280,26 @@ pub(crate) fn acquire_frame(
     device: &wgpu::Device,
     surface: &mut SurfaceState,
 ) -> Result<Option<wgpu::SurfaceTexture>, GpuError> {
+    // Anything the last frame asked for, done now — before a texture is in
+    // hand rather than while one is, which is the only moment it is allowed.
+    if surface.stale {
+        surface.surface.configure(device, &surface.config);
+        surface.stale = false;
+    }
     match surface.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(frame) => Ok(Some(frame)),
+        // Suboptimal hands back a frame that is perfectly drawable — it only
+        // says the surface no longer matches the swapchain, which is what a
+        // compositor reports when it rescales or rotates a window. So it is
+        // drawn, and the reconfigure waits for the next acquire.
+        //
+        // Reconfiguring here instead is a validation error, and a fatal one:
+        // wgpu requires the surface texture to be dropped first, and this still
+        // held it. Nothing on the desk ever returned Suboptimal, so nothing
+        // ever hit it; a phone whose compositor scales the window returns it on
+        // the very first frame and the process aborts before drawing anything.
         wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-            surface.surface.configure(device, &surface.config);
+            surface.stale = true;
             Ok(Some(frame))
         }
         wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => Ok(None),
