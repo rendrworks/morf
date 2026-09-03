@@ -72,6 +72,7 @@ pub(crate) fn run_surface(
                 LayerEvent::Configure { .. }
                 | LayerEvent::Closed { .. }
                 | LayerEvent::Scale { .. }
+                | LayerEvent::AuxScale { .. }
                 | LayerEvent::Idle { .. }
                 | LayerEvent::Clipboard { .. }
                 | LayerEvent::InputMethod(_)

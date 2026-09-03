@@ -112,6 +112,9 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         }
         while let Some(event) = client.next_event() {
             match event {
+                // A lock client has only lock surfaces, and those are not
+                // popups or floating windows.
+                LayerEvent::AuxScale { .. } => {}
                 LayerEvent::SessionLocked => locked = true,
                 LayerEvent::Screens(_) => {}
                 LayerEvent::SessionLockConfigure { index, .. } => {

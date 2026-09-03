@@ -139,6 +139,11 @@ pub enum SurfaceRole {
 /// Event produced by the layer-surface connection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayerEvent {
+    /// A popup or floating window's own scale changed.
+    ///
+    /// Separate from `Scale`, which is a layer surface's, because the two are
+    /// addressed differently and a caller resizes different things for each.
+    AuxScale { role: SurfaceRole, scale_120: u32 },
     /// The compositor selected a logical size for one layer surface.
     Configure { id: u64, width: u32, height: u32 },
     /// One layer surface's preferred scale changed in protocol-native 120ths.

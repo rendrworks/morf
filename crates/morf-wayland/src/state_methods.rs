@@ -226,6 +226,36 @@ impl LayerState {
             .collect();
     }
 
+    /// Starts tracking fractional scale for a popup or floating window.
+    ///
+    /// The same two objects a layer surface gets, kept in `aux_scales` because
+    /// those surfaces have no record of their own. A compositor offering
+    /// neither protocol leaves both `None`, and the surface stays at 1x --
+    /// which is what it did before this existed.
+    pub(crate) fn track_aux_scale(
+        &mut self,
+        role: SurfaceRole,
+        surface: &wayland_client::protocol::wl_surface::WlSurface,
+        qh: &QueueHandle<Self>,
+    ) {
+        let fractional = self
+            .fractional_manager
+            .as_ref()
+            .map(|manager| manager.get_fractional_scale(surface, qh, role));
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|manager| manager.get_viewport(surface, qh, ()));
+        self.aux_scales.insert(
+            role,
+            AuxSurfaceScale {
+                fractional,
+                viewport,
+                scale_120: 120,
+            },
+        );
+    }
+
     /// Holds the session awake, or stops holding it.
     ///
     /// The protocol has no "off": an inhibitor exists or it does not, and

@@ -3,7 +3,7 @@ use morf_lua::{LayerSurfaceConfig, Runtime};
 use morf_region::{Rect as RegionRect, Region};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
-use morf_wayland::{InputRect, LayerClient, PRIMARY_LAYER, physical_size};
+use morf_wayland::{InputRect, LayerClient, PRIMARY_LAYER, SurfaceRole, physical_size};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{surface_layers::*, surfaces::*};
@@ -299,6 +299,14 @@ pub(crate) enum AuxiliaryKind {
 }
 
 impl AuxiliaryKind {
+    /// How this surface is addressed, which is what its own scale is keyed on.
+    pub(crate) fn role(self, id: u64) -> SurfaceRole {
+        match self {
+            Self::Popup => SurfaceRole::Popup(id),
+            Self::Floating => SurfaceRole::Floating(id),
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Popup => "popup",
@@ -370,7 +378,10 @@ pub(crate) fn paint_auxiliary_surface(
     let scene = runtime.scene();
     let revision = scene.layout_revision();
     let size = (surface.width, surface.height);
-    let scale_120 = client.scale_120();
+    // This surface's own scale, not the bar's. A popup opened from a panel on a
+    // 1x screen but shown on a 2x one was drawn at 1x and stretched -- and on a
+    // mixed-DPI desk that is most popups.
+    let scale_120 = client.surface_scale_120(kind.role(surface.id));
     let reusable = surface.layout.as_ref().filter(|cached| {
         cached.revision == revision && cached.size == size && cached.scale_120 == scale_120
     });
@@ -387,10 +398,10 @@ pub(crate) fn paint_auxiliary_surface(
         )
         .map_err(|error| error.to_string())?,
     };
-    let (width, height) = physical_size((surface.width, surface.height), client.scale_120());
+    let (width, height) = physical_size((surface.width, surface.height), scale_120);
     kind.damage(client, surface.id, width, height)?;
     let damage = renderer
-        .render(&scene, &layout, client.scale_120(), |_| {})
+        .render(&scene, &layout, scale_120, |_| {})
         .map_err(|error| error.to_string())?;
     // Only ask for another callback when this paint actually drew something.
     //

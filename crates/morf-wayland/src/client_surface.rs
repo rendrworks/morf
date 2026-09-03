@@ -174,6 +174,11 @@ impl LayerClient {
                 .ok_or_else(|| WaylandError("popup grab requires an input serial".into()))?;
             popup.xdg_popup().grab(seat, serial);
         }
+        // Before the commit, so the compositor has somewhere to send the
+        // preferred scale with its first configure rather than after it.
+        let qh = self.queue.handle();
+        self.state
+            .track_aux_scale(SurfaceRole::Popup(id), popup.wl_surface(), &qh);
         popup.wl_surface().commit();
         self.state.popups.insert(id, popup);
         self.connection
@@ -218,6 +223,7 @@ impl LayerClient {
     /// Destroys the current popup when present.
     pub fn close_popup(&mut self, id: u64) {
         self.state.popups.remove(&id);
+        self.state.aux_scales.remove(&SurfaceRole::Popup(id));
         self.state.popup_repositions.remove(&id);
         self.forget_surface(SurfaceRole::Popup(id));
     }

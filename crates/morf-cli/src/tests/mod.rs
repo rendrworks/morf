@@ -355,3 +355,26 @@ fn log_levels_order_and_survive_the_wire() {
     assert_eq!(bare.level, LogLevel::Info);
     assert_eq!(bare.message, "something printed the old way");
 }
+
+#[test]
+fn an_auxiliary_surface_is_addressed_by_its_own_kind() {
+    // Fractional scale used to be a layer-surface privilege: a popup or a
+    // floating window borrowed the primary layer's, which is right only while
+    // they are on the same output. On a mixed-DPI desk they usually are not,
+    // and the popup was drawn at the bar's scale and stretched.
+    //
+    // Each has its own now, and this is the join. It matters that the kind
+    // travels with the number: identifiers do not share a space, so a layer
+    // surface and a popup may both be `1`, and keying scale on the number alone
+    // would have a popup's scale change resize a bar.
+    use crate::paint::AuxiliaryKind;
+    use morf_wayland::SurfaceRole;
+
+    assert_eq!(AuxiliaryKind::Popup.role(1), SurfaceRole::Popup(1));
+    assert_eq!(AuxiliaryKind::Floating.role(1), SurfaceRole::Floating(1));
+    assert_ne!(
+        AuxiliaryKind::Popup.role(1),
+        SurfaceRole::Layer(1),
+        "the same number, a different surface"
+    );
+}

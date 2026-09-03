@@ -143,6 +143,37 @@ impl Dispatch<WpFractionalScaleV1, u64> for LayerState {
     }
 }
 
+/// The same event for a popup or a floating window.
+///
+/// A second impl rather than one keyed on something both could share, because
+/// the identifiers do not share a space: a layer surface and a popup may both
+/// be `1`, and folding them into one map would have a popup's scale change
+/// resize a bar. The role carries the kind along with the number and so cannot
+/// be confused.
+impl Dispatch<WpFractionalScaleV1, SurfaceRole> for LayerState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        role: &SurfaceRole,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
+            return;
+        };
+        let Some(entry) = state.aux_scales.get_mut(role) else {
+            return;
+        };
+        entry.scale_120 = scale.max(1);
+        let scale_120 = entry.scale_120;
+        state.events.push_back(LayerEvent::AuxScale {
+            role: *role,
+            scale_120,
+        });
+    }
+}
+
 impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
     fn event(
         state: &mut Self,

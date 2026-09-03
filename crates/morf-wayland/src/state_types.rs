@@ -106,6 +106,26 @@ impl HasWindowHandle for WaylandWindowTarget {
     }
 }
 
+/// Fractional scale for a surface that is not a layer surface.
+pub(crate) struct AuxSurfaceScale {
+    pub(crate) fractional: Option<WpFractionalScaleV1>,
+    pub(crate) viewport: Option<WpViewport>,
+    /// Scale in 120ths, the protocol's own unit. 120 is 1x, and is what the
+    /// compositor is assumed to want until it says otherwise.
+    pub(crate) scale_120: u32,
+}
+
+impl Drop for AuxSurfaceScale {
+    fn drop(&mut self) {
+        if let Some(fractional) = self.fractional.take() {
+            fractional.destroy();
+        }
+        if let Some(viewport) = self.viewport.take() {
+            viewport.destroy();
+        }
+    }
+}
+
 /// One live wlr-layer-shell surface and the per-surface state the compositor
 /// configures independently of every other layer surface this client owns.
 pub(crate) struct LayerRecord {
@@ -178,6 +198,14 @@ pub(crate) struct LayerState {
     pub(crate) toplevel_control_manager: Option<ZwlrForeignToplevelManagerV1>,
     pub(crate) toplevel_controls: HashMap<ObjectId, ToplevelControl>,
     pub(crate) toplevel_control_handles: HashMap<ObjectId, ZwlrForeignToplevelHandleV1>,
+    /// Per-surface scale for popups and floating windows.
+    ///
+    /// Layer surfaces keep theirs in `LayerRecord`; these have no record of
+    /// their own, and until this existed they simply borrowed the primary
+    /// layer's scale. That is right exactly when a popup is on the same output
+    /// as the bar that opened it, and wrong the moment it is not -- which on a
+    /// mixed-DPI desk is most of the time.
+    pub(crate) aux_scales: HashMap<SurfaceRole, AuxSurfaceScale>,
     pub(crate) workspace_manager: Option<ExtWorkspaceManagerV1>,
     /// Every workspace the compositor reports, keyed by its protocol object.
     pub(crate) workspaces: HashMap<ObjectId, WorkspaceInfo>,

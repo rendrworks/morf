@@ -160,6 +160,7 @@ impl LayerClient {
             toplevel_control_manager,
             toplevel_controls: HashMap::new(),
             toplevel_control_handles: HashMap::new(),
+            aux_scales: HashMap::new(),
             workspace_manager,
             workspaces: HashMap::new(),
             workspace_handles: HashMap::new(),

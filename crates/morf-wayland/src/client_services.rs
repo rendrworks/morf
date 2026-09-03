@@ -131,6 +131,23 @@ impl LayerClient {
         self.state.toplevel_control_handles.get(key)
     }
 
+    /// One surface's scale in 120ths, whatever kind of surface it is.
+    ///
+    /// A layer surface answers from its own record; a popup or floating window
+    /// from `aux_scales`. 120 -- one to one -- when the surface is unknown or
+    /// the compositor offers no fractional scale, which is what every surface
+    /// but the primary layer used to get.
+    pub fn surface_scale_120(&self, role: SurfaceRole) -> u32 {
+        match role {
+            SurfaceRole::Layer(id) => self.layer_scale_120(id).unwrap_or(120),
+            other => self
+                .state
+                .aux_scales
+                .get(&other)
+                .map_or(120, |entry| entry.scale_120),
+        }
+    }
+
     /// Every workspace the compositor reports, in a stable order.
     ///
     /// Sorted by coordinates and then id, because the protocol delivers them in

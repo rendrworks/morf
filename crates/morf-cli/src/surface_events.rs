@@ -26,6 +26,11 @@ pub(crate) fn handle_surface_event(
                 .chain(state.floating_surfaces.values_mut())
             {
                 if let Some(renderer) = &mut surface.renderer {
+                    // Still the layer's scale here, as a fallback: a compositor
+                    // with no fractional-scale protocol never sends `AuxScale`,
+                    // and these surfaces would otherwise never be resized at
+                    // all. Where it does, `AuxScale` arrives too and corrects
+                    // this with the surface's own.
                     let (width, height) =
                         physical_size((surface.width, surface.height), client.scale_120());
                     renderer.resize(width, height);
@@ -361,8 +366,10 @@ pub(crate) fn handle_surface_event(
                 let initial = surface.renderer.is_none();
                 surface.width = width.max(1);
                 surface.height = height.max(1);
-                let (physical_width, physical_height) =
-                    physical_size((surface.width, surface.height), client.scale_120());
+                let (physical_width, physical_height) = physical_size(
+                    (surface.width, surface.height),
+                    client.surface_scale_120(SurfaceRole::Popup(id)),
+                );
                 if let Some(renderer) = &mut surface.renderer {
                     renderer.resize(physical_width, physical_height);
                 } else {
@@ -380,6 +387,22 @@ pub(crate) fn handle_surface_event(
                 if initial || surface.updates_enabled {
                     paint_popup_surface(runtime, client, surface)?;
                 }
+            }
+        }
+        LayerEvent::AuxScale { role, scale_120 } => {
+            // A popup on a 2x screen opened from a bar on a 1x one used to be
+            // rendered at the bar's scale and stretched. It has its own now.
+            let surface = match role {
+                SurfaceRole::Popup(id) => state.popup_surfaces.get_mut(&id),
+                SurfaceRole::Floating(id) => state.floating_surfaces.get_mut(&id),
+                SurfaceRole::Layer(_) => None,
+            };
+            if let Some(surface) = surface
+                && let Some(renderer) = &mut surface.renderer
+            {
+                let (width, height) = physical_size((surface.width, surface.height), scale_120);
+                renderer.resize(width, height);
+                repaint = true;
             }
         }
         LayerEvent::PopupFrame { id, .. } => {
@@ -401,8 +424,10 @@ pub(crate) fn handle_surface_event(
                 let initial = surface.renderer.is_none();
                 surface.width = width.max(1);
                 surface.height = height.max(1);
-                let (physical_width, physical_height) =
-                    physical_size((surface.width, surface.height), client.scale_120());
+                let (physical_width, physical_height) = physical_size(
+                    (surface.width, surface.height),
+                    client.surface_scale_120(SurfaceRole::Floating(id)),
+                );
                 if let Some(renderer) = &mut surface.renderer {
                     renderer.resize(physical_width, physical_height);
                 } else {

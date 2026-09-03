@@ -308,6 +308,9 @@ impl PopupHandler for LayerState {
             return;
         };
         self.popups.remove(&id);
+        // The scale objects go with the surface: keeping them would leak two
+        // protocol objects per popup, and a popup is opened per click.
+        self.aux_scales.remove(&SurfaceRole::Popup(id));
         self.popup_repositions.remove(&id);
         self.events.push_back(LayerEvent::PopupDone { id });
     }
@@ -330,6 +333,7 @@ impl WindowHandler for LayerState {
             return;
         };
         self.floatings.remove(&id);
+        self.aux_scales.remove(&SurfaceRole::Floating(id));
         self.floating_sizes.remove(&id);
         self.events.push_back(LayerEvent::FloatingClose { id });
     }

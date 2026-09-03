@@ -91,7 +91,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(event) = client.next_event() {
             match event {
                 LayerEvent::PopupFrame { time_ms, .. } => {
-                    println!("click-anchored popup {width}x{height}, frame {time_ms} ms");
+                    // The popup's own scale, which is the point: it used to
+                    // be given the primary layer's, and on a mixed-DPI desk
+                    // those differ.
+                    let popup_scale = client.surface_scale_120(morf_wayland::SurfaceRole::Popup(0));
+                    println!(
+                        "click-anchored popup {width}x{height} at {popup_scale}/120 \
+                         (layer {scale}/120), frame {time_ms} ms"
+                    );
                     break 'framed;
                 }
                 LayerEvent::PopupDone { .. } => return Err("popup was dismissed".into()),
