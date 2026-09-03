@@ -72,6 +72,10 @@ pub struct LayerSurfaceConfig {
     pub keyboard_focus: String,
     pub input_regions: Option<Vec<Region>>,
     pub reserve: SurfaceReserve,
+    /// Whether the exclusive zone follows the surface's own size on its
+    /// anchored edge, rather than being a number the configuration keeps in
+    /// step by hand. A bar that grows should push windows with it.
+    pub exclusive_auto: bool,
     /// Whether the whole surface is opaque, so the compositor can skip
     /// blending whatever is behind it. False by default, because a bar with a
     /// transparent corner that claims otherwise draws garbage there.
@@ -173,6 +177,7 @@ impl Default for LayerSurfaceConfig {
             keyboard_focus: "on_demand".to_owned(),
             input_regions: None,
             reserve: SurfaceReserve::default(),
+            exclusive_auto: false,
             opaque: false,
         }
     }

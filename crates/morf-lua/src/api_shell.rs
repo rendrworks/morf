@@ -19,6 +19,7 @@ pub(crate) fn install_shell_api<'gc>(
             "namespace" => LuaValue::String(ctx.intern(config.namespace.as_bytes())),
             "width" => LuaValue::Integer(i64::from(config.width)),
             "height" => LuaValue::Integer(i64::from(config.height)),
+            "exclusive_zone" if config.exclusive_auto => LuaValue::String(ctx.intern(b"auto")),
             "exclusive_zone" => LuaValue::Integer(i64::from(config.exclusive_zone)),
             "margin_top" => LuaValue::Integer(i64::from(config.margin_top)),
             "margin_right" => LuaValue::Integer(i64::from(config.margin_right)),

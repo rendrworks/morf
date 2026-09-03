@@ -221,3 +221,28 @@ fn a_surface_can_claim_to_be_opaque() {
         "and the claim reaches the compositor on the next frame"
     );
 }
+
+#[test]
+fn an_exclusive_zone_can_be_automatic() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "auto-zone.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                morf.surface.exclusive_zone = "auto"
+                local first = morf.surface.exclusive_zone
+                morf.surface.exclusive_zone = 12
+                ui.Text { text = tostring(first) .. "," .. tostring(morf.surface.exclusive_zone) }
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    assert_eq!(
+        runtime.scene().string_value(root, "text").unwrap(),
+        "auto,12",
+        "the mode reads back as itself, and a number takes it out of the mode"
+    );
+    assert!(!runtime.layer_surface_config().exclusive_auto);
+}

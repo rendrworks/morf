@@ -329,6 +329,25 @@ pub(crate) fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, Stri
     Ok(primary[0])
 }
 
+/// The zone a surface reserves when it asks for "auto".
+///
+/// Its own extent on the edge it is anchored to, plus the margin between it
+/// and that edge, because the margin is space the surface has claimed too. A
+/// surface anchored to opposite edges spans the output and reserves nothing:
+/// there is no side to push windows towards.
+pub(crate) fn auto_exclusive_zone(surface: &LayerSurfaceConfig) -> i32 {
+    let anchors = &surface.anchors;
+    let height = i32::try_from(surface.height).unwrap_or(i32::MAX);
+    let width = i32::try_from(surface.width).unwrap_or(i32::MAX);
+    match (anchors.top, anchors.bottom, anchors.left, anchors.right) {
+        (true, false, _, _) => height.saturating_add(surface.margin_top),
+        (false, true, _, _) => height.saturating_add(surface.margin_bottom),
+        (_, _, true, false) => width.saturating_add(surface.margin_left),
+        (_, _, false, true) => width.saturating_add(surface.margin_right),
+        _ => 0,
+    }
+}
+
 pub(crate) fn runtime_bar_config(
     surface: &LayerSurfaceConfig,
     output: &str,
@@ -350,7 +369,11 @@ pub(crate) fn runtime_bar_config(
         namespace: surface.namespace.clone(),
         width: surface.width,
         height: surface.height,
-        exclusive_zone: surface.exclusive_zone,
+        exclusive_zone: if surface.exclusive_auto {
+            auto_exclusive_zone(surface)
+        } else {
+            surface.exclusive_zone
+        },
         output: Some(output.to_owned()),
         anchors: LayerAnchors {
             top: surface.anchors.top,

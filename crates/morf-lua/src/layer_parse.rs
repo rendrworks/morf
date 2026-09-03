@@ -76,11 +76,22 @@ pub(crate) fn apply_layer_setting<'gc>(
             }
             Ok(assign_layer_setting(&mut config.width, value))
         }
+        // "auto" is a mode, not a number: the zone follows the surface's size
+        // on its anchored edge, so a bar that grows pushes windows with it.
+        "exclusive_zone" if matches!(&value, LuaValue::String(mode) if mode.as_bytes() == b"auto") =>
+        {
+            let changed = !config.exclusive_auto;
+            config.exclusive_auto = true;
+            Ok(changed)
+        }
         "exclusive_zone" | "margin_top" | "margin_right" | "margin_bottom" | "margin_left" => {
             let value = layer_setting_number(value, key)?;
             let value = i32::try_from(value).map_err(|_| format!("surface {key} must fit i32"))?;
             Ok(match key {
-                "exclusive_zone" => assign_layer_setting(&mut config.exclusive_zone, value),
+                "exclusive_zone" => {
+                    let was_auto = std::mem::replace(&mut config.exclusive_auto, false);
+                    assign_layer_setting(&mut config.exclusive_zone, value) || was_auto
+                }
                 "margin_top" => assign_layer_setting(&mut config.margin_top, value),
                 "margin_right" => assign_layer_setting(&mut config.margin_right, value),
                 "margin_bottom" => assign_layer_setting(&mut config.margin_bottom, value),
