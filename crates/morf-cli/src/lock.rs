@@ -29,6 +29,7 @@ pub(crate) enum WorkerCommand {
     Screens(Vec<ScreenInfo>),
     Verbs(mpsc::SyncSender<Vec<String>>),
     Logs(mpsc::SyncSender<Vec<String>>),
+    Capabilities(mpsc::SyncSender<Vec<String>>),
     Bindings(mpsc::SyncSender<Vec<String>>),
     Reload {
         path: Arc<PathBuf>,

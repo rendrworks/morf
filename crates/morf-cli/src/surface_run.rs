@@ -12,6 +12,37 @@ use crate::{
     surface_events::*, surface_layers::*, surfaces::*, workers::*,
 };
 
+/// What this output can do, as name = value pairs.
+///
+/// Booleans for the protocols, because "is there screencopy here" is the
+/// question; strings for the GPU, because "which one" is.
+fn capabilities_of(
+    client: &LayerClient,
+    renderer: &mut RenderEngine<WgpuBackend>,
+) -> Vec<(String, String)> {
+    let info = renderer.backend_mut().info();
+    let mut list = vec![
+        ("gpu".to_owned(), info.name.clone()),
+        ("gpu_backend".to_owned(), format!("{:?}", info.backend)),
+        ("scale_120".to_owned(), client.scale_120().to_string()),
+    ];
+    for (name, supported) in [
+        ("clipboard", client.supports_clipboard()),
+        ("virtual_keyboard", client.supports_virtual_keyboard()),
+        ("input_method", client.supports_input_method()),
+        ("text_input", client.supports_text_input()),
+        ("screencopy", client.supports_screencopy()),
+        ("image_capture", client.supports_image_capture()),
+        ("window_capture", client.supports_window_capture()),
+        ("backdrop_blur", client.supports_backdrop_blur()),
+        ("toplevels", client.supports_toplevels()),
+        ("toplevel_control", client.supports_toplevel_control()),
+    ] {
+        list.push((name.to_owned(), supported.to_string()));
+    }
+    list
+}
+
 pub(crate) fn run_surface(
     path: &Path,
     source: &[u8],
@@ -111,6 +142,9 @@ pub(crate) fn run_surface(
     ))
     .map_err(|error| error.to_string())?;
     let mut renderer = RenderEngine::new(backend);
+    // Known only now: the protocols came with the connection, the GPU with
+    // the renderer. Everything a configuration or `morf info` might ask.
+    runtime.set_capabilities(&capabilities_of(&client, &mut renderer));
     register_shaders(&runtime, &mut renderer)?;
     let animating_shaders = runtime.shaders_animate();
     let started = Instant::now();

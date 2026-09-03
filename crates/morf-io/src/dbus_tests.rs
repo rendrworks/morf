@@ -167,9 +167,12 @@ fn a_service_owns_a_name_answers_a_call_and_emits_a_signal() {
 
     assert_eq!(
         caller.join().expect("the caller finished").unwrap(),
-        // A body is a list of arguments even when there is one of them, which
-        // is what the decoder beside this one has always produced for a reply.
-        DbusValue::List(vec![DbusValue::String("answered".to_owned())]),
+        // One argument, bare. It used to arrive wrapped in a variant -- a
+        // `Value` handed to zbus serialises as `v` -- and a caller that asked
+        // for `s` and was given `v` rejected it. Now the body is built the
+        // same way for one value as for several, and one value is one
+        // argument on the wire, which the decoder hands back as itself.
+        DbusValue::String("answered".to_owned()),
         "and the caller got it",
     );
 
@@ -192,7 +195,130 @@ fn a_service_owns_a_name_answers_a_call_and_emits_a_signal() {
     let received = signals.next_value(Duration::from_secs(5));
     assert_eq!(
         received.map(Result::unwrap),
-        Some(DbusValue::List(vec![DbusValue::Integer(7)])),
+        // Bare, for the same reason a reply is: one value is one argument.
+        Some(DbusValue::Integer(7)),
         "the signal arrived with its body",
+    );
+}
+
+#[test]
+fn a_reply_with_several_values_arrives_as_several_arguments() {
+    // `GetServerInformation` answers with four strings, and libnotify checks
+    // that the reply's signature is `ssss` -- four arguments, not one struct
+    // of four. This pins down which of the two a Lua list becomes.
+    const NAME: &str = "org.morf.ReplyShape";
+    const PATH: &str = "/org/morf/ReplyShape";
+    const INTERFACE: &str = "org.morf.ReplyShape";
+    let Ok((mut service, _)) = DbusService::own(Bus::Session, NAME, PATH, true) else {
+        return;
+    };
+    let caller = thread::spawn(|| {
+        let proxy = DbusProxy::connect_with_timeout(
+            Bus::Session,
+            NAME,
+            PATH,
+            INTERFACE,
+            Duration::from_secs(5),
+        )
+        .expect("a caller can connect");
+        (proxy.call_value("Four"), proxy.call_value("Unsigned"))
+    });
+    let call = service
+        .next_call(Duration::from_secs(5))
+        .expect("first call");
+    assert_eq!(call.member, "Four");
+    service
+        .reply(
+            call.id,
+            &DbusValue::List(vec![
+                DbusValue::String("a".into()),
+                DbusValue::String("b".into()),
+                DbusValue::String("c".into()),
+                DbusValue::String("d".into()),
+            ]),
+        )
+        .unwrap();
+    let call = service
+        .next_call(Duration::from_secs(5))
+        .expect("second call");
+    assert_eq!(call.member, "Unsigned");
+    service
+        .reply(
+            call.id,
+            &DbusValue::Typed {
+                signature: "u".into(),
+                value: Box::new(DbusValue::Integer(7)),
+            },
+        )
+        .unwrap();
+    let (four, unsigned) = caller.join().unwrap();
+    assert_eq!(
+        unsigned.unwrap(),
+        DbusValue::Unsigned(7),
+        "one typed value is one bare argument of that type"
+    );
+    assert_eq!(
+        four.unwrap(),
+        DbusValue::List(vec![
+            DbusValue::String("a".into()),
+            DbusValue::String("b".into()),
+            DbusValue::String("c".into()),
+            DbusValue::String("d".into()),
+        ]),
+        "four arguments, flat"
+    );
+}
+
+#[test]
+fn a_calls_arguments_are_always_a_list_of_them() {
+    // `CloseNotification(u)` used to arrive as a bare number and `Notify`'s
+    // eight arguments as a list, and a handler indexing `arguments[1]` broke
+    // on the one-argument call. The signature says how many there are.
+    const NAME: &str = "org.morf.ArgShape";
+    const PATH: &str = "/org/morf/ArgShape";
+    const INTERFACE: &str = "org.morf.ArgShape";
+    let Ok((mut service, _)) = DbusService::own(Bus::Session, NAME, PATH, true) else {
+        return;
+    };
+    let caller = thread::spawn(|| {
+        let proxy = DbusProxy::connect_with_timeout(
+            Bus::Session,
+            NAME,
+            PATH,
+            INTERFACE,
+            Duration::from_secs(5),
+        )
+        .expect("a caller can connect");
+        let _ = proxy.call_value("None");
+        let _ = proxy.call_value_with(
+            "One",
+            &DbusValue::Typed {
+                signature: "u".into(),
+                value: Box::new(DbusValue::Integer(9)),
+            },
+        );
+        let _ = proxy.call_value_with(
+            "Two",
+            &DbusValue::List(vec![DbusValue::String("a".into()), DbusValue::Integer(2)]),
+        );
+    });
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        let call = service.next_call(Duration::from_secs(5)).expect("a call");
+        shapes.push((call.member.clone(), call.arguments.clone()));
+        service.reply(call.id, &DbusValue::Nil).unwrap();
+    }
+    caller.join().unwrap();
+    assert_eq!(shapes[0], ("None".into(), DbusValue::List(vec![])));
+    assert_eq!(
+        shapes[1],
+        ("One".into(), DbusValue::List(vec![DbusValue::Unsigned(9)]))
+    );
+    assert_eq!(
+        shapes[2],
+        (
+            "Two".into(),
+            DbusValue::List(vec![DbusValue::String("a".into()), DbusValue::Integer(2)])
+        )
     );
 }

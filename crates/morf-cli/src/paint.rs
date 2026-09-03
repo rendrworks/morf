@@ -97,16 +97,22 @@ pub(crate) fn paint_layer(
     let reusable = cache.filter(|cached| cached.still_valid(revision, (width, height), scale_120));
     let layout = match reusable {
         Some(cached) => cached.layout.clone(),
-        None => Layout::compute(
-            &scene,
-            root,
-            Size {
-                width: width as f64,
-                height: height as f64,
-            },
-            renderer.backend_mut(),
-        )
-        .map_err(|error| error.to_string())?,
+        None => {
+            let layout = Layout::compute(
+                &scene,
+                root,
+                Size {
+                    width: width as f64,
+                    height: height as f64,
+                },
+                renderer.backend_mut(),
+            )
+            .map_err(|error| error.to_string())?;
+            // Only on a fresh layout: it is the one moment the answer can have
+            // changed, and the cached one has already been looked at.
+            runtime.lint_layout(&layout, root);
+            layout
+        }
     };
     let input = if let Some(regions) = &config.input_regions {
         // A configured mask is a static surface setting — nothing animates it —

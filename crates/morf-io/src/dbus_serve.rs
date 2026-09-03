@@ -159,7 +159,7 @@ impl DbusService {
             member: header.member().map(ToString::to_string).unwrap_or_default(),
             path: header.path().map(ToString::to_string).unwrap_or_default(),
             sender: header.sender().map(ToString::to_string).unwrap_or_default(),
-            arguments: crate::dbus_encode::decode_message_value(&message).unwrap_or(DbusValue::Nil),
+            arguments: arguments_of(&message),
         };
         self.pending.insert(call.id, message);
         Some(call)
@@ -175,8 +175,20 @@ impl DbusService {
         let header = message.header();
         match value {
             DbusValue::Nil => self.connection.reply(&header, &()),
+            // A list is several out-arguments, the same convention the call
+            // path uses for inputs. `GetServerInformation` answers with four
+            // strings and its caller checks for four, not for one struct of
+            // four -- and an element that is itself compound says so with a
+            // signature, exactly as it would as an input.
+            DbusValue::List(values) => {
+                let body = positional_body(values)?;
+                self.connection.reply(&header, &body)
+            }
+            // One value is one argument, and still goes through the body
+            // builder: handed over bare, a `Value` serialises as a variant,
+            // and a caller that asked for `u` and is given `v` rejects it.
             other => {
-                let body = dbus_argument_value(other)?;
+                let body = positional_body(std::slice::from_ref(other))?;
                 self.connection.reply(&header, &body)
             }
         }
@@ -204,14 +216,58 @@ impl DbusService {
                 self.connection
                     .emit_signal(None::<&str>, path, interface, member, &())
             }
+            // Positional, as for a reply: `NotificationClosed` carries two
+            // unsigned integers, not a pair.
+            DbusValue::List(values) => {
+                let body = positional_body(values)?;
+                self.connection
+                    .emit_signal(None::<&str>, path, interface, member, &body)
+            }
             other => {
-                let body = dbus_argument_value(other)?;
+                let body = positional_body(std::slice::from_ref(other))?;
                 self.connection
                     .emit_signal(None::<&str>, path, interface, member, &body)
             }
         }
         .map_err(|error| error.to_string())
     }
+}
+
+/// A call's arguments, always as a list of them.
+///
+/// The decoder hands back one value for the body as a whole, which is fine
+/// for a reply and a trap for a handler: one argument arrived bare, several
+/// arrived as a list, and `call.arguments[1]` worked or did not depending on
+/// how many the caller sent. The message signature says how many there are,
+/// and that is what decides the shape here -- one argument is a list of one,
+/// none is an empty list, and only several were a list already.
+fn arguments_of(message: &zbus::Message) -> DbusValue {
+    let body = message.body();
+    let count = match body.signature() {
+        zbus::zvariant::Signature::Unit => 0,
+        zbus::zvariant::Signature::Structure(fields) => fields.len(),
+        _ => 1,
+    };
+    let decoded = crate::dbus_encode::decode_message_value(message).unwrap_or(DbusValue::Nil);
+    match (count, decoded) {
+        (0, _) => DbusValue::List(Vec::new()),
+        (1, value) => DbusValue::List(vec![value]),
+        (_, DbusValue::List(values)) => DbusValue::List(values),
+        (_, value) => DbusValue::List(vec![value]),
+    }
+}
+
+/// Several values as one message body.
+///
+/// A D-Bus body is a struct without its outer parentheses, which is what a
+/// `Structure` serialises to when it is the whole body -- so a list of values
+/// packed into one arrives as that many arguments.
+fn positional_body(values: &[DbusValue]) -> Result<zbus::zvariant::Structure<'_>, String> {
+    let mut builder = zbus::zvariant::StructureBuilder::new();
+    for value in values {
+        builder = builder.append_field(dbus_argument_value(value)?);
+    }
+    builder.build().map_err(|error| error.to_string())
 }
 
 impl Drop for DbusService {

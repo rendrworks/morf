@@ -1,13 +1,13 @@
 use morf_io::{IpcRequest, IpcValue as WireValue, ipc_call};
-use morf_lua::{LogEntry, LogLevel};
+use morf_lua::LogLevel;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::{lock::*, supervisor::*};
+use crate::{commands::*, lock::*, supervisor::*};
 
 pub(crate) fn usage() -> &'static str {
-    "morf - reactive Wayland shell runtime\n\nusage: morf [--no-plugin | --clean] [-d | --daemonize] [shell.lua]\n       morf -i <display> <client command>\n       morf list [-j|--json] [--show-dead]\n       morf [--no-plugin | --clean] -c <name>\n       morf lock [lock.lua]\n       morf ipc call <target> [args...]\n       morf ipc verbs\n       morf log [-f|--follow] [--level <debug|info|warn|error>]\n       morf log --bindings\n       morf kill\n       morf --help\n       morf --version"
+    "morf - reactive Wayland shell runtime\n\nusage: morf [--no-plugin | --clean] [-d | --daemonize] [shell.lua]\n       morf -i <display> <client command>\n       morf list [-j|--json] [--show-dead]\n       morf info\n       morf [--no-plugin | --clean] -c <name>\n       morf lock [lock.lua]\n       morf ipc call <target> [args...]\n       morf ipc verbs\n       morf log [-f|--follow] [--level <debug|info|warn|error>]\n       morf log --bindings\n       morf kill\n       morf --help\n       morf --version"
 }
 
 pub(crate) fn run() -> Result<(), String> {
@@ -36,6 +36,7 @@ pub(crate) fn run() -> Result<(), String> {
         }
         Command::Log { follow, level } => follow_logs(follow, level)?,
         Command::List { json, show_dead } => list_instances(json, show_dead)?,
+        Command::Info => print_info()?,
         Command::Client(request) => {
             let reply = ipc_call(socket_path()?, &request).map_err(|error| error.to_string())?;
             println!(
@@ -45,38 +46,6 @@ pub(crate) fn run() -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Prints the shell's log, once or until interrupted.
-///
-/// Following is a poll rather than a stream, and deliberately: the IPC is one
-/// request and one reply by design, and a socket that pushes would be a second
-/// protocol to get right. It works because reading the log *drains* it, so each
-/// pass returns only what arrived since the last -- which is exactly what
-/// following means.
-fn follow_logs(follow: bool, level: LogLevel) -> Result<(), String> {
-    loop {
-        let reply = ipc_call(socket_path()?, &IpcRequest::Log).map_err(|e| e.to_string())?;
-        if let Some(error) = &reply.error {
-            return Err(error.clone());
-        }
-        for value in &reply.result {
-            let WireValue::String(line) = value else {
-                continue;
-            };
-            let entry = LogEntry::from_wire(line.as_str());
-            if entry.level < level {
-                continue;
-            }
-            println!("{:<5} {}", entry.level.name(), entry.message);
-        }
-        if !follow {
-            return Ok(());
-        }
-        // Slow enough that an idle shell costs nothing, quick enough that a
-        // person watching a reload does not wonder whether it is working.
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
 }
 
 /// Reads the options `morf log` takes.
@@ -122,6 +91,8 @@ pub(crate) enum Command {
         json: bool,
         show_dead: bool,
     },
+    /// Everything about this machine, this display and the instance on it.
+    Info,
     Client(IpcRequest),
 }
 
@@ -200,6 +171,7 @@ pub(crate) fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, Stri
         ["log", rest @ ..] => parse_log(rest),
         ["kill"] => Ok(Command::Client(IpcRequest::Kill)),
         ["list", rest @ ..] => parse_list(rest),
+        ["info"] => Ok(Command::Info),
         // With nothing named, the environment may name it: `MORF_CONFIG` is
         // how a session file or a display manager points a shell at its
         // configuration without a command line to put it on.
@@ -319,112 +291,4 @@ fn parse_list(rest: &[&str]) -> Result<Command, String> {
         }
     }
     Ok(Command::List { json, show_dead })
-}
-
-/// Prints every instance on this machine, by asking each one who it is.
-///
-/// Dead sockets -- left by an instance that was killed rather than stopped --
-/// are skipped unless asked for, because the ordinary question is "what is
-/// running", and the answer to that should not include what is not.
-fn list_instances(json: bool, show_dead: bool) -> Result<(), String> {
-    let dir = socket_dir()?;
-    let mut entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "sock")
-            })
-            .collect::<Vec<_>>(),
-        // No directory is no instances, not an error: nothing has run yet.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(format!("could not read {}: {error}", dir.display())),
-    };
-    entries.sort();
-    let mut rows = Vec::new();
-    for socket in entries {
-        let display = socket
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        match ipc_call(&socket, &IpcRequest::Info) {
-            Ok(reply) if reply.ok => {
-                let pid = match reply.result.first() {
-                    Some(WireValue::Integer(pid)) => *pid,
-                    _ => 0,
-                };
-                let config = match reply.result.get(1) {
-                    Some(WireValue::String(config)) => config.clone(),
-                    _ => String::new(),
-                };
-                let uptime = match reply.result.get(2) {
-                    Some(WireValue::Integer(seconds)) => *seconds,
-                    _ => 0,
-                };
-                rows.push((display, Some((pid, config, uptime))));
-            }
-            _ if show_dead => rows.push((display, None)),
-            _ => {}
-        }
-    }
-    if json {
-        let items = rows
-            .iter()
-            .map(|(display, alive)| match alive {
-                Some((pid, config, uptime)) => serde_json::json!({
-                    "display": display, "pid": pid, "config": config, "uptime_s": uptime,
-                }),
-                None => serde_json::json!({ "display": display, "dead": true }),
-            })
-            .collect::<Vec<_>>();
-        println!(
-            "{}",
-            serde_json::to_string(&items).map_err(|error| error.to_string())?
-        );
-        return Ok(());
-    }
-    for (display, alive) in rows {
-        match alive {
-            Some((pid, config, uptime)) => println!("{display}\t{pid}\t{uptime}s\t{config}"),
-            None => println!("{display}\t-\t-\t(dead socket)"),
-        }
-    }
-    Ok(())
-}
-
-/// Puts the process in the background.
-///
-/// The classic double step: fork, and let the parent exit so the shell that
-/// started us gets its prompt back; `setsid` so a hangup on that terminal is
-/// not ours; stdio to `/dev/null` so nothing later blocks on a closed pipe.
-/// Whatever the shell logs still reaches `morf log`, which is the point of
-/// having that.
-fn detach() -> Result<(), String> {
-    // SAFETY: called before any thread exists, which is the one condition
-    // under which forking a Rust process is sound.
-    match unsafe { libc::fork() } {
-        -1 => {
-            return Err(format!(
-                "could not fork: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        0 => {}
-        _ => std::process::exit(0),
-    }
-    // SAFETY: plain syscalls with no memory arguments.
-    unsafe {
-        libc::setsid();
-        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-        if null >= 0 {
-            libc::dup2(null, 0);
-            libc::dup2(null, 1);
-            libc::dup2(null, 2);
-            if null > 2 {
-                libc::close(null);
-            }
-        }
-    }
-    Ok(())
 }

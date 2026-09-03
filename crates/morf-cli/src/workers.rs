@@ -142,6 +142,21 @@ pub(crate) fn handle_ipc(
             }
             IpcReply::success(logs.into_iter().map(WireValue::String).collect())
         }
+        IpcRequest::Capabilities => {
+            let mut lines = Vec::new();
+            for (output, worker) in workers {
+                let (tx, rx) = mpsc::sync_channel(1);
+                if worker
+                    .commands
+                    .send(WorkerCommand::Capabilities(tx))
+                    .is_ok()
+                    && let Ok(found) = rx.recv_timeout(Duration::from_secs(1))
+                {
+                    lines.extend(found.into_iter().map(|line| format!("{output}:{line}")));
+                }
+            }
+            IpcReply::success(lines.into_iter().map(WireValue::String).collect())
+        }
         IpcRequest::Bindings => {
             let mut bindings = Vec::new();
             for worker in workers.values() {
@@ -213,6 +228,10 @@ pub(crate) fn handle_worker_command(
                     .map(LogEntry::to_wire)
                     .collect::<Vec<_>>(),
             );
+            WorkerUpdate::default()
+        }
+        WorkerCommand::Capabilities(reply) => {
+            let _ = reply.send(runtime.capabilities());
             WorkerUpdate::default()
         }
         WorkerCommand::Bindings(reply) => {

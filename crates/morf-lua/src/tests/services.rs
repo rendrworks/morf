@@ -81,7 +81,8 @@ fn a_configuration_owns_a_bus_name_and_answers_a_call() {
     );
     assert_eq!(
         caller.join().expect("the caller finished").unwrap(),
-        morf_io::DbusValue::List(vec![morf_io::DbusValue::String("answered".to_owned())]),
+        // One value is one bare argument on the wire, not a variant of one.
+        morf_io::DbusValue::String("answered".to_owned()),
         "and Lua's reply reached the caller"
     );
 }

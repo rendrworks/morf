@@ -22,6 +22,7 @@ mod animation_groups;
 mod animation_playback;
 mod config;
 mod core_api;
+mod diagnostics;
 mod events_animation;
 mod examples;
 mod idle_input;

@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+mod commands;
 mod config;
 mod crash;
 mod lock;

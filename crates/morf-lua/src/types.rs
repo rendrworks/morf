@@ -67,6 +67,12 @@ pub struct Runtime {
     pub(crate) limits: Limits,
     pub(crate) reactive: Rc<RefCell<ReactiveState>>,
     pub(crate) module_roots: Rc<RefCell<Vec<PathBuf>>>,
+    /// Lint findings waiting to be logged.
+    ///
+    /// Its own cell rather than a push straight into the log, because the
+    /// lint runs while whoever laid the scene out still holds it borrowed --
+    /// and the log lives behind the same borrow. Drained on the next poll.
+    pub(crate) lint_queue: RefCell<Vec<(morf_scene::NodeHandle, String, usize)>>,
 }
 
 /// How much a log line matters.

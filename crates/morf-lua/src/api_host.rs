@@ -399,6 +399,9 @@ pub(crate) fn install_host_service_api<'gc>(
     // compositor that does not report them at all.
     let windows = Table::new(&ctx);
     morf.set_field(ctx, "windows", windows);
+    // Filled once the compositor connection is up; empty rather than absent so
+    // a configuration can index it from its first line.
+    morf.set_field(ctx, "capabilities", Table::new(&ctx));
     crate::api_compositor::install_compositor_api(ctx, Rc::clone(&state), morf);
 
     // Empty rather than absent, so a configuration can hold it and watch it

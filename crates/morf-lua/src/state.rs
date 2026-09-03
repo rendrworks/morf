@@ -128,6 +128,13 @@ pub(crate) struct ReactiveState {
     pub(crate) shortcuts_inhibit_changed: bool,
     /// Told the compositor's answer, which is not always yes.
     pub(crate) shortcuts_callbacks: Vec<StashedClosure>,
+    /// Nodes the lint has already complained about, so a bar that paints
+    /// sixty times a second says it once.
+    pub(crate) lint_warned: HashSet<NodeHandle>,
+    /// What this output's compositor and GPU can do, as name = value pairs.
+    /// Filled once the connection is up; read by `morf.capabilities` and by
+    /// `morf info`.
+    pub(crate) capabilities: Vec<(String, String)>,
     pub(crate) reload_completed_callbacks: Vec<StashedClosure>,
     pub(crate) reload_failed_callbacks: Vec<StashedClosure>,
     pub(crate) effects: HashMap<u64, LuaEffect>,
@@ -246,6 +253,8 @@ impl ReactiveState {
             shortcuts_inhibited: false,
             shortcuts_inhibit_changed: false,
             shortcuts_callbacks: Vec::new(),
+            lint_warned: HashSet::new(),
+            capabilities: Vec::new(),
             reload_completed_callbacks: Vec::new(),
             reload_failed_callbacks: Vec::new(),
             effects: HashMap::new(),
