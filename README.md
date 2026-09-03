@@ -48,3 +48,9 @@ remain available.
 
 An infinite Lua loop is terminated when its fuel budget is exhausted rather than
 hanging the process.
+
+## Writing UI
+
+How nodes are sized and placed, how state reaches them, and what makes a
+frame: [`docs/UI.md`](docs/UI.md). The examples under `examples/` are the
+runnable versions of each section.
