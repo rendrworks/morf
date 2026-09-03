@@ -86,8 +86,31 @@ morf.surface.keyboard_focus = "exclusive"
 
 -- GDM is laid out in `em` against an 11pt base, so it grows with the font
 -- rather than with the panel. Same idea: one number, everything in proportion.
-local SCALE = math.max(0.75, math.min(1.7, math.min(W / 1920, H / 1080)))
+-- A phone is not a small desktop, it is a different shape, and scaling a
+-- desktop layout down until it fits is how you get a login screen with a
+-- postage stamp in the middle of it. A narrow screen takes its scale from its
+-- *width*, because width is what everything here has to fit inside; a wide one
+-- keeps GDM's own em, which is what the numbers below were read against.
+local NARROW = W < 700
+local SCALE = NARROW and math.max(0.9, math.min(1.4, W / 400))
+  or math.max(0.75, math.min(1.7, math.min(W / 1920, H / 1080)))
 local function s(n) return math.floor(n * SCALE) end
+
+--- The width a panel gets: what it asked for, or the screen less a margin —
+--- whichever is smaller. On a desktop the margin never binds and this is the
+--- number GDM specifies; on a phone the screen always binds and the panel is
+--- as wide as there is room for.
+local function panel_width(wanted)
+  return math.min(s(wanted), W - s(28) * 2)
+end
+
+--- Where a panel sits down the screen. Centred on a desktop; nearer the top on
+--- a tall screen, because the bottom half of a phone belongs to the keyboard
+--- and to the hand holding it.
+local function panel_top(height)
+  if NARROW then return math.floor(H * 0.16) end
+  return math.floor((H - height) / 2)
+end
 
 -- Worked out from the stylesheet rather than picked by eye.
 local INK = "#222226"       -- $system_base_color
@@ -406,10 +429,10 @@ end
 -- `$base_padding * 1.5` around it, `$modal_radius` corners and `$base_padding
 -- * 2` between them, and the horizontal user widget puts `$base_padding * 3`
 -- between the avatar and the name.
-local LIST_W = s(400)
+local LIST_W = panel_width(400)
 local FACE_SM = s(64)
 local ITEM_PAD = s(9)
-local ITEM_H = FACE_SM + ITEM_PAD * 2
+local ITEM_H = math.max(FACE_SM + ITEM_PAD * 2, NARROW and 56 or 0)
 local ITEM_GAP = s(12)
 local ITEM_RADIUS = s(16)
 local NAME_GAP = s(18)
@@ -506,7 +529,8 @@ local LIST_H = math.max(1, #users) * ITEM_H + math.max(0, #users - 1) * ITEM_GAP
 local LIST_X = math.floor((W - LIST_W) / 2)
 -- `.login-dialog-user-selection-box` reserves 4em above and 8em below, and the
 -- box is centred — so the list itself sits a couple of ems above the middle.
-local LIST_Y = math.floor((H - LIST_H) / 2) - s(32)
+local LIST_Y = NARROW and panel_top(LIST_H)
+  or (math.floor((H - LIST_H) / 2) - s(32))
 
 -- The two panels pass each other: the one leaving goes the way you are not
 -- going and the one arriving comes from the way you are. A cut between them
@@ -565,9 +589,10 @@ list_view[#list_view + 1] = ui.Text {
 
 -- `.login-dialog-prompt-layout` is 30em wide, and the dialog puts a fixed-top
 -- actor at `centre - 550/2` with `margin-top: 80px` on top of that.
-local PROMPT_W = s(480)
+local PROMPT_W = panel_width(480)
 local PROMPT_X = math.floor((W - PROMPT_W) / 2)
-local PROMPT_Y = math.floor(H / 2) - s(275) + s(80)
+local PROMPT_Y = NARROW and panel_top(0)
+  or (math.floor(H / 2) - s(275) + s(80))
 
 local FACE_LG = s(160)          -- `$base_icon_size * 10`
 local ROW_H = s(64)             -- `.login-dialog-button-box` is 4em tall
@@ -1005,7 +1030,10 @@ place(ui.Item(list_view))
 -- `.login-dialog-bottom-button-group`: 32px in from the corner, 16px apart.
 --------------------------------------------------------------------------------
 
-local BUTTON_SIZE = s(48)       -- 16px icon with `to_em(16px)` around it
+-- 16px icon with `to_em(16px)` around it — and never smaller than a fingertip,
+-- because on a phone every one of these is hit by one. A pointer can be aimed;
+-- a finger covers about nine millimetres whatever the screen is.
+local BUTTON_SIZE = math.max(s(48), NARROW and 44 or 0)
 local BUTTON_PAD = s(32)
 local BUTTON_GAP = s(16)
 -- Along the top. They used to sit in GDM's corner, bottom right — which is
