@@ -219,6 +219,42 @@ impl DbusService {
             .map_err(|error| error.to_string())
     }
 
+    /// Calls a method on another service, from this service's connection.
+    ///
+    /// Which connection a call comes from is visible to the callee as the
+    /// caller's unique name, and some services keep it: polkit registers an
+    /// agent under the name that asked, and calls that name back. An agent
+    /// registered through a proxy -- a separate connection -- is called at
+    /// an object that is not there, and the caller waits on it forever. So
+    /// a registration of this object has to come from here.
+    pub fn call(
+        &self,
+        destination: &str,
+        path: &str,
+        interface: &str,
+        member: &str,
+        arguments: &DbusValue,
+    ) -> Result<DbusValue, String> {
+        let reply = match arguments {
+            DbusValue::Nil => {
+                self.connection
+                    .call_method(Some(destination), path, Some(interface), member, &())
+            }
+            DbusValue::List(values) => {
+                let body = positional_body(values)?;
+                self.connection
+                    .call_method(Some(destination), path, Some(interface), member, &body)
+            }
+            other => {
+                let body = positional_body(std::slice::from_ref(other))?;
+                self.connection
+                    .call_method(Some(destination), path, Some(interface), member, &body)
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        crate::dbus_encode::decode_message_value(&reply)
+    }
+
     /// Emits a signal from this service's object.
     pub fn emit(
         &self,

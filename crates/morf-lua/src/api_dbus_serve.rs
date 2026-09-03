@@ -18,7 +18,11 @@ use morf_io::{Bus, DbusService, NameOutcome};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{scene_bindings::HostError, serialization::lua_to_dbus, state::*};
+use crate::{
+    scene_bindings::HostError,
+    serialization::{dbus_value_to_lua, lua_to_dbus},
+    state::*,
+};
 
 /// Installs `morf.dbus.serve` and the methods on what it returns.
 ///
@@ -77,6 +81,28 @@ pub(crate) fn install_dbus_serve_api<'gc>(
             .map_err(HostError)?;
         Ok(CallbackReturn::Return)
     });
+    // `service:call(destination, path, interface, member, args)`: a call
+    // made from the service's own connection, for the services that remember
+    // who registered with them and call that name back.
+    let service_call = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let (service, destination, path, interface, member, value): (
+            UserRef<DbusServiceToken>,
+            String,
+            String,
+            String,
+            String,
+            LuaValue,
+        ) = stack.consume(ctx)?;
+        let value = lua_to_dbus(ctx, value, 0).map_err(HostError)?;
+        let reply = service
+            .service
+            .borrow()
+            .call(&destination, &path, &interface, &member, &value)
+            .map_err(HostError)?;
+        let reply = dbus_value_to_lua(ctx, reply).map_err(HostError)?;
+        stack.replace(ctx, reply);
+        Ok(CallbackReturn::Return)
+    });
     let on_call_state = Rc::clone(&state);
     let service_on_call = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (service, callback): (UserRef<DbusServiceToken>, Closure) = stack.consume(ctx)?;
@@ -120,6 +146,7 @@ pub(crate) fn install_dbus_serve_api<'gc>(
     service_methods.set_field(ctx, "reply", service_reply);
     service_methods.set_field(ctx, "reply_error", service_reply_error);
     service_methods.set_field(ctx, "emit", service_emit);
+    service_methods.set_field(ctx, "call", service_call);
     service_methods.set_field(ctx, "close", service_close);
     let service_metatable = Table::new(&ctx);
     service_metatable.set_field(ctx, "__index", service_methods);

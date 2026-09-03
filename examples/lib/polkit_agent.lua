@@ -4,8 +4,9 @@
 -- session's *agent* to authenticate the person, and the agent shows the
 -- dialog. There is nothing privileged about the agent itself: it registers
 -- with the authority, is called back at its own object path, and hands the
--- password to `polkit-agent-helper-1` -- a small setuid helper that runs PAM
--- as root and tells the authority the result. The agent never sees a verdict
+-- password to `polkit-agent-helper-1` -- a small root helper, behind a socket
+-- on current systems and setuid on older ones, that runs PAM and tells the
+-- authority the result. The agent never sees a verdict
 -- directly; it sees the helper say SUCCESS or FAILURE.
 --
 -- So this is three things on `morf.dbus.serve`: a nameless object on the
@@ -24,6 +25,7 @@ local AUTHORITY_PATH = "/org/freedesktop/PolicyKit1/Authority"
 local AUTHORITY_INTERFACE = "org.freedesktop.PolicyKit1.Authority"
 local AGENT_INTERFACE = "org.freedesktop.PolicyKit1.AuthenticationAgent"
 local HELPER = "/usr/lib/polkit-1/polkit-agent-helper-1"
+local HELPER_SOCKET = "/run/polkit/agent-helper.socket"
 local CANCELLED = "org.freedesktop.PolicyKit1.Error.Cancelled"
 local FAILED = "org.freedesktop.PolicyKit1.Error.Failed"
 
@@ -60,7 +62,7 @@ end
 --- asks for. The request carries `action_id`, `message`, `icon`, `details`,
 --- `cookie`, `identities`, and `prompt` once the helper has asked; the shell
 --- answers with `request.answer(password)` or gives up with
---- `request.cancel()`. `on_done(request, ok)` says how it ended.
+--- `request.cancel()`. `on_done(request, ok, why)` says how it ended.
 ---
 --- `options.subject` chooses what the agent answers for: `"session"` (the
 --- default) is this login session, `"process"` is this process only, which is
@@ -85,58 +87,112 @@ function polkit_agent.serve(options)
       pcall(function() request.helper:kill() end)
       request.helper = nil
     end
+    if request.socket then
+      pcall(function() request.socket:close() end)
+      request.socket = nil
+    end
     if ok then
       service:reply(request.call_id, nil)
     else
       service:reply_error(request.call_id, error_name or FAILED, message or "authentication failed")
     end
-    on_done(request, ok)
+    on_done(request, ok, message)
   end
 
-  --- Drives the helper for one request: cookie in, prompts out, verdict back.
+  --- Feeds the helper's lines to the request: prompts out, verdict back.
+  local function helper_line(request, text)
+    -- A character class rather than `%u`: the underscore in `PAM_TEXT_INFO`
+    -- is not a letter, and `%u+` stopped at it and matched nothing useful.
+    local style, rest = text:match("^(PAM_[A-Z_]+)%s?(.*)$")
+    if style == "PAM_PROMPT_ECHO_OFF" or style == "PAM_PROMPT_ECHO_ON" then
+      request.prompt = rest
+      request.echo = style == "PAM_PROMPT_ECHO_ON"
+      on_request(request)
+    elseif style == "PAM_TEXT_INFO" or style == "PAM_ERROR_MSG" then
+      request.info = rest
+      on_request(request)
+    elseif text == "SUCCESS" then
+      finish(request, true)
+    elseif text == "FAILURE" then
+      finish(request, false, FAILED, "authentication failed")
+    end
+  end
+
+  --- Drives the helper for one request: user and cookie in, prompts out,
+  --- verdict back.
+  ---
+  --- Two ways to reach it. Since polkit 124 the helper is a root service
+  --- behind `/run/polkit/agent-helper.socket`, which takes the user name and
+  --- the cookie as its first two lines and identifies the caller from the
+  --- socket; older systems have it as a setuid program that takes the user
+  --- on its command line and the cookie on stdin. The lines it speaks are
+  --- the same either way.
   local function run_helper(request, user)
-    local helper = morf.process(HELPER, { user })
-    request.helper = helper
-    -- The cookie is the first line; the helper is the one that tells the
-    -- authority, and this is how it knows which request it is answering.
-    helper:write(request.cookie .. "\n")
     local buffer = ""
-    local function line(text)
-      local style, rest = text:match("^(PAM_%u+)%s?(.*)$")
-      if style == "PAM_PROMPT_ECHO_OFF" or style == "PAM_PROMPT_ECHO_ON" then
-        request.prompt = rest
-        request.echo = style == "PAM_PROMPT_ECHO_ON"
-        on_request(request)
-      elseif style == "PAM_TEXT_INFO" or style == "PAM_ERROR_MSG" then
-        request.info = rest
-        on_request(request)
-      elseif text == "SUCCESS" then
-        finish(request, true)
-      elseif text == "FAILURE" then
-        finish(request, false, FAILED, "authentication failed")
+    local function feed(data)
+      buffer = buffer .. data
+      while true do
+        local newline = buffer:find("\n", 1, true)
+        if not newline then break end
+        helper_line(request, buffer:sub(1, newline - 1))
+        buffer = buffer:sub(newline + 1)
       end
+    end
+    local ok, socket = pcall(morf.socket, HELPER_SOCKET)
+    if ok and socket then
+      request.socket = socket
+      socket:send(user .. "\n" .. request.cookie .. "\n")
+      socket:flush()
+    else
+      local helper = morf.process(HELPER, { user })
+      request.helper = helper
+      -- The cookie is the first line; the helper is the one that tells the
+      -- authority, and this is how it knows which request it is answering.
+      helper:write(request.cookie .. "\n")
     end
     -- Polled rather than awaited, twenty milliseconds at a time, and stopped
     -- the moment the helper is gone: a handle is what makes that possible.
     local tick
     tick = morf.timer(20, function()
-      if not request.helper then
+      if not request.socket and not request.helper then
         if tick then tick:cancel() end
         return
       end
+      if request.socket then
+        for _ = 1, 32 do
+          local data = request.socket:receive(4096, 1)
+          if data == nil then break end
+          if data == "" then
+            -- The far end closed: a helper that leaves without a verdict
+            -- failed, whatever it said.
+            request.socket:close()
+            request.socket = nil
+            if agent.pending[request.cookie] then
+              finish(request, false, FAILED, "the helper went away")
+            end
+            tick:cancel()
+            return
+          end
+          feed(data)
+          -- A verdict in that data closed the socket; there is nothing more
+          -- to read from a handle that is gone.
+          if not request.socket then
+            tick:cancel()
+            return
+          end
+        end
+        return
+      end
+      local helper = request.helper
       for _ = 1, 32 do
         local event = helper:next()
         if not event then break end
         if event.kind == "stdout" then
-          buffer = buffer .. event.data
-          while true do
-            local newline = buffer:find("\n", 1, true)
-            if not newline then break end
-            line(buffer:sub(1, newline - 1))
-            buffer = buffer:sub(newline + 1)
-          end
+          feed(event.data)
+        elseif event.kind == "stderr" then
+          request.info = event.data
+          on_request(request)
         elseif event.kind == "exit" then
-          -- A helper that leaves without a verdict failed, whatever it said.
           request.helper = nil
           if agent.pending[request.cookie] then
             finish(request, false, FAILED, "the helper exited")
@@ -168,7 +224,12 @@ function polkit_agent.serve(options)
       end
       request.user = user.name
       function request.answer(password)
-        if request.helper then request.helper:write(tostring(password) .. "\n") end
+        if request.socket then
+          request.socket:send(tostring(password) .. "\n")
+          request.socket:flush()
+        elseif request.helper then
+          request.helper:write(tostring(password) .. "\n")
+        end
       end
       function request.cancel()
         finish(request, false, CANCELLED, "cancelled by the user")
@@ -196,11 +257,14 @@ function polkit_agent.serve(options)
   else
     subject = { "unix-session", { ["session-id"] = morf.env("XDG_SESSION_ID") or "" } }
   end
-  local authority = morf.dbus.proxy("system", AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE, 5000)
+  -- Registered from the service's own connection, not a proxy: the
+  -- authority remembers the unique name that registered and calls *that*
+  -- name back at `path`. A proxy is another connection with another name,
+  -- and an agent registered through one is called where nothing answers.
   local ok, err = pcall(function()
     -- The path travels as a plain string here; the interface was written
     -- before anyone minded the difference.
-    authority:call_with("RegisterAuthenticationAgent", {
+    service:call(AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE, "RegisterAuthenticationAgent", {
       { signature = "(sa{sv})", value = subject },
       morf.env("LANG") or "C",
       path,
@@ -213,7 +277,7 @@ function polkit_agent.serve(options)
 
   function agent.close()
     pcall(function()
-      authority:call_with("UnregisterAuthenticationAgent", {
+      service:call(AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE, "UnregisterAuthenticationAgent", {
         { signature = "(sa{sv})", value = subject },
         path,
       })
