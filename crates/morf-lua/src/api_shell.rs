@@ -93,6 +93,48 @@ pub(crate) fn install_shell_api<'gc>(
         Ok(CallbackReturn::Return)
     });
     morf.set_field(ctx, "font_families", font_families);
+    // What this configuration was started with. Three views of the same words:
+    // `args` is what was typed, in order and unaltered; `options` is the flags
+    // resolved into names and values; `operands` is what was left over. A
+    // configuration that wants to read the line itself has the first, and one
+    // that wants an answer has the other two.
+    let given = crate::arguments::given();
+    let list_of = |items: &[String]| {
+        let table = Table::new(&ctx);
+        for (index, word) in items.iter().enumerate() {
+            table
+                .set(ctx, index as i64 + 1, word.as_str())
+                .expect("a table accepts integer keys");
+        }
+        table
+    };
+    let words = list_of(given.words());
+    morf.set_field(ctx, "args", words);
+    let options = Table::new(&ctx);
+    for (name, values) in given.options() {
+        // One value is that value; several are a list, because a repeated
+        // option keeps what it was given and only the configuration knows
+        // whether the first, the last or all of them was meant.
+        if let [only] = values.as_slice() {
+            match only.text() {
+                Some(text) => options.set_field(ctx, name.as_str(), text),
+                None => options.set_field(ctx, name.as_str(), true),
+            };
+            continue;
+        }
+        let list = Table::new(&ctx);
+        for (index, value) in values.iter().enumerate() {
+            let slot = index as i64 + 1;
+            match value.text() {
+                Some(text) => list.set(ctx, slot, text),
+                None => list.set(ctx, slot, true),
+            }
+            .expect("a table accepts integer keys");
+        }
+        options.set_field(ctx, name.as_str(), list);
+    }
+    morf.set_field(ctx, "options", options);
+    morf.set_field(ctx, "operands", list_of(given.operands()));
     morf.set_field(ctx, "process_id", i64::from(std::process::id()));
     // The binary that is running, so a configuration can start another of
     // itself. `"morf"` only works when morf is on `PATH`, which it is not when

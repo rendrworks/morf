@@ -14,7 +14,10 @@ pub(crate) fn run() -> Result<(), String> {
     match parse_command(&args)? {
         Command::Help => println!("{}", usage()),
         Command::Version => println!("morf {}", env!("CARGO_PKG_VERSION")),
-        Command::Run(path, policy) => {
+        Command::Run(path, policy, arguments) => {
+            // Before anything is loaded, so the very first line of the very
+            // first configuration can already ask what it was started with.
+            morf_lua::arguments::install(arguments);
             let source = fs::read(&path)
                 .map_err(|error| format!("could not read {}: {error}", path.display()))?;
             supervise(path, source, policy)?;
@@ -38,7 +41,9 @@ pub(crate) fn run() -> Result<(), String> {
 pub(crate) enum Command {
     Help,
     Version,
-    Run(PathBuf, LoadPolicy),
+    /// The configuration to run, how much of the world to load, and the
+    /// arguments that are the configuration's own rather than morf's.
+    Run(PathBuf, LoadPolicy, Vec<String>),
     Lock(PathBuf),
     Client(IpcRequest),
 }
@@ -87,7 +92,7 @@ pub(crate) fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, Stri
     match strings {
         ["-h" | "--help"] => Ok(Command::Help),
         ["-V" | "--version"] => Ok(Command::Version),
-        ["-c", name] => Ok(Command::Run(named_config_path(name)?, policy)),
+        ["-c", name, rest @ ..] => Ok(Command::Run(named_config_path(name)?, policy, own(rest))),
         ["lock"] => Ok(Command::Lock(config_root()?.join("lock.lua"))),
         ["lock", path] => Ok(Command::Lock(PathBuf::from(path))),
         ["ipc", "verbs"] => Ok(Command::Client(IpcRequest::Verbs)),
@@ -101,10 +106,38 @@ pub(crate) fn parse_command(args: &[std::ffi::OsString]) -> Result<Command, Stri
         ["log"] => Ok(Command::Client(IpcRequest::Log)),
         ["log", "--bindings"] => Ok(Command::Client(IpcRequest::Bindings)),
         ["kill"] => Ok(Command::Client(IpcRequest::Kill)),
-        [] => Ok(Command::Run(config_root()?.join("shell.lua"), policy)),
-        [path] => Ok(Command::Run(PathBuf::from(path), policy)),
+        [] => Ok(Command::Run(
+            config_root()?.join("shell.lua"),
+            policy,
+            Vec::new(),
+        )),
+        // A configuration whose own name begins with a dash, said explicitly.
+        ["--", path, rest @ ..] => Ok(Command::Run(PathBuf::from(path), policy, own(rest))),
+        // Everything after the configuration is the configuration's, but the
+        // configuration itself still has to look like a path. Without this an
+        // unknown flag becomes a filename, and `morf --colour` fails by saying
+        // it could not read a file called `--colour` rather than that there is
+        // no such option.
+        [path, rest @ ..] if !path.starts_with('-') => {
+            Ok(Command::Run(PathBuf::from(path), policy, own(rest)))
+        }
         _ => Err(usage().to_owned()),
     }
+}
+
+/// Everything after the configuration belongs to the configuration.
+///
+/// morf takes the few arguments it needs to find the file at all and stops
+/// looking. What the rest mean is not something a shell runtime can know: they
+/// are addressed to whatever was written in Lua, and they are handed over
+/// exactly as typed. A leading `--` is dropped, so `morf shell.lua -- --help`
+/// asks the *shell* for help rather than morf.
+fn own(rest: &[&str]) -> Vec<String> {
+    let rest = match rest {
+        ["--", after @ ..] => after,
+        all => all,
+    };
+    rest.iter().map(|word| (*word).to_owned()).collect()
 }
 
 pub(crate) fn config_root() -> Result<PathBuf, String> {

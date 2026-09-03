@@ -33,6 +33,11 @@ local board = {}
 function board.build(options)
   local key_sink = options.key
   local W = options.width
+  -- A keypad rather than a keyboard, for a numeric password. It is the same
+  -- board — the same fusing keys, the same press, the same seam — laid out
+  -- three across instead of ten, with a key that opens the full one.
+  local keypad = options.keypad or false
+  local on_full = options.on_full
   local ORIGIN_X = options.x or 0
   local ORIGIN_Y = options.y or 0
 
@@ -157,9 +162,14 @@ function board.build(options)
 
   -- Full width on a phone, a centred board on a desktop. A key wants to be about
   -- a finger wide wherever it is, and ten of them across a 4K panel would not be.
-  local BOARD_W = math.min(W - 40, 1100)
-  local KEY = math.floor(BOARD_W / 11.5)
-  local GAP = math.floor((BOARD_W - KEY * 10) / 9)
+  --
+  -- A keypad is three across, so the same width buys keys three times the size
+  -- — which is the point of it: a numeric password typed with a thumb wants big
+  -- targets far more than it wants letters.
+  local ACROSS = keypad and 3 or 10
+  local BOARD_W = math.min(W - 40, keypad and 560 or 1100)
+  local KEY = math.floor(BOARD_W / (ACROSS + 1.5))
+  local GAP = math.floor((BOARD_W - KEY * ACROSS) / math.max(1, ACROSS - 1))
   local PAD = math.floor(KEY * 0.22)
   local BOARD_H = KEY * 4 + GAP * 3 + PAD * 2
   local BOARD_X = math.floor((W - BOARD_W) / 2)
@@ -259,75 +269,113 @@ function board.build(options)
     return entries
   end
 
-  local line = PAD
-  lay_row(line, character_row(1, 10))
-  line = line + KEY + GAP
-  lay_row(line, character_row(2, 9))
-  line = line + KEY + GAP
-  local row_three = {
-    {
-      id = "modifier",
-      units = 1.5,
-      tone = function()
-        if layer:get() ~= LETTERS then return "control" end
-        return (locked:get() or shifted:get()) and "live" or "control"
-      end,
-      label = function(which)
-        if which == NUMBERS then return "#+=" end
-        if which == SYMBOLS then return "123" end
-        return locked:get() and "SHIFT" or "shift"
-      end,
-      -- On the letters layer this is shift, and a second press locks it: the
-      -- ordinary touch-keyboard gesture, and the only way to type a run of
-      -- capitals without holding anything.
-      tap = function()
-        if layer:get() == NUMBERS then
-          switch_layer(SYMBOLS)
-        elseif layer:get() == SYMBOLS then
-          switch_layer(NUMBERS)
-        elseif locked:get() then
-          write(locked, false)
-          write(shifted, false)
-        elseif shifted:get() then
-          write(locked, true)
-        else
-          write(shifted, true)
-        end
-      end,
-    },
-  }
-  for _, entry in ipairs(character_row(3, 7)) do row_three[#row_three + 1] = entry end
-  row_three[#row_three + 1] = {
-    id = "delete",
-    units = 1.5,
-    tone = "control",
-    label = "del",
-    tap = function() emit(BACKSPACE, false, nil) end,
-  }
-  lay_row(line, row_three)
+  if keypad then
+    -- 1 2 3 / 4 5 6 / 7 8 9 / keyboard 0 delete. The digits are evdev codes
+    -- like everything else, so a host that turns them into presses and a host
+    -- that reads the label both work without knowing this layout exists.
+    local line = PAD
+    for row = 0, 2 do
+      local keys = {}
+      for column = 1, 3 do
+        local digit = row * 3 + column
+        keys[#keys + 1] = {
+          id = "n" .. digit,
+          label = tostring(digit),
+          tap = function() emit(DIGIT[digit], false, tostring(digit)) end,
+        }
+      end
+      lay_row(line, keys)
+      line = line + KEY + GAP
+    end
+    lay_row(line, {
+      {
+        id = "full",
+        tone = "control",
+        label = "abc",
+        -- The way out. A numeric keypad with no way back is a screen that has
+        -- decided for you what your password can be made of.
+        tap = function() if on_full then on_full() end end,
+      },
+      { id = "n0", label = "0", tap = function() emit(DIGIT[10], false, "0") end },
+      {
+        id = "delete",
+        tone = "control",
+        label = "del",
+        tap = function() emit(BACKSPACE, false, nil) end,
+      },
+    })
+  else
 
-  line = line + KEY + GAP
-  lay_row(line, {
-    {
-      id = "layer",
+    local line = PAD
+    lay_row(line, character_row(1, 10))
+    line = line + KEY + GAP
+    lay_row(line, character_row(2, 9))
+    line = line + KEY + GAP
+    local row_three = {
+      {
+        id = "modifier",
+        units = 1.5,
+        tone = function()
+          if layer:get() ~= LETTERS then return "control" end
+          return (locked:get() or shifted:get()) and "live" or "control"
+        end,
+        label = function(which)
+          if which == NUMBERS then return "#+=" end
+          if which == SYMBOLS then return "123" end
+          return locked:get() and "SHIFT" or "shift"
+        end,
+        -- On the letters layer this is shift, and a second press locks it: the
+        -- ordinary touch-keyboard gesture, and the only way to type a run of
+        -- capitals without holding anything.
+        tap = function()
+          if layer:get() == NUMBERS then
+            switch_layer(SYMBOLS)
+          elseif layer:get() == SYMBOLS then
+            switch_layer(NUMBERS)
+          elseif locked:get() then
+            write(locked, false)
+            write(shifted, false)
+          elseif shifted:get() then
+            write(locked, true)
+          else
+            write(shifted, true)
+          end
+        end,
+      },
+    }
+    for _, entry in ipairs(character_row(3, 7)) do row_three[#row_three + 1] = entry end
+    row_three[#row_three + 1] = {
+      id = "delete",
       units = 1.5,
       tone = "control",
-      label = function(which) return which == LETTERS and "123" or "abc" end,
-      tap = function() switch_layer(layer:get() == LETTERS and NUMBERS or LETTERS) end,
-    },
-    { id = "comma", label = ",", tap = function() emit(COMMA, false, ",") end },
-    { id = "space", units = 4, label = "space", tap = function() emit(SPACE, false, " ") end },
-    { id = "dot", label = ".", tap = function() emit(DOT, false, ".") end },
-    {
-      id = "enter",
-      units = 2,
-      tone = "accent",
-      label = "enter",
-      tap = function() emit(ENTER, false, nil) end,
-    },
-  })
+      label = "del",
+      tap = function() emit(BACKSPACE, false, nil) end,
+    }
+    lay_row(line, row_three)
 
-  --------------------------------------------------------------------------------
+    line = line + KEY + GAP
+    lay_row(line, {
+      {
+        id = "layer",
+        units = 1.5,
+        tone = "control",
+        label = function(which) return which == LETTERS and "123" or "abc" end,
+        tap = function() switch_layer(layer:get() == LETTERS and NUMBERS or LETTERS) end,
+      },
+      { id = "comma", label = ",", tap = function() emit(COMMA, false, ",") end },
+      { id = "space", units = 4, label = "space", tap = function() emit(SPACE, false, " ") end },
+      { id = "dot", label = ".", tap = function() emit(DOT, false, ".") end },
+      {
+        id = "enter",
+        units = 2,
+        tone = "accent",
+        label = "enter",
+        tap = function() emit(ENTER, false, nil) end,
+      },
+    })
+  end
+
+--------------------------------------------------------------------------------
   -- Drawing it.
   --------------------------------------------------------------------------------
 

@@ -20,6 +20,7 @@ mod api_time;
 mod api_transform;
 mod api_ui_json;
 mod api_view;
+pub mod arguments;
 mod configure;
 mod constructors;
 mod events;

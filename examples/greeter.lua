@@ -313,11 +313,27 @@ local function power(method)
   if not called then say(tostring(err), true) end
 end
 
+-- How far the login moves out of the keyboard's way. Enough to clear it, but
+-- never so far that the panel leaves the top of the screen — on a phone the
+-- login already starts near the top, and lifting it by a desktop's worth of
+-- room puts the face above the edge.
+local function lift_for(top)
+  return math.min(s(180), math.max(0, top - s(20)))
+end
+
 --- Shows and hides the board.
 local shown = morf.signal("greeter.board", false)
 local function open_keyboard()
   write(shown, not shown:get())
 end
+
+-- `morf examples/greeter.lua --numbers-only` puts up a keypad rather than a
+-- keyboard: three keys across instead of ten, so the same width buys targets
+-- three times the size. A numeric password typed with a thumb wants that far
+-- more than it wants letters — and the keypad keeps a key that opens the full
+-- board, because deciding for someone what their password may be made of is
+-- not this screen's business.
+local numeric = morf.signal("greeter.numeric", core.options["numbers-only"] == true)
 
 --------------------------------------------------------------------------------
 -- Typing.
@@ -540,7 +556,7 @@ local list_view = {
   visible = function() return list_up:get() end,
   opacity = function() return asking:get() and 0.0 or 1.0 end,
   translate_x = function() return asking:get() and -s(90) or 0 end,
-  translate_y = function() return shown:get() and -s(180) or 0 end,
+  translate_y = function() return shown:get() and -lift_for(LIST_Y) or 0 end,
   scale = function() return asking:get() and 0.94 or 1.0 end,
   behavior = {
     -- Springs, not durations. A duration says how long the movement takes and
@@ -706,7 +722,7 @@ local prompt = {
   visible = function() return prompt_up:get() end,
   opacity = function() return asking:get() and 1.0 or 0.0 end,
   translate_x = function() return asking:get() and 0 or s(90) end,
-  translate_y = function() return shown:get() and -s(180) or 0 end,
+  translate_y = function() return shown:get() and -lift_for(PROMPT_Y) or 0 end,
   scale = function() return asking:get() and 1.0 or 0.94 end,
   behavior = {
     -- Springs, not durations. A duration says how long the movement takes and
@@ -1010,7 +1026,9 @@ local function sheet(x, y, width, height, up, here)
     visible = up,
     opacity = function() return here() and 1.0 or 0.0 end,
     scale = function() return here() and 1.0 or 0.94 end,
-    translate_y = function() return shown:get() and -s(180) or 0 end,
+    translate_y = function()
+      return shown:get() and -lift_for(here() and PROMPT_Y or LIST_Y) or 0
+    end,
       behavior = {
       opacity = { duration = 190, easing = "out_quad" },
       scale = { kind = "spring", mass = 1, damping = 19, stiffness = 170,
@@ -1114,9 +1132,7 @@ unmount_rest = ui.Timer {
 -- the ring and the avatar answer a tap exactly as they answer a keystroke.
 local EVDEV_BACKSPACE, EVDEV_ENTER = 14, 28
 
-local board_panel, board_height = board.build {
-  width = W,
-  key = function(code, _shifted, label)
+local function board_key(code, _shifted, label)
     if working:get() then return end
     if code == EVDEV_BACKSPACE then
       backspace()
@@ -1133,8 +1149,23 @@ local board_panel, board_height = board.build {
       end
       type_character(label)
     end
-  end,
+end
+
+-- Both boards are built, and whichever is wanted is the one that is shown.
+-- Building on demand would mean tearing a node tree down and standing another
+-- up in the middle of someone typing; two panels that cost nothing while
+-- hidden are the cheaper answer as well as the simpler one.
+local keypad_panel, keypad_height = board.build {
+  width = W,
+  keypad = true,
+  key = board_key,
+  on_full = function() write(numeric, false) end,
 }
+local full_panel, full_height = board.build {
+  width = W,
+  key = board_key,
+}
+local board_height = math.max(keypad_height, full_height)
 
 place(ui.Item {
   x = 0,
@@ -1151,7 +1182,22 @@ place(ui.Item {
     translate_y = { kind = "spring", mass = 1, damping = 20, stiffness = 200,
                     epsilon = 0.05 },
   },
-  board_panel,
+  -- Both mounted, one visible. The keypad sits at the bottom of the taller
+  -- box so it stays under the thumb rather than floating in the middle of the
+  -- space the full board would have used.
+  ui.Item {
+    y = board_height - keypad_height,
+    width = W,
+    height = keypad_height,
+    visible = function() return numeric:get() end,
+    keypad_panel,
+  },
+  ui.Item {
+    width = W,
+    height = full_height,
+    visible = function() return not numeric:get() end,
+    full_panel,
+  },
 })
 
 place(kick_rest)
