@@ -82,6 +82,7 @@ impl RenderBackend for WgpuBackend {
                 layout: &self.glyph_layout,
                 sampler: &self.glyph_sampler,
                 target_size: (self.width, self.height),
+                external: &self.external_textures,
             },
             &mut self.images,
             &mut self.image_textures,

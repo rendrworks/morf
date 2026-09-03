@@ -148,7 +148,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         120,
     )?;
-    let info = backend.info();
+    let info = backend.info().clone();
+    // The zero-copy capture path, minus the compositor: export an image as a
+    // dmabuf with one of this device's own modifiers, take it back, and read
+    // it. A driver that exports but cannot be read from, or a modifier the
+    // device claims and then refuses, fails here rather than in front of a
+    // person with a black thumbnail.
+    let dmabuf = if backend.info().dmabuf {
+        let modifiers = backend.capture_modifiers(morf_render::FOURCC_XRGB8888);
+        let image = backend.export_capture(64, 48, morf_render::FOURCC_XRGB8888, &modifiers)?;
+        let summary = format!(
+            "exported 64x48 modifier {:#x} stride {} offset {} fd {:?}, {} modifiers offered",
+            image.modifier,
+            image.plane.stride,
+            image.plane.offset,
+            image.plane.fd,
+            modifiers.len()
+        );
+        backend.publish_texture("smoke", image)?;
+        let pixels = backend
+            .texture_pixels("smoke")
+            .ok_or("the published capture could not be read back")?;
+        assert_eq!(pixels.rgba.len(), 64 * 48 * 4, "a full picture came back");
+        format!("{summary}, read back {} bytes", pixels.rgba.len())
+    } else {
+        "unavailable on this device".to_owned()
+    };
+    println!("dmabuf: {dmabuf}");
     println!(
         "{} ({:?}, {:04x}:{:04x})",
         info.name, info.backend, info.vendor, info.device

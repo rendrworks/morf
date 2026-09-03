@@ -99,6 +99,8 @@ pub(crate) struct TextureBatchContext<'a> {
     pub(crate) layout: &'a wgpu::BindGroupLayout,
     pub(crate) sampler: &'a wgpu::Sampler,
     pub(crate) target_size: (u32, u32),
+    /// Textures the compositor drew into directly, by name.
+    pub(crate) external: &'a HashMap<String, super::backend_types::ExternalTexture>,
 }
 
 pub(crate) fn create_texture_batch(
@@ -131,6 +133,34 @@ pub(crate) fn create_texture_batch(
             continue;
         };
         if source.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
+            continue;
+        }
+        // A capture the compositor drew straight into GPU memory. Nothing to
+        // decode, nothing to upload, nothing to cache: the texture is the
+        // picture, at the size it was captured at.
+        if let Some(name) = source.strip_prefix("gpu:") {
+            let Some(external) = context.external.get(name) else {
+                continue;
+            };
+            let intrinsic = (external.image.width, external.image.height);
+            let placement = texture_placement(*bounds, intrinsic, *fill_mode, *transform);
+            push_texture_instance(
+                &mut batch,
+                command_index,
+                TextureImage {
+                    _texture: external.image.texture.clone(),
+                    bind_group: external.bind_group.clone(),
+                },
+                placement,
+                TextureStyle {
+                    overlay: *color_overlay,
+                    distance_field: *distance_field,
+                    field: *distance_field_style,
+                    spread: *distance_field_spread,
+                },
+                context.target_size,
+                scale,
+            );
             continue;
         }
         let preferred = bounds.width.max(bounds.height).ceil().max(1.0) as u32;

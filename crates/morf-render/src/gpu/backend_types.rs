@@ -7,6 +7,13 @@ use std::fmt;
 use super::{glyphs::*, targets::*, textures::*};
 
 /// Adapter selected for the wgpu renderer.
+/// A published GPU texture: the image it wraps, and its view and bind group,
+/// made once because the texture never changes size or format.
+pub(crate) struct ExternalTexture {
+    pub(crate) image: crate::gpu::dmabuf::DmabufImage,
+    pub(crate) bind_group: wgpu::BindGroup,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GpuInfo {
     /// Human-readable driver adapter name.
@@ -17,6 +24,9 @@ pub struct GpuInfo {
     pub vendor: u32,
     /// PCI device identifier when available.
     pub device: u32,
+    /// Whether this device can export images as dmabufs, for zero-copy
+    /// capture. False on GLES, and on a Vulkan driver without the extensions.
+    pub dmabuf: bool,
 }
 
 /// wgpu initialization or submission failure.
@@ -138,6 +148,12 @@ pub struct WgpuBackend {
     /// Documents already read, so an icon is parsed and resampled once rather
     /// than once a frame.
     pub(crate) drawings: morf_svg::SvgOutlines,
+    /// What the device said it could do about dmabufs, when it could.
+    pub(crate) dmabuf: Option<crate::gpu::dmabuf::DmabufSupport>,
+    /// Textures this engine did not decode: captures the compositor drew
+    /// straight into GPU memory, published under a name `ui.Image` resolves
+    /// as `gpu:<name>`. The GPU-side twin of `ImageCache`'s `memory:` images.
+    pub(crate) external_textures: HashMap<String, ExternalTexture>,
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
     pub(crate) surface: Option<SurfaceState>,

@@ -17,6 +17,9 @@ morf-svg.workspace = true
 morf-text.workspace = true
 raw-window-handle.workspace = true
 wgpu.workspace = true
+# The same ash wgpu-hal speaks, for the handful of Vulkan calls wgpu has no
+# word for: exporting an image as a dmabuf, and acquiring it back.
+ash = "0.38"
 
 [dev-dependencies]
 pollster.workspace = true

@@ -10,6 +10,67 @@ use super::{
     targets::*,
 };
 
+/// Opens the adapter's device with the dmabuf extensions enabled, when it can.
+///
+/// `None` is the ordinary case on anything that is not Vulkan, or is Vulkan
+/// without the extensions: the caller opens the device the usual way and
+/// captures go through shared memory. Enabling extensions is the one thing
+/// that has to happen at creation, which is why this reaches into wgpu-hal at
+/// all -- everything else dmabuf needs can be done on the device afterwards.
+fn open_with_dmabuf(
+    instance: &wgpu::Instance,
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Option<(wgpu::Device, wgpu::Queue, crate::gpu::dmabuf::DmabufSupport)> {
+    use crate::gpu::dmabuf;
+    use wgpu::hal::Instance as _;
+    use wgpu::hal::api::Vulkan;
+    if adapter.get_info().backend != wgpu::Backend::Vulkan {
+        return None;
+    }
+    let hal_instance = unsafe { instance.as_hal::<Vulkan>() }?;
+    let raw_instance = hal_instance.shared_instance().raw_instance();
+    // The same physical device wgpu chose, found again among hal's adapters:
+    // hal hands out its own adapter objects, and the one to open is the one
+    // whose device is the device wgpu already reported.
+    let wanted = adapter.get_info();
+    let exposed = unsafe { hal_instance.enumerate_adapters(None) }
+        .into_iter()
+        .find(|exposed| exposed.info.device == wanted.device && exposed.info.name == wanted.name)?;
+    let physical = exposed.adapter.raw_physical_device();
+    let extensions = dmabuf::supported_extensions(raw_instance, physical)?;
+    let render_node = dmabuf::render_node(raw_instance, physical);
+    let open = unsafe {
+        exposed.adapter.open_with_callback(
+            descriptor.required_features,
+            &descriptor.required_limits,
+            &descriptor.memory_hints,
+            Some(Box::new(
+                |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
+                    for extension in &extensions {
+                        if !args.extensions.contains(extension) {
+                            args.extensions.push(extension);
+                        }
+                    }
+                },
+            )),
+        )
+    }
+    .ok()?;
+    let queue_family = open.device.queue_family_index();
+    let hal_adapter = unsafe { instance.create_adapter_from_hal::<Vulkan>(exposed) };
+    let (device, queue) =
+        unsafe { hal_adapter.create_device_from_hal::<Vulkan>(open, descriptor) }.ok()?;
+    Some((
+        device,
+        queue,
+        dmabuf::DmabufSupport {
+            render_node,
+            queue_family,
+        },
+    ))
+}
+
 impl WgpuBackend {
     /// Selects a Vulkan or GLES adapter and creates an offscreen render target.
     pub async fn new(width: u32, height: u32) -> Result<Self, GpuError> {
@@ -50,15 +111,25 @@ impl WgpuBackend {
             .map_err(|error| GpuError(format!("no compatible GPU adapter: {error}")))?;
         let adapter_info = adapter.get_info();
         let adapter_limits = adapter.limits();
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("morf device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: adapter_limits,
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| GpuError(format!("could not create GPU device: {error}")))?;
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("morf device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter_limits.clone(),
+            ..Default::default()
+        };
+        // Through wgpu-hal when the device can export dmabufs, so the
+        // extensions that need enabling at creation are enabled; through wgpu
+        // as usual otherwise, which is the same device without them.
+        let (device, queue, dmabuf) = match open_with_dmabuf(&instance, &adapter, &descriptor) {
+            Some((device, queue, support)) => (device, queue, Some(support)),
+            None => {
+                let (device, queue) = adapter
+                    .request_device(&descriptor)
+                    .await
+                    .map_err(|error| GpuError(format!("could not create GPU device: {error}")))?;
+                (device, queue, None)
+            }
+        };
         let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("morf viewport layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -205,7 +276,10 @@ impl WgpuBackend {
                 backend: adapter_info.backend,
                 vendor: adapter_info.vendor,
                 device: adapter_info.device,
+                dmabuf: dmabuf.is_some(),
             },
+            dmabuf,
+            external_textures: HashMap::new(),
         })
     }
 

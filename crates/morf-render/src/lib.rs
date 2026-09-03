@@ -2,6 +2,10 @@
 
 mod gpu;
 
+pub use gpu::dmabuf::{
+    DmabufImage, DmabufPlane, DmabufSupport, FOURCC_ARGB8888, FOURCC_XRGB8888, MODIFIER_LINEAR,
+    split_dev_t,
+};
 pub use gpu::{GpuError, GpuInfo, ShaderRegistration, WgpuBackend};
 
 mod commands;
