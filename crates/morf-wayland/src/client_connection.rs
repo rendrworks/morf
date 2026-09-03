@@ -25,6 +25,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_captu
 use wayland_protocols::ext::workspace::v1::client::ext_workspace_manager_v1::ExtWorkspaceManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1;
+use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
@@ -81,6 +82,9 @@ impl LayerClient {
         let idle_notifier = globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok();
         let idle_inhibit_manager = globals
             .bind::<ZwpIdleInhibitManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
+        let shortcuts_inhibit_manager = globals
+            .bind::<ZwpKeyboardShortcutsInhibitManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
         let workspace_manager = globals
             .bind::<ExtWorkspaceManagerV1, _, _>(&qh, 1..=1, ())
@@ -157,6 +161,8 @@ impl LayerClient {
             idle_notifier,
             idle_inhibit_manager,
             idle_inhibitor: None,
+            shortcuts_inhibit_manager,
+            shortcuts_inhibitor: None,
             toplevel_control_manager,
             toplevel_controls: HashMap::new(),
             toplevel_control_handles: HashMap::new(),

@@ -11,6 +11,7 @@ mod client_services;
 mod client_surface;
 mod data_handlers;
 mod helpers;
+mod inhibit_handlers;
 mod input_handlers;
 mod protocol_handlers;
 mod state_methods;

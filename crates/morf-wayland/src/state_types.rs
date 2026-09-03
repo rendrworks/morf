@@ -61,6 +61,10 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::idle_inhibit::zv1::client::{
     zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
 };
+use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
+    zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1,
+    zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1,
+};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3::ZwpTextInputV3,
 };
@@ -224,8 +228,13 @@ pub(crate) struct LayerState {
     /// Its existence *is* the inhibition — the protocol has no "off", only a
     /// destroy — so this is `Some` exactly while the session is being held.
     pub(crate) idle_inhibitor: Option<ZwpIdleInhibitorV1>,
+    pub(crate) shortcuts_inhibit_manager: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    /// Live while the shell is asking the compositor to stop eating its keys.
+    /// Same shape as the idle inhibitor: the object's existence is the request.
+    pub(crate) shortcuts_inhibitor: Option<ZwpKeyboardShortcutsInhibitorV1>,
     pub(crate) idle_notifications: Vec<ExtIdleNotificationV1>,
-    pub(crate) idle_timeouts: Vec<u32>,
+    /// Thresholds, each with whether it should ignore inhibitors.
+    pub(crate) idle_timeouts: Vec<(u32, bool)>,
     pub(crate) data_device_manager: Option<DataDeviceManagerState>,
     pub(crate) data_devices: Vec<DataDevice>,
     pub(crate) clipboard_source: Option<CopyPasteSource>,

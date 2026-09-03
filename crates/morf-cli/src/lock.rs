@@ -114,7 +114,7 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
             match event {
                 // A lock client has only lock surfaces, and those are not
                 // popups or floating windows.
-                LayerEvent::AuxScale { .. } => {}
+                LayerEvent::AuxScale { .. } | LayerEvent::ShortcutsInhibited { .. } => {}
                 LayerEvent::SessionLocked => locked = true,
                 LayerEvent::Screens(_) => {}
                 LayerEvent::SessionLockConfigure { index, .. } => {
@@ -172,8 +172,12 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                 LayerEvent::SessionLockFinished => {
                     return Err("compositor ended the session lock".to_owned());
                 }
-                LayerEvent::Idle { timeout_ms, idle } => {
-                    repaint |= runtime.dispatch_idle(timeout_ms, idle);
+                LayerEvent::Idle {
+                    timeout_ms,
+                    input_only,
+                    idle,
+                } => {
+                    repaint |= runtime.dispatch_idle(timeout_ms, input_only, idle);
                 }
                 LayerEvent::Clipboard { text } => {
                     repaint |= runtime.dispatch_clipboard(text);

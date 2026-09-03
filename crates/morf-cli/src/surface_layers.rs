@@ -95,6 +95,15 @@ fn apply_toplevel_requests(runtime: &mut Runtime, client: &mut LayerClient) {
             "set_maximized" => ToplevelAction::Maximized(request.value),
             "set_minimized" => ToplevelAction::Minimized(request.value),
             "set_fullscreen" => ToplevelAction::Fullscreen(request.value),
+            "set_minimize_target" => match request.rect {
+                Some((x, y, width, height)) => ToplevelAction::MinimizeTarget {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+                None => continue,
+            },
             _ => continue,
         };
         client.control_toplevel(&request.identifier, action);

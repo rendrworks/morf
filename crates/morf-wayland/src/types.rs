@@ -280,6 +280,14 @@ pub enum ToplevelAction {
     Maximized(bool),
     Minimized(bool),
     Fullscreen(bool),
+    /// Where on the shell's own surface the window's task-bar entry is, so a
+    /// compositor that animates minimize has somewhere to animate towards.
+    MinimizeTarget {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
 }
 
 /// One workspace, as `ext-workspace-v1` describes it.

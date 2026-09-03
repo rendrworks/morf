@@ -73,6 +73,7 @@ pub(crate) fn run_surface(
                 | LayerEvent::Closed { .. }
                 | LayerEvent::Scale { .. }
                 | LayerEvent::AuxScale { .. }
+                | LayerEvent::ShortcutsInhibited { .. }
                 | LayerEvent::Idle { .. }
                 | LayerEvent::Clipboard { .. }
                 | LayerEvent::InputMethod(_)
@@ -213,6 +214,7 @@ pub(crate) fn run_surface(
             return Ok(());
         }
         apply_idle_inhibit(&mut runtime, &mut client);
+        apply_shortcuts_inhibit(&mut runtime, &mut client);
         if let Some(enabled) = runtime.take_watch_files_change() {
             tx.send(SupervisorMessage::WatchFiles(enabled))
                 .map_err(|_| "output supervisor stopped".to_owned())?;

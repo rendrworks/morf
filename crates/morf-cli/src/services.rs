@@ -36,6 +36,12 @@ pub(crate) fn apply_idle_inhibit(runtime: &mut Runtime, client: &mut LayerClient
     }
 }
 
+pub(crate) fn apply_shortcuts_inhibit(runtime: &mut Runtime, client: &mut LayerClient) {
+    if let Some(inhibited) = runtime.take_shortcuts_inhibit_change() {
+        client.set_shortcuts_inhibited(inhibited);
+    }
+}
+
 pub(crate) fn apply_output_power_requests(runtime: &mut Runtime, client: &mut LayerClient) {
     for on in runtime.take_output_power_requests() {
         client.set_output_power(if on {

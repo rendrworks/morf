@@ -132,7 +132,7 @@ fn list_handlers_preserve_order_and_isolate_failures() {
         )
         .unwrap();
 
-    assert!(runtime.dispatch_idle(1000, true));
+    assert!(runtime.dispatch_idle(1000, false, true));
     assert_eq!(
         runtime.call_ipc("calls", &[]).unwrap(),
         [IpcValue::String("ab".into())]
@@ -273,8 +273,8 @@ fn idle_callbacks_receive_compositor_state() {
         )
         .unwrap();
 
-    assert_eq!(runtime.idle_timeouts(), [30_000]);
-    assert!(runtime.dispatch_idle(30_000, true));
+    assert_eq!(runtime.idle_timeouts(), [(30_000, false)]);
+    assert!(runtime.dispatch_idle(30_000, false, true));
     assert_eq!(
         runtime.call_ipc("idle.get", &[]).unwrap(),
         [IpcValue::Boolean(true)]

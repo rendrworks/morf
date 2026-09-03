@@ -1,7 +1,7 @@
 use smithay_client_toolkit::session_lock::SessionLock;
 use smithay_client_toolkit::shm::slot::SlotPool;
-use wayland_client::QueueHandle;
 use wayland_client::protocol::{wl_output, wl_shm};
+use wayland_client::{Proxy, QueueHandle};
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self};
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1;
 
@@ -222,8 +222,47 @@ impl LayerState {
         self.idle_notifications = self
             .idle_timeouts
             .iter()
-            .map(|timeout| notifier.get_idle_notification(*timeout, &seat, qh, *timeout))
+            .map(|&(timeout, input_only)| {
+                // Version 2 of the protocol added the input variant, which
+                // counts only the person and ignores inhibitors. An older
+                // compositor gets the ordinary one for the same key, so the
+                // caller's callback still fires -- on inhibited idleness rather
+                // than never, which is the better of the two ways to degrade.
+                if input_only && notifier.version() >= 2 {
+                    notifier.get_input_idle_notification(timeout, &seat, qh, (timeout, input_only))
+                } else {
+                    notifier.get_idle_notification(timeout, &seat, qh, (timeout, input_only))
+                }
+            })
             .collect();
+    }
+
+    /// Asks the compositor to stop taking the shell's keys, or lets it again.
+    ///
+    /// A compositor binds keys for itself -- Super for the launcher, Alt-Tab
+    /// for the switcher -- and a shell that draws its own launcher never sees
+    /// the one key it most wants. This says: while my surface has focus, give
+    /// me all of them. Whether the compositor agrees arrives as an event.
+    pub(crate) fn set_shortcuts_inhibited(&mut self, inhibited: bool, qh: &QueueHandle<Self>) {
+        if inhibited == self.shortcuts_inhibitor.is_some() {
+            return;
+        }
+        match self.shortcuts_inhibitor.take() {
+            Some(inhibitor) => inhibitor.destroy(),
+            None => {
+                let Some(manager) = &self.shortcuts_inhibit_manager else {
+                    return;
+                };
+                let Some(seat) = self.seats.seats().next() else {
+                    return;
+                };
+                let Some(layer) = self.layers.get(&crate::PRIMARY_LAYER) else {
+                    return;
+                };
+                self.shortcuts_inhibitor =
+                    Some(manager.inhibit_shortcuts(layer.surface.wl_surface(), &seat, qh, ()));
+            }
+        }
     }
 
     /// Starts tracking fractional scale for a popup or floating window.

@@ -216,6 +216,8 @@ pub struct ToplevelRequest {
     pub identifier: String,
     pub action: String,
     pub value: bool,
+    /// For `set_minimize_target`: x, y, width, height on the shell's surface.
+    pub rect: Option<(i32, i32, i32, i32)>,
 }
 
 /// Output metadata exposed to one per-screen Lua configuration instance.

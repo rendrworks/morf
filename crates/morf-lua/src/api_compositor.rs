@@ -5,7 +5,7 @@
 //! clipboard. These two describe the session around it, and both are lists the
 //! configuration reads and requests it makes back.
 
-use luna::{Callback, CallbackReturn, Context, Table};
+use luna::{Callback, CallbackReturn, Closure, Context, Table};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -58,10 +58,60 @@ pub(crate) fn install_compositor_api<'gc>(
                 } else {
                     true
                 },
+                rect: None,
             });
             Ok(CallbackReturn::Return)
         });
         toplevel.set_field(ctx, name, entry);
     }
+    // Where a window's entry is, so a compositor that animates minimize has
+    // somewhere to send it. Coordinates on the shell's own surface.
+    let target_state = Rc::clone(&state);
+    let set_minimize_target = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (identifier, x, y, width, height): (String, i64, i64, i64, i64) = stack.consume(ctx)?;
+        let narrow = |value: i64| {
+            i32::try_from(value)
+                .map_err(|_| HostError(format!("`{value}` does not fit a surface coordinate")))
+        };
+        let mut state = target_state.borrow_mut();
+        if state.toplevel_requests.len() >= 64 {
+            return Err(HostError("window request limit reached".into()).into());
+        }
+        state.toplevel_requests.push(ToplevelRequest {
+            identifier,
+            action: "set_minimize_target".to_owned(),
+            value: true,
+            rect: Some((narrow(x)?, narrow(y)?, narrow(width)?, narrow(height)?)),
+        });
+        Ok(CallbackReturn::Return)
+    });
+    toplevel.set_field(ctx, "set_minimize_target", set_minimize_target);
     morf.set_field(ctx, "toplevel", toplevel);
+
+    // The compositor's own key bindings, held off the shell while it has
+    // focus. `active` is the compositor's answer, which is not always yes.
+    let shortcuts_state = Rc::clone(&state);
+    let shortcuts_inhibit = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let inhibited: bool = stack.consume(ctx)?;
+        let mut state = shortcuts_state.borrow_mut();
+        state.shortcuts_inhibited = inhibited;
+        state.shortcuts_inhibit_changed = true;
+        Ok(CallbackReturn::Return)
+    });
+    // The compositor's answer, delivered rather than polled: a binding that
+    // read a plain function would never re-run when the answer changed.
+    let subscribe_state = Rc::clone(&state);
+    let shortcuts_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let callback: Closure = stack.consume(ctx)?;
+        let mut state = subscribe_state.borrow_mut();
+        if state.shortcuts_callbacks.len() >= 64 {
+            return Err(HostError("shortcuts callback limit reached".into()).into());
+        }
+        state.shortcuts_callbacks.push(ctx.stash(callback));
+        Ok(CallbackReturn::Return)
+    });
+    let shortcuts = Table::new(&ctx);
+    shortcuts.set_field(ctx, "inhibit", shortcuts_inhibit);
+    shortcuts.set_field(ctx, "subscribe", shortcuts_subscribe);
+    morf.set_field(ctx, "shortcuts", shortcuts);
 }

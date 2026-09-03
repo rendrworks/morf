@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..BarConfig::default()
     };
     let mut client = LayerClient::connect(config)?;
-    let idle_notify = client.set_idle_timeouts(&[600_000]);
+    let idle_notify = client.set_idle_timeouts(&[(600_000, false)]);
     let output_power = client.set_output_power(OutputPowerMode::On);
     // Turned on and straight back off, because the point here is that the
     // compositor accepts both halves against a real surface — an inhibitor
@@ -21,6 +21,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rude besides.
     let idle_inhibit = client.set_idle_inhibited(true);
     client.set_idle_inhibited(false);
+    // And the compositor's shortcuts, held and released the same way. Whether
+    // it *agrees* arrives later as an event; this only says it can be asked.
+    let shortcuts_inhibit = client.set_shortcuts_inhibited(true);
+    client.set_shortcuts_inhibited(false);
     let clipboard = client.supports_clipboard();
     let virtual_keyboard = client.supports_virtual_keyboard();
     let input_method = client.supports_input_method();
@@ -144,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], workspaces [{}], idle {}, inhibit {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, capture {}, backdrop-blur {}, windows {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], workspaces [{}], idle {}, inhibit {}, shortcuts {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, capture {}, backdrop-blur {}, windows {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
@@ -162,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .join(","),
                     idle_notify,
                     idle_inhibit,
+                    shortcuts_inhibit,
                     output_power,
                     clipboard,
                     virtual_keyboard,

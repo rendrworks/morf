@@ -58,7 +58,7 @@ impl LayerClient {
     }
 
     /// Replaces seat idle thresholds and returns whether the compositor supports them.
-    pub fn set_idle_timeouts(&mut self, timeouts: &[u32]) -> bool {
+    pub fn set_idle_timeouts(&mut self, timeouts: &[(u32, bool)]) -> bool {
         self.state.idle_timeouts = timeouts.iter().copied().take(64).collect();
         self.state.idle_timeouts.sort_unstable();
         self.state.idle_timeouts.dedup();
@@ -96,8 +96,31 @@ impl LayerClient {
             ToplevelAction::Minimized(false) => handle.unset_minimized(),
             ToplevelAction::Fullscreen(true) => handle.set_fullscreen(None),
             ToplevelAction::Fullscreen(false) => handle.unset_fullscreen(),
+            ToplevelAction::MinimizeTarget {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                // Relative to the shell's own primary surface: that is where
+                // the task bar is, and a rectangle on any other surface would
+                // be a window flying towards the wrong thing.
+                let Some(layer) = self.state.layers.get(&crate::PRIMARY_LAYER) else {
+                    return false;
+                };
+                handle.set_rectangle(layer.surface.wl_surface(), x, y, width, height);
+            }
         }
         true
+    }
+
+    /// Holds the compositor's shortcuts off the shell, and reports whether
+    /// the compositor speaks the protocol at all -- whether it *agrees* comes
+    /// later, as `LayerEvent::ShortcutsInhibited`.
+    pub fn set_shortcuts_inhibited(&mut self, inhibited: bool) -> bool {
+        self.state
+            .set_shortcuts_inhibited(inhibited, &self.queue.handle());
+        self.state.shortcuts_inhibit_manager.is_some()
     }
 
     /// Whether this compositor lets a client act on other windows at all.

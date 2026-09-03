@@ -20,9 +20,6 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
-use wayland_protocols::wp::idle_inhibit::zv1::client::{
-    zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
-};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3::ZwpTextInputManagerV3,
     zwp_text_input_v3::{self, ZwpTextInputV3},
@@ -174,12 +171,12 @@ impl Dispatch<WpFractionalScaleV1, SurfaceRole> for LayerState {
     }
 }
 
-impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
+impl Dispatch<ExtIdleNotificationV1, (u32, bool)> for LayerState {
     fn event(
         state: &mut Self,
         _proxy: &ExtIdleNotificationV1,
         event: ext_idle_notification_v1::Event,
-        timeout_ms: &u32,
+        (timeout_ms, input_only): &(u32, bool),
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
@@ -190,6 +187,7 @@ impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
         };
         state.events.push_back(LayerEvent::Idle {
             timeout_ms: *timeout_ms,
+            input_only: *input_only,
             idle,
         });
     }
@@ -435,10 +433,6 @@ smithay_client_toolkit::delegate_dispatch2!(LayerState);
 wayland_client::delegate_noop!(LayerState: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore WpViewporter);
 wayland_client::delegate_noop!(LayerState: ignore ExtIdleNotifierV1);
-// Neither half of idle inhibition says anything back: the manager only makes
-// inhibitors, and an inhibitor is a token whose existence is the whole message.
-wayland_client::delegate_noop!(LayerState: ignore ZwpIdleInhibitManagerV1);
-wayland_client::delegate_noop!(LayerState: ignore ZwpIdleInhibitorV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwlrOutputPowerManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwlrScreencopyManagerV1);
 wayland_client::delegate_noop!(LayerState: ignore ZwpVirtualKeyboardManagerV1);

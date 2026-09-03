@@ -60,8 +60,9 @@ impl Runtime {
         self.dispatch_ui_event_with_args(node, event, &[])
     }
 
-    /// Returns compositor idle thresholds requested by Lua callbacks.
-    pub fn idle_timeouts(&self) -> Vec<u32> {
+    /// Returns compositor idle thresholds requested by Lua callbacks, each
+    /// with whether it should ignore idle inhibitors.
+    pub fn idle_timeouts(&self) -> Vec<(u32, bool)> {
         let mut timeouts = self
             .reactive
             .borrow()
@@ -74,12 +75,12 @@ impl Runtime {
     }
 
     /// Dispatches one compositor idle state change to registered Lua callbacks.
-    pub fn dispatch_idle(&mut self, timeout_ms: u32, idle: bool) -> bool {
+    pub fn dispatch_idle(&mut self, timeout_ms: u32, input_only: bool, idle: bool) -> bool {
         let callbacks = self
             .reactive
             .borrow()
             .idle_callbacks
-            .get(&timeout_ms)
+            .get(&(timeout_ms, input_only))
             .cloned()
             .unwrap_or_default();
         for callback in &callbacks {
@@ -106,6 +107,31 @@ impl Runtime {
             state.idle_inhibit_changed = false;
             state.idle_inhibited
         })
+    }
+
+    /// Takes a pending change to whether the shell wants the compositor's
+    /// shortcuts held off it.
+    pub fn take_shortcuts_inhibit_change(&mut self) -> Option<bool> {
+        let mut state = self.reactive.borrow_mut();
+        state.shortcuts_inhibit_changed.then(|| {
+            state.shortcuts_inhibit_changed = false;
+            state.shortcuts_inhibited
+        })
+    }
+
+    /// Delivers the compositor's answer to that request.
+    pub fn dispatch_shortcuts_inhibited(&mut self, active: bool) -> bool {
+        let callbacks = self.reactive.borrow().shortcuts_callbacks.clone();
+        for callback in &callbacks {
+            if let Err(message) = self.lua.enter(|ctx| {
+                execute_handler_args(ctx, callback, &[IpcValue::Boolean(active)], self.limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("shortcuts callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
     }
 
     /// Takes pending compositor clipboard publications.

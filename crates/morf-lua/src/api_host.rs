@@ -14,20 +14,26 @@ pub(crate) fn install_host_service_api<'gc>(
 ) {
     let idle_state = Rc::clone(&state);
     let idle_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (milliseconds, callback): (i64, Closure) = stack.consume(ctx)?;
+        // The third argument asks for *input* idleness: time since the person
+        // last touched anything, ignoring idle inhibitors. A media player
+        // inhibits idle so the screen stays on, and a shell that dims its own
+        // bar after a minute of no input still wants to know about the minute.
+        let (milliseconds, callback, input_only): (i64, Closure, Option<bool>) =
+            stack.consume(ctx)?;
         let milliseconds = u32::try_from(milliseconds)
             .map_err(|_| HostError("idle timeout must fit an unsigned 32-bit value".into()))?;
+        let key = (milliseconds, input_only.unwrap_or(false));
         let mut state = idle_state.borrow_mut();
         let callback_count = state.idle_callbacks.values().map(Vec::len).sum::<usize>();
         if callback_count >= 256 {
             return Err(HostError("idle callback limit reached".into()).into());
         }
-        if !state.idle_callbacks.contains_key(&milliseconds) && state.idle_callbacks.len() >= 64 {
+        if !state.idle_callbacks.contains_key(&key) && state.idle_callbacks.len() >= 64 {
             return Err(HostError("idle timeout limit reached".into()).into());
         }
         state
             .idle_callbacks
-            .entry(milliseconds)
+            .entry(key)
             .or_default()
             .push(ctx.stash(callback));
         Ok(CallbackReturn::Return)

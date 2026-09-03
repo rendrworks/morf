@@ -95,8 +95,12 @@ pub(crate) fn handle_surface_event(
             return Err("layer surface was closed".to_owned());
         }
         LayerEvent::Closed { id } => layer_surface_closed(runtime, client, state, id),
-        LayerEvent::Idle { timeout_ms, idle } => {
-            repaint |= runtime.dispatch_idle(timeout_ms, idle);
+        LayerEvent::Idle {
+            timeout_ms,
+            input_only,
+            idle,
+        } => {
+            repaint |= runtime.dispatch_idle(timeout_ms, input_only, idle);
         }
         LayerEvent::Clipboard { text } => {
             repaint |= runtime.dispatch_clipboard(text);
@@ -388,6 +392,9 @@ pub(crate) fn handle_surface_event(
                     paint_popup_surface(runtime, client, surface)?;
                 }
             }
+        }
+        LayerEvent::ShortcutsInhibited { active } => {
+            repaint |= runtime.dispatch_shortcuts_inhibited(active);
         }
         LayerEvent::AuxScale { role, scale_120 } => {
             // A popup on a 2x screen opened from a bar on a 1x one used to be

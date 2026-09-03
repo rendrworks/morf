@@ -144,6 +144,8 @@ pub enum LayerEvent {
     /// Separate from `Scale`, which is a layer surface's, because the two are
     /// addressed differently and a caller resizes different things for each.
     AuxScale { role: SurfaceRole, scale_120: u32 },
+    /// The compositor granted, or withdrew, the shell's hold on its shortcuts.
+    ShortcutsInhibited { active: bool },
     /// The compositor selected a logical size for one layer surface.
     Configure { id: u64, width: u32, height: u32 },
     /// One layer surface's preferred scale changed in protocol-native 120ths.
@@ -208,7 +210,12 @@ pub enum LayerEvent {
         repeat: bool,
     },
     /// A configured seat idle threshold changed state.
-    Idle { timeout_ms: u32, idle: bool },
+    Idle {
+        timeout_ms: u32,
+        /// Whether this threshold counts input only, ignoring idle inhibitors.
+        input_only: bool,
+        idle: bool,
+    },
     /// The compositor clipboard selection changed.
     Clipboard { text: Option<String> },
     /// An output capture completed or failed.
