@@ -126,7 +126,9 @@ pub(crate) fn timer_constructor<'gc>(
             let timer = IoTimer::every(Duration::from_secs_f64(interval / 1_000.0))
                 .map_err(|error| HostError(error.to_string()))?;
             let interval = Duration::from_secs_f64(interval / 1_000.0);
+            let id = state.borrow_mut().next_timer_id();
             state.borrow_mut().timers.push(PendingTimer {
+                id,
                 timer,
                 callback: callback.clone(),
                 repeat,

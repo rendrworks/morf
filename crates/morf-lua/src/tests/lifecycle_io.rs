@@ -412,3 +412,41 @@ fn lua_exposes_stream_parsers_and_socket_servers() {
     assert!(!path.exists());
     assert!(!next.exists());
 }
+
+#[test]
+fn a_timer_handle_stops_it() {
+    // A repeating timer with no handle could not be stopped, which is how a
+    // helper polled every twenty milliseconds went on being polled after the
+    // helper was gone. The handle names the timer to whoever holds it.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "timer-cancel.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local fired = morf.signal("timer.fired", 0)
+                local tick
+                tick = morf.timer(1, function()
+                    fired:set(fired:get() + 1)
+                    assert(tick:active(), "still there from inside its own callback")
+                    assert(tick:cancel(), "and there was something to cancel")
+                    assert(not tick:cancel(), "a second cancel finds nothing")
+                    assert(not tick:active())
+                end, true)
+                ui.Text { text = function() return "" .. fired:get() end }
+            "#,
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_millis(200);
+    while std::time::Instant::now() < deadline {
+        runtime.poll_services();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let root = runtime.scene().roots()[0];
+    assert_eq!(
+        runtime.scene().string_value(root, "text").unwrap(),
+        "1",
+        "once: a cancelled repeating timer does not fire again"
+    );
+}

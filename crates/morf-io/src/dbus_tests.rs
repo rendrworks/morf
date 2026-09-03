@@ -452,3 +452,37 @@ fn a_deferred_read_answers_from_a_poll_and_never_waits() {
     }
     assert_eq!(got.unwrap().unwrap(), DbusValue::Unsigned(3));
 }
+
+#[test]
+fn a_service_with_no_name_answers_on_its_unique_one() {
+    // An agent registers a path with an authority and is called back on its
+    // unique name; it owns nothing well-known, and on the system bus could
+    // not. An empty name is that service.
+    const PATH: &str = "/org/morf/Nameless";
+    let Ok((mut service, outcome)) = DbusService::own(Bus::Session, "", PATH, false) else {
+        return;
+    };
+    assert_eq!(outcome, NameOutcome::Owned);
+    let unique = service.name().to_owned();
+    assert!(
+        unique.starts_with(':'),
+        "the name is the unique one: {unique}"
+    );
+    let caller = thread::spawn(move || {
+        let proxy = DbusProxy::connect_with_timeout(
+            Bus::Session,
+            unique,
+            PATH,
+            "org.morf.Nameless",
+            Duration::from_secs(5),
+        )
+        .expect("a caller can connect to a unique name");
+        proxy.call_value("Ping")
+    });
+    let call = service
+        .next_call(Duration::from_secs(5))
+        .expect("the call arrived");
+    assert_eq!(call.member, "Ping");
+    service.reply(call.id, &DbusValue::Nil).unwrap();
+    assert!(caller.join().unwrap().is_ok());
+}

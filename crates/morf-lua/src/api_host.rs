@@ -1,8 +1,6 @@
 use luna::{Callback, CallbackReturn, Closure, Context, Function, Table, Value as LuaValue};
-use morf_io::Timer as IoTimer;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 use crate::{scene_bindings::*, state::*, surface_types::*, types::*};
 
@@ -329,30 +327,7 @@ pub(crate) fn install_host_service_api<'gc>(
     text_input.set_field(ctx, "content_type", text_input_content);
     text_input.set_field(ctx, "cursor_rect", text_input_rect);
     morf.set_field(ctx, "text_input", text_input);
-    let timer_state = Rc::clone(&state);
-    let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
-        if !milliseconds.is_finite() || milliseconds <= 0.0 {
-            return Err(HostError("timer interval must be finite and positive".into()).into());
-        }
-        let repeat = match repeat {
-            LuaValue::Nil => true,
-            LuaValue::Boolean(value) => value,
-            _ => return Err(HostError("timer repeat must be boolean".into()).into()),
-        };
-        let timer = IoTimer::every(Duration::from_secs_f64(milliseconds / 1_000.0))
-            .map_err(|error| HostError(error.to_string()))?;
-        let interval = Duration::from_secs_f64(milliseconds / 1_000.0);
-        timer_state.borrow_mut().timers.push(PendingTimer {
-            timer,
-            callback: ctx.stash(callback),
-            repeat,
-            interval,
-            node: None,
-        });
-        Ok(CallbackReturn::Return)
-    });
-    morf.set_field(ctx, "timer", timer);
+    crate::api_time::install_timer_api(ctx, Rc::clone(&state), morf);
     let ipc_register = Callback::from_fn(&ctx, {
         let state = Rc::clone(&state);
         move |ctx, _, mut stack| {

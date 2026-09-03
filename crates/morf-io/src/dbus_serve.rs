@@ -98,12 +98,20 @@ impl DbusService {
         } else {
             RequestNameFlags::AllowReplacement | RequestNameFlags::DoNotQueue
         };
-        let outcome = match connection.request_name_with_flags(name, flags) {
-            Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => NameOutcome::Owned,
-            Ok(zbus::fdo::RequestNameReply::InQueue) => NameOutcome::Queued,
-            Ok(_) => NameOutcome::Taken,
-            Err(zbus::Error::NameTaken) => NameOutcome::Taken,
-            Err(error) => return Err(error),
+        // No name is a service on the connection's unique name alone. That is
+        // what an agent is: polkit calls back whoever registered, at the path
+        // they registered, and the system bus would not grant an unprivileged
+        // process a well-known name to be called on anyway.
+        let outcome = if name.is_empty() {
+            NameOutcome::Owned
+        } else {
+            match connection.request_name_with_flags(name, flags) {
+                Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => NameOutcome::Owned,
+                Ok(zbus::fdo::RequestNameReply::InQueue) => NameOutcome::Queued,
+                Ok(_) => NameOutcome::Taken,
+                Err(zbus::Error::NameTaken) => NameOutcome::Taken,
+                Err(error) => return Err(error),
+            }
         };
 
         // Method calls addressed to our object. Signals and replies are not our
@@ -125,10 +133,18 @@ impl DbusService {
                 }
             }
         });
+        let name = if name.is_empty() {
+            connection
+                .unique_name()
+                .map(|unique| unique.to_string())
+                .unwrap_or_default()
+        } else {
+            name.to_owned()
+        };
         Ok((
             Self {
                 connection,
-                name: name.to_owned(),
+                name,
                 calls,
                 pending: HashMap::new(),
                 next_id: 0,
@@ -274,8 +290,10 @@ impl Drop for DbusService {
     fn drop(&mut self) {
         // Releasing the name lets whoever is queued behind us take over
         // immediately rather than waiting for the connection to be noticed as
-        // gone.
-        let _ = self.connection.release_name(self.name.as_str());
+        // gone. A unique name cannot be released and the call is skipped.
+        if !self.name.starts_with(':') {
+            let _ = self.connection.release_name(self.name.as_str());
+        }
         drop(self.join.take());
     }
 }

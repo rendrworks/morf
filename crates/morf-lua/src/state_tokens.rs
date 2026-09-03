@@ -210,3 +210,8 @@ pub(crate) struct MenuToken {
     pub(crate) menu: RefCell<Menu>,
     pub(crate) callbacks: HashMap<String, StashedClosure>,
 }
+
+/// A handle to a `morf.timer`, good for one thing: stopping it.
+pub(crate) struct TimerToken {
+    pub(crate) id: u64,
+}

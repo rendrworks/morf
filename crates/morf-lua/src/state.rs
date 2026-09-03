@@ -135,6 +135,9 @@ pub(crate) struct ReactiveState {
     /// Filled once the connection is up; read by `morf.capabilities` and by
     /// `morf info`.
     pub(crate) capabilities: Vec<(String, String)>,
+    /// The last timer id handed out. Never reused: a handle to a timer that
+    /// finished must not find a newer one wearing its number.
+    pub(crate) last_timer_id: u64,
     pub(crate) reload_completed_callbacks: Vec<StashedClosure>,
     pub(crate) reload_failed_callbacks: Vec<StashedClosure>,
     pub(crate) effects: HashMap<u64, LuaEffect>,
@@ -208,6 +211,12 @@ pub(crate) struct ReactiveState {
 }
 
 impl ReactiveState {
+    /// A fresh timer id.
+    pub(crate) fn next_timer_id(&mut self) -> u64 {
+        self.last_timer_id += 1;
+        self.last_timer_id
+    }
+
     /// Records one line, stamped with when it happened.
     ///
     /// The one way in, so every entry gets a level and a time rather than the
@@ -255,6 +264,7 @@ impl ReactiveState {
             shortcuts_callbacks: Vec::new(),
             lint_warned: HashSet::new(),
             capabilities: Vec::new(),
+            last_timer_id: 0,
             reload_completed_callbacks: Vec::new(),
             reload_failed_callbacks: Vec::new(),
             effects: HashMap::new(),

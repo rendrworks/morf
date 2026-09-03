@@ -1,7 +1,10 @@
-use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
+use luna::{
+    Callback, CallbackReturn, Closure, Context, Table, UserData, UserRef, Value as LuaValue,
+};
+use morf_io::Timer as IoTimer;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::{lua_values::*, scene_bindings::*, state::*, table_menu::*};
 
@@ -240,4 +243,78 @@ pub(crate) fn install_time_api<'gc>(
         Ok(CallbackReturn::Return)
     });
     morf.set_field(ctx, "easing_curve", easing_curve);
+}
+
+/// Installs `morf.timer`, which returns a handle that can stop it.
+///
+/// Here rather than beside the other host services, because a timer is a
+/// clock: it belongs with the elapsed timer and the system clock it shares
+/// this file with. And because a timer with no handle cannot be stopped,
+/// which is how a helper polled every twenty milliseconds went on being polled
+/// after the helper was gone.
+pub(crate) fn install_timer_api<'gc>(
+    ctx: Context<'gc>,
+    state: Rc<RefCell<ReactiveState>>,
+    morf: Table<'gc>,
+) {
+    let cancel_state = Rc::clone(&state);
+    let timer_cancel = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let token: UserRef<TimerToken> = stack.consume(ctx)?;
+        let mut state = cancel_state.borrow_mut();
+        let before = state.timers.len();
+        state.timers.retain(|timer| timer.id != token.id);
+        // Whether there was anything to stop: a second cancel, or a cancel of
+        // a one-shot that already fired, is not an error but is worth knowing.
+        stack.replace(ctx, state.timers.len() != before);
+        Ok(CallbackReturn::Return)
+    });
+    let active_state = Rc::clone(&state);
+    let timer_active = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let token: UserRef<TimerToken> = stack.consume(ctx)?;
+        let active = active_state
+            .borrow()
+            .timers
+            .iter()
+            .any(|timer| timer.id == token.id);
+        stack.replace(ctx, active);
+        Ok(CallbackReturn::Return)
+    });
+    let timer_methods = Table::new(&ctx);
+    timer_methods.set_field(ctx, "cancel", timer_cancel);
+    timer_methods.set_field(ctx, "active", timer_active);
+    let timer_metatable = Table::new(&ctx);
+    timer_metatable.set_field(ctx, "__index", timer_methods);
+    let timer_metatable = ctx.stash(timer_metatable);
+
+    let timer_state = Rc::clone(&state);
+    let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
+        if !milliseconds.is_finite() || milliseconds <= 0.0 {
+            return Err(HostError("timer interval must be finite and positive".into()).into());
+        }
+        let repeat = match repeat {
+            LuaValue::Nil => true,
+            LuaValue::Boolean(value) => value,
+            _ => return Err(HostError("timer repeat must be boolean".into()).into()),
+        };
+        let timer = IoTimer::every(Duration::from_secs_f64(milliseconds / 1_000.0))
+            .map_err(|error| HostError(error.to_string()))?;
+        let interval = Duration::from_secs_f64(milliseconds / 1_000.0);
+        let mut state = timer_state.borrow_mut();
+        let id = state.next_timer_id();
+        state.timers.push(PendingTimer {
+            id,
+            timer,
+            callback: ctx.stash(callback),
+            repeat,
+            interval,
+            node: None,
+        });
+        drop(state);
+        let userdata = UserData::new_static(&ctx, TimerToken { id });
+        userdata.set_metatable(ctx, Some(ctx.fetch(&timer_metatable)));
+        stack.replace(ctx, userdata);
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "timer", timer);
 }

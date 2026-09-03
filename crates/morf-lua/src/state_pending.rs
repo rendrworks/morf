@@ -20,6 +20,8 @@ pub(crate) struct PendingPam {
 }
 
 pub(crate) struct PendingTimer {
+    /// Names the timer to whoever holds its handle, so it can be cancelled.
+    pub(crate) id: u64,
     pub(crate) timer: IoTimer,
     pub(crate) callback: StashedClosure,
     pub(crate) repeat: bool,

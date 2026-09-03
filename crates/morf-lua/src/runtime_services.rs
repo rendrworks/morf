@@ -148,13 +148,17 @@ impl Runtime {
                     state.timers.swap_remove(index);
                 }
                 match IoTimer::every(duration) {
-                    Ok(timer) => state.timers.push(PendingTimer {
-                        timer,
-                        callback,
-                        repeat,
-                        interval: duration,
-                        node: Some(node),
-                    }),
+                    Ok(timer) => {
+                        let id = state.next_timer_id();
+                        state.timers.push(PendingTimer {
+                            id,
+                            timer,
+                            callback,
+                            repeat,
+                            interval: duration,
+                            node: Some(node),
+                        });
+                    }
                     Err(error) => state.log(LogLevel::Warn, format!("Timer: {error}")),
                 }
                 service_changed = true;
