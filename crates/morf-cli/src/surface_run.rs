@@ -211,6 +211,7 @@ pub(crate) fn run_surface(
                 .map_err(|_| "output supervisor stopped".to_owned())?;
             return Ok(());
         }
+        apply_idle_inhibit(&mut runtime, &mut client);
         if let Some(enabled) = runtime.take_watch_files_change() {
             tx.send(SupervisorMessage::WatchFiles(enabled))
                 .map_err(|_| "output supervisor stopped".to_owned())?;

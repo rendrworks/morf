@@ -14,6 +14,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = LayerClient::connect(config)?;
     let idle_notify = client.set_idle_timeouts(&[600_000]);
     let output_power = client.set_output_power(OutputPowerMode::On);
+    // Turned on and straight back off, because the point here is that the
+    // compositor accepts both halves against a real surface — an inhibitor
+    // built on a bad one is a fatal protocol error, so surviving this line is
+    // the assertion. Leaving a smoke test holding the session awake would be
+    // rude besides.
+    let idle_inhibit = client.set_idle_inhibited(true);
+    client.set_idle_inhibited(false);
     let clipboard = client.supports_clipboard();
     let virtual_keyboard = client.supports_virtual_keyboard();
     let input_method = client.supports_input_method();
@@ -137,12 +144,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",");
                 println!(
-                    "{}x{} at {}/120, screens [{}], idle {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, capture {}, backdrop-blur {}, windows {}, frame {} ms, {} ({:?})",
+                    "{}x{} at {}/120, screens [{}], idle {}, inhibit {}, power {}, clipboard {}, keyboard {}, input-method {}, text-input {}, capture {}, backdrop-blur {}, windows {}, frame {} ms, {} ({:?})",
                     client.logical_size().0,
                     client.logical_size().1,
                     client.scale_120(),
                     screens,
                     idle_notify,
+                    idle_inhibit,
                     output_power,
                     clipboard,
                     virtual_keyboard,

@@ -66,6 +66,17 @@ impl LayerClient {
         self.state.idle_notifier.is_some()
     }
 
+    /// Holds the session awake, and reports whether the compositor allows it.
+    ///
+    /// `false` means no compositor support rather than failure to apply: a
+    /// configuration can tell the difference between "not inhibiting" and
+    /// "cannot inhibit here", which otherwise look identical from Lua.
+    pub fn set_idle_inhibited(&mut self, inhibited: bool) -> bool {
+        self.state
+            .set_idle_inhibited(inhibited, &self.queue.handle());
+        self.state.idle_inhibit_manager.is_some()
+    }
+
     /// Requests a power state for the configured output, or every output for a lock client.
     pub fn set_output_power(&mut self, mode: OutputPowerMode) -> bool {
         if self.state.output_power_manager.is_none() {

@@ -100,6 +100,15 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().output_power_requests)
     }
 
+    /// Takes a pending change to whether the session is being held awake.
+    pub fn take_idle_inhibit_change(&mut self) -> Option<bool> {
+        let mut state = self.reactive.borrow_mut();
+        state.idle_inhibit_changed.then(|| {
+            state.idle_inhibit_changed = false;
+            state.idle_inhibited
+        })
+    }
+
     /// Takes pending compositor clipboard publications.
     pub fn take_clipboard_requests(&mut self) -> Vec<String> {
         std::mem::take(&mut self.reactive.borrow_mut().clipboard_requests)

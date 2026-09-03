@@ -32,8 +32,20 @@ pub(crate) fn install_host_service_api<'gc>(
             .push(ctx.stash(callback));
         Ok(CallbackReturn::Return)
     });
+    let inhibit_state = Rc::clone(&state);
+    // The other direction from `subscribe`: not "tell me when the session goes
+    // idle" but "do not let it". A video player, a presentation, a long copy —
+    // each wants the screen to stay awake while nobody touches the input.
+    let idle_inhibit = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let inhibited: bool = stack.consume(ctx)?;
+        let mut state = inhibit_state.borrow_mut();
+        state.idle_inhibited = inhibited;
+        state.idle_inhibit_changed = true;
+        Ok(CallbackReturn::Return)
+    });
     let idle = Table::new(&ctx);
     idle.set_field(ctx, "subscribe", idle_subscribe);
+    idle.set_field(ctx, "inhibit", idle_inhibit);
     morf.set_field(ctx, "idle", idle);
     let output_power_state = Rc::clone(&state);
     let output_power_set = Callback::from_fn(&ctx, move |ctx, _, mut stack| {

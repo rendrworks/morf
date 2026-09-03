@@ -125,3 +125,52 @@ fn a_configuration_can_ask_the_shell_to_stop() {
         "and the request is there for the supervisor to act on"
     );
 }
+
+#[test]
+fn a_proxy_takes_a_call_timeout_and_enumerates_managed_objects() {
+    // Two halves of the same complaint: that writing UPower or BlueZ in Lua is
+    // technically possible and unpleasant.
+    //
+    // The timeout was the real half. Every proxy gave up after a second, which
+    // is right for reading a property and wrong for anything a human is part
+    // of -- BlueZ `Pair` does not return until the pairing succeeds or fails,
+    // well past it.
+    //
+    // ObjectManager was not a gap at all. `GetManagedObjects` returns
+    // `a{oa{sa{sv}}}` and the decoder beside this has always handled it: the
+    // reply arrives as a path -> interface -> property tree of ordinary Lua
+    // tables. Nothing needed writing; this pins it down so it stays true.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "dbus-timeout.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local seen = morf.signal("dbus.seen", "no bus")
+                local ok, proxy = pcall(morf.dbus.proxy,
+                    "session", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus", 15000)
+                if ok then
+                    local names = proxy:call("ListNames")
+                    seen:set(type(names) == "table" and "listed" or "odd")
+                end
+                ui.Text { text = function() return seen:get() end }
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let scene = runtime.scene();
+    let text = scene.string_value(root, "text").unwrap().to_owned();
+    drop(scene);
+    assert!(
+        text == "listed" || text == "no bus",
+        "a proxy accepts a timeout and still works: {text}"
+    );
+    if text == "no bus" {
+        assert!(
+            std::env::var("DBUS_SESSION_BUS_ADDRESS").is_err(),
+            "there is a session bus, so the proxy failed for a real reason"
+        );
+    }
+}

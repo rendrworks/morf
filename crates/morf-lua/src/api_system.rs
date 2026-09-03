@@ -85,15 +85,38 @@ pub(crate) fn install_system_service_api<'gc>(
     dbus_metatable.set_field(ctx, "__index", dbus_methods);
     let dbus_metatable = ctx.stash(dbus_metatable);
     let dbus_proxy = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (bus, destination, path, interface): (String, String, String, String) =
-            stack.consume(ctx)?;
+        let (bus, destination, path, interface, timeout_ms): (
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+        ) = stack.consume(ctx)?;
         let bus = match bus.as_str() {
             "session" => Bus::Session,
             "system" => Bus::System,
             _ => return Err(HostError(format!("unknown D-Bus bus `{bus}`")).into()),
         };
-        let proxy = DbusProxy::connect(bus, destination, path, interface)
-            .map_err(|error| HostError(error.to_string()))?;
+        // A second is right for reading a property and wrong for anything a
+        // human is part of: BlueZ `Pair` does not return until the pairing
+        // succeeds, fails, or times out well past it, and a caller with no way
+        // to say so was left driving `bluetoothctl` instead.
+        let proxy = match timeout_ms {
+            Some(milliseconds) => {
+                let milliseconds = u64::try_from(milliseconds).map_err(|_| {
+                    HostError(format!("`{milliseconds}` is not a D-Bus call timeout"))
+                })?;
+                DbusProxy::connect_with_timeout(
+                    bus,
+                    destination,
+                    path,
+                    interface,
+                    Duration::from_millis(milliseconds),
+                )
+            }
+            None => DbusProxy::connect(bus, destination, path, interface),
+        }
+        .map_err(|error| HostError(error.to_string()))?;
         let userdata = UserData::new_static(&ctx, DbusToken { proxy });
         userdata.set_metatable(ctx, Some(ctx.fetch(&dbus_metatable)));
         stack.replace(ctx, userdata);

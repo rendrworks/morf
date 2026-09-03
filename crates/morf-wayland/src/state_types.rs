@@ -49,6 +49,9 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::WpFractionalScaleV1,
 };
+use wayland_protocols::wp::idle_inhibit::zv1::client::{
+    zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3::ZwpTextInputV3,
 };
@@ -159,6 +162,12 @@ pub(crate) struct LayerState {
     pub(crate) touch_points: HashMap<i32, ((f64, f64), SurfaceRole)>,
     pub(crate) keyboard_surface: Option<SurfaceRole>,
     pub(crate) idle_notifier: Option<ExtIdleNotifierV1>,
+    pub(crate) idle_inhibit_manager: Option<ZwpIdleInhibitManagerV1>,
+    /// The live inhibitor, if the shell is currently holding the session awake.
+    ///
+    /// Its existence *is* the inhibition — the protocol has no "off", only a
+    /// destroy — so this is `Some` exactly while the session is being held.
+    pub(crate) idle_inhibitor: Option<ZwpIdleInhibitorV1>,
     pub(crate) idle_notifications: Vec<ExtIdleNotificationV1>,
     pub(crate) idle_timeouts: Vec<u32>,
     pub(crate) data_device_manager: Option<DataDeviceManagerState>,

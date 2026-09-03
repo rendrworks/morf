@@ -226,6 +226,37 @@ impl LayerState {
             .collect();
     }
 
+    /// Holds the session awake, or stops holding it.
+    ///
+    /// The protocol has no "off": an inhibitor exists or it does not, and
+    /// destroying it is how the session is released. So this is idempotent by
+    /// construction — asking twice for the same state does nothing the second
+    /// time, which matters because a configuration is likely to assign this
+    /// from a binding that re-runs on every frame.
+    pub(crate) fn set_idle_inhibited(&mut self, inhibited: bool, qh: &QueueHandle<Self>) {
+        if inhibited == self.idle_inhibitor.is_some() {
+            return;
+        }
+        match self.idle_inhibitor.take() {
+            Some(inhibitor) => inhibitor.destroy(),
+            None => {
+                let Some(manager) = &self.idle_inhibit_manager else {
+                    return;
+                };
+                // Against the shell's own surface, because the protocol scopes
+                // inhibition to a surface. Looked up rather than taken through
+                // `layer()`, which panics when there is none: a configuration
+                // may ask for this before its surface exists, and refusing to
+                // inhibit is the right answer there rather than dying.
+                let Some(layer) = self.layers.get(&crate::PRIMARY_LAYER) else {
+                    return;
+                };
+                self.idle_inhibitor =
+                    Some(manager.create_inhibitor(layer.surface.wl_surface(), qh, ()));
+            }
+        }
+    }
+
     pub(crate) fn create_lock_surface(
         &mut self,
         output: wl_output::WlOutput,

@@ -339,6 +339,10 @@ pub(crate) struct ReactiveState {
     /// One-way: nothing clears it but the supervisor reading it, and by then
     /// the process is on its way out. A configuration cannot un-quit.
     pub(crate) quit_requested: bool,
+    /// Whether the configuration is holding the session awake, and whether that
+    /// has changed since the compositor was last told.
+    pub(crate) idle_inhibited: bool,
+    pub(crate) idle_inhibit_changed: bool,
     pub(crate) reload_completed_callbacks: Vec<StashedClosure>,
     pub(crate) reload_failed_callbacks: Vec<StashedClosure>,
     pub(crate) effects: HashMap<u64, LuaEffect>,
@@ -429,6 +433,8 @@ impl ReactiveState {
             watch_files: true,
             watch_files_changed: false,
             quit_requested: false,
+            idle_inhibited: false,
+            idle_inhibit_changed: false,
             reload_completed_callbacks: Vec::new(),
             reload_failed_callbacks: Vec::new(),
             effects: HashMap::new(),

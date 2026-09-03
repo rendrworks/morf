@@ -23,6 +23,7 @@ use wayland_protocols::ext::image_capture_source::v1::client::{
 };
 use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
@@ -76,6 +77,9 @@ impl LayerClient {
             .ok();
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
         let idle_notifier = globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok();
+        let idle_inhibit_manager = globals
+            .bind::<ZwpIdleInhibitManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
         let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
         let virtual_keyboard_manager = globals
             .bind::<ZwpVirtualKeyboardManagerV1, _, _>(&qh, 1..=1, ())
@@ -141,6 +145,8 @@ impl LayerClient {
             touch_points: HashMap::new(),
             keyboard_surface: None,
             idle_notifier,
+            idle_inhibit_manager,
+            idle_inhibitor: None,
             idle_notifications: Vec::new(),
             idle_timeouts: Vec::new(),
             data_device_manager,
