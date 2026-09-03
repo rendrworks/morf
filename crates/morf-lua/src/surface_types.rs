@@ -300,6 +300,14 @@ pub struct ScreencopyRequest {
     /// out and nothing uploaded back. Honoured where the compositor and the
     /// GPU allow it, and quietly shared memory where they do not.
     pub gpu: bool,
+    /// The name the picture is published under, when the caller chose one.
+    ///
+    /// `frame.source` is then `memory:capture/<name>` or `gpu:capture/<name>`,
+    /// and a later capture under the same name replaces the picture rather
+    /// than adding one: a thumbnail that refreshes holds one image, not one
+    /// per refresh. Without a name the request's own id is used, and the
+    /// picture stays until `morf.screencopy.release(source)`.
+    pub name: Option<String>,
 }
 
 impl IpcValue {

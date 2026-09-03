@@ -160,6 +160,21 @@ impl Runtime {
         std::mem::take(&mut self.reactive.borrow_mut().screencopy_requests)
     }
 
+    /// Takes the name a capture asked to be published under, if it chose one.
+    pub fn take_screencopy_name(&mut self, request_id: u64) -> Option<String> {
+        self.reactive
+            .borrow_mut()
+            .screencopy_names
+            .remove(&request_id)
+    }
+
+    /// Takes the published captures a configuration has released.
+    ///
+    /// Each is a source string as `frame.source` gave it, or the bare name.
+    pub fn take_screencopy_releases(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.reactive.borrow_mut().screencopy_releases)
+    }
+
     /// Dispatches one output capture to its requesting Lua callback.
     pub fn dispatch_screencopy(
         &mut self,

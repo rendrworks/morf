@@ -186,6 +186,7 @@ local function refresh()
   local scanned = 0
   while scanned < #tiles do
     local tile = tiles[next_slot]
+    local slot = next_slot
     next_slot = next_slot % #tiles + 1
     scanned = scanned + 1
     if tile.identifier then
@@ -197,7 +198,7 @@ local function refresh()
         if err or tile.identifier ~= wanted then return end
         tile.shot.source = frame.source
         tile.shot.visible = true
-      end)
+      end, { name = "tile" .. slot })
       return
     end
   end

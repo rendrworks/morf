@@ -358,12 +358,14 @@ fn screencopy_bridges_bounded_requests_and_pixels() {
                 include_cursor: true,
                 window: None,
                 gpu: false,
+                name: None,
             },
             ScreencopyRequest {
                 id: 1,
                 include_cursor: false,
                 window: None,
                 gpu: false,
+                name: None,
             },
         ]
     );

@@ -12,7 +12,9 @@
 -- Started with `MORF_CAPTURE_READBACK=1` the engine reads the GPU capture
 -- back once -- the one copy the path otherwise avoids -- so the two can be
 -- compared here, pixel for pixel. `morf ipc call status` says how that went;
--- `morf ipc call again` takes both pictures again.
+-- `morf ipc call again` takes both pictures again -- under the same names,
+-- so they replace the last pair rather than pile up beside it.
+-- `morf ipc call release` lets both go.
 
 local morf = require("morf")
 local ui = require("morf.ui")
@@ -97,7 +99,7 @@ local function shoot()
     gpu_shot.source = frame.source
     gpu_label.text = frame.gpu and "gpu  " .. frame.source or "shm (fallback)  " .. frame.source
     compare()
-  end, { gpu = true })
+  end, { gpu = true, name = "gpu" })
   morf.screencopy.capture(false, function(frame, err)
     if err then
       status:set("shm: " .. tostring(err))
@@ -107,11 +109,18 @@ local function shoot()
     shm_shot.source = frame.source
     shm_label.text = "shm  " .. frame.source
     compare()
-  end)
+  end, { name = "shm" })
 end
 
 morf.ipc.status = function() return status:get() end
 morf.ipc.caps = function() return tostring(morf.capabilities.dmabuf_capture) end
+morf.ipc.release = function()
+  morf.screencopy.release("gpu:capture/gpu")
+  morf.screencopy.release("memory:capture/shm")
+  gpu_shot.source = ""
+  shm_shot.source = ""
+  return "released"
+end
 morf.ipc.again = function()
   shoot()
   return "ok"

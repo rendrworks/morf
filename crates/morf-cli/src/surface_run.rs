@@ -328,6 +328,7 @@ pub(crate) fn run_surface(
             )?;
         }
         apply_service_requests(&mut runtime, &mut client);
+        apply_capture_releases(&mut runtime, &mut renderer);
         apply_window_surface_actions(&mut runtime, &client, &state.floating_surfaces);
         if repaint {
             let painted = Instant::now();

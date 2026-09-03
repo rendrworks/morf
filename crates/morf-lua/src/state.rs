@@ -164,6 +164,10 @@ pub(crate) struct ReactiveState {
     pub(crate) clipboard_callbacks: Vec<StashedClosure>,
     pub(crate) screencopy_requests: Vec<ScreencopyRequest>,
     pub(crate) screencopy_callbacks: HashMap<u64, StashedClosure>,
+    /// The chosen name of each capture in flight, by request.
+    pub(crate) screencopy_names: HashMap<u64, String>,
+    /// Published captures the configuration is done with.
+    pub(crate) screencopy_releases: Vec<String>,
     pub(crate) next_screencopy: u64,
     pub(crate) virtual_keyboard_requests: Vec<VirtualKeyboardRequest>,
     pub(crate) input_method_enable_requested: bool,
@@ -285,6 +289,8 @@ impl ReactiveState {
             clipboard_callbacks: Vec::new(),
             screencopy_requests: Vec::new(),
             screencopy_callbacks: HashMap::new(),
+            screencopy_names: HashMap::new(),
+            screencopy_releases: Vec::new(),
             next_screencopy: 0,
             virtual_keyboard_requests: Vec::new(),
             input_method_enable_requested: false,

@@ -61,7 +61,10 @@ pub(crate) fn dispatch_screencopy(
     // instead of leaking an image per frame. A capture drawn on the GPU is
     // the texture that was exported for it, under `gpu:`; one that came
     // through shared memory is uploaded, under `memory:`.
-    let name = format!("capture/{request_id}");
+    let name = match runtime.take_screencopy_name(request_id) {
+        Some(name) => format!("capture/{name}"),
+        None => format!("capture/{request_id}"),
+    };
     let mut result = result;
     let mut source = format!("memory:{name}");
     match (renderer, &mut result) {
@@ -118,6 +121,32 @@ pub(crate) fn dispatch_screencopy(
             pixels: frame.pixels,
         }),
     )
+}
+
+/// Drops the published captures a configuration has released.
+///
+/// A source as `frame.source` gave it, with either prefix, or the bare
+/// name: whichever side holds it lets go, and a name nothing held is not
+/// an error, since a release after a replacement is the natural thing to
+/// write.
+pub(crate) fn apply_capture_releases(
+    runtime: &mut Runtime,
+    renderer: &mut RenderEngine<WgpuBackend>,
+) {
+    for source in runtime.take_screencopy_releases() {
+        let name = source
+            .strip_prefix("gpu:")
+            .or_else(|| source.strip_prefix("memory:"))
+            .unwrap_or(&source);
+        let name = if name.starts_with("capture/") {
+            name.to_owned()
+        } else {
+            format!("capture/{name}")
+        };
+        let backend = renderer.backend_mut();
+        backend.forget_image(&name);
+        backend.forget_texture(&name);
+    }
 }
 
 /// Handles the two capture events, or hands any other event back.
