@@ -270,6 +270,18 @@ pub(crate) fn popup_constraints(
 /// doing, because that is the compositor's business and not a client's. An
 /// overview or a task switcher wants exactly this list, plus a capture of each,
 /// and no more.
+/// Something to do to another window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToplevelAction {
+    /// Focus it, on this client's seat.
+    Activate,
+    /// Ask it to close, which is a request and not a kill.
+    Close,
+    Maximized(bool),
+    Minimized(bool),
+    Fullscreen(bool),
+}
+
 /// One workspace, as `ext-workspace-v1` describes it.
 ///
 /// Compositor-neutral by construction: nothing here is Hyprland's or sway's
@@ -320,4 +332,21 @@ pub struct ToplevelInfo {
     /// Which application it belongs to, matching a desktop entry's id where the
     /// application sets it — which is how an overview finds an icon.
     pub app_id: String,
+    /// Whether this window is the focused one.
+    ///
+    /// These four come from `wlr-foreign-toplevel-management` rather than from
+    /// the enumeration protocol, which reports no state at all. On a compositor
+    /// offering only the newer protocol they are all false and
+    /// [`Self::controllable`] is false with them, which is how a configuration
+    /// tells "not maximized" from "never said".
+    pub activated: bool,
+    pub maximized: bool,
+    pub minimized: bool,
+    pub fullscreen: bool,
+    /// Whether this window can be acted on — activated, closed, maximized.
+    ///
+    /// False when the compositor offers no control protocol, and false when it
+    /// does but this window could not be matched to a handle in it. A task bar
+    /// should draw an entry either way and only offer the click for this.
+    pub controllable: bool,
 }

@@ -17,6 +17,7 @@ mod state_methods;
 mod state_types;
 mod surface_handlers;
 mod surface_types;
+mod toplevel_control;
 mod toplevel_handlers;
 mod types;
 mod workspace_handlers;

@@ -4,7 +4,8 @@ use morf_lua::{
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
 use morf_wayland::{
-    BarConfig, KeyboardFocus, LayerAnchors, LayerClient, PRIMARY_LAYER, ShellLayer, physical_size,
+    BarConfig, KeyboardFocus, LayerAnchors, LayerClient, PRIMARY_LAYER, ShellLayer, ToplevelAction,
+    physical_size,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -29,6 +30,7 @@ pub(crate) fn apply_service_requests(runtime: &mut Runtime, client: &mut LayerCl
     publish_windows(runtime, client);
     publish_workspaces(runtime, client);
     apply_workspace_activation(runtime, client);
+    apply_toplevel_requests(runtime, client);
 }
 
 /// Hands the compositor's window list to the configuration, when it changed.
@@ -48,6 +50,11 @@ fn publish_windows(runtime: &mut Runtime, client: &mut LayerClient) {
             identifier: window.identifier,
             title: window.title,
             app_id: window.app_id,
+            activated: window.activated,
+            maximized: window.maximized,
+            minimized: window.minimized,
+            fullscreen: window.fullscreen,
+            controllable: window.controllable,
         })
         .collect();
     runtime.set_windows(&windows);
@@ -77,6 +84,21 @@ fn publish_workspaces(runtime: &mut Runtime, client: &mut LayerClient) {
         })
         .collect();
     runtime.set_workspaces(&workspaces);
+}
+
+/// Acts on other windows, if the configuration asked.
+fn apply_toplevel_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    for request in runtime.take_toplevel_requests() {
+        let action = match request.action.as_str() {
+            "activate" => ToplevelAction::Activate,
+            "close" => ToplevelAction::Close,
+            "set_maximized" => ToplevelAction::Maximized(request.value),
+            "set_minimized" => ToplevelAction::Minimized(request.value),
+            "set_fullscreen" => ToplevelAction::Fullscreen(request.value),
+            _ => continue,
+        };
+        client.control_toplevel(&request.identifier, action);
+    }
 }
 
 /// Switches workspace, if the configuration asked.

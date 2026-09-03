@@ -103,6 +103,22 @@ pub struct Toplevel {
     pub title: String,
     /// Which application it belongs to.
     pub app_id: String,
+    pub activated: bool,
+    pub maximized: bool,
+    pub minimized: bool,
+    pub fullscreen: bool,
+    /// Whether the window can be acted on. False means the state above is
+    /// unknown rather than false -- the compositor offers no control protocol,
+    /// or this window did not match a handle in it.
+    pub controllable: bool,
+}
+
+/// Something a configuration asked to do to another window.
+#[derive(Clone, Debug)]
+pub struct ToplevelRequest {
+    pub identifier: String,
+    pub action: String,
+    pub value: bool,
 }
 
 /// Output metadata exposed to one per-screen Lua configuration instance.

@@ -257,3 +257,90 @@ fn a_configuration_reads_workspaces_and_asks_to_switch() {
         "the request is taken once"
     );
 }
+
+#[test]
+fn a_configuration_acts_on_another_window() {
+    // `ext-foreign-toplevel-list` is enumeration and nothing else -- no state,
+    // no requests -- so a shell built on it alone can draw a task list and not
+    // a task bar: every entry is a label nobody can click. The control half
+    // comes from `wlr-foreign-toplevel-management`, and this is what a
+    // configuration sees of it.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "toplevels.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local shown = morf.signal("tl.shown", "none")
+                morf.timer(1, function()
+                    local lines = {}
+                    for _, w in ipairs(morf.windows) do
+                        lines[#lines + 1] = w.app_id ..
+                            (w.activated and "*" or "") ..
+                            (w.controllable and "" or "?")
+                        if w.app_id == "editor" then
+                            morf.toplevel.activate(w.identifier)
+                            morf.toplevel.set_maximized(w.identifier)
+                            morf.toplevel.set_minimized(w.identifier, false)
+                        end
+                    end
+                    shown:set(table.concat(lines, ","))
+                end, false)
+                ui.Text { text = function() return shown:get() end }
+            "#,
+        )
+        .unwrap();
+    runtime.set_windows(&[
+        Toplevel {
+            identifier: "one".into(),
+            title: "notes".into(),
+            app_id: "editor".into(),
+            activated: true,
+            controllable: true,
+            ..Toplevel::default()
+        },
+        // A window the control protocol never matched: its state is unknown
+        // rather than false, which is what `controllable` is for.
+        Toplevel {
+            identifier: "two".into(),
+            title: "mail".into(),
+            app_id: "mailer".into(),
+            ..Toplevel::default()
+        },
+    ]);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while !runtime.poll_services() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let root = runtime.scene().roots()[0];
+    assert_eq!(
+        runtime.scene().string_value(root, "text").unwrap(),
+        "editor*,mailer?",
+        "focus and controllability both reach the configuration"
+    );
+    let requests = runtime.take_toplevel_requests();
+    let described = requests
+        .iter()
+        .map(|request| {
+            format!(
+                "{}:{}={}",
+                request.identifier, request.action, request.value
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        described,
+        [
+            "one:activate=true",
+            // The setters default to on, so `set_maximized(id)` reads the way
+            // it looks, and the explicit `false` still comes through.
+            "one:set_maximized=true",
+            "one:set_minimized=false",
+        ],
+        "and the requests come back in order, addressed by identifier"
+    );
+    assert!(runtime.take_toplevel_requests().is_empty(), "taken once");
+}

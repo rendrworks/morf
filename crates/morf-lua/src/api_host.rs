@@ -393,21 +393,11 @@ pub(crate) fn install_host_service_api<'gc>(
     // compositor that does not report them at all.
     let windows = Table::new(&ctx);
     morf.set_field(ctx, "windows", windows);
+    crate::api_compositor::install_compositor_api(ctx, Rc::clone(&state), morf);
 
     // Empty rather than absent, so a configuration can hold it and watch it
     // from its first line — and so `#morf.workspaces` is a number rather than
     // an error on a compositor that does not speak the protocol at all.
-    let workspaces = Table::new(&ctx);
-    morf.set_field(ctx, "workspaces", workspaces);
-    let activate_state = Rc::clone(&state);
-    let workspace_activate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let id: String = stack.consume(ctx)?;
-        activate_state.borrow_mut().workspace_activation = Some(id);
-        Ok(CallbackReturn::Return)
-    });
-    let workspace = Table::new(&ctx);
-    workspace.set_field(ctx, "activate", workspace_activate);
-    morf.set_field(ctx, "workspace", workspace);
 }
 
 /// Builds the Lua table describing one output.

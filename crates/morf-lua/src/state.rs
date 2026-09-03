@@ -4,22 +4,26 @@ use luna::{StashedClosure, StashedTable, UserRef};
 use morf_desktop::DesktopEntries;
 use morf_image::ImageRect as QuantizeRect;
 use morf_io::{
-    DbusProxy, DbusService, DbusSignal, FileDocument, FileView, FileWatcher, Process,
-    ProcessConfig, Socket, SocketServer, SplitParser, StreamCollector, Timer as IoTimer,
+    DbusProxy, DbusService, FileDocument, FileView, FileWatcher, Process, ProcessConfig, Socket,
+    SocketServer, SplitParser, StreamCollector,
 };
 use morf_layout::{TransformTracker, TransformWatcher as NativeTransformWatcher};
 use morf_lifecycle::Retention;
 use morf_menu::Menu;
 use morf_reactive::{Graph, SignalId};
 use morf_scene::{Easing, GroupId, ListModel, ModelId, NodeHandle, Scene, VirtualList};
-use morf_services::{GreetdClient, PamTask, StatusNotifierHost, UdevMonitor};
+use morf_services::GreetdClient;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::{events::*, surface_types::*};
+use crate::{events::*, surface_types::*, types::ToplevelRequest};
+// Re-exported, because these moved out of this file only to satisfy the line
+// gate: every consumer reaches for them through `state::*` and there is no
+// reason to make them all learn a second module name.
+pub(crate) use crate::state_pending::*;
 
 #[derive(Debug)]
 pub(crate) struct SignalToken {
@@ -228,46 +232,6 @@ pub(crate) enum ViewKind {
     Grid,
 }
 
-pub(crate) struct PendingPam {
-    pub(crate) task: PamTask,
-    pub(crate) callback: StashedClosure,
-    pub(crate) unlock_on_success: bool,
-}
-
-pub(crate) struct PendingTimer {
-    pub(crate) timer: IoTimer,
-    pub(crate) callback: StashedClosure,
-    pub(crate) repeat: bool,
-    pub(crate) interval: Duration,
-    pub(crate) node: Option<NodeHandle>,
-}
-
-pub(crate) struct PendingDbusSignal {
-    pub(crate) signal: DbusSignal,
-    pub(crate) callback: StashedClosure,
-}
-
-/// A bus name this configuration owns, and who answers calls on it.
-///
-/// The service is shared rather than owned here because it is reachable from
-/// two directions at once: the runtime polls it for arriving calls, and the
-/// configuration replies through the same handle from inside the callback
-/// those calls are delivered to.
-pub(crate) struct PendingDbusService {
-    pub(crate) service: Rc<RefCell<DbusService>>,
-    pub(crate) callback: StashedClosure,
-}
-
-pub(crate) struct PendingUdev {
-    pub(crate) monitor: UdevMonitor,
-    pub(crate) callback: StashedClosure,
-}
-
-pub(crate) struct PendingStatusNotifier {
-    pub(crate) host: StatusNotifierHost,
-    pub(crate) callback: StashedClosure,
-}
-
 pub(crate) struct LuaTransformWatcher {
     pub(crate) a: NodeHandle,
     pub(crate) b: NodeHandle,
@@ -343,6 +307,8 @@ pub(crate) struct ReactiveState {
     /// has changed since the compositor was last told.
     /// The workspace a configuration has asked to switch to, if any.
     pub(crate) workspace_activation: Option<String>,
+    /// What a configuration asked to do to other windows this frame.
+    pub(crate) toplevel_requests: Vec<ToplevelRequest>,
     pub(crate) idle_inhibited: bool,
     pub(crate) idle_inhibit_changed: bool,
     pub(crate) reload_completed_callbacks: Vec<StashedClosure>,
@@ -436,6 +402,7 @@ impl ReactiveState {
             watch_files_changed: false,
             quit_requested: false,
             workspace_activation: None,
+            toplevel_requests: Vec::new(),
             idle_inhibited: false,
             idle_inhibit_changed: false,
             reload_completed_callbacks: Vec::new(),

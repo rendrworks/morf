@@ -54,9 +54,19 @@ impl Runtime {
                     "app_id",
                     LuaValue::String(ctx.intern(window.app_id.as_bytes())),
                 );
+                entry.set_field(ctx, "activated", window.activated);
+                entry.set_field(ctx, "maximized", window.maximized);
+                entry.set_field(ctx, "minimized", window.minimized);
+                entry.set_field(ctx, "fullscreen", window.fullscreen);
+                entry.set_field(ctx, "controllable", window.controllable);
                 let _ = table.set(ctx, index as i64 + 1, entry);
             }
         });
+    }
+
+    /// Takes what a configuration asked to do to other windows.
+    pub fn take_toplevel_requests(&mut self) -> Vec<ToplevelRequest> {
+        std::mem::take(&mut self.reactive.borrow_mut().toplevel_requests)
     }
 
     /// Replaces `morf.workspaces` with the compositor's current workspace list.

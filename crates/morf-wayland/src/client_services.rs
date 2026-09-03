@@ -66,6 +66,71 @@ impl LayerClient {
         self.state.idle_notifier.is_some()
     }
 
+    /// What can be done to another window, by identifier.
+    ///
+    /// One entry point rather than five methods, because every one of them is
+    /// the same lookup followed by one request, and the lookup is the part that
+    /// can fail. `false` means the window is not controllable — see
+    /// [`ToplevelInfo::controllable`].
+    pub fn control_toplevel(&mut self, identifier: &str, action: ToplevelAction) -> bool {
+        if !self.supports_toplevel_control() {
+            return false;
+        }
+        let Some(handle) = self.toplevel_control_handle(identifier) else {
+            return false;
+        };
+        match action {
+            ToplevelAction::Activate => {
+                // Activation is scoped to a seat: the protocol wants to know
+                // *whose* focus is moving, and a client with no seat has no
+                // business moving anybody's.
+                let Some(seat) = self.state.seats.seats().next() else {
+                    return false;
+                };
+                handle.activate(&seat);
+            }
+            ToplevelAction::Close => handle.close(),
+            ToplevelAction::Maximized(true) => handle.set_maximized(),
+            ToplevelAction::Maximized(false) => handle.unset_maximized(),
+            ToplevelAction::Minimized(true) => handle.set_minimized(),
+            ToplevelAction::Minimized(false) => handle.unset_minimized(),
+            ToplevelAction::Fullscreen(true) => handle.set_fullscreen(None),
+            ToplevelAction::Fullscreen(false) => handle.unset_fullscreen(),
+        }
+        true
+    }
+
+    /// Whether this compositor lets a client act on other windows at all.
+    ///
+    /// Separate from a window's own `controllable`, which additionally says
+    /// whether *that* window was matched to a handle.
+    pub fn supports_toplevel_control(&self) -> bool {
+        self.state.toplevel_control_manager.is_some()
+    }
+
+    /// Finds the control handle for a window named by the enumeration protocol.
+    ///
+    /// Matched on application and title, because nothing correlates the two
+    /// protocols' handles — see the module note on `toplevel_control`.
+    fn toplevel_control_handle(
+        &self,
+        identifier: &str,
+    ) -> Option<&wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1>
+    {
+        let listed = self
+            .state
+            .toplevels
+            .values()
+            .find(|info| info.identifier == identifier)?;
+        let key = self
+            .state
+            .toplevel_controls
+            .iter()
+            .find(|(_, control)| control.app_id == listed.app_id && control.title == listed.title)
+            .map(|(key, _)| key)?;
+        self.state.toplevel_control_handles.get(key)
+    }
+
     /// Every workspace the compositor reports, in a stable order.
     ///
     /// Sorted by coordinates and then id, because the protocol delivers them in
@@ -191,6 +256,22 @@ impl LayerClient {
             .filter(|toplevel| !toplevel.identifier.is_empty())
             .cloned()
             .collect();
+        // The control protocol's view folded onto the enumeration's, matched on
+        // application and title. A window with no match keeps its defaults and
+        // stays `controllable: false`, which is the honest answer: the state is
+        // not false, it is unknown.
+        for toplevel in &mut toplevels {
+            let Some(control) = self.state.toplevel_controls.values().find(|control| {
+                control.app_id == toplevel.app_id && control.title == toplevel.title
+            }) else {
+                continue;
+            };
+            toplevel.activated = control.activated;
+            toplevel.maximized = control.maximized;
+            toplevel.minimized = control.minimized;
+            toplevel.fullscreen = control.fullscreen;
+            toplevel.controllable = true;
+        }
         toplevels.sort_by(|a, b| a.identifier.cmp(&b.identifier));
         toplevels
     }

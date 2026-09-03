@@ -45,6 +45,12 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
     ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
 };
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+    zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+};
+
+use crate::toplevel_control::ToplevelControl;
 use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_handle_v1::ExtWorkspaceHandleV1, ext_workspace_manager_v1::ExtWorkspaceManagerV1,
 };
@@ -166,6 +172,12 @@ pub(crate) struct LayerState {
     pub(crate) keyboard_surface: Option<SurfaceRole>,
     pub(crate) idle_notifier: Option<ExtIdleNotifierV1>,
     pub(crate) idle_inhibit_manager: Option<ZwpIdleInhibitManagerV1>,
+    /// The control half of the window list. Optional: a compositor may offer
+    /// the newer enumeration protocol and not this one, and then windows can be
+    /// listed and not acted on.
+    pub(crate) toplevel_control_manager: Option<ZwlrForeignToplevelManagerV1>,
+    pub(crate) toplevel_controls: HashMap<ObjectId, ToplevelControl>,
+    pub(crate) toplevel_control_handles: HashMap<ObjectId, ZwlrForeignToplevelHandleV1>,
     pub(crate) workspace_manager: Option<ExtWorkspaceManagerV1>,
     /// Every workspace the compositor reports, keyed by its protocol object.
     pub(crate) workspaces: HashMap<ObjectId, WorkspaceInfo>,

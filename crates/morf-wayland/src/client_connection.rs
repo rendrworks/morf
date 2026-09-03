@@ -29,6 +29,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::Z
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
+use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1;
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
@@ -83,6 +84,11 @@ impl LayerClient {
             .ok();
         let workspace_manager = globals
             .bind::<ExtWorkspaceManagerV1, _, _>(&qh, 1..=1, ())
+            .ok();
+        // Version 3 where offered, for `set_fullscreen`; 1 is enough for
+        // activate, close and the maximize/minimize pair.
+        let toplevel_control_manager = globals
+            .bind::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ())
             .ok();
         let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
         let virtual_keyboard_manager = globals
@@ -151,6 +157,9 @@ impl LayerClient {
             idle_notifier,
             idle_inhibit_manager,
             idle_inhibitor: None,
+            toplevel_control_manager,
+            toplevel_controls: HashMap::new(),
+            toplevel_control_handles: HashMap::new(),
             workspace_manager,
             workspaces: HashMap::new(),
             workspace_handles: HashMap::new(),

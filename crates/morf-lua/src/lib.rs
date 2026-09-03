@@ -1,6 +1,7 @@
 //! Sandboxed execution of morf configuration code.
 
 mod api_animation;
+mod api_compositor;
 mod api_dbus_serve;
 mod api_file;
 mod api_finish;
@@ -43,6 +44,7 @@ mod runtime_toplevels;
 mod scene_bindings;
 mod serialization;
 mod state;
+mod state_pending;
 mod states;
 mod surface_types;
 mod table_menu;

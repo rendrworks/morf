@@ -193,7 +193,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // global being advertised and the list actually arriving
                     // are different claims, and only the second is useful.
                     if client.supports_toplevels() {
-                        format!("{}", client.toplevels().len())
+                        // Controllable is the second claim worth making: the
+                        // enumeration protocol reports no state and offers no
+                        // requests, so a window is only actionable if it also
+                        // matched a handle in the control protocol.
+                        let windows = client.toplevels();
+                        format!(
+                            "{} ({} controllable, {} active)",
+                            windows.len(),
+                            windows.iter().filter(|window| window.controllable).count(),
+                            windows.iter().filter(|window| window.activated).count(),
+                        )
                     } else {
                         "unsupported".to_owned()
                     },

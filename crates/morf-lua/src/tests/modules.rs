@@ -455,11 +455,13 @@ fn the_window_list_is_there_before_any_compositor_speaks() {
             identifier: "b".to_owned(),
             title: "second".to_owned(),
             app_id: "kitty".to_owned(),
+            ..Toplevel::default()
         },
         Toplevel {
             identifier: "a".to_owned(),
             title: "first".to_owned(),
             app_id: "zen".to_owned(),
+            ..Toplevel::default()
         },
     ]);
     assert_eq!(
@@ -477,6 +479,7 @@ fn the_window_list_is_there_before_any_compositor_speaks() {
         identifier: "a".to_owned(),
         title: "only".to_owned(),
         app_id: "zen".to_owned(),
+        ..Toplevel::default()
     }]);
     assert_eq!(
         runtime.call_ipc("count", &[]).unwrap(),
