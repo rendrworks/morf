@@ -49,7 +49,7 @@ pub(crate) fn dispatch_screencopy(
     // configure loop runs before a renderer exists, and the lock screen keeps
     // one per output rather than one. Without a renderer the pixels still reach
     // the configuration; only the ready-made image source does not.
-    renderer: Option<&mut RenderEngine<WgpuBackend>>,
+    mut renderer: Option<&mut RenderEngine<WgpuBackend>>,
     request_id: u64,
     result: Result<morf_wayland::ScreencopyFrame, String>,
 ) -> bool {
@@ -67,6 +67,12 @@ pub(crate) fn dispatch_screencopy(
     };
     let mut result = result;
     let mut source = format!("memory:{name}");
+    // A capture that failed after an image was exported for it -- the
+    // compositor refused the buffer, or the window went away -- would leave
+    // that image waiting for a picture that is never coming.
+    if let (Some(renderer), Err(_)) = (renderer.as_deref_mut(), &result) {
+        renderer.backend_mut().take_export(request_id);
+    }
     match (renderer, &mut result) {
         (Some(renderer), Ok(frame)) if frame.dmabuf => {
             let backend = renderer.backend_mut();
