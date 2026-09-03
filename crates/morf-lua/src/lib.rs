@@ -19,6 +19,7 @@ mod api_shader;
 mod api_shell;
 mod api_signal;
 mod api_socket;
+mod api_state;
 mod api_system;
 mod api_time;
 mod api_transform;

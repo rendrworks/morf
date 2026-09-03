@@ -99,6 +99,7 @@ pub(crate) fn install_reactive_api(
     lua.enter(|ctx| {
         let morf = Table::new(&ctx);
         install_signal_api(ctx, Rc::clone(&state), morf, limits);
+        crate::api_state::install_state_api(ctx, Rc::clone(&state), morf, limits);
         install_retention_api(ctx, Rc::clone(&state), morf, limits);
         install_shell_api(ctx, Rc::clone(&state), morf);
         install_time_api(ctx, Rc::clone(&state), morf);

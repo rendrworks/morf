@@ -37,6 +37,19 @@ pub(crate) struct LuaVirtualView {
     pub(crate) positioned: bool,
 }
 
+/// A `morf.state` table: each named field its own signal, each nested
+/// table its own proxy, each array a list model.
+pub(crate) struct StateToken {
+    pub(crate) fields: Rc<RefCell<StateFields>>,
+}
+
+#[derive(Default)]
+pub(crate) struct StateFields {
+    pub(crate) scalars: HashMap<String, SignalId>,
+    pub(crate) tables: HashMap<String, luna::StashedUserData>,
+    pub(crate) lists: HashMap<String, (luna::StashedUserData, Rc<RefCell<ListModel>>)>,
+}
+
 /// What a `ui.Layout` container answers layout with.
 #[derive(Clone)]
 pub(crate) struct CustomLayoutFns {
@@ -205,6 +218,9 @@ pub(crate) struct ReactiveState {
     pub(crate) loader_factories: HashMap<NodeHandle, StashedClosure>,
     /// The `measure` and `place` functions of every `ui.Layout` container.
     pub(crate) custom_layouts: HashMap<NodeHandle, CustomLayoutFns>,
+    /// The list model's metatable, kept so a list inside `morf.state` is
+    /// the same kind of object as `morf.list_model` makes.
+    pub(crate) model_metatable: Option<luna::StashedTable>,
     pub(crate) loaded_loaders: HashSet<NodeHandle>,
     pub(crate) retention: Retention<NodeHandle>,
     pub(crate) retain_callbacks: HashMap<NodeHandle, RetainCallbacks>,
@@ -331,6 +347,7 @@ impl ReactiveState {
             group_callbacks: HashMap::new(),
             loader_factories: HashMap::new(),
             custom_layouts: HashMap::new(),
+            model_metatable: None,
             loaded_loaders: HashSet::new(),
             retention: Retention::default(),
             retain_callbacks: HashMap::new(),

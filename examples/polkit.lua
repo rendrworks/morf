@@ -14,10 +14,16 @@
 -- `morf ipc call request` says what the card is showing, for a test that
 -- cannot look at the screen. The password is typed into the card and
 -- nowhere else.
+--
+-- The card is a component (`examples/lib/component.lua`): one model with
+-- the fields the card shows, one `update` where every change to it lives,
+-- and a view that is functions of the model. What Escape does is one
+-- branch of one function, not four handlers.
 
 local morf = require("morf")
 local ui = require("morf.ui")
 local polkit_agent = require("lib.polkit_agent")
+local component = require("lib.component")
 
 local W = 520
 local IDLE_HEIGHT, OPEN_HEIGHT = 1, 196
@@ -31,31 +37,131 @@ morf.surface.keyboard_focus = "none"
 local BG, CARD, TEXT, MUTED, FIELD, ACCENT, BAD =
   "#101418", "#1b2128", "#f2f4f6", "#9aa5b1", "#0c1014", "#5fa8ff", "#ff6b6b"
 
--- What the card shows. The password itself is a plain local, never a
--- signal: signals are named and observable, and a secret wants neither. The
--- screen only needs to know how many characters there are.
-local open = morf.signal("polkit.open", false)
-local title = morf.signal("polkit.title", "")
-local detail = morf.signal("polkit.detail", "")
-local info = morf.signal("polkit.info", "")
-local prompt = morf.signal("polkit.prompt", "")
-local verdict = morf.signal("polkit.verdict", "")
-local typed = morf.signal("polkit.typed", 0)
-local password = ""
-local current
-
-local function clear_password()
-  password = ""
-  typed:set(0)
-end
+local RETURN, KP_ENTER, BACKSPACE, ESCAPE = 0xff0d, 0xff8d, 0xff08, 0xff1b
 
 --- Opens or closes the card: size and keyboard focus follow, and the
 --- compositor is told without a reconnect.
 local function show(opening)
-  open:set(opening)
   morf.surface.height = opening and OPEN_HEIGHT or IDLE_HEIGHT
   morf.surface.keyboard_focus = opening and "exclusive" or "none"
 end
+
+-- The password is a plain local, never a field: fields are signals, and a
+-- secret wants to be neither named nor observable. The model only knows
+-- how many characters there are.
+local password = ""
+local current
+
+local Card = component.define {
+  init = function()
+    return {
+      open = false, title = "", detail = "", info = "", prompt = "",
+      verdict = "", typed = 0, refused = false,
+    }
+  end,
+
+  update = function(model, msg)
+    if msg.type == "request" then
+      local request = msg.request
+      current = request
+      model.title = request.message or request.action_id or "Authentication required"
+      model.detail = request.action_id .. "  ·  as " .. tostring(request.user)
+      model.info = request.info or ""
+      model.prompt = request.prompt or ""
+      model.verdict, model.refused = "", false
+      if not model.open then
+        password, model.typed = "", 0
+        model.open = true
+        show(true)
+      end
+    elseif msg.type == "done" then
+      model.verdict = msg.ok and "authorised" or ("refused: " .. tostring(msg.reason))
+      model.refused = not msg.ok
+      current = nil
+      password, model.typed = "", 0
+      -- Long enough to read the verdict, short enough not to be in the way.
+      morf.timer(1200, function()
+        if not current then
+          model.open = false
+          show(false)
+        end
+      end)
+    elseif msg.type == "key" and current then
+      local keysym, text = msg.keysym, msg.text
+      if keysym == RETURN or keysym == KP_ENTER then
+        current.answer(password)
+        password, model.typed = "", 0
+        model.info = "checking"
+      elseif keysym == BACKSPACE then
+        password = password:sub(1, -2)
+        model.typed = #password
+      elseif keysym == ESCAPE then
+        current.cancel()
+      elseif text and text ~= "" and #password < 128 then
+        password = password .. text
+        model.typed = #password
+      end
+    elseif msg.type == "cancel" and current then
+      current.cancel()
+    end
+  end,
+
+  view = function(model, send, self)
+    local function dots()
+      local n = model.typed
+      return n == 0 and "" or string.rep("●", math.min(n, 40))
+    end
+    local function tone() return model.refused and BAD or MUTED end
+    return ui.MouseArea {
+      width = W,
+      height = OPEN_HEIGHT,
+      on_key_pressed = self.send_with(function(keysym, text)
+        return { type = "key", keysym = keysym, text = text }
+      end),
+      ui.Rect {
+        width = W, height = OPEN_HEIGHT, color = BG,
+        visible = function() return model.open end,
+        ui.Rect {
+          x = 8, y = 8, width = W - 16, height = OPEN_HEIGHT - 16, radius = 12, color = CARD,
+          ui.Column {
+            x = 18, y = 14, width = W - 52, spacing = 6,
+            ui.Text {
+              text = function() return model.title end,
+              color = TEXT, font_size = 15, font_weight = 600, width = W - 52, wrap = true,
+              max_lines = 2,
+            },
+            ui.Text { text = function() return model.detail end, color = MUTED, font_size = 11 },
+            ui.Text {
+              text = function() return model.info end,
+              color = tone, font_size = 12, width = W - 52, wrap = true, max_lines = 2,
+            },
+            ui.Row {
+              spacing = 10,
+              -- The label sits on the field's centre line, not its top edge.
+              alignment = "center",
+              ui.Text {
+                text = function() return model.prompt ~= "" and model.prompt or "Password:" end,
+                color = TEXT, font_size = 13, width = 90,
+              },
+              ui.Rect {
+                width = W - 52 - 100, height = 30, radius = 6, color = FIELD,
+                border_color = ACCENT, border_width = 1,
+                ui.Text { x = 10, y = 6, text = dots, color = TEXT, font_size = 14 },
+              },
+            },
+            ui.Text {
+              text = function()
+                if model.verdict ~= "" then return model.verdict end
+                return "Return to authenticate  ·  Escape to cancel"
+              end,
+              color = tone, font_size = 11,
+            },
+          },
+        },
+      },
+    }
+  end,
+}
 
 -- One agent per session, and a session with three outputs runs three copies
 -- of this file. The output whose name sorts first hosts it -- which is also
@@ -68,128 +174,28 @@ local function hosts_agent()
   return true
 end
 
+-- The card's root is a node with no parent, which is what a surface draws.
+local card = Card {}
 local agent, why
 if not hosts_agent() then
   why = "another output hosts the agent"
 else
   agent, why = polkit_agent.serve {
     subject = "process",
-    on_request = function(request)
-      current = request
-      title:set(request.message or request.action_id or "Authentication required")
-      detail:set(request.action_id .. "  ·  as " .. tostring(request.user))
-      info:set(request.info or "")
-      prompt:set(request.prompt or "")
-      verdict:set("")
-      if not open:get() then
-        clear_password()
-        show(true)
-      end
-    end,
-    on_done = function(request, ok, reason)
-      verdict:set(ok and "authorised" or ("refused: " .. tostring(reason)))
-      current = nil
-      clear_password()
-      -- Long enough to read the verdict, short enough not to be in the way.
-      morf.timer(1200, function()
-        if not current then show(false) end
-      end)
-    end,
+    on_request = function(request) card.dispatch { type = "request", request = request } end,
+    on_done = function(_, ok, reason) card.dispatch { type = "done", ok = ok, reason = reason } end,
   }
-end
-
-local function submit()
-  if not current then return end
-  current.answer(password)
-  clear_password()
-  info:set("checking")
-end
-
-local function cancel()
-  if not current then return end
-  current.cancel()
 end
 
 morf.ipc.request = function()
   if not agent then return "no agent: " .. tostring(why) end
-  if not open:get() then return "no request" end
-  return title:get() .. " | " .. detail:get() .. " | info: " .. info:get()
-    .. " | prompt: " .. prompt:get() .. " | typed: " .. typed:get()
-    .. (verdict:get() ~= "" and (" | " .. verdict:get()) or "")
+  local model = card.model
+  if not model.open then return "no request" end
+  return model.title .. " | " .. model.detail .. " | info: " .. model.info
+    .. " | prompt: " .. model.prompt .. " | typed: " .. model.typed
+    .. (model.verdict ~= "" and (" | " .. model.verdict) or "")
 end
 morf.ipc.cancel = function()
-  cancel()
+  card.dispatch { type = "cancel" }
   return "cancelled"
 end
-
-local function dots()
-  local n = typed:get()
-  if n == 0 then return prompt:get() ~= "" and "" or "" end
-  return string.rep("●", math.min(n, 40))
-end
-
-ui.MouseArea {
-  width = W,
-  height = OPEN_HEIGHT,
-  on_key_pressed = function(keysym, text)
-    local RETURN, KP_ENTER, BACKSPACE, ESCAPE = 0xff0d, 0xff8d, 0xff08, 0xff1b
-    if not current then return end
-    if keysym == RETURN or keysym == KP_ENTER then
-      submit()
-    elseif keysym == BACKSPACE then
-      password = password:sub(1, -2)
-      typed:set(#password)
-    elseif keysym == ESCAPE then
-      cancel()
-    elseif text and text ~= "" and #password < 128 then
-      password = password .. text
-      typed:set(#password)
-    end
-  end,
-  ui.Rect {
-    width = W, height = OPEN_HEIGHT, color = BG,
-    visible = function() return open:get() end,
-    ui.Rect {
-      x = 8, y = 8, width = W - 16, height = OPEN_HEIGHT - 16, radius = 12, color = CARD,
-      ui.Column {
-        x = 18, y = 14, width = W - 52, spacing = 6,
-        ui.Text {
-          text = function() return title:get() end,
-          color = TEXT, font_size = 15, font_weight = 600, width = W - 52, wrap = true,
-        },
-        ui.Text { text = function() return detail:get() end, color = MUTED, font_size = 11 },
-        ui.Text {
-          text = function() return info:get() end,
-          color = function() return verdict:get():find("refused", 1, true) and BAD or MUTED end,
-          font_size = 12, width = W - 52, wrap = true,
-        },
-        ui.Row {
-          spacing = 10,
-          -- The label sits on the field's centre line, not its top edge.
-          alignment = "center",
-          ui.Text {
-            text = function() return prompt:get() ~= "" and prompt:get() or "Password:" end,
-            color = TEXT, font_size = 13, width = 90,
-          },
-          ui.Rect {
-            width = W - 52 - 100, height = 30, radius = 6, color = FIELD,
-            border_color = ACCENT, border_width = 1,
-            ui.Text {
-              x = 10, y = 6,
-              text = dots, color = TEXT, font_size = 14,
-            },
-          },
-        },
-        ui.Text {
-          text = function()
-            local v = verdict:get()
-            if v ~= "" then return v end
-            return "Return to authenticate  ·  Escape to cancel"
-          end,
-          color = function() return verdict:get():find("refused", 1, true) and BAD or MUTED end,
-          font_size = 11,
-        },
-      },
-    },
-  },
-}

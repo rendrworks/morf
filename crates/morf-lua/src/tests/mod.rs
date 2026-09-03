@@ -37,4 +37,5 @@ mod scene;
 mod screens;
 mod services;
 mod shaders;
+mod state_tables;
 mod views_states;

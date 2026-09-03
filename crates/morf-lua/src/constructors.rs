@@ -151,8 +151,24 @@ pub(crate) fn view_constructor<'gc>(
     kind: ViewKind,
 ) -> Callback<'gc> {
     Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let virtualized = !matches!(kind, ViewKind::Repeater);
         let properties: Table = stack.consume(ctx)?;
+        let node = construct_view(ctx, &state, limits, kind, properties)?;
+        stack.replace(ctx, node);
+        Ok(CallbackReturn::Return)
+    })
+}
+
+/// Builds a view node from its properties table; shared by `ui.Repeater`,
+/// `ui.ListView`, `ui.GridView` and `ui.each`.
+pub(crate) fn construct_view<'gc>(
+    ctx: Context<'gc>,
+    state: &Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+    kind: ViewKind,
+    properties: Table<'gc>,
+) -> Result<LuaValue<'gc>, luna::Error<'gc>> {
+    {
+        let virtualized = !matches!(kind, ViewKind::Repeater);
         let model = match properties.get_value(ctx, "model") {
             LuaValue::UserData(model) => model
                 .downcast_static::<ListModelToken>()
@@ -216,8 +232,8 @@ pub(crate) fn view_constructor<'gc>(
         if virtualized {
             clean.set_field(ctx, "clip", true);
         }
-        let node = create_node(&state, element);
-        configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
+        let node = create_node(state, element);
+        configure_element(state, ctx, limits, node, clean).map_err(HostError)?;
         let model_handle = Rc::clone(&model.model);
         let model = model_handle.borrow();
         let configured_view;
@@ -320,7 +336,10 @@ pub(crate) fn view_constructor<'gc>(
                 },
             );
         }
-        stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
-        Ok(CallbackReturn::Return)
-    })
+        Ok(LuaValue::UserData(node_userdata(
+            ctx,
+            Rc::clone(state),
+            node,
+        )))
+    }
 }

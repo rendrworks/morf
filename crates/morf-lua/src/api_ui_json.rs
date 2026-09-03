@@ -38,6 +38,31 @@ pub(crate) fn install_ui_json_api<'gc>(
             element_constructor(ctx, Rc::clone(&state), limits, element),
         );
     }
+    // `ui.each(list, delegate, options)`: a Repeater over a list, which is
+    // what a `morf.state` array is. `options.as` lays the rows out as a
+    // column, row or grid, as for a Repeater.
+    let each_state = Rc::clone(&state);
+    let each = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (model, delegate, options): (LuaValue, LuaValue, Option<Table>) = stack.consume(ctx)?;
+        let properties = Table::new(&ctx);
+        if let Some(options) = options {
+            for (key, value) in options.iter(ctx) {
+                properties.set(ctx, key, value)?;
+            }
+        }
+        properties.set_field(ctx, "model", model);
+        properties.set_field(ctx, "delegate", delegate);
+        let node = crate::constructors::construct_view(
+            ctx,
+            &each_state,
+            limits,
+            ViewKind::Repeater,
+            properties,
+        )?;
+        stack.replace(ctx, node);
+        Ok(CallbackReturn::Return)
+    });
+    ui.set_field(ctx, "each", each);
     ui.set_field(
         ctx,
         "Layout",
