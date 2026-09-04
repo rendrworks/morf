@@ -1,3 +1,4 @@
+use crate::gradient::{GradientMaterial, gradient_material};
 use crate::{commands::*, effects::*};
 use glyph_layer::polygon_params;
 use morf_region::Shape;
@@ -69,14 +70,17 @@ pub struct SdfFieldMaterial {
     /// `[offset x, offset y, inner, unused]`.
     pub shadow: [f32; 4],
     pub shadow_color: [f32; 4],
-    /// `[unused, shadow blur, shadow spread, conic rotation]`.
+    /// `[unused, shadow blur, shadow spread, unused]`.
     pub effects: [f32; 4],
-    pub gradient_start_color: [f32; 4],
-    pub gradient_end_color: [f32; 4],
-    /// Normalised start and end of a linear gradient.
-    pub gradient_points: [f32; 4],
-    /// `[kind, centre x, centre y, radius]`.
-    pub gradient_data: [f32; 4],
+    /// `[kind, centre x, centre y, radius]`; kind is 0 none, 1 linear, 2
+    /// radial, 3 conic, and the centre and radius are fractions of the shape.
+    pub gradient: [f32; 4],
+    /// `[angle in radians, stop count, space, unused]`.
+    pub gradient_extra: [f32; 4],
+    /// Stop positions, four to a vector.
+    pub gradient_positions: [[f32; 4]; 4],
+    /// Linear-light stop colours, straight alpha.
+    pub gradient_colors: [[f32; 4]; morf_scene::MAX_GRADIENT_STOPS],
     pub color_overlay: [f32; 4],
     /// The rectangle a gradient is measured across, in the field's own space.
     pub shape: [f32; 4],
@@ -208,8 +212,12 @@ impl SdfFieldInstance {
                 radii: layer.radii.map(|radius| (f64::from(radius) * scale) as f32),
             });
         }
-        let (gradient_start_color, gradient_end_color, gradient_points, gradient_data, angle) =
-            gradient_instance(gradient);
+        let GradientMaterial {
+            gradient,
+            gradient_extra,
+            gradient_positions,
+            gradient_colors,
+        } = gradient_material(gradient.as_ref());
         // A field's outline straddles the crossing by default and a rectangle's
         // sits inside it, but both are the one outline the shader now has, and
         // either can say which it wants.
@@ -227,12 +235,12 @@ impl SdfFieldInstance {
                 0.0,
                 (shadow_blur * scale) as f32,
                 (shadow_spread * scale) as f32,
-                angle,
+                0.0,
             ],
-            gradient_start_color,
-            gradient_end_color,
-            gradient_points,
-            gradient_data,
+            gradient,
+            gradient_extra,
+            gradient_positions,
+            gradient_colors,
             color_overlay: color_array(*color_overlay),
             shape: [
                 0.0,
@@ -344,8 +352,12 @@ impl SdfFieldInstance {
             color: color_array(*color),
             radii: radii.map(|radius| (radius.max(0.0) * scale) as f32),
         });
-        let (gradient_start_color, gradient_end_color, gradient_points, gradient_data, angle) =
-            gradient_instance(gradient);
+        let GradientMaterial {
+            gradient,
+            gradient_extra,
+            gradient_positions,
+            gradient_colors,
+        } = gradient_material(gradient.as_ref());
         materials.push(SdfFieldMaterial {
             border: [
                 BorderAlignment::Inside.code(),
@@ -365,12 +377,12 @@ impl SdfFieldInstance {
                 0.0,
                 (*shadow_blur * scale) as f32,
                 (*shadow_spread * scale) as f32,
-                angle,
+                0.0,
             ],
-            gradient_start_color,
-            gradient_end_color,
-            gradient_points,
-            gradient_data,
+            gradient,
+            gradient_extra,
+            gradient_positions,
+            gradient_colors,
             color_overlay: color_array(*color_overlay),
             shape: [0.0, 0.0, width, height],
         });

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{animation::*, types::*};
+use crate::{animation::*, gradient::Gradient, types::*};
 
 pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
     let mut properties = vec![
@@ -81,17 +81,7 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         Element::Rect | Element::ClipRect => {
             properties.extend([
                 color("color", Color::rgba8(255, 255, 255, 255)),
-                string("gradient_type", "none"),
-                color("gradient_start_color", Color::rgba8(255, 255, 255, 255)),
-                color("gradient_end_color", Color::rgba8(0, 0, 0, 255)),
-                number("gradient_start_x", 0.0),
-                number("gradient_start_y", 0.0),
-                number("gradient_end_x", 1.0),
-                number("gradient_end_y", 0.0),
-                number("gradient_center_x", 0.5),
-                number("gradient_center_y", 0.5),
-                number("gradient_radius", 0.5),
-                number("gradient_angle", 0.0),
+                any("gradient", Value::Map(BTreeMap::new())),
                 number("radius", 0.0),
                 number("top_left_radius", -1.0),
                 number("top_right_radius", -1.0),
@@ -210,17 +200,7 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 // rectangle had its own pipeline and a composed shape did not.
                 // One pipeline draws both now, so a star can carry a gradient
                 // and a shadow like anything else.
-                string("gradient_type", "none"),
-                color("gradient_start_color", Color::rgba8(255, 255, 255, 255)),
-                color("gradient_end_color", Color::rgba8(0, 0, 0, 255)),
-                number("gradient_start_x", 0.0),
-                number("gradient_start_y", 0.0),
-                number("gradient_end_x", 1.0),
-                number("gradient_end_y", 0.0),
-                number("gradient_center_x", 0.5),
-                number("gradient_center_y", 0.5),
-                number("gradient_radius", 0.5),
-                number("gradient_angle", 0.0),
+                any("gradient", Value::Map(BTreeMap::new())),
                 color("shadow_color", Color::rgba8(0, 0, 0, 0)),
                 number("shadow_blur", 0.0),
                 number("shadow_spread", 0.0),
@@ -391,6 +371,13 @@ pub(crate) fn coerce(
     kind: PropertyType,
     value: Value,
 ) -> Result<Value, SceneError> {
+    if property == "gradient" {
+        return Gradient::canonical(value).map_err(|message| SceneError::InvalidPropertyValue {
+            element: element.name(),
+            property: property.to_owned(),
+            message,
+        });
+    }
     let converted = match (kind, value) {
         (PropertyType::Any, value) => Some(value),
         (PropertyType::Bool, Value::Bool(value)) => Some(Value::Bool(value)),

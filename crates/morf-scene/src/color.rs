@@ -45,6 +45,15 @@ impl ColorSpace {
             _ => None,
         }
     }
+
+    /// The name a configuration uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Srgb => "srgb",
+            Self::Oklab => "oklab",
+            Self::Oklch => "oklch",
+        }
+    }
 }
 
 impl HueDirection {

@@ -12,6 +12,7 @@ mod commands;
 mod damage;
 mod effects;
 mod field;
+mod gradient;
 mod paint;
 mod paint_fields;
 mod sdf;

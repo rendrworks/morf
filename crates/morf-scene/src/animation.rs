@@ -1,11 +1,10 @@
 use animato::{Spring, Tween};
-use morf_reactive::GraphError;
-use std::error::Error as StdError;
-use std::fmt;
 use std::time::Duration;
 
 use crate::color::{ColorSpace, HueDirection};
 use crate::{groups::*, motion_values::*, types::*};
+
+pub use crate::error::SceneError;
 
 /// Frame-pipeline work invalidated by an animated property.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -439,60 +438,4 @@ pub(crate) struct PropertySpec {
     pub(crate) name: &'static str,
     pub(crate) kind: PropertyType,
     pub(crate) default: Value,
-}
-
-/// A scene graph operation failure.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SceneError {
-    /// A node handle no longer refers to a live node.
-    StaleNode,
-    /// A node cannot become a child of itself or one of its descendants.
-    ParentCycle,
-    /// The named property is absent from the element schema.
-    UnknownProperty {
-        /// Element type receiving the assignment.
-        element: &'static str,
-        /// Rejected property name.
-        property: String,
-    },
-    /// A property value cannot be converted to its declared type.
-    InvalidPropertyType {
-        /// Element type receiving the assignment.
-        element: &'static str,
-        /// Property whose coercion failed.
-        property: String,
-        /// Required property type.
-        expected: &'static str,
-    },
-    /// The property signal graph rejected an operation.
-    Reactive(String),
-}
-
-impl fmt::Display for SceneError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::StaleNode => f.write_str("stale scene node handle"),
-            Self::ParentCycle => f.write_str("a node cannot parent itself or its ancestor"),
-            Self::UnknownProperty { element, property } => {
-                write!(f, "unknown {element} property `{property}`")
-            }
-            Self::InvalidPropertyType {
-                element,
-                property,
-                expected,
-            } => write!(
-                f,
-                "invalid {element} property `{property}`: expected {expected}"
-            ),
-            Self::Reactive(message) => write!(f, "reactive property error: {message}"),
-        }
-    }
-}
-
-impl StdError for SceneError {}
-
-impl From<GraphError> for SceneError {
-    fn from(error: GraphError) -> Self {
-        Self::Reactive(error.to_string())
-    }
 }

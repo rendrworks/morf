@@ -83,6 +83,22 @@ pub(crate) fn interpolate_in(
         (Value::Color(from), Value::Color(to)) => {
             Value::Color(crate::color::mix(*from, *to, progress, space, hue))
         }
+        // A tree of values — a gradient's stops — moves leaf by leaf while the
+        // two trees have the same shape, and snaps when they do not.
+        (Value::List(from), Value::List(to)) if from.len() == to.len() => Value::List(
+            from.iter()
+                .zip(to)
+                .map(|(from, to)| interpolate_in(from, to, progress, space, hue))
+                .collect(),
+        ),
+        (Value::Map(from), Value::Map(to)) if from.keys().eq(to.keys()) => Value::Map(
+            from.iter()
+                .zip(to)
+                .map(|((key, from), (_, to))| {
+                    (key.clone(), interpolate_in(from, to, progress, space, hue))
+                })
+                .collect(),
+        ),
         _ => to.clone(),
     }
 }

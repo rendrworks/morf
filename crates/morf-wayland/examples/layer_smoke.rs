@@ -1,7 +1,7 @@
 use morf_layout::{Geometry, TextAlignment, TextElide, Transform2D};
 use morf_render::{
-    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, Gradient, RenderBackend,
-    VerticalAlignment, WgpuBackend,
+    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, RenderBackend, VerticalAlignment,
+    WgpuBackend,
 };
 use morf_scene::{Color, Element, Scene};
 use morf_wayland::{BarConfig, LayerClient, LayerEvent, OutputPowerMode};
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 clip: None,
                 color: Color::rgba8(31, 36, 48, 255),
                 color_overlay: Color::rgba8(0, 0, 0, 0),
-                gradient: Gradient::None,
+                gradient: None,
                 radii: [0.0; 4],
                 border_width: 0.0,
                 antialiasing: true,

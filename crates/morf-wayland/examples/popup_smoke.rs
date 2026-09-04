@@ -1,5 +1,5 @@
 use morf_layout::{Geometry, Transform2D};
-use morf_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
+use morf_render::{DamageRect, DrawCommand, DrawList, RenderBackend, WgpuBackend};
 use morf_scene::{Color, Element, Scene};
 use morf_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, PopupConfig};
 
@@ -176,7 +176,7 @@ fn quad(
         clip: None,
         color,
         color_overlay: Color::rgba8(0, 0, 0, 0),
-        gradient: Gradient::None,
+        gradient: None,
         radii: [8.0; 4],
         border_width: 1.0,
         antialiasing: true,

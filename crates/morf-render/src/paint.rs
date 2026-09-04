@@ -342,7 +342,7 @@ pub(crate) fn append_node(
             clip,
             color: Color::rgba8(0, 0, 0, 0),
             color_overlay: Color::rgba8(0, 0, 0, 0),
-            gradient: Gradient::None,
+            gradient: None,
             radii,
             border_width: scene.number(node, "border_width")?,
             antialiasing: scene.bool_value(node, "antialiasing")?,

@@ -147,10 +147,26 @@ impl Animation {
 }
 
 pub(crate) fn interpolatable(from: &Value, to: &Value) -> bool {
-    matches!(
-        (from, to),
-        (Value::Number(_), Value::Number(_)) | (Value::Color(_), Value::Color(_))
-    )
+    match (from, to) {
+        (Value::Number(_), Value::Number(_)) | (Value::Color(_), Value::Color(_)) => true,
+        // A tree of values — a gradient's stops — moves when the two trees
+        // have the same shape and every leaf can.
+        (Value::List(from), Value::List(to)) => {
+            from.len() == to.len()
+                && from
+                    .iter()
+                    .zip(to)
+                    .all(|(from, to)| interpolatable(from, to) || from == to)
+        }
+        (Value::Map(from), Value::Map(to)) => {
+            from.keys().eq(to.keys())
+                && from
+                    .values()
+                    .zip(to.values())
+                    .all(|(from, to)| interpolatable(from, to) || from == to)
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn animation_start(
@@ -406,16 +422,7 @@ pub(crate) fn affects_layout(property: &str) -> bool {
             | "antialiasing"
             | "border_pixel_aligned"
             | "content_under_border"
-            | "gradient_start_color"
-            | "gradient_end_color"
-            | "gradient_start_x"
-            | "gradient_start_y"
-            | "gradient_end_x"
-            | "gradient_end_y"
-            | "gradient_center_x"
-            | "gradient_center_y"
-            | "gradient_radius"
-            | "gradient_angle"
+            | "gradient"
             | "blur"
             | "shadow_color"
             | "shadow_blur"

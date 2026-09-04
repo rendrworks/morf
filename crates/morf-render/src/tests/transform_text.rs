@@ -175,18 +175,28 @@ fn text_commands_preserve_wrap_and_alignment() {
 }
 
 #[test]
-fn rectangles_emit_normalized_gradient_instances() {
+fn rectangles_emit_gradient_stops_in_the_material() {
     let mut scene = Scene::new();
     let rect = scene.create(Element::Rect);
     scene.assign(rect, "width", 100.0).unwrap();
     scene.assign(rect, "height", 50.0).unwrap();
     scene.assign(rect, "opacity", 0.5).unwrap();
-    scene.assign(rect, "gradient_type", "linear").unwrap();
+    let mut gradient = std::collections::BTreeMap::new();
+    gradient.insert("angle".to_owned(), Value::Number(90.0));
+    gradient.insert(
+        "stops".to_owned(),
+        Value::List(vec![
+            Value::String("#ff0000".to_owned()),
+            Value::List(vec![
+                Value::String("#0000ff".to_owned()),
+                Value::Number(0.25),
+            ]),
+            Value::String("#00ff00".to_owned()),
+        ]),
+    );
     scene
-        .assign(rect, "gradient_start_color", "#ff0000")
+        .assign(rect, "gradient", Value::Map(gradient))
         .unwrap();
-    scene.assign(rect, "gradient_end_color", "#0000ff").unwrap();
-    scene.assign(rect, "gradient_end_y", 1.0).unwrap();
     scene.assign(rect, "radius", 4.0).unwrap();
     scene.assign(rect, "top_right_radius", 12.0).unwrap();
     let layout = Layout::compute(
@@ -208,25 +218,14 @@ fn rectangles_emit_normalized_gradient_instances() {
         panic!("rectangle did not emit a quad");
     };
     assert_eq!(*radii, [4.0, 12.0, 4.0, 4.0]);
-    assert_eq!(
-        gradient,
-        &Gradient::Linear {
-            start_color: Color {
-                red: 1.0,
-                green: 0.0,
-                blue: 0.0,
-                alpha: 1.0,
-            },
-            end_color: Color {
-                red: 0.0,
-                green: 0.0,
-                blue: 1.0,
-                alpha: 1.0,
-            },
-            start: [0.0, 0.0],
-            end: [1.0, 1.0],
-        }
-    );
+    let gradient = gradient
+        .as_ref()
+        .expect("the rectangle carries its gradient");
+    assert_eq!(gradient.kind, morf_scene::GradientKind::Linear);
+    assert_eq!(gradient.angle, 90.0);
+    let positions: Vec<f64> = gradient.stops.iter().map(|stop| stop.position).collect();
+    assert_eq!(positions, vec![0.0, 0.25, 1.0]);
+    assert_eq!(gradient.stops[1].color, Color::rgba8(0, 0, 255, 255));
     assert_eq!(list.layers.len(), 1);
     assert_eq!(list.layers[0].opacity, 0.5);
     assert_eq!(list.layers[0].blur, 0.0);
@@ -243,8 +242,14 @@ fn rectangles_emit_normalized_gradient_instances() {
         &mut morf_svg::SvgOutlines::new(),
     )
     .unwrap();
-    assert_eq!(materials[0].gradient_data[0], 1.0);
-    assert_eq!(materials[0].gradient_points, [0.0, 0.0, 1.0, 1.0]);
+    assert_eq!(materials[0].gradient[0], 1.0, "linear");
+    assert_eq!(materials[0].gradient_extra[1], 3.0, "three stops");
+    assert_eq!(
+        materials[0].gradient_extra[2], 1.0,
+        "mixed in OkLab by default"
+    );
+    assert_eq!(materials[0].gradient_positions[0], [0.0, 0.25, 1.0, 0.0]);
+    assert_eq!(materials[0].gradient_colors[1], [0.0, 0.0, 1.0, 1.0]);
     // The corner radii now belong to the rectangle's own layer, which is where
     // every other shape in the vocabulary has always kept them.
     assert_eq!(layers[0].radii, [4.0, 12.0, 4.0, 4.0]);

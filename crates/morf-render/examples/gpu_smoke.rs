@@ -1,9 +1,9 @@
 use morf_layout::{Geometry, TextAlignment, TextElide, Transform2D};
 use morf_render::{
-    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, Gradient, ImageFillMode, Layer,
-    LayerMask, RenderBackend, VerticalAlignment, WgpuBackend,
+    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode, Layer, LayerMask,
+    RenderBackend, VerticalAlignment, WgpuBackend,
 };
-use morf_scene::{Color, Element, Scene};
+use morf_scene::{Color, ColorSpace, Element, Gradient, GradientKind, GradientStop, Scene};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_path =
@@ -36,12 +36,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }),
                 color: Color::rgba8(38, 115, 217, 255),
                 color_overlay: Color::rgba8(0, 0, 0, 0),
-                gradient: Gradient::Linear {
-                    start_color: Color::rgba8(38, 115, 217, 255),
-                    end_color: Color::rgba8(124, 58, 237, 255),
-                    start: [0.0, 0.0],
-                    end: [1.0, 0.0],
-                },
+                gradient: Some(Gradient {
+                    kind: GradientKind::Linear,
+                    angle: 90.0,
+                    at: [0.5, 0.5],
+                    radius: None,
+                    stops: vec![
+                        GradientStop {
+                            color: Color::rgba8(38, 115, 217, 255),
+                            position: 0.0,
+                        },
+                        GradientStop {
+                            color: Color::rgba8(124, 58, 237, 255),
+                            position: 1.0,
+                        },
+                    ],
+                    space: ColorSpace::Oklab,
+                }),
                 radii: [8.0, 16.0, 8.0, 16.0],
                 border_width: 1.0,
                 antialiasing: true,

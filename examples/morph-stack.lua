@@ -85,13 +85,7 @@ ui.Item {
   height = 360,
   ui.Rect {
     anchors = { fill = true },
-    gradient_type = "linear",
-    gradient_start_color = "#0b1220",
-    gradient_end_color = "#111c31",
-    gradient_start_x = 0,
-    gradient_start_y = 0,
-    gradient_end_x = 1,
-    gradient_end_y = 1,
+    gradient = { angle = 135, stops = { "#0b1220", "#111c31" } },
   },
   ui.MouseArea {
     anchors = { fill = true },

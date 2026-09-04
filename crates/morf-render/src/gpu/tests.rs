@@ -25,7 +25,7 @@ pub(crate) fn test_quad(
         clip: None,
         color,
         color_overlay: Color::rgba8(0, 0, 0, 0),
-        gradient: crate::Gradient::None,
+        gradient: None,
         radii: [0.0; 4],
         border_width,
         antialiasing: false,

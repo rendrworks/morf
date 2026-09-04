@@ -83,6 +83,8 @@ local function card(x, y, width, height, radius, border_width, children)
     height = height,
     radius = radius,
     color = theme.color236,
+    -- A little light at the top, the flat colour by a third of the way down.
+    gradient = { stops = { theme.color236:lighten(0.03), { theme.color236, 0.35 } } },
     border_width = border_width,
     border_color = theme.color244:alpha(0.08),
   }

@@ -109,7 +109,7 @@ pub(crate) fn a_smooth_seam_may_bulge_outside_the_node_without_being_clipped() {
             stroke_color: Color::rgba8(0, 0, 0, 0),
             stroke_width: 0.0,
             stroke_alignment: BorderAlignment::Centred,
-            gradient: Gradient::None,
+            gradient: None,
             color_overlay: Color::rgba8(0, 0, 0, 0),
             shadow_color: Color::rgba8(0, 0, 0, 0),
             shadow_blur: 0.0,
@@ -180,4 +180,57 @@ pub(crate) fn alpha_cross_fades_across_a_seam_like_any_other_channel() {
         seam > faint_end && seam < opaque_end,
         "the seam should fade between {faint_end} and {opaque_end}, got {seam}"
     );
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_hard_edged_stripe_is_two_stops_at_one_position() {
+    // Two stops at the same position make an edge, not a ramp: left of it the
+    // first colour, right of it the second, and nothing in between wider than
+    // the pixel the edge falls on.
+    let mut scene = morf_scene::Scene::new();
+    let node = scene.create(morf_scene::Element::Sdf);
+    let mut command = field_command(node, vec![field_layer(0.0, 0.0, 64.0, Shape::Box)]);
+    let DrawCommand::Field {
+        gradient,
+        fill_color,
+        ..
+    } = &mut command
+    else {
+        panic!("field_command builds a field");
+    };
+    *fill_color = Color::rgba8(255, 255, 255, 255);
+    let stop = |color: Color, position: f64| morf_scene::GradientStop { color, position };
+    *gradient = Some(morf_scene::Gradient {
+        kind: morf_scene::GradientKind::Linear,
+        angle: 90.0,
+        at: [0.5, 0.5],
+        radius: None,
+        stops: vec![
+            stop(Color::rgba8(255, 0, 0, 255), 0.0),
+            stop(Color::rgba8(255, 0, 0, 255), 0.5),
+            stop(Color::rgba8(0, 0, 255, 255), 0.5),
+            stop(Color::rgba8(0, 0, 255, 255), 1.0),
+        ],
+        space: morf_scene::ColorSpace::Oklab,
+    });
+    let pixels = render_readback(
+        &DrawList {
+            commands: vec![command],
+            layers: Vec::new(),
+        },
+        64,
+    );
+    let at = |x: u32, y: u32| {
+        let i = ((y * 64 + x) * 4) as usize;
+        (pixels[i], pixels[i + 2])
+    };
+    for x in 2..31 {
+        let (red, blue) = at(x, 32);
+        assert!(red > 240 && blue < 15, "x={x} is red: {red},{blue}");
+    }
+    for x in 33..62 {
+        let (red, blue) = at(x, 32);
+        assert!(blue > 240 && red < 15, "x={x} is blue: {red},{blue}");
+    }
 }

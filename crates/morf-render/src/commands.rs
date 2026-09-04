@@ -1,5 +1,5 @@
 use morf_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D};
-use morf_scene::{Color, NodeHandle, Scene};
+use morf_scene::{Color, Gradient, NodeHandle, Scene};
 use std::ops::Range;
 
 use crate::{effects::*, field::*, paint::*, sdf::*};
@@ -25,8 +25,8 @@ pub enum DrawCommand {
         color: Color,
         /// Inherited colour overlay.
         color_overlay: Color,
-        /// Optional normalized gradient fill.
-        gradient: Gradient,
+        /// A gradient across the rectangle, if it has one.
+        gradient: Option<Gradient>,
         /// Corner radii in top-left clockwise order.
         radii: [f64; 4],
         /// Border width.
@@ -146,7 +146,7 @@ pub enum DrawCommand {
         /// Extra edge softness in logical pixels.
         softness: f64,
         /// Gradient across the node's own rectangle, if any.
-        gradient: Gradient,
+        gradient: Option<Gradient>,
         /// Multiplied over the finished surface.
         color_overlay: Color,
         /// Drop shadow colour; fully transparent means no shadow.
@@ -243,34 +243,6 @@ pub enum VerticalAlignment {
     Top,
     Center,
     Bottom,
-}
-
-/// Gradient fill encoded in normalized rectangle coordinates.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Gradient {
-    /// Use the rectangle's solid colour.
-    None,
-    /// Interpolate along a line.
-    Linear {
-        start_color: Color,
-        end_color: Color,
-        start: [f64; 2],
-        end: [f64; 2],
-    },
-    /// Interpolate outwards from a center point.
-    Radial {
-        start_color: Color,
-        end_color: Color,
-        center: [f64; 2],
-        radius: f64,
-    },
-    /// Interpolate around a center point from an angle in degrees.
-    Conical {
-        start_color: Color,
-        end_color: Color,
-        center: [f64; 2],
-        angle: f64,
-    },
 }
 
 impl DrawCommand {

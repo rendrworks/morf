@@ -6,7 +6,9 @@ pub use model::{ListChange, ListModel, ModelId, ViewItem, ViewTransition, Virtua
 
 mod animation;
 mod color;
+mod error;
 mod fling;
+mod gradient;
 mod groups;
 mod hashing;
 mod keyframes;
@@ -23,6 +25,7 @@ mod types;
 
 pub use animation::*;
 pub use color::{ColorSpace, HueDirection, mix as mix_colors};
+pub use gradient::*;
 pub use groups::*;
 pub use hashing::*;
 pub use keyframes::*;

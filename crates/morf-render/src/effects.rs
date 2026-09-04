@@ -1,5 +1,5 @@
 use morf_layout::{Geometry, TextAlignment, TextElide};
-use morf_scene::{Color, NodeHandle, Scene, Value};
+use morf_scene::{Color, Gradient, NodeHandle, Scene, Value};
 
 use crate::{commands::*, damage::*, field::*, sdf::*};
 
@@ -173,62 +173,11 @@ pub(crate) fn stroke_alignment(name: &str) -> Result<BorderAlignment, RenderErro
     })
 }
 
-pub(crate) fn scene_gradient(scene: &Scene, node: NodeHandle) -> Result<Gradient, RenderError> {
-    // The kind decides first. Almost every rect in a real configuration has no
-    // gradient at all, and reading the two colours before asking made every one
-    // of them pay for three property lookups instead of one.
-    let kind = scene.string_value(node, "gradient_type")?;
-    if kind == "none" {
-        return Ok(Gradient::None);
-    }
-    let start_color = scene.color_value(node, "gradient_start_color")?;
-    let end_color = scene.color_value(node, "gradient_end_color")?;
-    Ok(match kind {
-        "none" => Gradient::None,
-        "linear" => Gradient::Linear {
-            start_color,
-            end_color,
-            start: [
-                scene.number(node, "gradient_start_x")?,
-                scene.number(node, "gradient_start_y")?,
-            ],
-            end: [
-                scene.number(node, "gradient_end_x")?,
-                scene.number(node, "gradient_end_y")?,
-            ],
-        },
-        "radial" => {
-            let radius = scene.number(node, "gradient_radius")?;
-            if radius <= 0.0 {
-                return Err(RenderError::Scene(
-                    "Rect radial gradient radius must be positive".to_owned(),
-                ));
-            }
-            Gradient::Radial {
-                start_color,
-                end_color,
-                center: [
-                    scene.number(node, "gradient_center_x")?,
-                    scene.number(node, "gradient_center_y")?,
-                ],
-                radius,
-            }
-        }
-        "conical" => Gradient::Conical {
-            start_color,
-            end_color,
-            center: [
-                scene.number(node, "gradient_center_x")?,
-                scene.number(node, "gradient_center_y")?,
-            ],
-            angle: scene.number(node, "gradient_angle")?,
-        },
-        kind => {
-            return Err(RenderError::Scene(format!(
-                "unknown Rect gradient type `{kind}`"
-            )));
-        }
-    })
+pub(crate) fn scene_gradient(
+    scene: &Scene,
+    node: NodeHandle,
+) -> Result<Option<Gradient>, RenderError> {
+    Gradient::parse(scene.current(node, "gradient")?).map_err(RenderError::Scene)
 }
 
 pub(crate) fn rect_radii(scene: &Scene, node: NodeHandle) -> Result<[f64; 4], RenderError> {
@@ -288,55 +237,6 @@ pub(crate) fn image_fill_mode(value: &str) -> Result<ImageFillMode, RenderError>
         _ => Err(RenderError::Scene(format!(
             "unknown image fill mode `{value}`"
         ))),
-    }
-}
-
-pub(crate) fn gradient_instance(
-    gradient: &Gradient,
-) -> ([f32; 4], [f32; 4], [f32; 4], [f32; 4], f32) {
-    match gradient {
-        Gradient::None => ([0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4], 0.0),
-        Gradient::Linear {
-            start_color,
-            end_color,
-            start,
-            end,
-        } => (
-            color_array(*start_color),
-            color_array(*end_color),
-            [
-                start[0] as f32,
-                start[1] as f32,
-                end[0] as f32,
-                end[1] as f32,
-            ],
-            [1.0, 0.0, 0.0, 0.0],
-            0.0,
-        ),
-        Gradient::Radial {
-            start_color,
-            end_color,
-            center,
-            radius,
-        } => (
-            color_array(*start_color),
-            color_array(*end_color),
-            [0.0; 4],
-            [2.0, center[0] as f32, center[1] as f32, *radius as f32],
-            0.0,
-        ),
-        Gradient::Conical {
-            start_color,
-            end_color,
-            center,
-            angle,
-        } => (
-            color_array(*start_color),
-            color_array(*end_color),
-            [0.0; 4],
-            [3.0, center[0] as f32, center[1] as f32, 0.0],
-            angle.to_radians() as f32,
-        ),
     }
 }
 

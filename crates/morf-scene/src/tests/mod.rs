@@ -259,6 +259,7 @@ fn smoothed_motion_obeys_velocity_limit() {
     assert_eq!(scene.number(item, "x").unwrap(), 100.0);
 }
 
+mod gradient;
 mod groups;
 mod physics;
 mod playback;

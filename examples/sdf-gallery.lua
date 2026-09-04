@@ -125,6 +125,9 @@ local function cell(name, caption, extra)
       width = CELL - 12,
       height = CELL - 12,
       fill_color = ACCENT,
+      -- Three stops across the shape, mixed in OkLCh so the middle keeps its
+      -- chroma; the field takes a gradient the same way a rectangle does.
+      gradient = { angle = 135, space = "oklch", stops = { "#e6f7fa", { ACCENT, 0.5 }, "#5fa8d3" } },
       stroke_color = INK,
       stroke_width = 2.5,
       ui.SdfShape(layer),
