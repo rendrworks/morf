@@ -193,7 +193,7 @@ function board.build(options)
   -- should read as two keys touching, a morph as the row having no keys in it.
   local FUSE = math.floor(GAP * 0.95)
 
-  local PANEL = "#0c1017e6"
+  local PANEL = morf.color("#0c1017"):alpha(0.9)
   local KEYFACE = "#243043"
   local LIVE = "#6fb3cc"
   local EDGE = "#33415a"
@@ -514,6 +514,7 @@ function board.build(options)
   -- Pass three: the touch targets, over the labels.
   for _, entry in ipairs(keys) do
     parts[#parts + 1] = ui.MouseArea {
+      cursor = "pointer",
       x = entry.x,
       y = entry.y,
       width = entry.width,

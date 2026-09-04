@@ -183,22 +183,6 @@ local BLOBS = {
   { radius = 0.062, orbit = 0.272, speed = -0.00142, phase = 0.7, wobble = 0.058, color = "#c98fd1" },
 }
 
---- One hex colour to the linear numbers a shader works in.
----
---- The engine converts a fill it is *given*; a shader is handed raw floats and
---- converts nothing, so a colour that travels through a data block has to
---- arrive already linear or every blob comes out washed out and too bright.
-local function linear_of(hex)
-  local function part(pair)
-    local value = tonumber(pair, 16) / 255
-    if value <= 0.04045 then
-      return value / 12.92
-    end
-    return ((value + 0.055) / 1.055) ^ 2.4
-  end
-  return part(hex:sub(2, 3)), part(hex:sub(4, 5)), part(hex:sub(6, 7))
-end
-
 local elapsed = core.elapsed_timer()
 local blobs = {}
 local field_node
@@ -269,7 +253,10 @@ local function advance()
       levels[base + 1] = mine.x / W
       levels[base + 2] = mine.y / H
       levels[base + 3] = mine.r / H
-      local red, green, blue = linear_of(BLOBS[index].color)
+      -- A shader is handed raw floats and converts nothing, so the colour
+      -- goes in as linear light or every blob comes out washed out.
+      local linear = morf.color(BLOBS[index].color):linear()
+      local red, green, blue = linear.r, linear.g, linear.b
       levels[base + 4] = red
       levels[base + 5] = green
       levels[base + 6] = blue

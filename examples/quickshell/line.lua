@@ -246,8 +246,8 @@ local function pill(index)
     radius = pill_radius,
     color = function()
       local row = hypr.row(index)
-      if row.active then return theme.color1() end
-      return row.windows > 0 and theme.color244() or theme.color240()
+      if row.active then return theme.palette.color1 end
+      return row.windows > 0 and theme.palette.color244 or theme.palette.color240
     end,
     opacity = function()
       local row = hypr.row(index)
@@ -259,6 +259,7 @@ local function pill(index)
       opacity = { duration = 200 },
     },
     ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       on_entered = function() hovered:set(true) end,
       on_exited = function() hovered:set(false) end,
@@ -332,7 +333,7 @@ function line.build()
     width = pill_width,
     height = badge_size,
     text = function() return tostring(badge_workspace:get()) end,
-    color = function() return theme.color1():text_color() end,
+    color = function() return theme.palette.color1:text_color() end,
     font_family = theme.font,
     font_source = theme.font_source,
     font_size = math.max(1, math.floor(math.min(pill_width, badge_size) * 0.495 + 0.5)),
@@ -384,8 +385,8 @@ function line.build()
     y = 0,
     width = strip_width,
     height = HEIGHT,
-    fill_color = function() return theme.color1() end,
-    stroke_color = function() return theme.color0() end,
+    fill_color = function() return theme.palette.color1 end,
+    stroke_color = function() return theme.palette.color0 end,
     stroke_width = popup_border_width,
     visible = false,
     anchor,
@@ -433,15 +434,12 @@ function line.build()
       on_triggered = tick,
     },
 
-    -- The palette, and a reconciliation in case an event was ever missed.
+    -- A reconciliation in case an event was ever missed.
     ui.Timer {
       interval = 1000,
       ["repeat"] = true,
       running = true,
-      on_triggered = function()
-        theme.reload()
-        hypr.refresh()
-      end,
+      on_triggered = function() hypr.refresh() end,
     },
   }
 

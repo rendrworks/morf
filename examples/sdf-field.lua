@@ -22,9 +22,11 @@ morf.surface.height = 340
 morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local INK = "#0e1213"
-local ACCENT = "#b4e1ea"
-local WARM = "#f0b47a"
+local theme = morf.theme {
+  ink = "#0e1213",
+  accent = "#b4e1ea",
+  warm = "#f0b47a",
+}
 
 -- One phase drives everything, so the panels stay in step.
 local phase = morf.signal("sdf.phase", 0)
@@ -57,7 +59,7 @@ local function panel(x, title, caption, field)
       width = 240,
       text = title,
       font_size = 19,
-      color = ACCENT,
+      color = theme.accent,
     },
     ui.Text {
       x = 20,
@@ -65,7 +67,7 @@ local function panel(x, title, caption, field)
       width = 240,
       text = caption,
       font_size = 13,
-      wrap = true,
+      wrap = true, line_height = 1.4,
       color = "#6a8389",
     },
   }
@@ -80,8 +82,8 @@ local morphing = ui.Sdf {
   y = 0,
   width = 280,
   height = 240,
-  fill_color = ACCENT,
-  stroke_color = INK,
+  fill_color = theme.accent,
+  stroke_color = theme.ink,
   stroke_width = 3,
   ui.SdfShape {
     x = 70,
@@ -109,8 +111,8 @@ local merging = ui.Sdf {
   y = 0,
   width = 280,
   height = 240,
-  fill_color = WARM,
-  stroke_color = INK,
+  fill_color = theme.warm,
+  stroke_color = theme.ink,
   stroke_width = 3,
   ui.SdfShape {
     x = 40,
@@ -146,8 +148,8 @@ local carving = ui.Sdf {
   y = 0,
   width = 280,
   height = 240,
-  fill_color = ACCENT,
-  stroke_color = INK,
+  fill_color = theme.accent,
+  stroke_color = theme.ink,
   stroke_width = 3,
   ui.SdfShape {
     x = 65,
@@ -176,7 +178,7 @@ local carving = ui.Sdf {
 ui.Item {
   width = 900,
   height = 340,
-  ui.Rect { width = 900, height = 340, color = INK },
+  ui.Rect { width = 900, height = 340, color = theme.ink },
   panel(10, "Morph", "circle to six-pointed star, as one number", morphing),
   panel(310, "Merge", "two fields joining with no seam", merging),
   panel(610, "Carve", "a wedge cut out of a ring, opening", carving),

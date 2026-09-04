@@ -62,27 +62,11 @@ local CHILD_ENVIRONMENT = { LD_LIBRARY_PATH = "" }
 
 -- ─── Colour ───
 
---- Blends `fg` over `bg` at `amount`, in sRGB.
----
---- morf composites alpha in linear light and Qt composites it in sRGB, so a
---- translucent fill that must match the original is blended here and handed
---- over opaque. Only the panel's own outline keeps its alpha, because what sits
---- behind it is whatever window the panel is over.
-local function mix(fg, bg, amount)
-  local function channel(hex, at)
-    return tonumber(hex:sub(at, at + 1), 16) or 0
-  end
-  local front = tostring(fg):gsub("#", "")
-  local back = tostring(bg):gsub("#", "")
-  if #front < 6 or #back < 6 then return "#ff00ff" end
-  local a = math.max(0, math.min(1, amount))
-  local out = "#"
-  for _, at in ipairs { 1, 3, 5 } do
-    local value = channel(front, at) * a + channel(back, at) * (1 - a)
-    out = out .. string.format("%02x", math.floor(value + 0.5))
-  end
-  return out
-end
+-- Blends are asked for in sRGB: morf composites alpha in linear light and
+-- Qt composites it in sRGB, so a translucent fill that must match the
+-- original is mixed in sRGB and handed over opaque. Only the panel's own
+-- outline keeps its alpha, because what sits behind it is whatever window
+-- the panel is over.
 
 -- ─── Signals ───
 
@@ -650,6 +634,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       indicator,
       future,
       ui.MouseArea {
+        cursor = "ew_resize",
         anchors = { fill = true },
         on_entered = cfg.on_entered,
         on_exited = cfg.on_exited,
@@ -688,7 +673,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
         return pill_radius + (button_size * 0.5 - pill_radius) * ch.bubble:get()
       end,
       color = fill,
-      border_color = function() return theme.color0() end,
+      border_color = function() return theme.palette.color0 end,
       border_width = function()
         return heavy_border + border_growth * ch.bubble:get()
       end,
@@ -706,7 +691,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
         width = function() return bubble_w(ch) end,
         height = pill_h,
         text = icon,
-        color = function() return theme.color0() end,
+        color = function() return theme.palette.color0 end,
         font_family = theme.font,
         font_source = theme.font_source,
         font_size = function() return math.min(bubble_w(ch), pill_h) * 0.495 end,
@@ -716,6 +701,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       },
 
       ui.MouseArea {
+        cursor = "pointer",
         anchors = { fill = true },
         on_entered = enter,
         on_exited = leave,
@@ -736,7 +722,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
         height = slash_thickness,
         radius = tiny_radius,
         rotation = -45,
-        color = function() return theme.color0() end,
+        color = function() return theme.palette.color0 end,
         opacity = 0.9,
         visible = show_slash,
       })
@@ -757,8 +743,8 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
         height = icon_size,
         text = icon,
         color = function()
-          if mute_aware and muted:get() then return theme.color244() end
-          return theme.color1()
+          if mute_aware and muted:get() then return theme.palette.color244 end
+          return theme.palette.color1
         end,
         font_family = theme.font,
         font_source = theme.font_source,
@@ -776,12 +762,13 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
         height = slash_thickness,
         radius = tiny_radius,
         rotation = -45,
-        color = function() return theme.color0() end,
+        color = function() return theme.palette.color0 end,
         opacity = 0.95,
         visible = function() return muted:get() end,
       }
     end
     children[#children + 1] = ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       on_entered = enter,
       on_exited = leave,
@@ -807,9 +794,9 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       width = function() return content_w(ch) end,
       height = main_card_h,
       radius = corner_radius,
-      color = function() return theme.color236() end,
+      color = function() return theme.palette.color236 end,
       border_width = hairline,
-      border_color = function() return mix(theme.color244(), theme.color238(), 0.08) end,
+      border_color = function() return theme.palette.color244:mix(theme.palette.color238, 0.08, "srgb") end,
 
       card_icon(ch, icon, tint, on_icon_click, mute_aware),
 
@@ -820,8 +807,8 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
         height = function() return row_h end,
         origin = function() return panel_x(ch) + panel_pad + bar_x() end,
         value = value,
-        fill = function() return theme.color1() end,
-        track = function() return mix(theme.color244(), theme.color236(), 0.15) end,
+        fill = function() return theme.palette.color1 end,
+        track = function() return theme.palette.color244:mix(theme.palette.color236, 0.15, "srgb") end,
         on_entered = enter,
         on_exited = leave,
         on_seek = on_seek,
@@ -858,7 +845,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
         height = app_row_h,
         text = function() return row.name:get() end,
         elide = "right",
-        color = function() return mix(theme.color1(), theme.color236(), 0.7) end,
+        color = function() return theme.palette.color1:mix(theme.palette.color236, 0.7, "srgb") end,
         font_family = theme.font,
         font_source = theme.font_source,
         font_size = app_row_h * 0.45,
@@ -874,8 +861,8 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
           return panel_x(vol) + panel_pad + card_pad + row_w() * 0.25 + card_pad
         end,
         value = function() return row.value:get() end,
-        fill = function() return theme.color1() end,
-        track = function() return mix(theme.color244(), theme.color236(), 0.15) end,
+        fill = function() return theme.palette.color1 end,
+        track = function() return theme.palette.color244:mix(theme.palette.color236, 0.15, "srgb") end,
         visible = visible,
         on_entered = enter,
         on_exited = leave,
@@ -899,9 +886,9 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       width = function() return content_w(vol) end,
       height = app_card_h,
       radius = corner_radius,
-      color = function() return theme.color236() end,
+      color = function() return theme.palette.color236 end,
       border_width = hairline,
-      border_color = function() return mix(theme.color244(), theme.color238(), 0.08) end,
+      border_color = function() return theme.palette.color244:mix(theme.palette.color238, 0.08, "srgb") end,
       visible = function() return app_count:get() > 0 end,
     }
     for index = 1, MAX_APPS do
@@ -917,7 +904,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       y = ch.top,
       width = function() return panel_w(ch) end,
       height = function() return panel_h(ch) end,
-      color = function() return theme.color238() end,
+      color = function() return theme.palette.color238 end,
       radius = function()
         return button_size * 0.5 + (panel_radius - button_size * 0.5) * ease(ch)
       end,
@@ -925,7 +912,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       border_width = hairline,
       -- The only alpha left unresolved: what is behind the panel is whatever
       -- window it happens to be over, so there is nothing to blend against.
-      border_color = function() return theme.color244():alpha(0.08 * ch.expand:get()) end,
+      border_color = function() return theme.palette.color244:alpha(0.08 * ch.expand:get()) end,
       visible = function() return ch.wide:get() or ch.expand:get() > 0 end,
     }
     for _, card in ipairs(cards) do children[#children + 1] = card end
@@ -966,7 +953,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       width = pill_width,
       height = pill_h,
       radius = pill_radius,
-      color = function() return theme.color240() end,
+      color = function() return theme.palette.color240 end,
       opacity = 0.6,
       state = function()
         if ch.expanded:get() then return "expanded" end
@@ -975,19 +962,19 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       states = {
         idle = {
           property_changes = {
-            color = function() return theme.color240() end,
+            color = function() return theme.palette.color240 end,
             opacity = 0.6,
           },
         },
         hovered = {
           property_changes = {
-            color = function() return theme.color240() end,
+            color = function() return theme.palette.color240 end,
             opacity = 0.9,
           },
         },
         expanded = {
           property_changes = {
-            color = function() return theme.color1() end,
+            color = function() return theme.palette.color1 end,
             opacity = 1.0,
           },
         },
@@ -1038,7 +1025,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       vol,
       volume_icon,
       function()
-        return mix(theme.color1(), theme.color236(), muted:get() and 0.05 or 0.15)
+        return theme.palette.color1:mix(theme.palette.color236, muted:get() and 0.05 or 0.15, "srgb")
       end,
       function()
         write(muted, not muted:get())
@@ -1062,7 +1049,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
     main_card(
       bright,
       BRIGHTNESS_ICON,
-      function() return mix(theme.color1(), theme.color236(), 0.15) end,
+      function() return theme.palette.color1:mix(theme.palette.color236, 0.15, "srgb") end,
       function() end,
       function() return brightness:get() end,
       bright_seek,
@@ -1088,12 +1075,12 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
     tracker(vol),
     vol_panel,
     bubble(vol, volume_icon, function()
-      return muted:get() and theme.color240() or theme.color1()
+      return muted:get() and theme.palette.color240 or theme.palette.color1
     end, function() return muted:get() end),
 
     tracker(bright),
     bright_panel,
-    bubble(bright, BRIGHTNESS_ICON, function() return theme.color1() end),
+    bubble(bright, BRIGHTNESS_ICON, function() return theme.palette.color1 end),
 
     pill(vol, settings_top),
     pill(bright, settings_top + item_height + pill_gap),

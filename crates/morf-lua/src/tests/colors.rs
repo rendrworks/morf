@@ -202,3 +202,24 @@ fn a_colour_behavior_names_its_space_and_direction() {
         .unwrap_err();
     assert!(error.to_string().contains("space must be"), "{error}");
 }
+
+#[test]
+fn linear_light_is_the_shader_side_of_a_colour() {
+    // What a shader is handed: the sRGB curve taken off, so a data block
+    // carries the numbers the GPU multiplies rather than the ones a
+    // stylesheet writes.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "linear.lua",
+            br##"
+                local morf = require("morf")
+                local linear = morf.color("#808080"):linear()
+                morf.ipc.gray = function() return linear.r end
+                morf.ipc.alpha = function() return morf.color("#ff000080"):linear().a end
+            "##,
+        )
+        .unwrap();
+    assert!((ipc_number(&mut runtime, "gray") - 0.2158).abs() < 0.001);
+    assert!((ipc_number(&mut runtime, "alpha") - 0.5).abs() < 0.01);
+}

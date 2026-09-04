@@ -45,8 +45,10 @@ morf.surface.keyboard_focus = "none"
 
 local function s(n) return n end
 
-local TEXT = "#e9edf5"
-local MUTED = "#78849a"
+local theme = morf.theme {
+  text = "#e9edf5",
+  muted = "#78849a",
+}
 
 -- Every family the field can draw. A `Pie` and a `Ring` are as much a shape to
 -- morph through as a circle is.
@@ -222,7 +224,7 @@ caption = ui.Text {
   font_size = s(20),
   font_weight = 500,
   horizontal_alignment = "center",
-  color = TEXT,
+  color = theme.text,
 }
 
 --- Lands the new composition and drops the progress.
@@ -284,7 +286,7 @@ ui.Item {
     text = "click anywhere",
     font_size = s(14),
     horizontal_alignment = "center",
-    color = MUTED,
+    color = theme.muted,
   },
 
   ui.Text {
@@ -293,11 +295,12 @@ ui.Item {
     text = "a letter is a shape: it unions, subtracts and morphs like one",
     font_size = s(15),
     horizontal_alignment = "center",
-    color = MUTED,
+    color = theme.muted,
   },
 
   -- The surface's own area, which is all it has any business claiming.
   ui.MouseArea {
+    cursor = "pointer",
     width = W,
     height = H,
     on_clicked = advance,

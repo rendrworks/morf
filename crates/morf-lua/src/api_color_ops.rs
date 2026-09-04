@@ -228,6 +228,30 @@ pub(crate) fn install_color_methods<'gc>(ctx: Context<'gc>, methods: Table<'gc>)
         table.set_field(ctx, "a", c.alpha);
         stack.replace(ctx, table);
     });
+    // Linear light: what a shader is handed and converts nothing of, so a
+    // colour that travels through a data block arrives already linear.
+    method!("linear", |ctx, token, stack| {
+        let c = token.color.to_rgba_float();
+        let linear = |channel: f64| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        stack.replace(
+            ctx,
+            table_of(
+                ctx,
+                &[
+                    ("r", linear(c.r)),
+                    ("g", linear(c.g)),
+                    ("b", linear(c.b)),
+                    ("a", c.alpha),
+                ],
+            ),
+        );
+    });
     method!("hsl", |ctx, token, stack| {
         let c = token.color.to_hsla();
         stack.replace(

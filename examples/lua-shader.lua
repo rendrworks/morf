@@ -21,8 +21,10 @@ morf.surface.width = W
 morf.surface.height = H
 morf.surface.anchors = { top = true, left = true, right = true, bottom = true }
 
-local INK = "#0f1116"
-local MUTED = "#8b90a0"
+local theme = morf.theme {
+  ink = "#0f1116",
+  muted = "#8b90a0",
+}
 
 -- A shader that reads `time` repaints every frame. One that does not costs
 -- nothing after the first — which is what makes a shader affordable on a bar
@@ -133,7 +135,7 @@ local left = (W - total) / 2
 local top = (H - PANEL_H) / 2 - 20
 
 local children = { width = W, height = H }
-children[#children + 1] = ui.Rect { width = W, height = H, color = INK }
+children[#children + 1] = ui.Rect { width = W, height = H, color = theme.ink }
 
 -- The ripple has to *wrap* the row, not lie over it. An effect shader samples
 -- the layer its own node became, and a layer holds that node's subtree — so a
@@ -169,7 +171,7 @@ for index, panel in ipairs(panels) do
     width = PANEL_W,
     text = panel[3],
     font_size = 12,
-    color = MUTED,
+    color = theme.muted,
   }
 end
 

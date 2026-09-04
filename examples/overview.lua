@@ -57,10 +57,17 @@ local LABEL = 26
 local CELL_W = math.floor((W - PAD * 2 - GAP * (COLS - 1)) / COLS)
 local CELL_H = math.floor(CELL_W * 0.62)
 
-local INK = "#0d1015f2"
-local TILE = "#1a1f28"
-local TEXT = "#e6e9ef"
-local MUTED = "#8b93a5"
+local theme = morf.theme {
+  ink = morf.color("#0d1015"):alpha(0.95),
+  tile = "#1a1f28",
+  text = "#e6e9ef",
+  muted = "#8b93a5",
+  -- The hover tint takes the desktop's accent when it has one.
+  tile_hover = function(t)
+    local accent = morf.prefers.accent_color
+    return accent and t.tile:mix(accent, 0.25) or "#242b36"
+  end,
+}
 
 --- One request on Hyprland's control socket, and its reply.
 ---
@@ -105,24 +112,23 @@ local model = morf.list_model({})
 
 local heading = ui.Text {
   x = PAD, y = 14, width = W - PAD * 2,
-  text = "windows", font_size = 15, color = MUTED,
+  text = "windows", font_size = 15, color = theme.muted,
 }
 
 local function capture_name(identifier) return "tile-" .. identifier end
 
-local TILE_HOVER = "#242b36"
 
 local function tile_for(item)
   -- Hover is a state that chooses itself: `when` reads the signal, and the
   -- transition eases the colour either way. No handler writes a colour.
   local hovered = morf.signal("overview.hover." .. item.identifier, false)
   local frame = ui.Rect {
-    width = CELL_W, height = CELL_H, radius = 10, color = TILE,
+    width = CELL_W, height = CELL_H, radius = 10, color = theme.tile,
     states = {
-      default = { property_changes = { color = TILE } },
+      default = { property_changes = { color = theme.tile } },
       hovered = {
         when = function() return hovered:get() end,
-        property_changes = { color = TILE_HOVER },
+        property_changes = { color = theme.tile_hover },
       },
     },
     transitions = { { from = "*", to = "*", duration = 120, easing = "out_quad" } },
@@ -135,7 +141,7 @@ local function tile_for(item)
   }
   local caption = ui.Text {
     y = CELL_H + 6, width = CELL_W,
-    text = "", font_size = 12, color = TEXT,
+    text = "", font_size = 12, color = theme.text,
   }
   local tile = { frame = frame, shot = shot, caption = caption, identifier = item.identifier }
   local function describe(window)
@@ -151,6 +157,13 @@ local function tile_for(item)
   local node = ui.MouseArea {
     width = CELL_W, height = CELL_H + LABEL,
     cursor = "pointer",
+    -- A tile arrives a little small and clear: where its first frame
+    -- starts, and the behaviors carry it to its place.
+    enter = { opacity = 0, scale = 0.96 },
+    behavior = {
+      opacity = { duration = 180, easing = "out_quad" },
+      scale = { kind = "spring", stiffness = 300, damping = 24 },
+    },
     on_entered = function() hovered:set(true) end,
     on_exited = function() hovered:set(false) end,
     on_clicked = function()
@@ -217,7 +230,7 @@ end
 
 ui.Item {
   width = W, height = H,
-  ui.Rect { width = W, height = H, radius = 18, color = INK },
+  ui.Rect { width = W, height = H, radius = 18, color = theme.ink },
   heading,
   grid,
   ui.Timer {

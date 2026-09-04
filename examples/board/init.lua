@@ -654,6 +654,7 @@ local function progress_bar(options)
       return clamp01((surface_x - origin) / width)
     end
     node[#node + 1] = ui.MouseArea {
+      cursor = "ew_resize",
       anchors = { fill = true },
       on_position_changed = function(surface_x)
         pointer_x = surface_x
@@ -912,6 +913,7 @@ local function calendar_card(x, y, width, height, radius, border_width)
       end,
       centered_label(glyph, font_size * 2, header_height, font_size, theme.color1),
       ui.MouseArea {
+        cursor = "pointer",
         anchors = { fill = true },
         on_entered = function() calendar_hover:set(hover_key) end,
         on_exited = function()
@@ -1215,6 +1217,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
         vertical_alignment = "center",
       },
       ui.MouseArea {
+        cursor = "pointer",
         anchors = { fill = true },
         on_entered = function() media_hover:set(hover_key) end,
         on_exited = function()

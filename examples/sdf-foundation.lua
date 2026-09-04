@@ -24,10 +24,12 @@ morf.surface.height = H
 morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local INK = "#0e1213"
-local SURFACE = "#b4e1ea"
-local ACCENT = "#f0b47a"
-local MUTED = "#6a8389"
+local theme = morf.theme {
+  ink = "#0e1213",
+  surface = "#b4e1ea",
+  accent = "#f0b47a",
+  muted = "#6a8389",
+}
 
 -- Each tab has its own fill. An absorbed rect brings its colour into the
 -- composition, and the fills cross-fade with the same weight the seam uses, so
@@ -40,9 +42,9 @@ local MUTED = "#6a8389"
 -- than one shape being drawn over the other and showing a hard edge.
 local TABS = {
   { "Overview", "#b4e1ea" },
-  { "Signals", "#8fd0c45c" },
+  { "Signals", morf.color("#8fd0c4"):alpha(0.36) },
   { "Layout", "#f0b47a" },
-  { "Render", "#e08f8faa" },
+  { "Render", morf.color("#e08f8f"):alpha(0.67) },
 }
 local TAB_W, TAB_H, GAP = 150, 62, 26
 
@@ -59,7 +61,7 @@ local function bar(y, blend)
     y = y,
     width = W - 80,
     height = TAB_H + 34,
-    fill_color = SURFACE,
+    fill_color = theme.surface,
     blend = blend,
   }
 
@@ -117,7 +119,7 @@ local function labels(y, tint)
 end
 
 local function caption(y, text)
-  return ui.Text { x = 40, y = y, width = W - 80, text = text, font_size = 13, color = MUTED }
+  return ui.Text { x = 40, y = y, width = W - 80, text = text, font_size = 13, color = theme.muted }
 end
 
 ui.Item {
@@ -128,11 +130,11 @@ ui.Item {
   -- input region stays empty and every click goes straight through.
   caption(40, "blend = 0 — the same rects, hard edges; two are semi-transparent"),
   bar(66, 0),
-  labels(66, INK),
+  labels(66, theme.ink),
 
   caption(226, "blend = 30 — fused; colour and alpha both cross-fade at the seams"),
   bar(252, 30),
-  labels(252, INK),
+  labels(252, theme.ink),
 
   caption(H - 40, "one number differs between the two rows"),
 

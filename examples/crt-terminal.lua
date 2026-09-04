@@ -137,27 +137,29 @@ morf.shader("crt", {
 -- What is on the screen.
 --------------------------------------------------------------------------------
 
-local GLASS = "#050a06"
-local BEZEL = "#141712"
-local PHOSPHOR = "#8dffa8"
-local DIM = "#3f8f56"
+local theme = morf.theme {
+  glass = "#050a06",
+  bezel = "#141712",
+  phosphor = "#8dffa8",
+  dim = "#3f8f56",
+}
 
 local BOOT = {
-  { DIM, "MORF SYSTEM MONITOR                       REV 0.1.3" },
-  { DIM, "-----------------------------------------------------" },
-  { PHOSPHOR, "> selftest" },
-  { DIM, "  scene graph .......................... OK" },
-  { DIM, "  layout solver ........................ OK" },
-  { DIM, "  distance fields ...................... OK" },
-  { DIM, "  shader compiler ...................... OK" },
-  { DIM, "  wayland surfaces ..................... OK" },
-  { PHOSPHOR, "> shader --list" },
-  { DIM, "  crt          effect    6 params  animated" },
-  { DIM, "  chromatic    effect    3 params  animated" },
-  { PHOSPHOR, "> shader --explain crt" },
-  { DIM, "  written in lua, compiled to wgsl at load," },
-  { DIM, "  executed on the gpu once per pixel per frame." },
-  { PHOSPHOR, "> _" },
+  { theme.dim, "MORF SYSTEM MONITOR                       REV 0.1.3" },
+  { theme.dim, "-----------------------------------------------------" },
+  { theme.phosphor, "> selftest" },
+  { theme.dim, "  scene graph .......................... OK" },
+  { theme.dim, "  layout solver ........................ OK" },
+  { theme.dim, "  distance fields ...................... OK" },
+  { theme.dim, "  shader compiler ...................... OK" },
+  { theme.dim, "  wayland surfaces ..................... OK" },
+  { theme.phosphor, "> shader --list" },
+  { theme.dim, "  crt          effect    6 params  animated" },
+  { theme.dim, "  chromatic    effect    3 params  animated" },
+  { theme.phosphor, "> shader --explain crt" },
+  { theme.dim, "  written in lua, compiled to wgsl at load," },
+  { theme.dim, "  executed on the gpu once per pixel per frame." },
+  { theme.phosphor, "> _" },
 }
 
 local PAD_X = 54
@@ -174,10 +176,10 @@ local inside = { width = W, height = H, shader = "crt" }
 
 -- The bezel, then the glass. Both are ordinary rectangles; the shader does not
 -- care what it is given.
-inside[#inside + 1] = ui.Rect { width = W, height = H, radius = 26, color = BEZEL }
+inside[#inside + 1] = ui.Rect { width = W, height = H, radius = 26, color = theme.bezel }
 inside[#inside + 1] = ui.Rect {
   x = 16, y = 16, width = W - 32, height = H - 32,
-  radius = 18, color = GLASS,
+  radius = 18, color = theme.glass,
 }
 
 local lines = {}

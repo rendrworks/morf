@@ -45,8 +45,10 @@ morf.surface.keyboard_focus = "none"
 morf.surface.exclusive_zone = -1
 
 local RADIUS = 28
-local INK = "#f2f4f8"
-local MUTED = "#f2f4f899"
+local theme = morf.theme {
+  ink = "#f2f4f8",
+  muted = function(t) return t.ink:alpha(0.6) end,
+}
 
 --------------------------------------------------------------------------------
 -- The glass.
@@ -143,7 +145,7 @@ ui.Item {
     radius = RADIUS,
     -- Nearly nothing of its own. Every pixel of colour here is a pixel of the
     -- blur painted over.
-    color = "#0e121a2b",
+    color = morf.color("#0e121a"):alpha(0.17),
     backdrop_blur = true,
   },
 
@@ -161,7 +163,7 @@ ui.Item {
     width = W - 80,
     text = "Frosted",
     font_size = 46,
-    color = INK,
+    color = theme.ink,
   },
   ui.Text {
     x = 40,
@@ -169,7 +171,7 @@ ui.Item {
     width = W - 80,
     text = supported,
     font_size = 14,
-    color = MUTED,
+    color = theme.muted,
   },
   ui.Text {
     x = 40,
@@ -177,7 +179,7 @@ ui.Item {
     width = W - 80,
     text = "ext-background-effect-v1 · the blur happens on the far side of this surface",
     font_size = 12,
-    color = MUTED,
+    color = theme.muted,
   },
 
   -- Something behind it worth blurring, if this is run over a bare desktop:
@@ -188,6 +190,6 @@ ui.Item {
     width = W - 80,
     text = "move a window underneath — the blur is the compositor's, not ours",
     font_size = 12,
-    color = MUTED,
+    color = theme.muted,
   },
 }

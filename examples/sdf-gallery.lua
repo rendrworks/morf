@@ -18,10 +18,12 @@ morf.surface.height = 2 * (CELL + LABEL)
 morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local INK = "#0e1213"
-local PANEL = "#141a1c"
-local ACCENT = "#b4e1ea"
-local MUTED = "#6a8389"
+local theme = morf.theme {
+  ink = "#0e1213",
+  panel = "#141a1c",
+  accent = "#b4e1ea",
+  muted = "#6a8389",
+}
 
 -- One value swinging between zero and one drives every cell.
 local phase = morf.signal("gallery.phase", 0)
@@ -118,29 +120,29 @@ local function cell(name, caption, extra)
   return ui.Item {
     width = CELL,
     height = CELL + LABEL,
-    ui.Rect { x = 6, y = 6, width = CELL - 12, height = CELL + LABEL - 12, radius = 14, color = PANEL },
+    ui.Rect { x = 6, y = 6, width = CELL - 12, height = CELL + LABEL - 12, radius = 14, color = theme.panel },
     ui.Sdf {
       x = 6,
       y = 6,
       width = CELL - 12,
       height = CELL - 12,
-      fill_color = ACCENT,
+      fill_color = theme.accent,
       -- Three stops across the shape, mixed in OkLCh so the middle keeps its
       -- chroma; the field takes a gradient the same way a rectangle does.
-      gradient = { angle = 135, space = "oklch", stops = { "#e6f7fa", { ACCENT, 0.5 }, "#5fa8d3" } },
-      stroke_color = INK,
+      gradient = { angle = 135, space = "oklch", stops = { "#e6f7fa", { theme.accent, 0.5 }, "#5fa8d3" } },
+      stroke_color = theme.ink,
       stroke_width = 2.5,
       ui.SdfShape(layer),
     },
-    ui.Text { x = 20, y = CELL - 14, width = CELL - 34, text = name, font_size = 15, color = ACCENT },
+    ui.Text { x = 20, y = CELL - 14, width = CELL - 34, text = name, font_size = 15, color = theme.accent },
     ui.Text {
       x = 20,
       y = CELL + 6,
       width = CELL - 34,
       text = caption,
       font_size = 11,
-      wrap = true,
-      color = MUTED,
+      wrap = true, line_height = 1.4,
+      color = theme.muted,
     },
   }
 end
@@ -159,7 +161,7 @@ end
 ui.Item {
   width = COLUMNS * CELL,
   height = 2 * (CELL + LABEL),
-  ui.Rect { width = COLUMNS * CELL, height = 2 * (CELL + LABEL), color = INK },
+  ui.Rect { width = COLUMNS * CELL, height = 2 * (CELL + LABEL), color = theme.ink },
   ui.Grid(cells),
   ui.Timer {
     interval = 1800,

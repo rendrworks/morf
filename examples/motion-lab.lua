@@ -174,6 +174,7 @@ local function button(x, y, width, text, on_clicked)
       font_weight = 600,
     },
     ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       on_clicked = on_clicked,
     },

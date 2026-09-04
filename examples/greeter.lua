@@ -547,6 +547,7 @@ local function user_row(index, user)
       color = function() return theme.text end,
     },
     ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       on_entered = function()
         write(hot, true)
@@ -731,6 +732,7 @@ local function round_button(id, name, size, on_tap)
       },
     }),
     ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       on_entered = function() write(hot, true) end,
       on_exited = function()
@@ -902,6 +904,7 @@ do
   })
 end
 prompt[#prompt + 1] = ui.MouseArea {
+  cursor = "text",
   x = ENTRY_X, y = ROW_Y, width = ENTRY_W, height = ROW_H,
   on_clicked = function() attempt() end,
 }

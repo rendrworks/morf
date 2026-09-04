@@ -6,64 +6,21 @@
 -- proportions on any output rather than being pinned to one panel.
 
 local morf = require("morf")
-local io = require("morf.io")
 local core = require("morf.core")
 
 local theme = {}
 
-local FALLBACK = {
+-- The pywal palette, with the same greys to fall back on. The file's leaf
+-- keys are the tokens, read now and again whenever pywal rewrites it, so a
+-- binding that reads a colour follows the palette with nothing to reload.
+theme.palette = morf.theme({
   color0 = "#000000",
   color1 = "#ffffff",
   color236 = "#1e1e1e",
   color238 = "#2a2a2a",
   color240 = "#303030",
   color244 = "#555555",
-}
-
-local colors = {}
-for key, value in pairs(FALLBACK) do colors[key] = value end
-
--- Bumped whenever the palette is reloaded, so bindings that read a colour can
--- depend on it without the palette itself having to be a signal.
-theme.revision = morf.signal("quickshell.theme.revision", 0)
-
-local wal = io.file_view {
-  path = (core.env("HOME") or "") .. "/.cache/wal/colors.json",
-  preload = true,
-  watch_changes = true,
-}
-
---- Rereads the palette, returning whether anything changed.
-function theme.reload()
-  if not wal:loaded() then return false end
-  local ok, decoded = pcall(io.json.decode, wal:text())
-  if not ok or type(decoded) ~= "table" then return false end
-  local changed = false
-  for key in pairs(FALLBACK) do
-    local value = decoded.colors and decoded.colors[key]
-    if type(value) == "string" and value ~= colors[key] then
-      colors[key] = value
-      changed = true
-    end
-  end
-  if changed then
-    theme.revision:set(theme.revision:get() + 1)
-  end
-  return changed
-end
-
---- Reads one palette entry, registering the caller as a palette dependent.
-function theme.color(name)
-  theme.revision:get()
-  return morf.color(colors[name] or FALLBACK[name] or "#ff00ff")
-end
-
-function theme.color0() return theme.color("color0") end
-function theme.color1() return theme.color("color1") end
-function theme.color236() return theme.color("color236") end
-function theme.color238() return theme.color("color238") end
-function theme.color240() return theme.color("color240") end
-function theme.color244() return theme.color("color244") end
+}, { source = (core.env("HOME") or "") .. "/.cache/wal/colors.json" })
 
 --- The first reported output, which every size is measured against.
 function theme.reference()
@@ -103,7 +60,5 @@ function theme.font_size_large() return theme.scaled(28) end
 theme.short_duration = 200
 theme.medium_duration = 300
 theme.long_duration = 400
-
-theme.reload()
 
 return theme

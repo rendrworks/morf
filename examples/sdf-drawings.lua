@@ -31,9 +31,11 @@ morf.surface.width = W
 morf.surface.height = H
 morf.surface.anchors = { top = true, left = true }
 
-local INK = "#141821"
-local TEXT = "#e9edf5"
-local MUTED = "#78849a"
+local theme = morf.theme {
+  ink = "#141821",
+  text = "#e9edf5",
+  muted = "#78849a",
+}
 
 -- Beside the configuration. `core.shell_path` is rooted at the directory the
 -- configuration itself was loaded from, so this holds wherever it is run from
@@ -47,12 +49,12 @@ local BOLT, CLIPPED = asset("sdf-bolt"), asset("sdf-clipped")
 
 local tree = { width = W, height = H }
 local function place(node) tree[#tree + 1] = node end
-place(ui.Rect { width = W, height = H, color = INK })
+place(ui.Rect { width = W, height = H, color = theme.ink })
 
 local function caption(x, y, width, text)
   place(ui.Text {
     x = x, y = y, width = width, text = text,
-    font_size = 15, horizontal_alignment = "center", color = MUTED,
+    font_size = 15, horizontal_alignment = "center", color = theme.muted,
   })
 end
 

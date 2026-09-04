@@ -384,7 +384,7 @@ lens = ui.Item {
   -- the screen and not whatever the blobs happen to span this frame. Without
   -- it `uv` would be measured against a box that moves, and the blob positions
   -- the shader is handed would mean something different every frame.
-  ui.Rect { width = W, height = H, color = "#00000000" },
+  ui.Rect { width = W, height = H, color = "transparent" },
   ui.Sdf(field),
 }
 

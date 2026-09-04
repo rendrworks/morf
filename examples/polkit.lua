@@ -127,13 +127,13 @@ local Card = component.define {
             x = 18, y = 14, width = W - 52, gap = 6,
             ui.Text {
               text = function() return model.title end,
-              color = TEXT, font_size = 15, font_weight = 600, width = W - 52, wrap = true,
+              color = TEXT, font_size = 15, font_weight = 600, width = W - 52, wrap = true, line_height = 1.4,
               max_lines = 2,
             },
             ui.Text { text = function() return model.detail end, color = MUTED, font_size = 11 },
             ui.Text {
               text = function() return model.info end,
-              color = tone, font_size = 12, width = W - 52, wrap = true, max_lines = 2,
+              color = tone, font_size = 12, width = W - 52, wrap = true, line_height = 1.4, max_lines = 2,
             },
             ui.Row {
               gap = 10,

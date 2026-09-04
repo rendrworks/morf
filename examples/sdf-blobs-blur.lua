@@ -38,16 +38,16 @@ local function s(fraction) return SHORT * fraction end
 
 -- A twentieth of full alpha — barely a tint. The blur is the subject and the
 -- colour only says which blob is which; nineteen parts of what shows through a
--- blob is the desktop behind it. Set these to `00` and the glass goes
+-- blob is the desktop behind it. Set the alpha to zero and the glass goes
 -- completely invisible, which is worth trying once: the rim alone is enough to
 -- read the shape, and nothing else on screen changes.
 local BLOBS = {
-  { radius = 0.150, orbit = 0.185, speed = 0.00040, phase = 0.0, wobble = 0.052, color = "#f0b47a0d" },
-  { radius = 0.122, orbit = 0.225, speed = -0.00057, phase = 1.9, wobble = 0.066, color = "#e8735a0d" },
-  { radius = 0.104, orbit = 0.152, speed = 0.00079, phase = 3.4, wobble = 0.038, color = "#b4e1ea0d" },
-  { radius = 0.088, orbit = 0.248, speed = -0.00098, phase = 5.0, wobble = 0.074, color = "#7fb7c90d" },
-  { radius = 0.074, orbit = 0.118, speed = 0.00121, phase = 2.4, wobble = 0.044, color = "#f5d98b0d" },
-  { radius = 0.062, orbit = 0.272, speed = -0.00142, phase = 0.7, wobble = 0.058, color = "#c98fd10d" },
+  { radius = 0.150, orbit = 0.185, speed = 0.00040, phase = 0.0, wobble = 0.052, color = morf.color("#f0b47a"):alpha(0.05) },
+  { radius = 0.122, orbit = 0.225, speed = -0.00057, phase = 1.9, wobble = 0.066, color = morf.color("#e8735a"):alpha(0.05) },
+  { radius = 0.104, orbit = 0.152, speed = 0.00079, phase = 3.4, wobble = 0.038, color = morf.color("#b4e1ea"):alpha(0.05) },
+  { radius = 0.088, orbit = 0.248, speed = -0.00098, phase = 5.0, wobble = 0.074, color = morf.color("#7fb7c9"):alpha(0.05) },
+  { radius = 0.074, orbit = 0.118, speed = 0.00121, phase = 2.4, wobble = 0.044, color = morf.color("#f5d98b"):alpha(0.05) },
+  { radius = 0.062, orbit = 0.272, speed = -0.00142, phase = 0.7, wobble = 0.058, color = morf.color("#c98fd1"):alpha(0.05) },
 }
 
 local BLEND = s(0.038)
@@ -74,11 +74,11 @@ end
 -- One field. One draw. The layers melt into each other exactly as in
 -- `sdf-blobs.lua` — the blur does not change what the shape is.
 local field = { x = 0, y = 0, width = W, height = H }
-field.fill_color = "#f0b47a0d"
+field.fill_color = morf.color("#f0b47a"):alpha(0.05)
 -- A thin bright edge, and it matters more the fainter the fill gets: at a tenth
 -- of alpha the interior is barely there, so the rim is what says a blob is a
 -- blob rather than a soft patch of nothing.
-field.stroke_color = "#ffffff4a"
+field.stroke_color = morf.color("white"):alpha(0.29)
 field.stroke_width = math.max(1.5, SHORT * 0.0016)
 
 for index, spec in ipairs(BLOBS) do

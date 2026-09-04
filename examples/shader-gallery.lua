@@ -33,10 +33,12 @@ morf.surface.anchors = FULL and { top = true, left = true, right = true, bottom 
 morf.surface.margin_top = FULL and 0 or 40
 morf.surface.margin_right = FULL and 0 or 40
 
-local INK = "#0d0f14"
-local PANEL = "#161922"
-local LABEL = "#7d8496"
-local TITLE = "#cdd3e0"
+local theme = morf.theme {
+  ink = "#0d0f14",
+  panel = "#161922",
+  label = "#7d8496",
+  title = "#cdd3e0",
+}
 
 --------------------------------------------------------------------------------
 -- Matrices. Rotation could only be written by expanding the arithmetic by hand.
@@ -210,7 +212,7 @@ local left = (W - total_w) / 2
 local top = (H - total_h) / 2 + 10
 
 local children = { width = W, height = H }
-children[#children + 1] = ui.Rect { width = W, height = H, color = INK }
+children[#children + 1] = ui.Rect { width = W, height = H, color = theme.ink }
 
 children[#children + 1] = ui.Text {
   x = left,
@@ -218,7 +220,7 @@ children[#children + 1] = ui.Text {
   width = total_w,
   text = "shaders written in Lua, compiled to WGSL",
   font_size = 17,
-  color = TITLE,
+  color = theme.title,
 }
 
 local level_nodes = {}
@@ -231,12 +233,12 @@ for index, panel in ipairs(PANELS) do
 
   children[#children + 1] = ui.Rect {
     x = x - 2, y = y - 2, width = PANEL_W + 4, height = PANEL_H + 4,
-    radius = 16, color = PANEL,
+    radius = 16, color = theme.panel,
   }
   local node = ui.Rect {
     x = x, y = y, width = PANEL_W, height = PANEL_H,
     radius = 14,
-    color = PANEL,
+    color = theme.panel,
     shader = panel[1],
   }
   if panel[1] == "levels" then
@@ -245,7 +247,7 @@ for index, panel in ipairs(PANELS) do
   children[#children + 1] = node
   children[#children + 1] = ui.Text {
     x = x, y = y + PANEL_H + 10, width = PANEL_W,
-    text = panel[2], font_size = 11, color = LABEL,
+    text = panel[2], font_size = 11, color = theme.label,
   }
 end
 

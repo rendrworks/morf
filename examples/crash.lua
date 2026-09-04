@@ -32,6 +32,9 @@ else
 end
 
 ui.MouseArea {
+  cursor = "pointer",
+  enter = { opacity = 0 },
+  behavior = { opacity = { duration = 240, easing = "out_quad" } },
   on_clicked = function() morf.quit() end,
   ui.Rect {
     color = "#3a1414",

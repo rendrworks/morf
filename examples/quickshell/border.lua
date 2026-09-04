@@ -25,7 +25,7 @@ function border.build(width, height)
   return ui.Sdf {
     width = width,
     height = height,
-    fill_color = function() return theme.color0() end,
+    fill_color = function() return theme.palette.color0 end,
     behavior = { fill_color = { duration = 200, easing = "out_cubic" } },
     -- The output, square-cornered, because the compositor's own edge is.
     ui.SdfShape {
