@@ -1,6 +1,9 @@
 //! Sandboxed execution of morf configuration code.
 
 mod api_animation;
+mod api_color;
+mod api_color_ops;
+mod api_color_palette;
 mod api_compositor;
 mod api_dbus_serve;
 mod api_file;

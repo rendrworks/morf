@@ -68,7 +68,7 @@ fn build<'gc>(
                 let child = build(ctx, state, metatable, &name, child_reload.as_deref(), table)?;
                 fields.tables.insert(key, ctx.stash(child));
             }
-            LuaValue::Function(_) | LuaValue::UserData(_) => {
+            LuaValue::Function(_) => {
                 return Err(format!(
                     "state field `{name}` must be a value, a table or a list"
                 ));

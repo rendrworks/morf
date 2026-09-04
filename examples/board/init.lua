@@ -54,9 +54,8 @@ if wal:loaded() then
     theme[name] = colors[name] or theme[name]
   end
 end
-
-local function alpha(color, value)
-  return color .. string.format("%02x", math.floor(value * 255 + 0.5))
+for name, value in pairs(theme) do
+  theme[name] = morf.color(value)
 end
 
 local function clamp01(value)
@@ -85,7 +84,7 @@ local function card(x, y, width, height, radius, border_width, children)
     radius = radius,
     color = theme.color236,
     border_width = border_width,
-    border_color = alpha(theme.color244, 0.08),
+    border_color = theme.color244:alpha(0.08),
   }
   for _, child in ipairs(children or {}) do values[#values + 1] = child end
   return ui.Rect(values)
@@ -641,7 +640,7 @@ local function progress_bar(options)
       width = function() return math.max(0, width - indicator_position() - indicator_gap) end,
       height = line_height,
       radius = line_height * 0.2,
-      color = alpha(theme.color244, 0.15),
+      color = theme.color244:alpha(0.15),
       behavior = {
         x = { duration = 200, easing = "out_cubic" },
         -- The original derives the empty track's width from its animated `x`,
@@ -720,7 +719,7 @@ local function logo_card(x, y, width, height, radius, border_width, line_height,
         width = function() return math.max(0, bar_width * (1 - battery:get() / 100)) end,
         height = line_height,
         radius = small_radius,
-        color = alpha(theme.color244, 0.15),
+        color = theme.color244:alpha(0.15),
         behavior = {
           x = { duration = 300, easing = "in_out_quad" },
           width = { duration = 300, easing = "in_out_quad" },
@@ -761,7 +760,7 @@ local function user_card(x, y, width, height, radius, border_width, line_height)
         width = icon_size,
         height = icon_size,
         radius = icon_size * 0.5,
-        color = alpha(theme.color1, 0.15),
+        color = theme.color1:alpha(0.15),
         centered_label(glyph, icon_size, icon_size, icon_size * 0.6, theme.color1),
       },
     }
@@ -800,7 +799,7 @@ local function user_card(x, y, width, height, radius, border_width, line_height)
       height = small_size * 1.2,
       text = function() return uptime:get() end,
       font_size = small_size,
-      color = alpha(theme.color1, 0.7),
+      color = theme.color1:alpha(0.7),
       elide = "right",
       horizontal_alignment = "center",
       vertical_alignment = "center",
@@ -878,7 +877,7 @@ local function clock_card(x, y, width, height, radius, border_width)
     height = date_size * 1.2,
     text = function() return clock:format("%b %d") end,
     font_size = date_size,
-    color = alpha(theme.color1, 0.7),
+    color = theme.color1:alpha(0.7),
     horizontal_alignment = "center",
     vertical_alignment = "center",
   }
@@ -915,7 +914,7 @@ local function calendar_card(x, y, width, height, radius, border_width)
       height = header_height,
       radius = radius,
       color = function()
-        return calendar_hover:get() == hover_key and alpha(theme.color1, 0.12) or "transparent"
+        return calendar_hover:get() == hover_key and theme.color1:alpha(0.12) or "transparent"
       end,
       centered_label(glyph, font_size * 2, header_height, font_size, theme.color1),
       ui.MouseArea {
@@ -958,7 +957,7 @@ local function calendar_card(x, y, width, height, radius, border_width)
       text = name,
       font_size = font_size,
       font_weight = 500,
-      color = alpha(theme.color1, 0.6),
+      color = theme.color1:alpha(0.6),
       horizontal_alignment = "center",
       vertical_alignment = "center",
     }
@@ -1008,8 +1007,8 @@ local function calendar_card(x, y, width, height, radius, border_width)
       height = circle_size,
       radius = circle_size * 0.5,
       color = function()
-        if is_today() then return alpha(theme.color1, 0.12) end
-        if calendar_hover:get() == cell then return alpha(theme.color1, 0.08) end
+        if is_today() then return theme.color1:alpha(0.12) end
+        if calendar_hover:get() == cell then return theme.color1:alpha(0.08) end
         return "transparent"
       end,
       text {
@@ -1021,7 +1020,7 @@ local function calendar_card(x, y, width, height, radius, border_width)
         color = function()
           local _, current = day_of_cell()
           if is_today() or current then return theme.color1 end
-          return alpha(theme.color1, 0.4)
+          return theme.color1:alpha(0.4)
         end,
         horizontal_alignment = "center",
         vertical_alignment = "center",
@@ -1060,7 +1059,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
       height = icon_size * 1.2,
       text = "󰝚",
       font_size = icon_size,
-      color = alpha(theme.color1, 0.5),
+      color = theme.color1:alpha(0.5),
       horizontal_alignment = "center",
       vertical_alignment = "center",
       visible = idle,
@@ -1071,7 +1070,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
       height = font_size * 1.2,
       text = "No Media",
       font_size = font_size,
-      color = alpha(theme.color1, 0.7),
+      color = theme.color1:alpha(0.7),
       horizontal_alignment = "center",
       vertical_alignment = "center",
       visible = idle,
@@ -1127,7 +1126,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
     width = art_size,
     height = art_size,
     radius = art_size * 0.5,
-    color = alpha(theme.color1, 0.08),
+    color = theme.color1:alpha(0.08),
     border_width = border_width * 2,
     border_color = theme.color1,
     visible = playing,
@@ -1143,7 +1142,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
       height = art_size,
       text = "󰝚",
       font_size = art_size * 0.4,
-      color = alpha(theme.color1, 0.5),
+      color = theme.color1:alpha(0.5),
       horizontal_alignment = "center",
       vertical_alignment = "center",
       visible = function() return not local_art() end,
@@ -1177,7 +1176,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
       return media.artist ~= "" and media.artist or "Unknown Artist"
     end,
     font_size = font_size,
-    color = alpha(theme.color1, 0.7),
+    color = theme.color1:alpha(0.7),
     elide = "right",
     horizontal_alignment = "center",
     vertical_alignment = "center",
@@ -1251,7 +1250,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
     theme.color1,
     function()
       media_revision:get()
-      if media.shuffle then return alpha(theme.color1, 0.2) end
+      if media.shuffle then return theme.color1:alpha(0.2) end
       return media_hover:get() == "shuffle" and theme.color240 or "transparent"
     end,
     toggle_shuffle, "shuffle")
@@ -1281,7 +1280,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
     button_size * 0.35, theme.color1,
     function()
       media_revision:get()
-      if media.loop ~= "None" then return alpha(theme.color1, 0.2) end
+      if media.loop ~= "None" then return theme.color1:alpha(0.2) end
       return media_hover:get() == "loop" and theme.color240 or "transparent"
     end,
     cycle_loop, "loop")

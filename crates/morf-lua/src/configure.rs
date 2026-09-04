@@ -271,6 +271,8 @@ pub(crate) fn configure_behaviors<'gc>(
                     time_scale,
                     repeat: parse_repeat(ctx, behavior)?,
                     enabled: parse_enabled(ctx, behavior)?,
+                    color_space: parse_color_space(ctx, behavior)?,
+                    hue: parse_hue(ctx, behavior)?,
                 }),
             )
             .map_err(|error| error.to_string())?;
@@ -322,6 +324,36 @@ pub(crate) fn parse_enabled<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Resu
         LuaValue::Nil => Ok(true),
         LuaValue::Boolean(value) => Ok(value),
         _ => Err("behavior enabled must be boolean".to_owned()),
+    }
+}
+
+/// `space = "srgb" | "oklab" | "oklch"`: where a colour travels.
+pub(crate) fn parse_color_space<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<morf_scene::ColorSpace, String> {
+    match options.get_value(ctx, "space") {
+        LuaValue::Nil => Ok(morf_scene::ColorSpace::default()),
+        LuaValue::String(value) => {
+            morf_scene::ColorSpace::parse(&value.display_lossy().to_string())
+                .ok_or_else(|| "space must be srgb, oklab or oklch".to_owned())
+        }
+        _ => Err("space must be a string".to_owned()),
+    }
+}
+
+/// `hue = "shorter" | "longer"`: which way round the wheel in `oklch`.
+pub(crate) fn parse_hue<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<morf_scene::HueDirection, String> {
+    match options.get_value(ctx, "hue") {
+        LuaValue::Nil => Ok(morf_scene::HueDirection::default()),
+        LuaValue::String(value) => {
+            morf_scene::HueDirection::parse(&value.display_lossy().to_string())
+                .ok_or_else(|| "hue must be shorter or longer".to_owned())
+        }
+        _ => Err("hue must be a string".to_owned()),
     }
 }
 

@@ -925,7 +925,7 @@ function settings.build(bar_width, item_height, pill_gap, on_right)
       border_width = hairline,
       -- The only alpha left unresolved: what is behind the panel is whatever
       -- window it happens to be over, so there is nothing to blend against.
-      border_color = function() return theme.alpha("color244", 0.08 * ch.expand:get()) end,
+      border_color = function() return theme.color244():alpha(0.08 * ch.expand:get()) end,
       visible = function() return ch.wide:get() or ch.expand:get() > 0 end,
     }
     for _, card in ipairs(cards) do children[#children + 1] = card end

@@ -346,14 +346,7 @@ pub(crate) fn scene_to_lua<'gc>(
         SceneValue::Bool(value) => LuaValue::Boolean(*value),
         SceneValue::Number(value) => LuaValue::Number(*value),
         SceneValue::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
-        SceneValue::Color(color) => {
-            let table = Table::new(&ctx);
-            table.set_field(ctx, "r", color.red as f64);
-            table.set_field(ctx, "g", color.green as f64);
-            table.set_field(ctx, "b", color.blue as f64);
-            table.set_field(ctx, "a", color.alpha as f64);
-            LuaValue::Table(table)
-        }
+        SceneValue::Color(color) => crate::api_color::scene_color_userdata(ctx, *color),
         SceneValue::List(values) => {
             let table = Table::new(&ctx);
             for (index, value) in values.iter().enumerate() {

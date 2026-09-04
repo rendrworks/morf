@@ -226,6 +226,8 @@ pub(crate) fn parse_step_behavior<'gc>(
         time_scale,
         repeat: parse_repeat(ctx, table)?,
         enabled: true,
+        color_space: parse_color_space(ctx, table)?,
+        hue: parse_hue(ctx, table)?,
     })
 }
 

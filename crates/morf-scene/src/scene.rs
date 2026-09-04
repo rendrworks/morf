@@ -4,7 +4,7 @@ use slotmap::SlotMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::{animation::*, hashing::*, motion::*, schema::*, types::*};
+use crate::{animation::*, hashing::*, motion::*, motion_values::*, schema::*, types::*};
 
 impl Scene {
     /// Creates an empty scene arena.
@@ -254,6 +254,20 @@ impl Scene {
             return Ok(());
         }
         if let Some(spec) = self.physics_specs.get(&key).copied()
+            && let Value::Color(target) = value
+            && let Value::Color(current) = *self.properties.read(slot.current)?
+        {
+            let velocity = self
+                .physics
+                .get(&key)
+                .map_or([0.0; 4], PhysicsAnimation::color_velocity);
+            self.animations.remove(&key);
+            self.properties.write(slot.target, Value::Color(target))?;
+            self.physics.insert(
+                key,
+                physics_animation_color(current, target, velocity, spec),
+            );
+        } else if let Some(spec) = self.physics_specs.get(&key).copied()
             && let Value::Number(target) = value
             && matches!(self.properties.read(slot.current)?, Value::Number(_))
         {
@@ -380,11 +394,24 @@ impl Scene {
                 continue;
             };
             let slot = node.properties[key.property];
+            let motion = self.physics.get_mut(&key).expect("physics key vanished");
+            if let PhysicsAnimation::Color { channels } = motion {
+                let Value::Color(mut current) = *self.properties.read(slot.current)? else {
+                    physics_finished.push(key);
+                    continue;
+                };
+                let settled = advance_physics_color(channels, &mut current, delta);
+                self.properties.write(slot.current, Value::Color(current))?;
+                frame.changed += 1;
+                if settled {
+                    physics_finished.push(key);
+                }
+                continue;
+            }
             let Value::Number(mut current) = *self.properties.read(slot.current)? else {
                 physics_finished.push(key);
                 continue;
             };
-            let motion = self.physics.get_mut(&key).expect("physics key vanished");
             let settled = advance_physics(motion, &mut current, delta);
             // Physics moves a property without any assignment, so this is the
             // one write that has to say so itself. Without it a paint reuses

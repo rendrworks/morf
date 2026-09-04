@@ -22,3 +22,4 @@ morf-shader.workspace = true
 morf-text.workspace = true
 morf-services.workspace = true
 serde_json.workspace = true
+pastel = "0.12"

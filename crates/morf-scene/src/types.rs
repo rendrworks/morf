@@ -115,42 +115,14 @@ impl Color {
         }
     }
 
-    /// Parses a CSS-style hex string or one of the handful of named colours.
+    /// Reads a colour from any form a configuration writes: hex with or
+    /// without `#`, `0x`, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`,
+    /// `oklab()`, `oklch()`, `gray()`, `transparent`, and the CSS names.
     ///
     /// Returns `None` rather than a fallback so a typo in a colour surfaces as
     /// an error at the property that used it.
     pub fn parse(input: &str) -> Option<Self> {
-        match input {
-            "transparent" => return Some(Self::rgba8(0, 0, 0, 0)),
-            "black" => return Some(Self::rgba8(0, 0, 0, 255)),
-            "white" => return Some(Self::rgba8(255, 255, 255, 255)),
-            "red" => return Some(Self::rgba8(255, 0, 0, 255)),
-            "green" => return Some(Self::rgba8(0, 128, 0, 255)),
-            "blue" => return Some(Self::rgba8(0, 0, 255, 255)),
-            _ => {}
-        }
-        let hex = input.strip_prefix('#')?;
-        let expand = |byte: u8| (byte << 4) | byte;
-        let nibble = |at: usize| u8::from_str_radix(&hex[at..at + 1], 16).ok();
-        let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
-        let (red, green, blue, alpha) = match hex.len() {
-            3 => (
-                expand(nibble(0)?),
-                expand(nibble(1)?),
-                expand(nibble(2)?),
-                255,
-            ),
-            4 => (
-                expand(nibble(0)?),
-                expand(nibble(1)?),
-                expand(nibble(2)?),
-                expand(nibble(3)?),
-            ),
-            6 => (byte(0)?, byte(2)?, byte(4)?, 255),
-            8 => (byte(0)?, byte(2)?, byte(4)?, byte(6)?),
-            _ => return None,
-        };
-        Some(Self::rgba8(red, green, blue, alpha))
+        crate::color::parse(input)
     }
 }
 

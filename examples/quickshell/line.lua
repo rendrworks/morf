@@ -332,7 +332,7 @@ function line.build()
     width = pill_width,
     height = badge_size,
     text = function() return tostring(badge_workspace:get()) end,
-    color = function() return theme.readable(theme.color1()) end,
+    color = function() return theme.color1():text_color() end,
     font_family = theme.font,
     font_source = theme.font_source,
     font_size = math.max(1, math.floor(math.min(pill_width, badge_size) * 0.495 + 0.5)),

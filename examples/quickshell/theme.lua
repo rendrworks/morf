@@ -55,7 +55,7 @@ end
 --- Reads one palette entry, registering the caller as a palette dependent.
 function theme.color(name)
   theme.revision:get()
-  return colors[name] or FALLBACK[name] or "#ff00ff"
+  return morf.color(colors[name] or FALLBACK[name] or "#ff00ff")
 end
 
 function theme.color0() return theme.color("color0") end
@@ -64,24 +64,6 @@ function theme.color236() return theme.color("color236") end
 function theme.color238() return theme.color("color238") end
 function theme.color240() return theme.color("color240") end
 function theme.color244() return theme.color("color244") end
-
---- Adds an alpha channel to a palette entry, as `#rrggbbaa`.
-function theme.alpha(name, amount)
-  local value = math.floor(math.max(0, math.min(1, amount)) * 255 + 0.5)
-  return string.format("%s%02x", theme.color(name):sub(1, 7), value)
-end
-
---- Picks black or white for legibility against a background, matching the
---- luminance test in `Numbers.qml`.
-function theme.readable(hex)
-  local raw = tostring(hex):gsub("#", "")
-  if #raw < 6 then return "#ffffff" end
-  local r = tonumber(raw:sub(1, 2), 16) or 255
-  local g = tonumber(raw:sub(3, 4), 16) or 255
-  local b = tonumber(raw:sub(5, 6), 16) or 255
-  local luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
-  return luminance < 0.45 and "#ffffff" or "#000000"
-end
 
 --- The first reported output, which every size is measured against.
 function theme.reference()

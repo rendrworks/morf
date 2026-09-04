@@ -200,6 +200,8 @@ pub enum IpcValue {
     Integer(i64),
     Number(f64),
     String(String),
+    /// A colour value, so a signal or a state field may hold one.
+    Color(morf_scene::Color),
 }
 
 /// Deferred virtual keyboard request produced by Lua.
@@ -318,6 +320,7 @@ impl IpcValue {
             Self::Integer(value) => LuaValue::Integer(*value),
             Self::Number(value) => LuaValue::Number(*value),
             Self::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+            Self::Color(color) => crate::api_color::scene_color_userdata(ctx, *color),
         }
     }
 
@@ -328,8 +331,18 @@ impl IpcValue {
             LuaValue::Integer(value) => Ok(Self::Integer(value)),
             LuaValue::Number(value) if value.is_finite() => Ok(Self::Number(value)),
             LuaValue::String(value) => Ok(Self::String(value.display_lossy().to_string())),
+            LuaValue::UserData(userdata)
+                if userdata
+                    .downcast_static::<crate::api_color::ColorToken>()
+                    .is_ok() =>
+            {
+                let token = userdata
+                    .downcast_static::<crate::api_color::ColorToken>()
+                    .expect("checked above");
+                Ok(Self::Color(morf_scene::Color::from_pastel(&token.color)))
+            }
             value => Err(format!(
-                "values crossing the Lua boundary must be nil, boolean, number, or string, found {}",
+                "values crossing the Lua boundary must be nil, boolean, number, string or colour, found {}",
                 value.type_name()
             )),
         }
@@ -348,6 +361,7 @@ impl IpcValue {
             Self::Integer(value) => SceneValue::Number(*value as f64),
             Self::Number(value) => SceneValue::Number(*value),
             Self::String(value) => SceneValue::String(value.clone()),
+            Self::Color(color) => SceneValue::Color(*color),
         }
     }
 }

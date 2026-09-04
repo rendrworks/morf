@@ -1,4 +1,6 @@
+use crate::motion_values::*;
 use animato::{Spring, SpringConfig, Tween, TweenState, Update};
+
 use std::time::Duration;
 
 use crate::{animation::*, types::*};
@@ -77,9 +79,17 @@ impl Animation {
                 self.initial_velocity,
                 self.behavior.duration.as_secs_f64(),
                 progress,
+                self.behavior.color_space,
+                self.behavior.hue,
             )
         } else {
-            interpolate(&self.from, &self.to, progress)
+            interpolate_in(
+                &self.from,
+                &self.to,
+                progress,
+                self.behavior.color_space,
+                self.behavior.hue,
+            )
         }
     }
 
@@ -93,6 +103,7 @@ impl Animation {
         let before = (progress - epsilon).max(0.0);
         let after = (progress + epsilon).min(1.0);
         let span = (after - before) * duration;
+        let (space, hue) = (self.behavior.color_space, self.behavior.hue);
         let before_value = if self.preserve_velocity {
             interpolate_hermite(
                 &self.from,
@@ -100,16 +111,38 @@ impl Animation {
                 self.initial_velocity,
                 duration,
                 before,
+                space,
+                hue,
             )
         } else {
-            interpolate(&self.from, &self.to, self.behavior.easing.value_at(before))
+            interpolate_in(
+                &self.from,
+                &self.to,
+                self.behavior.easing.value_at(before),
+                space,
+                hue,
+            )
         };
         let after_value = if self.preserve_velocity {
-            interpolate_hermite(&self.from, &self.to, self.initial_velocity, duration, after)
+            interpolate_hermite(
+                &self.from,
+                &self.to,
+                self.initial_velocity,
+                duration,
+                after,
+                space,
+                hue,
+            )
         } else {
-            interpolate(&self.from, &self.to, self.behavior.easing.value_at(after))
+            interpolate_in(
+                &self.from,
+                &self.to,
+                self.behavior.easing.value_at(after),
+                space,
+                hue,
+            )
         };
-        value_velocity(&before_value, &after_value, span)
+        value_velocity(&before_value, &after_value, span, space, hue)
     }
 }
 
@@ -315,6 +348,7 @@ pub(crate) fn advance_physics(
             // the next step will start it moving again.
             *gravity == 0.0 && slow_enough_to_stop(*velocity, *min_velocity)
         }
+        PhysicsAnimation::Color { .. } => true,
         PhysicsAnimation::Smoothed {
             target,
             velocity,
@@ -332,76 +366,6 @@ pub(crate) fn advance_physics(
                 false
             }
         }
-    }
-}
-
-pub(crate) fn zero_velocity(value: &Value) -> Velocity {
-    match value {
-        Value::Color(_) => Velocity::Color([0.0; 4]),
-        _ => Velocity::Number(0.0),
-    }
-}
-
-pub(crate) fn value_velocity(from: &Value, to: &Value, seconds: f64) -> Velocity {
-    let seconds = seconds.max(f64::EPSILON);
-    match (from, to) {
-        (Value::Number(from), Value::Number(to)) => Velocity::Number((to - from) / seconds),
-        (Value::Color(from), Value::Color(to)) => Velocity::Color([
-            (to.red as f64 - from.red as f64) / seconds,
-            (to.green as f64 - from.green as f64) / seconds,
-            (to.blue as f64 - from.blue as f64) / seconds,
-            (to.alpha as f64 - from.alpha as f64) / seconds,
-        ]),
-        _ => Velocity::Number(0.0),
-    }
-}
-
-pub(crate) fn interpolate(from: &Value, to: &Value, progress: f64) -> Value {
-    match (from, to) {
-        (Value::Number(from), Value::Number(to)) => Value::Number(from + (to - from) * progress),
-        (Value::Color(from), Value::Color(to)) => Value::Color(Color {
-            red: (from.red as f64 + (to.red as f64 - from.red as f64) * progress) as f32,
-            green: (from.green as f64 + (to.green as f64 - from.green as f64) * progress) as f32,
-            blue: (from.blue as f64 + (to.blue as f64 - from.blue as f64) * progress) as f32,
-            alpha: (from.alpha as f64 + (to.alpha as f64 - from.alpha as f64) * progress) as f32,
-        }),
-        _ => to.clone(),
-    }
-}
-
-pub(crate) fn interpolate_hermite(
-    from: &Value,
-    to: &Value,
-    velocity: Velocity,
-    duration: f64,
-    progress: f64,
-) -> Value {
-    let t2 = progress * progress;
-    let t3 = t2 * progress;
-    let from_weight = 2.0 * t3 - 3.0 * t2 + 1.0;
-    let velocity_weight = t3 - 2.0 * t2 + progress;
-    let to_weight = -2.0 * t3 + 3.0 * t2;
-    match (from, to, velocity) {
-        (Value::Number(from), Value::Number(to), Velocity::Number(velocity)) => Value::Number(
-            from_weight * from + velocity_weight * duration * velocity + to_weight * to,
-        ),
-        (Value::Color(from), Value::Color(to), Velocity::Color(velocity)) => {
-            let from = [from.red, from.green, from.blue, from.alpha].map(f64::from);
-            let to = [to.red, to.green, to.blue, to.alpha].map(f64::from);
-            let channels: [f32; 4] = std::array::from_fn(|index| {
-                (from_weight * from[index]
-                    + velocity_weight * duration * velocity[index]
-                    + to_weight * to[index])
-                    .clamp(0.0, 1.0) as f32
-            });
-            Value::Color(Color {
-                red: channels[0],
-                green: channels[1],
-                blue: channels[2],
-                alpha: channels[3],
-            })
-        }
-        _ => interpolate(from, to, progress),
     }
 }
 

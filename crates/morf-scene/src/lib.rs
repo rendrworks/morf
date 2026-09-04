@@ -5,11 +5,13 @@ mod model;
 pub use model::{ListChange, ListModel, ModelId, ViewItem, ViewTransition, VirtualList};
 
 mod animation;
+mod color;
 mod fling;
 mod groups;
 mod hashing;
 mod keyframes;
 mod motion;
+mod motion_values;
 mod playback;
 mod scene;
 mod scene_access;
@@ -20,6 +22,7 @@ mod schema;
 mod types;
 
 pub use animation::*;
+pub use color::{ColorSpace, HueDirection, mix as mix_colors};
 pub use groups::*;
 pub use hashing::*;
 pub use keyframes::*;

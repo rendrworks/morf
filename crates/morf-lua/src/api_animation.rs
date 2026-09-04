@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use morf_scene::{AnimationEnd, Color, NodeHandle, Scene, SceneError, Value as SceneValue};
 
-use crate::{lua_values::*, reactive_bindings::*, scene_bindings::*, serialization::*, state::*};
+use crate::{lua_values::*, scene_bindings::*, serialization::*, state::*};
 
 /// Installs `morf.animation`, the imperative control surface over motion that
 /// a `behavior` table has already declared.
@@ -203,20 +203,32 @@ pub(crate) fn install_easing_api<'gc>(ctx: Context<'gc>, morf: Table<'gc>) {
     easing.set_field(ctx, "rect", rect);
 
     let color = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (curve, progress, start, end): (LuaValue, f64, LuaValue, LuaValue) =
-            stack.consume(ctx)?;
+        let (curve, progress, start, end, options): (
+            LuaValue,
+            f64,
+            LuaValue,
+            LuaValue,
+            Option<Table>,
+        ) = stack.consume(ctx)?;
         let curve = parse_easing(ctx, curve).map_err(HostError)?;
-        let progress = finite(progress, "easing progress")?;
-        // Accepts either form a colour property does: a `#rrggbb` style string
-        // or the `{ r, g, b, a }` table a colour reads back as.
-        let read = |value| match lua_to_scene(ctx, value, 0).map_err(HostError)? {
-            SceneValue::Color(color) => Ok(color),
-            SceneValue::String(name) => {
-                Color::parse(&name).ok_or_else(|| HostError(format!("`{name}` is not a colour")))
-            }
-            _ => Err(HostError("easing colour must be a colour".into())),
+        // `{ space = "oklch", hue = "longer" }` chooses the road, as on a
+        // behavior; OkLab, the shorter way, otherwise.
+        let (space, hue) = match options {
+            Some(options) => (
+                crate::configure::parse_color_space(ctx, options).map_err(HostError)?,
+                crate::configure::parse_hue(ctx, options).map_err(HostError)?,
+            ),
+            None => Default::default(),
         };
-        let eased = curve.interpolate_color(progress, read(start)?, read(end)?);
+        let progress = finite(progress, "easing progress")?;
+        // Accepts anything a colour property does: a value, a string, a
+        // table naming a space.
+        let read = |value| {
+            crate::api_color::color_of(ctx, value)
+                .map(|color| Color::from_pastel(&color))
+                .map_err(HostError)
+        };
+        let eased = curve.interpolate_color(progress, read(start)?, read(end)?, space, hue);
         stack.replace(
             ctx,
             scene_to_lua(ctx, &SceneValue::Color(eased)).map_err(HostError)?,

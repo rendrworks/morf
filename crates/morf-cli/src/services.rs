@@ -23,6 +23,9 @@ pub(crate) fn wire_ipc_value(value: &IpcValue) -> WireValue {
         IpcValue::Integer(value) => WireValue::Integer(*value),
         IpcValue::Number(value) => WireValue::Number(*value),
         IpcValue::String(value) => WireValue::String(value.clone()),
+        // A colour crosses the wire as its hex, which is what a caller can
+        // print and what a shell can parse back.
+        IpcValue::Color(color) => WireValue::String(color.to_pastel().to_rgb_hex_string(true)),
     }
 }
 
