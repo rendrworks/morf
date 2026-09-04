@@ -4,7 +4,7 @@ How a configuration puts things on screen: the node kinds, how they are
 sized and placed, how state reaches them, and what makes a frame. Every
 section has a snippet you can paste into a config and run.
 
-Three questions have three separate answers, and every feature here
+Four questions have four separate answers, and every feature here
 belongs to exactly one of them:
 
 - **Where does a node go?** Layout. Decided by the node's *parent*, and by
@@ -13,6 +13,8 @@ belongs to exactly one of them:
   a literal, a binding, or a state block.
 - **How is a piece of UI organised?** Structure: a function returning a
   node, a component with a model, a list with a delegate.
+- **What does a node look like?** Appearance. Numbers and colours on the
+  node itself, every one of which animates by existing.
 
 Layout kinds compete with each other for one node's placement. Value
 sources compete with each other for one property. Everything else nests.
@@ -248,7 +250,8 @@ Any property given a function is a binding. It runs once at construction
 and again whenever something it read changes: a signal, a `morf.state`
 field, another node's property (`other.width`, or `other.width_target`
 for the animation's destination), `layout_*`, `morf.clock`. It returns a
-scalar. It never runs per frame.
+value: a number, a string, a colour, or a table for the properties that
+take one (a gradient, a decoration). It never runs per frame.
 
 ### Signals and state tables
 
@@ -315,13 +318,145 @@ node stays as it is.
 A `behavior = { property = { duration = 200, easing = "out_quad" } }`
 makes writes to that property animate; `ui.spring { stiffness = 300 }`
 and `ui.smoothed { velocity = 1000 }` are the other kinds. Behaviors are
-installed after construction, so nothing animates its own creation.
+installed after construction, so nothing animates its own creation;
+`enter` (section 6) says where a first frame starts instead.
 Animated *current* values do not re-run bindings; read `_target` for the
 destination, or use a `morf.transform_watcher` for the moving value.
 `morf.animation.play { ... }` runs groups and keyframes;
 `morf.animation.fling` coasts a property.
 
-## 6. What makes a frame
+## 6. Appearance
+
+One rule covers every property in this section: it is a number, a colour,
+or a table of those, and a `behavior` on it animates it. Nothing here has
+a second mechanism.
+
+### Colour values
+
+`morf.color(x)` reads any notation: hex, `rgb()`, `hsl()`, `hwb()`,
+`lab()`, `oklch()`, a named colour, `transparent`, a `/ alpha` at the end
+of any of them. Every property that takes a colour takes a string or a
+value, and reads back as a value. A value has fields `r g b a h s l`, and
+methods for nearly everything a colour can do:
+
+```lua
+local accent = morf.color "#3366cc"
+accent:lighten(0.1)  accent:darken(0.1)  accent:saturate(0.2)  accent:rotate(30)
+accent:alpha(0.5)    accent:complement() accent:gray()         accent:invert()
+accent:mix(other, 0.5, "oklch")          accent:composite(over)
+accent:luminance()   accent:is_light()   accent:contrast(paper)  accent:text_color()
+accent:distance(other, "ciede2000")      accent:blind("deuteranopia")
+accent:with { l = accent.l - 0.1, space = "oklch" }
+accent:hex()  accent:oklch_string()  accent:rgb8()  accent:nearest_name()
+```
+
+Constructors live beside it: `morf.color.rgb`, `hsl`, `hsv`, `lab`,
+`oklab`, `lch`, `oklch`, `xyz`, `cmyk`, `gray`, `named`, `random("vivid")`,
+`mix(a, b, t, space)`, `scale { stops }:sample(t)`, and
+`distinct(n, { fixed, metric, iterations })` for a palette whose members
+stay apart. `c:ansi_style { bold = true }` and `c:paint(text)` colour a
+terminal.
+
+A colour animates in a space. The default is OkLab, which is what a
+crossfade between two saturated colours should look like; `space` and
+`hue` on the behavior choose otherwise:
+
+```lua
+ui.Rect { color = accent, behavior = { color = { duration = 300, space = "oklch", hue = "longer" } } }
+```
+
+### Gradients
+
+`gradient` on a `Rect` or an `Sdf` is one table: a `kind` (`linear`,
+`radial`, `conic`), an `angle` (0 points up, 90 right, as a stylesheet's
+does), a centre `at = { x, y }` in fractions, a `radius` for radial, the
+`space` neighbouring stops mix in, and up to sixteen `stops`. A stop is a
+colour, a `{ color, position }` pair, or a `{ color = , position = }`
+table; a bare list spreads evenly, a missing position sits between its
+neighbours, and two stops at one position are a hard edge.
+
+```lua
+ui.Rect {
+  gradient = { angle = 135, space = "oklch", stops = { "#e6f7fa", { accent, 0.5 }, "#5fa8d3" } },
+  behavior = { gradient = { duration = 400 } },  -- every stop moves
+}
+```
+
+The whole table is one property: a binding may return it, and a behavior
+on it moves every stop's colour and position at once.
+
+### Themes and preferences
+
+`morf.theme(tokens, options)` is a `morf.state` for appearance. A string
+that names a colour becomes one. A function field is derived: read
+inside a binding, whatever it touches is what the binding follows, so
+`hover` below re-derives when `accent` changes with no wiring. A `source`
+is a JSON file whose leaf keys are tokens -- the file a palette generator
+writes -- read now and again whenever it is rewritten.
+
+```lua
+local theme = morf.theme({
+  accent = "#3366cc", paper = "#f6f5f4",
+  hover = function(t) return t.accent:alpha(0.12) end,
+  ink = function(t) return t.paper:text_color() end,
+}, { source = "~/.cache/wal/colors.json" })
+ui.Rect { color = function() return theme.hover end }
+theme.accent = "#ff6600"   -- and every reader of hover follows
+```
+
+`morf.prefers` is the desktop's own settings, read from the settings
+portal and kept current: `color_scheme` (`"dark"`, `"light"`, `"none"`),
+`contrast`, `accent_color` (a colour or nil), `reduced_motion`, and the
+driven output's `scale`. Each is a field a binding follows. A derived
+token that reads one switches palette with the desktop. When
+`reduced_motion` is on, every behavior, group and spring lands on its
+target on the next tick: a configuration written with motion ends up in
+the same place, without the travel.
+
+`Text` takes `color = "inherit"`: the nearest ancestor with a colour.
+An `Item` carries one for the purpose without painting anything.
+
+### Text
+
+Beyond `font_family`, `font_size` and `font_weight`: `line_height` is a
+multiple of the size, or a `"24px"` size; `letter_spacing` and
+`word_spacing` are pixels; `font_style` is `normal`, `italic` or
+`oblique`; `font_stretch` runs from `ultra_condensed` to
+`ultra_expanded`. A `decoration = { line, thickness, offset, color }`
+draws a band `under`, `over` or `through` the text from the face's own
+metrics; thickness and colour default to the face's and the text's.
+
+```lua
+ui.Text {
+  text = "Sorry, that didn't work", line_height = 1.4, font_style = "italic",
+  decoration = function() return refused:get() and { line = "under", color = theme.alert } or {} end,
+}
+```
+
+### Entering
+
+`enter = { opacity = 0, translate_x = 32 }` on any node is where its
+first frame starts. The behaviors carry it from there to the declared
+values; a property with no behavior simply arrives. This is the one way
+creation animates.
+
+```lua
+ui.Rect {
+  opacity = 1, translate_x = 0,
+  enter = { opacity = 0, translate_x = 32 },
+  behavior = { opacity = { duration = 220 }, translate_x = { kind = "spring", stiffness = 260 } },
+}
+```
+
+### Cursors
+
+`cursor = "pointer"` on a `MouseArea` is the pointer's shape while it is
+over the area, drawn by the compositor from its own theme. The names are
+the cursor-shape protocol's: `default`, `pointer`, `text`, `grab`,
+`grabbing`, `move`, `not_allowed`, `crosshair`, `ew_resize`, and the
+rest, spelled with underscores.
+
+## 7. What makes a frame
 
 - A property write that lands on a new value marks the surface dirty.
 - Anything but transforms, opacity, colours, radii and blur also marks the
@@ -333,7 +468,7 @@ destination, or use a `morf.transform_watcher` for the moving value.
 - A handler gets 100k Lua instructions; effects share a frame budget of
   1M. Exhaustion is logged, not fatal.
 
-## 7. Idioms to prefer
+## 8. Idioms to prefer
 
 - Reach for a container before a coordinate: a `Row` with `align`, a
   `Flex` with `gap`, a `Grid` with tracks, a `Layout` of your own.
@@ -341,4 +476,6 @@ destination, or use a `morf.transform_watcher` for the moving value.
 - Keep a shape in one `morf.state`, change it in one place, and let
   `when` states and bindings do the reading.
 - Keep lists in a model with a key, and let the `Repeater` follow it.
+- Keep a palette in a `morf.theme` and derive from it; let
+  `morf.prefers` choose the scheme.
 - A secret stays a plain local. Signals are named and observable.
