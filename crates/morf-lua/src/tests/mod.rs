@@ -41,5 +41,6 @@ mod screens;
 mod services;
 mod shaders;
 mod state_tables;
+mod text_style;
 mod themes;
 mod views_states;

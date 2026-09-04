@@ -2,6 +2,7 @@ use crate::states::Capture;
 use luna::{Context, Executor, Fuel, StashedClosure, Table, Value as LuaValue, Variadic};
 use morf_io::{DbusCall, DbusValue};
 use morf_reactive::EffectContext;
+use morf_scene::Value as SceneValue;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -86,10 +87,12 @@ pub(crate) fn evaluate_effect(
         (&result, lua_effect.sink.clone())
     {
         match value {
-            IpcValue::String(name) => apply_state(state, ctx, limits, frame_remaining, node, name),
+            SceneValue::String(name) => {
+                apply_state(state, ctx, limits, frame_remaining, node, name)
+            }
             // No state chose itself and none is the default: the node stays
             // as it is.
-            IpcValue::Nil => Ok(()),
+            SceneValue::Nil => Ok(()),
             _ => Err("state binding must return a string".into()),
         }
     } else {
@@ -102,7 +105,7 @@ pub(crate) fn evaluate_effect(
                     &mut state.borrow_mut(),
                     sink.node,
                     &sink.property,
-                    value.to_scene(),
+                    value.clone(),
                 ),
                 EffectSink::State(_) => Ok(()),
             }
@@ -151,7 +154,7 @@ pub(crate) fn execute_effect(
     limits: Limits,
     frame_remaining: &mut u64,
     capture_value: bool,
-) -> Result<Option<IpcValue>, String> {
+) -> Result<Option<SceneValue>, String> {
     let budget = limits.effect_fuel.min(*frame_remaining);
     if budget == 0 {
         return Err("Lua frame fuel exhausted".to_owned());
@@ -165,8 +168,10 @@ pub(crate) fn execute_effect(
         Ok(spent) => {
             *frame_remaining = frame_remaining.saturating_sub(spent);
             if capture_value {
+                // Whatever a binding hands back goes to the property as it
+                // is: a table is a gradient, a decoration, an anchor set.
                 match executor.take_result::<LuaValue>(ctx) {
-                    Ok(Ok(value)) => IpcValue::from_lua(value).map(Some),
+                    Ok(Ok(value)) => lua_to_scene(ctx, value, 0).map(Some),
                     Ok(Err(error)) => Err(error.to_string()),
                     Err(error) => Err(error.to_string()),
                 }

@@ -1,5 +1,5 @@
-use morf_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D};
-use morf_scene::{Color, Gradient, NodeHandle, Scene};
+use morf_layout::{Geometry, Layout, TextAlignment, TextElide, TextStyle, Transform2D};
+use morf_scene::{Color, Gradient, NodeHandle, Scene, TextDecoration};
 use std::ops::Range;
 
 use crate::{effects::*, field::*, paint::*, sdf::*};
@@ -99,6 +99,10 @@ pub enum DrawCommand {
         morph_to: String,
         /// How far between the two, zero at the run's own text.
         morph_progress: f32,
+        /// Line height, spacing, slant and width.
+        style: TextStyle,
+        /// A line under, over or through the text, if it has one.
+        decoration: Option<TextDecoration>,
     },
     /// Rasterized image or theme icon.
     Texture {

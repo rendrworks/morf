@@ -11,13 +11,16 @@ use morf_scene::{FastMap, NodeHandle};
 
 use crate::glyph_fields::FieldImage;
 
-struct CachedBuffer {
-    buffer: Buffer,
+pub(crate) struct CachedBuffer {
+    pub(crate) buffer: Buffer,
     input: Option<TextInput>,
+    /// What shaping could not be told, applied to every glyph after it.
+    pub(crate) word_spacing: f32,
+    pub(crate) alignment: TextAlignment,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ResolvedFamily {
+pub(crate) enum ResolvedFamily {
     Name(String),
     Serif,
     SansSerif,
@@ -27,7 +30,7 @@ enum ResolvedFamily {
 }
 
 impl ResolvedFamily {
-    fn family(&self) -> Family<'_> {
+    pub(crate) fn family(&self) -> Family<'_> {
         match self {
             Self::Name(name) => Family::Name(name),
             Self::Serif => Family::Serif,
@@ -62,6 +65,7 @@ struct TextInput {
     font_weight: u16,
     font_source: Option<String>,
     max_lines: usize,
+    style: morf_layout::TextStyleKey,
 }
 
 /// Two glyphs measured over one box, and how much of them fails to overlap.
@@ -406,6 +410,8 @@ mod glyph_runs;
 mod measure;
 pub(crate) use elide::elided_text;
 mod raster_glyph;
+mod style;
+pub use style::LineBand;
 
 pub use glyph_fields::{
     FIELD_REFERENCE_PX as GLYPH_FIELD_REFERENCE_PX, FIELD_SPREAD_PX as GLYPH_FIELD_SPREAD_PX,
@@ -414,5 +420,7 @@ pub use glyph_fields::{
 
 #[cfg(test)]
 mod probe_tests;
+#[cfg(test)]
+mod style_tests;
 #[cfg(test)]
 mod tests;

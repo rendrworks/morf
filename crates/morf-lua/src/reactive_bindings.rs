@@ -101,7 +101,6 @@ pub(crate) fn apply_state(
             StateValue::Binding(closure) => {
                 execute_effect(ctx, &closure, limits, frame_remaining, true)?
                     .ok_or_else(|| format!("state property `{property}` returned no value"))?
-                    .to_scene()
             }
         };
         properties.push((property, value));

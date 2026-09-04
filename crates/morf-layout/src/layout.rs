@@ -194,6 +194,7 @@ impl Layout {
                         source => Some(source.to_owned()),
                     },
                     max_lines: scene.number(node, "max_lines")?.max(0.0) as usize,
+                    style: crate::text_style::TextStyle::from_scene(scene, node)?,
                 },
             ),
             Element::Image | Element::Icon => {

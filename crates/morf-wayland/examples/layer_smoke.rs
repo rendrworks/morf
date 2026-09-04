@@ -79,6 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             DrawCommand::Text {
                 morph_to: String::new(),
                 morph_progress: 0.0,
+                style: morf_layout::TextStyle::default(),
+                decoration: None,
                 node: text_node,
                 bounds: Geometry {
                     x: 12.0,

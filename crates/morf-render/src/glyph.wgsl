@@ -189,7 +189,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     sampled *= mask_coverage;
-    let sampled_alpha = select(sampled.a, sampled.r, input.mode.z > 0.5);
+    // A solid quad — a decoration line — takes no coverage from the atlas.
+    let sampled_alpha = select(
+        select(sampled.a, sampled.r, input.mode.z > 0.5),
+        mask_coverage,
+        input.mode.z > 1.5,
+    );
     let alpha = sampled_alpha * input.color.a;
     if input.mode.x > 0.5 {
         return vec4<f32>(sampled.rgb * input.color.a, alpha);

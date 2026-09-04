@@ -423,6 +423,7 @@ pub(crate) fn affects_layout(property: &str) -> bool {
             | "border_pixel_aligned"
             | "content_under_border"
             | "gradient"
+            | "decoration"
             | "blur"
             | "shadow_color"
             | "shadow_blur"

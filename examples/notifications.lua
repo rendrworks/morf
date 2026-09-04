@@ -67,9 +67,9 @@ ui.Rect {
               margin = 6,
               ui.Row {
                 gap = 8,
-                ui.Text { text = entry.app, color = "#8a94a0", font_size = 14 },
+                ui.Text { text = entry.app, color = "#8a94a0", font_size = 14, font_style = "italic" },
                 ui.Text { text = entry.summary, color = "#ffffff", font_size = 16 },
-                ui.Text { text = entry.body, color = "#c0c8d0", font_size = 14 },
+                ui.Text { text = entry.body, color = "#c0c8d0", font_size = 14, line_height = 1.5 },
               },
             },
           },

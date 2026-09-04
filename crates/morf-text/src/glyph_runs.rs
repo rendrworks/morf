@@ -86,18 +86,10 @@ impl TextSystem {
         origin: (f32, f32),
         scale: f32,
     ) -> Vec<PhysicalGlyph> {
-        let Some(buffer) = self.buffers.get(&key) else {
+        let Some(cached) = self.buffers.get(&key) else {
             return Vec::new();
         };
-        buffer
-            .buffer
-            .layout_runs()
-            .flat_map(|run| {
-                run.glyphs.iter().map(move |glyph| {
-                    glyph.physical((origin.0, origin.1 + run.line_y * scale), scale)
-                })
-            })
-            .collect()
+        crate::style::physical_glyphs(cached, origin, scale)
     }
 
     fn rasterize_run(
@@ -107,18 +99,7 @@ impl TextSystem {
         scale: f32,
         field: bool,
     ) -> Vec<RasterGlyph> {
-        let Some(buffer) = self.buffers.get(&key) else {
-            return Vec::new();
-        };
-        let physical: Vec<_> = buffer
-            .buffer
-            .layout_runs()
-            .flat_map(|run| {
-                run.glyphs.iter().map(move |glyph| {
-                    glyph.physical((origin.0, origin.1 + run.line_y * scale), scale)
-                })
-            })
-            .collect();
+        let physical = self.physical_glyphs(key, origin, scale);
         physical
             .into_iter()
             .filter_map(|glyph| self.raster_glyph(&glyph, field))
@@ -185,8 +166,9 @@ impl TextSystem {
 
     fn shape_one_in(&mut self, glyph: char, family: &str) -> Option<cosmic_text::CacheKey> {
         let size = crate::glyph_fields::FIELD_REFERENCE_PX;
+        // One character on one line: the line height is nothing to it.
         let mut buffer =
-            cosmic_text::Buffer::new(&mut self.fonts, cosmic_text::Metrics::relative(size, 1.2));
+            cosmic_text::Buffer::new(&mut self.fonts, cosmic_text::Metrics::new(size, size));
         let family = crate::resolve_family(&self.fonts, family);
         buffer.set_text(
             glyph.encode_utf8(&mut [0u8; 4]),

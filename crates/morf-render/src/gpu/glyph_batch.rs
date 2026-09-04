@@ -1,7 +1,8 @@
 use crate::effects::color_array;
 use crate::{DrawCommand, DrawList, VerticalAlignment};
-use morf_layout::{Geometry, TextMeasurer, TextOptions};
-use morf_text::{RasterContent, RasterGlyph, TextSystem};
+use morf_layout::{Geometry, TextMeasurer, TextOptions, Transform2D};
+use morf_scene::{Color, DecorationLine, TextDecoration};
+use morf_text::{LineBand, RasterContent, RasterGlyph, TextSystem};
 
 use super::{backend_types::*, glyphs::*, textures::*};
 
@@ -29,6 +30,7 @@ pub(crate) fn create_glyph_batch(
     } = context;
     let scale = scale_120.max(1) as f32 / 120.0;
     let mut glyphs = Vec::new();
+    let mut bands: Vec<PreparedBand> = Vec::new();
     for (command_index, command) in list.commands.iter().enumerate() {
         let DrawCommand::Text {
             node,
@@ -49,6 +51,8 @@ pub(crate) fn create_glyph_batch(
             field_style,
             morph_to,
             morph_progress,
+            style,
+            decoration,
             ..
         } = command
         else {
@@ -67,6 +71,7 @@ pub(crate) fn create_glyph_batch(
                 font_weight: *font_weight,
                 font_source: (!font_source.is_empty()).then(|| font_source.clone()),
                 max_lines: *max_lines,
+                style: *style,
             },
         );
         let spare_height = (bounds.height - measured.height).max(0.0);
@@ -127,6 +132,7 @@ pub(crate) fn create_glyph_batch(
                     font_weight: *font_weight,
                     font_source: (!font_source.is_empty()).then(|| font_source.clone()),
                     max_lines: *max_lines,
+                    style: *style,
                 },
             );
             // Paired glyphs come back already measured over one shared box, so
@@ -156,8 +162,25 @@ pub(crate) fn create_glyph_batch(
                 push(glyph, None, 0.0);
             }
         }
+        if let Some(decoration) = decoration {
+            bands.extend(decoration_bands(
+                text_system.line_bands(*node),
+                decoration,
+                *size,
+                Geometry {
+                    x: bounds.x,
+                    y: bounds.y + vertical_offset,
+                    width: bounds.width,
+                    height: bounds.height,
+                },
+                *color,
+                *color_overlay,
+                *transform,
+                command_index,
+            ));
+        }
     }
-    if glyphs.is_empty() {
+    if glyphs.is_empty() && bands.is_empty() {
         return Ok(None);
     }
     mask_atlas.prepare(queue, &glyphs)?;
@@ -252,8 +275,88 @@ pub(crate) fn create_glyph_batch(
             ..GlyphInstance::default()
         });
     }
+    // A decoration is a solid quad through the glyph pipeline, after the
+    // letters of every command so it lies over them, clipped and masked the
+    // same way.
+    for band in bands {
+        let (origin, axes) = transformed_quad(
+            band.transform,
+            band.rect,
+            f64::from(scale),
+            (target_width, target_height),
+        );
+        let instance = instances.len() as u32;
+        command_spans[band.command_index].push(GlyphSpan {
+            range: instance..instance + 1,
+            color: false,
+        });
+        instances.push(GlyphInstance {
+            origin,
+            axes,
+            color: color_array(band.color),
+            color_overlay: color_array(band.color_overlay),
+            // `z` past one is solid: no sample, the colour as it is.
+            mode: [0.0, 0.0, 2.0, 0.0],
+            ..GlyphInstance::default()
+        });
+    }
     Ok(Some(GlyphBatch {
         instances,
         command_spans,
     }))
+}
+
+/// One decoration line, positioned, waiting to become an instance.
+struct PreparedBand {
+    rect: Geometry,
+    color: Color,
+    color_overlay: Color,
+    transform: Transform2D,
+    command_index: usize,
+}
+
+/// Where a decoration runs along each line, from the face's own metrics.
+#[allow(clippy::too_many_arguments)]
+fn decoration_bands(
+    lines: Vec<LineBand>,
+    decoration: &TextDecoration,
+    size: f64,
+    bounds: Geometry,
+    text_color: Color,
+    color_overlay: Color,
+    transform: Transform2D,
+    command_index: usize,
+) -> Vec<PreparedBand> {
+    let color = decoration.color.unwrap_or(text_color);
+    lines
+        .into_iter()
+        .map(|line| {
+            let thickness = decoration
+                .thickness
+                .unwrap_or(f64::from(line.stroke_size))
+                .max(size / 24.0);
+            let baseline = bounds.y + f64::from(line.baseline);
+            // Where the face puts the line, then the configuration's offset,
+            // downwards; the band's own thickness is centred on that.
+            let centre = match decoration.line {
+                DecorationLine::Under => {
+                    baseline + f64::from(line.underline_offset) + thickness / 2.0
+                }
+                DecorationLine::Over => baseline - f64::from(line.ascent) + thickness / 2.0,
+                DecorationLine::Through => baseline - f64::from(line.strikeout_offset),
+            } + decoration.offset;
+            PreparedBand {
+                rect: Geometry {
+                    x: bounds.x + f64::from(line.x),
+                    y: centre - thickness / 2.0,
+                    width: f64::from(line.width),
+                    height: thickness,
+                },
+                color,
+                color_overlay,
+                transform,
+                command_index,
+            }
+        })
+        .collect()
 }

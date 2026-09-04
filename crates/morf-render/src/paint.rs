@@ -197,6 +197,10 @@ pub(crate) fn append_node(
             field_style: text_field_style(scene, node)?,
             morph_to: scene.string_value(node, "morph_to")?.to_owned(),
             morph_progress: scene.number(node, "morph_progress")?.clamp(0.0, 1.0) as f32,
+            style: morf_layout::TextStyle::from_scene(scene, node)
+                .map_err(|error| RenderError::Scene(error.to_string()))?,
+            decoration: morf_scene::TextDecoration::parse(scene.current(node, "decoration")?)
+                .map_err(RenderError::Scene)?,
         }),
         Element::Image => list.commands.push(DrawCommand::Texture {
             node,

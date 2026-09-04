@@ -920,6 +920,12 @@ prompt[#prompt + 1] = ui.Text {
   font_size = s(12),
   horizontal_alignment = "center",
   color = function() return theme.dim end,
+  -- A refusal is underlined in the alert colour for as long as the shake
+  -- lasts, so the eye that missed the words still sees the answer.
+  decoration = function()
+    if shake:get() > 0 then return { line = "under", color = theme.alert } end
+    return {}
+  end,
 }
 
 --------------------------------------------------------------------------------

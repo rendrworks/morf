@@ -256,7 +256,15 @@ fn eliding_places_ellipsis_and_constrains_width() {
             },
         );
         assert!(displayed.contains('…'));
-        assert!(shaped_width(&mut fonts, &displayed, "sans-serif", 16.0, 400.0) <= 100.0);
+        assert!(
+            shaped_width(
+                &mut fonts,
+                &displayed,
+                "sans-serif",
+                16.0,
+                &TextOptions::default()
+            ) <= 100.0
+        );
         match mode {
             TextElide::Left => assert!(text.ends_with(displayed.trim_start_matches('…'))),
             TextElide::Middle => {

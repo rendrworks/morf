@@ -347,21 +347,4 @@ impl IpcValue {
             )),
         }
     }
-
-    /// The same value as the scene stores it.
-    ///
-    /// This lived on a second enum with the same five variants and the same
-    /// three conversions, which existed only because the reactive graph and the
-    /// IPC surface had each grown one — along with a pair of shims to carry a
-    /// value from one to the other.
-    pub(crate) fn to_scene(&self) -> SceneValue {
-        match self {
-            Self::Nil => SceneValue::Nil,
-            Self::Boolean(value) => SceneValue::Bool(*value),
-            Self::Integer(value) => SceneValue::Number(*value as f64),
-            Self::Number(value) => SceneValue::Number(*value),
-            Self::String(value) => SceneValue::String(value.clone()),
-            Self::Color(color) => SceneValue::Color(*color),
-        }
-    }
 }

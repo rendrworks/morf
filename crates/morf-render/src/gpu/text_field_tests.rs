@@ -15,6 +15,8 @@ pub(crate) fn text_command(
     DrawCommand::Text {
         morph_to: String::new(),
         morph_progress: 0.0,
+        style: morf_layout::TextStyle::default(),
+        decoration: None,
         node,
         bounds: Geometry {
             x: 0.0,
@@ -115,5 +117,60 @@ pub(crate) fn thickness_moves_the_edge_and_an_outline_adds_a_band_around_it() {
     assert!(
         outlined > plain,
         "the outline is a band outside the fill: {outlined} against {plain}"
+    );
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+pub(crate) fn a_decoration_is_a_band_under_the_line() {
+    // A line under the text is drawn from the face's own metrics: below the
+    // baseline, as wide as the line, in the decoration's colour — and not
+    // there at all when nothing asked for it.
+    let mut scene = morf_scene::Scene::new();
+    let node = scene.create(morf_scene::Element::Text);
+    let render = |decoration: Option<morf_scene::TextDecoration>| {
+        let mut command = text_command(node, "mmmm", 40.0, DistanceFieldStyle::default());
+        let DrawCommand::Text {
+            decoration: slot, ..
+        } = &mut command
+        else {
+            panic!("text_command builds text");
+        };
+        *slot = decoration;
+        render_readback(
+            &DrawList {
+                commands: vec![command],
+                layers: Vec::new(),
+            },
+            128,
+        )
+    };
+    let plain = render(None);
+    let underlined = render(Some(morf_scene::TextDecoration {
+        line: morf_scene::DecorationLine::Under,
+        thickness: Some(4.0),
+        offset: 0.0,
+        color: Some(Color::rgba8(255, 0, 0, 255)),
+    }));
+    // A row below the letters' baseline that the underline runs along:
+    // the widest run of red across any row.
+    let red_run = |pixels: &[u8], y: u32| {
+        (0..128u32)
+            .filter(|x| {
+                let i = ((y * 128 + x) * 4) as usize;
+                pixels[i] > 200 && pixels[i + 1] < 60 && pixels[i + 3] > 200
+            })
+            .count()
+    };
+    let widest = (0..128u32).map(|y| red_run(&underlined, y)).max().unwrap();
+    assert!(widest > 60, "the line runs the width of the text: {widest}");
+    assert_eq!(
+        (0..128u32).map(|y| red_run(&plain, y)).max().unwrap(),
+        0,
+        "no red without a decoration"
+    );
+    assert!(
+        ink(&underlined, 128) > ink(&plain, 128),
+        "the band adds ink"
     );
 }

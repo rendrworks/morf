@@ -6,10 +6,11 @@
 //! the last with one. Both search over graphemes, each probe a throwaway
 //! shape, so the cost is paid only by text that overflows.
 
-use cosmic_text::{Align, Attrs, Buffer, FontSystem, Metrics, Shaping, Weight, Wrap};
+use cosmic_text::{Align, Buffer, FontSystem, Shaping, Wrap};
 use morf_layout::{TextElide, TextOptions};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::style::{run_gain, text_attrs, text_metrics};
 use crate::{normalize_font_weight, resolve_family};
 
 pub(crate) fn elided_text(
@@ -31,7 +32,7 @@ pub(crate) fn elided_text(
     else {
         return text.to_owned();
     };
-    if shaped_width(fonts, text, family, size, options.font_weight) <= width as f32 {
+    if shaped_width(fonts, text, family, size, options) <= width as f32 {
         return text.to_owned();
     }
     let graphemes: Vec<&str> = text.graphemes(true).collect();
@@ -40,7 +41,7 @@ pub(crate) fn elided_text(
     while low < high {
         let middle = (low + high).div_ceil(2);
         let candidate = elide_candidate(&graphemes, middle, options.elide);
-        if shaped_width(fonts, &candidate, family, size, options.font_weight) <= width as f32 {
+        if shaped_width(fonts, &candidate, family, size, options) <= width as f32 {
             low = middle;
         } else {
             high = middle - 1;
@@ -63,7 +64,7 @@ fn truncated_to_lines(
     width: f32,
 ) -> String {
     let lines = |fonts: &mut FontSystem, candidate: &str| {
-        wrapped_lines(fonts, candidate, family, size, options.font_weight, width)
+        wrapped_lines(fonts, candidate, family, size, options, width)
     };
     if lines(fonts, text) <= options.max_lines {
         return text.to_owned();
@@ -88,18 +89,21 @@ fn wrapped_lines(
     text: &str,
     family: &str,
     size: f32,
-    font_weight: f64,
+    options: &TextOptions,
     width: f32,
 ) -> usize {
     let family = resolve_family(fonts, family);
-    let mut buffer = Buffer::new(fonts, Metrics::relative(size, 1.2));
+    let mut buffer = Buffer::new(fonts, text_metrics(size, &options.style));
     buffer.set_size(Some(width), None);
     buffer.set_wrap(Wrap::WordOrGlyph);
     buffer.set_text(
         text,
-        &Attrs::new()
-            .family(family.family())
-            .weight(Weight(normalize_font_weight(font_weight))),
+        &text_attrs(
+            &family,
+            normalize_font_weight(options.font_weight),
+            size,
+            &options.style,
+        ),
         Shaping::Advanced,
         None,
     );
@@ -130,22 +134,26 @@ pub(crate) fn shaped_width(
     text: &str,
     family: &str,
     size: f32,
-    font_weight: f64,
+    options: &TextOptions,
 ) -> f32 {
     let family = resolve_family(fonts, family);
-    let mut buffer = Buffer::new(fonts, Metrics::relative(size, 1.2));
+    let mut buffer = Buffer::new(fonts, text_metrics(size, &options.style));
     buffer.set_wrap(Wrap::None);
     buffer.set_text(
         text,
-        &Attrs::new()
-            .family(family.family())
-            .weight(Weight(normalize_font_weight(font_weight))),
+        &text_attrs(
+            &family,
+            normalize_font_weight(options.font_weight),
+            size,
+            &options.style,
+        ),
         Shaping::Advanced,
         Some(Align::Left),
     );
     buffer.shape_until_scroll(fonts, false);
+    let word_spacing = options.style.word_spacing as f32;
     buffer
         .layout_runs()
-        .map(|run| run.line_w)
+        .map(|run| run.line_w + run_gain(&run, word_spacing))
         .fold(0.0, f32::max)
 }

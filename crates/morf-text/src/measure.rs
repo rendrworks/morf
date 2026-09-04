@@ -1,10 +1,11 @@
 // What the layout engine asks of text: how big a string comes out, given a
 // font, a size and the room it has.
 
-use cosmic_text::{Align, Attrs, Buffer, Metrics, Shaping, Weight, Wrap};
+use cosmic_text::{Align, Buffer, Shaping, Wrap};
 use morf_layout::{Size, TextAlignment, TextMeasurer, TextOptions};
 use morf_scene::NodeHandle;
 
+use crate::style::{run_gain, text_attrs, text_metrics};
 use crate::{
     BufferKey, CachedBuffer, TextInput, TextSystem, elided_text, normalize_font_weight,
     resolve_family,
@@ -50,14 +51,18 @@ impl TextSystem {
             font_weight,
             font_source: options.font_source.clone(),
             max_lines: options.max_lines,
+            style: options.style.key(),
         };
+        let metrics = text_metrics(size, &options.style);
         let cached = self.buffers.entry(key).or_insert_with(|| CachedBuffer {
-            buffer: Buffer::new(&mut self.fonts, Metrics::relative(size, 1.2)),
+            buffer: Buffer::new(&mut self.fonts, metrics),
             input: None,
+            word_spacing: 0.0,
+            alignment: options.alignment,
         });
         if cached.input.as_ref() != Some(&input) {
             cached.buffer.set_metrics_and_size(
-                Metrics::relative(size, 1.2),
+                metrics,
                 options.width.map(|value| value as f32),
                 None,
             );
@@ -68,11 +73,11 @@ impl TextSystem {
             });
             let displayed = elided_text(&mut self.fonts, text, family, size, &options);
             let family = resolve_family(&self.fonts, family);
+            cached.word_spacing = options.style.word_spacing as f32;
+            cached.alignment = options.alignment;
             cached.buffer.set_text(
                 &displayed,
-                &Attrs::new()
-                    .family(family.family())
-                    .weight(Weight(font_weight)),
+                &text_attrs(&family, font_weight, size, &options.style),
                 Shaping::Advanced,
                 Some(match options.alignment {
                     TextAlignment::Left => Align::Left,
@@ -88,7 +93,7 @@ impl TextSystem {
         let mut width = 0.0_f32;
         let mut height = 0.0_f32;
         for run in cached.buffer.layout_runs() {
-            width = width.max(run.line_w);
+            width = width.max(run.line_w + run_gain(&run, cached.word_spacing));
             height = height.max(run.line_top + run.line_height);
         }
         Size {
