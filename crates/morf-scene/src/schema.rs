@@ -40,7 +40,9 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         any("layout", Value::Map(BTreeMap::new())),
     ];
     match element {
-        Element::Item => {}
+        // Nothing of its own to paint, but a colour for the text beneath it
+        // to inherit.
+        Element::Item => properties.push(any("color", Value::Nil)),
         Element::Inset => properties.extend([
             number("margin", 0.0),
             number("extra_margin", 0.0),
@@ -378,7 +380,20 @@ pub(crate) fn coerce(
             message,
         });
     }
+    // `color` is the one property that may say "inherit": text takes the
+    // nearest ancestor's colour, and an `Item` carries one for it without
+    // painting anything.
     let converted = match (kind, value) {
+        (_, Value::String(value)) if property == "color" && value == "inherit" => {
+            Some(Value::String(value))
+        }
+        (PropertyType::Any, Value::String(value)) if property == "color" => {
+            Color::parse(&value).map(Value::Color)
+        }
+        (PropertyType::Any, value @ (Value::Nil | Value::Color(_))) if property == "color" => {
+            Some(value)
+        }
+        (PropertyType::Any, _) if property == "color" => None,
         (PropertyType::Any, value) => Some(value),
         (PropertyType::Bool, Value::Bool(value)) => Some(Value::Bool(value)),
         (PropertyType::Number, Value::Number(value)) if value.is_finite() => {
@@ -393,6 +408,7 @@ pub(crate) fn coerce(
         element: element.name(),
         property: property.to_owned(),
         expected: match kind {
+            PropertyType::Any if property == "color" => "color, inherit or nil",
             PropertyType::Any => "value",
             PropertyType::Bool => "boolean",
             PropertyType::Number => "finite number",

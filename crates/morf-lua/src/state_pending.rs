@@ -6,10 +6,13 @@
 //! is owed the answer. The runtime drains all of them in one pass.
 
 use luna::StashedClosure;
-use morf_io::{DbusService, DbusSignal, Timer as IoTimer};
+use morf_io::{DbusProxy, DbusService, DbusSignal, FileWatcher, Timer as IoTimer};
+use morf_reactive::SignalId;
 use morf_scene::NodeHandle;
 use morf_services::{PamSession, PamTask, StatusNotifierHost, UdevMonitor};
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -63,4 +66,26 @@ pub(crate) struct PendingUdev {
 pub(crate) struct PendingStatusNotifier {
     pub(crate) host: StatusNotifierHost,
     pub(crate) callback: StashedClosure,
+}
+
+/// A JSON file a theme takes its tokens from, watched for rewrites.
+pub(crate) struct ThemeSource {
+    pub(crate) path: PathBuf,
+    /// Absent when the directory could not be watched; the file is then read
+    /// once and never again.
+    pub(crate) watcher: Option<FileWatcher>,
+    /// The token each leaf key of the file writes.
+    pub(crate) fields: HashMap<String, SignalId>,
+}
+
+/// The signals behind `morf.prefers`, and the settings portal they follow.
+pub(crate) struct Prefers {
+    pub(crate) color_scheme: SignalId,
+    pub(crate) contrast: SignalId,
+    pub(crate) reduced_motion: SignalId,
+    pub(crate) accent_color: SignalId,
+    pub(crate) scale: SignalId,
+    /// The portal's settings interface and its change signal, when there is
+    /// a portal to ask.
+    pub(crate) portal: Option<(DbusProxy, DbusSignal)>,
 }

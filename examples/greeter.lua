@@ -112,20 +112,47 @@ local function panel_top(height)
   return math.floor((H - height) / 2)
 end
 
--- Worked out from the stylesheet rather than picked by eye.
-local INK = "#222226"       -- $system_base_color
-local TEXT = "#fafafb"      -- $system_fg_color
-local DIM = "#dedee4"       -- darken($system_fg_color, 10%)
-local CARD = "#353539"      -- button(normal) over the base colour
-local CARD_HOT = "#3a3a3f"
-local BUTTON = "#404045"    -- button(normal) over $system_bg_color, and %system_entry
-local BUTTON_HOT = "#45454b"
-local WELL = "#fafafb21"    -- transparentize($system_fg_color, .87)
-local ACCENT = "#86b5ef"    -- the dark-variant accent, for the ring under a key
-local ACCENT_RING = "#86b5ef33" -- the accent at a fifth, which is the focus ring
-local ALERT = "#ff7b63"     -- not GDM's, which says a refusal in words alone —
-                            -- but a screen that only answers in text is a screen
-                            -- you have to read to know it heard you
+-- Worked out from the stylesheet rather than picked by eye: the dark
+-- palette GDM ships, and a light one in the same relationships. Which is in
+-- force follows the desktop's colour-scheme preference — every token is
+-- derived from `morf.prefers`, so a binding that reads one switches with it.
+local dark = {
+  ink = "#222226",        -- $system_base_color
+  text = "#fafafb",       -- $system_fg_color
+  dim = "#dedee4",        -- darken($system_fg_color, 10%)
+  card = "#353539",       -- button(normal) over the base colour
+  card_hot = "#3a3a3f",
+  button = "#404045",     -- button(normal) over $system_bg_color, and %system_entry
+  button_hot = "#45454b",
+  well = "#fafafb21",     -- transparentize($system_fg_color, .87)
+  well_hot = "#fafafb2e",
+  accent = "#86b5ef",     -- the dark-variant accent, for the ring under a key
+  ring = "#86b5ef33",     -- the accent at a fifth, which is the focus ring
+  alert = "#ff7b63",      -- not GDM's, which says a refusal in words alone —
+                          -- but a screen that only answers in text is a screen
+                          -- you have to read to know it heard you
+}
+local light = {
+  ink = "#f6f5f4",
+  text = "#2e3436",
+  dim = "#5e5c64",
+  card = "#e8e6e3",
+  card_hot = "#e1dedb",
+  button = "#dcd9d6",
+  button_hot = "#d3d0cc",
+  well = "#2e343621",
+  well_hot = "#2e34362e",
+  accent = "#3584e4",
+  ring = "#3584e433",
+  alert = "#c01c28",
+}
+local tokens = {}
+for name, value in pairs(dark) do
+  tokens[name] = function()
+    return morf.prefers.color_scheme == "light" and light[name] or value
+  end
+end
+local theme = morf.theme(tokens)
 
 local function write(signal, value)
   local ok, error = signal:set(value)
@@ -375,7 +402,7 @@ local function icon(name, box, extra)
   local field = {
     width = box,
     height = box,
-    fill_color = TEXT,
+    fill_color = function() return theme.text end,
     ui.SdfShape {
       width = box,
       height = box,
@@ -478,11 +505,11 @@ local function user_row(index, user)
     ui.Rect {
       anchors = { fill = true },
       radius = ITEM_RADIUS,
-      color = function() return live() and CARD_HOT or CARD end,
+      color = function() return live() and theme.card_hot or theme.card end,
       -- The accent arrives on the edge before it arrives anywhere else, which
       -- is how a list says which row is *the* row without shouting.
       border_width = s(2),
-      border_color = function() return live() and ACCENT or "#00000000" end,
+      border_color = function() return live() and theme.accent or "#00000000" end,
       behavior = {
         color = { duration = 150, easing = "out_quad" },
         border_color = { duration = 200, easing = "out_quad" },
@@ -490,7 +517,7 @@ local function user_row(index, user)
     },
     ui.Sdf {
       x = ITEM_PAD, y = ITEM_PAD, width = FACE_SM, height = FACE_SM,
-      fill_color = function() return live() and "#fafafb2e" or WELL end,
+      fill_color = function() return live() and theme.well_hot or theme.well end,
       scale = function() return live() and 1.06 or 1.0 end,
       behavior = {
         fill_color = { duration = 180, easing = "out_quad" },
@@ -505,7 +532,7 @@ local function user_row(index, user)
       font_weight = 700,
       horizontal_alignment = "center",
       vertical_alignment = "center",
-      color = TEXT,
+      color = function() return theme.text end,
     },
     ui.Text {
       x = ITEM_PAD + FACE_SM + NAME_GAP,
@@ -517,7 +544,7 @@ local function user_row(index, user)
       font_weight = 700,
       vertical_alignment = "center",
       elide = "right",
-      color = TEXT,
+      color = function() return theme.text end,
     },
     ui.MouseArea {
       anchors = { fill = true },
@@ -584,7 +611,7 @@ if #users == 0 then
     font_size = s(16),
     horizontal_alignment = "center",
     vertical_alignment = "center",
-    color = DIM,
+    color = function() return theme.dim end,
   }
 end
 -- `.login-dialog-not-listed-label` is `%heading`, and the button it sits in is
@@ -596,7 +623,7 @@ list_view[#list_view + 1] = ui.Text {
   text = "Not listed?",
   font_size = s(12),
   font_weight = 700,
-  color = DIM,
+  color = function() return theme.dim end,
 }
 
 --------------------------------------------------------------------------------
@@ -671,7 +698,7 @@ local function round_button(id, name, size, on_tap)
     },
     ui.Sdf {
       width = size, height = size,
-      fill_color = function() return hot:get() and BUTTON_HOT or BUTTON end,
+      fill_color = function() return hot:get() and theme.button_hot or theme.button end,
       behavior = { fill_color = { duration = 150, easing = "out_quad" } },
       ui.SdfShape { width = size, height = size, shape = "circle" },
     },
@@ -747,7 +774,7 @@ local prompt = {
 prompt[#prompt + 1] = ui.Sdf {
   x = math.floor((PROMPT_W - FACE_LG) / 2),
   width = FACE_LG, height = FACE_LG,
-  fill_color = function() return kick:get() > 0 and "#fafafb2e" or WELL end,
+  fill_color = function() return kick:get() > 0 and theme.well_hot or theme.well end,
   scale = function() return 1.0 + kick:get() * 0.03 end,
   behavior = {
     fill_color = { duration = 220, easing = "out_quad" },
@@ -758,7 +785,7 @@ prompt[#prompt + 1] = ui.Sdf {
 prompt[#prompt + 1] = ui.Sdf {
   x = math.floor((PROMPT_W - FACE_LG) / 2),
   width = FACE_LG, height = FACE_LG,
-  fill_color = TEXT,
+  fill_color = function() return theme.text end,
   initial_letter,
 }
 
@@ -773,7 +800,7 @@ prompt[#prompt + 1] = ui.Text {
   font_size = s(22),
   font_weight = 400,
   horizontal_alignment = "center",
-  color = TEXT,
+  color = function() return theme.text end,
 }
 
 -- The back button, left of the entry and vertically centred in the row, which
@@ -797,7 +824,7 @@ local dot_row = {
   y = ROW_Y + math.floor((ROW_H - DOT) / 2),
   width = DOTS * DOT_GAP,
   height = DOT,
-  fill_color = TEXT,
+  fill_color = function() return theme.text end,
 }
 for index = 1, DOTS do
   -- Size, and not `opacity`: the layers of a field compose into one shape
@@ -826,7 +853,7 @@ prompt[#prompt + 1] = ui.Rect {
   width = ENTRY_W,
   height = ENTRY_H,
   radius = ENTRY_RADIUS,
-  color = BUTTON,
+  color = function() return theme.button end,
   -- `%system_entry:focus` is a two-pixel ring at a fifth of the accent, drawn
   -- inside the entry. It always has the keys here, so it always has the ring —
   -- and the ring is where the screen answers back. A key thickens and brightens
@@ -835,8 +862,8 @@ prompt[#prompt + 1] = ui.Rect {
   -- frame tick, so holding a key down costs no more than pressing it.
   border_width = function() return s(2) + kick:get() * s(2) end,
   border_color = function()
-    if shake:get() > 0 then return ALERT end
-    return kick:get() > 0 and ACCENT or ACCENT_RING
+    if shake:get() > 0 then return theme.alert end
+    return kick:get() > 0 and theme.accent or theme.ring
   end,
   translate_x = function() return shake:get() * s(14) end,
   behavior = {
@@ -858,7 +885,7 @@ prompt[#prompt + 1] = ui.Text {
   text = function() return typed:get() == 0 and "Password" or "" end,
   font_size = s(15),
   vertical_alignment = "center",
-  color = DIM,
+  color = function() return theme.dim end,
   opacity = 0.65,
 }
 prompt[#prompt + 1] = ui.Sdf(dot_row)
@@ -892,7 +919,7 @@ prompt[#prompt + 1] = ui.Text {
   end,
   font_size = s(12),
   horizontal_alignment = "center",
-  color = DIM,
+  color = function() return theme.dim end,
 }
 
 --------------------------------------------------------------------------------
@@ -966,7 +993,7 @@ place(ui.MouseArea {
   end,
 })
 
-place(ui.Rect { width = W, height = H, color = INK })
+place(ui.Rect { width = W, height = H, color = function() return theme.ink end })
 
 --------------------------------------------------------------------------------
 -- The frost.
@@ -1096,7 +1123,7 @@ place(ui.Text {
   vertical_alignment = "center",
   horizontal_alignment = "right",
   elide = "right",
-  color = DIM,
+  color = function() return theme.dim end,
 })
 
 place(sheet(PROMPT_X, PROMPT_Y, PROMPT_W, ROW_Y + ROW_H + s(60),

@@ -204,6 +204,8 @@ pub struct Scene {
     /// fading: none of them move a box. Recording when the geometry last
     /// actually moved lets a paint reuse the layout it already has.
     pub(crate) layout_revision: u64,
+    /// How fast motion runs: 1 is real time, 0 finishes everything at once.
+    pub(crate) motion_scale: f64,
     /// Nodes destroyed since anyone last asked.
     ///
     /// Every cache keyed on a node lives outside this crate — shaped text

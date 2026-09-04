@@ -26,7 +26,7 @@ fn is_array<'gc>(ctx: Context<'gc>, table: Table<'gc>) -> bool {
         .all(|(key, _)| matches!(key, LuaValue::Integer(index) if index >= 1))
 }
 
-fn build<'gc>(
+pub(crate) fn build<'gc>(
     ctx: Context<'gc>,
     state: &Rc<RefCell<ReactiveState>>,
     metatable: &luna::StashedTable,
@@ -116,8 +116,21 @@ pub(crate) fn install_state_api<'gc>(
     let index = Callback::from_fn(&ctx, {
         let state = Rc::clone(&state);
         move |ctx, _, mut stack| {
-            let (token, key): (UserRef<StateToken>, String) = stack.consume(ctx)?;
+            let (this, key): (UserData, String) = stack.consume(ctx)?;
+            let token = this
+                .downcast_static::<StateToken>()
+                .map_err(|_| HostError("not a state".to_owned()))?;
             let fields = token.fields.borrow();
+            if let Some(closure) = fields.derived.get(&key) {
+                // Derived on the spot, with the state as its argument.
+                let function = luna::Function::Closure(ctx.fetch(closure));
+                drop(fields);
+                stack.replace(ctx, this);
+                return Ok(CallbackReturn::Call {
+                    function,
+                    then: None,
+                });
+            }
             if let Some(&id) = fields.scalars.get(&key) {
                 let mut state = state.borrow_mut();
                 let value = if let Some(active) = &mut state.active {
@@ -155,6 +168,11 @@ pub(crate) fn install_state_api<'gc>(
             let fields = token.fields.borrow();
             if let Some(&id) = fields.scalars.get(&key) {
                 let value = IpcValue::from_lua(value).map_err(HostError)?;
+                let value = if fields.theme {
+                    crate::api_theme::token_value(value)
+                } else {
+                    value
+                };
                 {
                     let mut state = state.borrow_mut();
                     if let Some(active) = &mut state.active {
@@ -205,6 +223,7 @@ pub(crate) fn install_state_api<'gc>(
     metatable.set_field(ctx, "__index", index);
     metatable.set_field(ctx, "__newindex", new_index);
     let metatable = ctx.stash(metatable);
+    state.borrow_mut().state_metatable = Some(metatable.clone());
 
     let create = Callback::from_fn(&ctx, {
         let state = Rc::clone(&state);

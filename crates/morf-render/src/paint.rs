@@ -11,6 +11,21 @@ pub(crate) struct PaintContext {
     pub(crate) layer: Option<usize>,
     /// Whether an enclosing field has already taken this node's shape.
     pub(crate) in_field: bool,
+    /// The nearest ancestor's colour, for text that says `inherit`.
+    pub(crate) color: Option<Color>,
+}
+
+/// The colour a node paints with: its own, or the nearest ancestor's when it
+/// says `inherit`, or black when nothing above it has one.
+pub(crate) fn resolved_color(
+    scene: &Scene,
+    node: NodeHandle,
+    inherited: &PaintContext,
+) -> Result<Color, RenderError> {
+    Ok(match scene.current(node, "color")? {
+        morf_scene::Value::Color(color) => *color,
+        _ => inherited.color.unwrap_or(Color::rgba8(0, 0, 0, 255)),
+    })
 }
 
 pub(crate) fn append_node(
@@ -133,7 +148,7 @@ pub(crate) fn append_node(
             bounds,
             transform,
             clip,
-            color: scene.color_value(node, "color")?,
+            color: resolved_color(scene, node, &inherited)?,
             color_overlay,
             gradient: scene_gradient(scene, node)?,
             radii,
@@ -168,7 +183,7 @@ pub(crate) fn append_node(
             font_source: scene.string_value(node, "font_source")?.to_owned(),
             size: scene.number(node, "font_size")?,
             font_weight: scene.number(node, "font_weight")?,
-            color: scene.color_value(node, "color")?,
+            color: resolved_color(scene, node, &inherited)?,
             color_overlay,
             wrap: scene.bool_value(node, "wrap")?,
             max_lines: scene.number(node, "max_lines")?.max(0.0) as usize,
@@ -326,6 +341,12 @@ pub(crate) fn append_node(
                 // positioners nest, which is what lets an ordinary laid-out
                 // row of rects arrive as one fused surface.
                 in_field: inherited.in_field || element == Element::Sdf,
+                // Text beneath inherits the nearest colour written above it;
+                // one that says `inherit` itself passes the ancestor's on.
+                color: match scene.current(node, "color") {
+                    Ok(morf_scene::Value::Color(color)) => Some(*color),
+                    _ => inherited.color,
+                },
             },
             list,
         )?;

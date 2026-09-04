@@ -13,6 +13,7 @@ impl Runtime {
     /// Polls native service jobs and runs completed callbacks with bounded fuel.
     pub fn poll_services(&mut self) -> bool {
         self.flush_lint();
+        let appearance_changed = self.poll_appearance();
         let mut ready = Vec::new();
         let mut timers = Vec::new();
         let mut dbus_signals = Vec::new();
@@ -280,7 +281,8 @@ impl Runtime {
         // finds it unchanged would otherwise force a full render of every
         // output sixty times a second, forever.
         let revision_before = self.reactive.borrow().scene_revision;
-        let service_changed = service_changed || !transform_callbacks.is_empty();
+        let service_changed =
+            service_changed || appearance_changed || !transform_callbacks.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;

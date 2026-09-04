@@ -101,6 +101,8 @@ pub(crate) fn install_reactive_api(
         crate::api_color::install_color_api(ctx, morf);
         install_signal_api(ctx, Rc::clone(&state), morf, limits);
         crate::api_state::install_state_api(ctx, Rc::clone(&state), morf, limits);
+        crate::api_theme::install_theme_api(ctx, Rc::clone(&state), morf, limits);
+        crate::api_prefers::install_prefers_api(ctx, Rc::clone(&state), morf, screen);
         install_retention_api(ctx, Rc::clone(&state), morf, limits);
         install_shell_api(ctx, Rc::clone(&state), morf);
         install_time_api(ctx, Rc::clone(&state), morf);

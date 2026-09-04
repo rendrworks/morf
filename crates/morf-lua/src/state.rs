@@ -46,6 +46,12 @@ pub(crate) struct StateToken {
 #[derive(Default)]
 pub(crate) struct StateFields {
     pub(crate) scalars: HashMap<String, SignalId>,
+    /// A field computed from the others on every read: a theme's derived
+    /// token. Read inside a binding, whatever it reads is what the binding
+    /// tracks, so it re-derives exactly when its inputs change.
+    pub(crate) derived: HashMap<String, StashedClosure>,
+    /// A theme: a string written to a field that names a colour becomes one.
+    pub(crate) theme: bool,
     pub(crate) tables: HashMap<String, luna::StashedUserData>,
     pub(crate) lists: HashMap<String, (luna::StashedUserData, Rc<RefCell<ListModel>>)>,
 }
@@ -243,6 +249,12 @@ pub(crate) struct ReactiveState {
     pub(crate) transform_watchers: HashMap<u64, LuaTransformWatcher>,
     pub(crate) next_transform_watcher: u64,
     pub(crate) dbus_signals: Vec<PendingDbusSignal>,
+    /// The metatable every state proxy shares, so a theme can be one.
+    pub(crate) state_metatable: Option<StashedTable>,
+    /// Theme token files being watched.
+    pub(crate) theme_sources: Vec<ThemeSource>,
+    /// `morf.prefers` and where its answers come from.
+    pub(crate) prefers: Option<Prefers>,
     pub(crate) dbus_services: Vec<PendingDbusService>,
     pub(crate) udev_monitors: Vec<PendingUdev>,
     pub(crate) status_notifiers: Vec<PendingStatusNotifier>,
@@ -362,6 +374,9 @@ impl ReactiveState {
             node_metatable: None,
             transform_watchers: HashMap::new(),
             next_transform_watcher: 0,
+            state_metatable: None,
+            theme_sources: Vec::new(),
+            prefers: None,
             dbus_signals: Vec::new(),
             dbus_services: Vec::new(),
             udev_monitors: Vec::new(),

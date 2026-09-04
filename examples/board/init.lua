@@ -34,29 +34,21 @@ local home = core.env("HOME") or ""
 --------------------------------------------------------------------------------
 
 -- `Theme.qml` reads the same pywal file and falls back to the same greys.
-local theme = {
+-- The file's leaf keys are the tokens: `color1` comes from it when it is
+-- there and from the seed when it is not, and rewriting the file retints the
+-- board. The derived tokens follow whichever colour they are made from.
+local theme = morf.theme({
   color0 = "#000000",
   color1 = "#ffffff",
   color236 = "#1e1e1e",
   color238 = "#2a2a2a",
   color240 = "#303030",
   color244 = "#555555",
-}
-
-local wal = io.file_view {
-  path = home .. "/.cache/wal/colors.json",
-  preload = true,
-}
-if wal:loaded() then
-  local values = io.json.decode(wal:text())
-  local colors = values.colors or {}
-  for _, name in ipairs { "color0", "color1", "color236", "color238", "color240", "color244" } do
-    theme[name] = colors[name] or theme[name]
-  end
-end
-for name, value in pairs(theme) do
-  theme[name] = morf.color(value)
-end
+  border = function(t) return t.color244:alpha(0.08) end,
+  track = function(t) return t.color244:alpha(0.15) end,
+  hover = function(t) return t.color1:alpha(0.12) end,
+  muted = function(t) return t.color1:alpha(0.7) end,
+}, { source = home .. "/.cache/wal/colors.json" })
 
 local function clamp01(value)
   if value < 0 then return 0 end
@@ -86,7 +78,7 @@ local function card(x, y, width, height, radius, border_width, children)
     -- A little light at the top, the flat colour by a third of the way down.
     gradient = { stops = { theme.color236:lighten(0.03), { theme.color236, 0.35 } } },
     border_width = border_width,
-    border_color = theme.color244:alpha(0.08),
+    border_color = theme.border,
   }
   for _, child in ipairs(children or {}) do values[#values + 1] = child end
   return ui.Rect(values)
@@ -642,7 +634,7 @@ local function progress_bar(options)
       width = function() return math.max(0, width - indicator_position() - indicator_gap) end,
       height = line_height,
       radius = line_height * 0.2,
-      color = theme.color244:alpha(0.15),
+      color = theme.track,
       behavior = {
         x = { duration = 200, easing = "out_cubic" },
         -- The original derives the empty track's width from its animated `x`,
@@ -721,7 +713,7 @@ local function logo_card(x, y, width, height, radius, border_width, line_height,
         width = function() return math.max(0, bar_width * (1 - battery:get() / 100)) end,
         height = line_height,
         radius = small_radius,
-        color = theme.color244:alpha(0.15),
+        color = theme.track,
         behavior = {
           x = { duration = 300, easing = "in_out_quad" },
           width = { duration = 300, easing = "in_out_quad" },
@@ -801,7 +793,7 @@ local function user_card(x, y, width, height, radius, border_width, line_height)
       height = small_size * 1.2,
       text = function() return uptime:get() end,
       font_size = small_size,
-      color = theme.color1:alpha(0.7),
+      color = theme.muted,
       elide = "right",
       horizontal_alignment = "center",
       vertical_alignment = "center",
@@ -879,7 +871,7 @@ local function clock_card(x, y, width, height, radius, border_width)
     height = date_size * 1.2,
     text = function() return clock:format("%b %d") end,
     font_size = date_size,
-    color = theme.color1:alpha(0.7),
+    color = theme.muted,
     horizontal_alignment = "center",
     vertical_alignment = "center",
   }
@@ -916,7 +908,7 @@ local function calendar_card(x, y, width, height, radius, border_width)
       height = header_height,
       radius = radius,
       color = function()
-        return calendar_hover:get() == hover_key and theme.color1:alpha(0.12) or "transparent"
+        return calendar_hover:get() == hover_key and theme.hover or "transparent"
       end,
       centered_label(glyph, font_size * 2, header_height, font_size, theme.color1),
       ui.MouseArea {
@@ -1009,7 +1001,7 @@ local function calendar_card(x, y, width, height, radius, border_width)
       height = circle_size,
       radius = circle_size * 0.5,
       color = function()
-        if is_today() then return theme.color1:alpha(0.12) end
+        if is_today() then return theme.hover end
         if calendar_hover:get() == cell then return theme.color1:alpha(0.08) end
         return "transparent"
       end,
@@ -1072,7 +1064,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
       height = font_size * 1.2,
       text = "No Media",
       font_size = font_size,
-      color = theme.color1:alpha(0.7),
+      color = theme.muted,
       horizontal_alignment = "center",
       vertical_alignment = "center",
       visible = idle,
@@ -1178,7 +1170,7 @@ local function media_card(x, y, width, height, radius, border_width, line_height
       return media.artist ~= "" and media.artist or "Unknown Artist"
     end,
     font_size = font_size,
-    color = theme.color1:alpha(0.7),
+    color = theme.muted,
     elide = "right",
     horizontal_alignment = "center",
     vertical_alignment = "center",

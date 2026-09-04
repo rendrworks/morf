@@ -49,6 +49,8 @@ pub(crate) fn install_module_api<'gc>(
         "has_icon",
         "exec_detached",
         "signal",
+        "theme",
+        "prefers",
         "reloadable",
         "persistent",
         "scope",

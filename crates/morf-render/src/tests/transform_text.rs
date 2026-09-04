@@ -387,3 +387,53 @@ fn animating_the_field_edge_repaints_without_touching_the_cached_field() {
     assert_ne!(before.commands[0], after.commands[0]);
     assert_eq!(source(&before), source(&after));
 }
+
+#[test]
+fn text_inherits_the_nearest_ancestor_colour() {
+    // An `Item` paints nothing, but the colour written on it is what the text
+    // beneath means by `inherit` — through any number of ancestors that say
+    // nothing, and past one that says `inherit` itself.
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Item);
+    scene.assign(root, "color", "#ff0000").unwrap();
+    let middle = scene.create(Element::Item);
+    scene.reparent(middle, Some(root)).unwrap();
+    let text = scene.create(Element::Text);
+    scene.assign(text, "color", "inherit").unwrap();
+    scene.reparent(text, Some(middle)).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 100.0,
+            height: 50.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+    let text_color = |scene: &Scene| {
+        let list = DrawList::from_scene(scene, &layout).unwrap();
+        list.commands
+            .iter()
+            .find_map(|command| match command {
+                DrawCommand::Text { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("the text is painted")
+    };
+    assert_eq!(
+        text_color(&scene),
+        Color::rgba8(255, 0, 0, 255),
+        "inherited from the root"
+    );
+
+    // With nothing above it saying a colour, inherit means black.
+    scene.assign(root, "color", Value::Nil).unwrap();
+    assert_eq!(text_color(&scene), Color::rgba8(0, 0, 0, 255));
+
+    let wrong = scene.assign(root, "color", 3.0).unwrap_err();
+    assert_eq!(
+        wrong.to_string(),
+        "invalid Item property `color`: expected color, inherit or nil"
+    );
+}

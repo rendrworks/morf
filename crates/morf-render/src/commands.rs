@@ -398,6 +398,7 @@ impl DrawList {
                     overlay: Color::rgba8(0, 0, 0, 0),
                     layer: None,
                     in_field: false,
+                    color: None,
                 },
                 list,
             )?;

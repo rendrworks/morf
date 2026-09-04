@@ -22,6 +22,7 @@ impl Scene {
             group_events: Vec::new(),
             next_group: 0,
             layout_revision: 0,
+            motion_scale: 1.0,
             removed: Vec::new(),
             shaders: FastMap::default(),
         }
@@ -331,7 +332,34 @@ impl Scene {
     }
 
     /// Advances every active behavior without invoking Lua.
+    /// Sets how fast motion runs against the clock.
+    ///
+    /// 1 is real time. 0 is what a reduced-motion preference means: every
+    /// behavior, group and spring lands on its target on the next tick, so a
+    /// configuration written with motion still ends up in the same place,
+    /// only without the travel.
+    pub fn set_motion_scale(&mut self, scale: f64) {
+        self.motion_scale = if scale.is_finite() {
+            scale.max(0.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// How fast motion runs against the clock; see [`Self::set_motion_scale`].
+    pub fn motion_scale(&self) -> f64 {
+        self.motion_scale
+    }
+
     pub fn tick_animations(&mut self, delta: Duration) -> Result<AnimationFrame, SceneError> {
+        let snap = self.motion_scale == 0.0;
+        // A scale of zero is a tick long enough to finish anything timed. A
+        // spring is not timed, so it is landed by hand below.
+        let delta = if snap {
+            Duration::from_secs(1 << 20)
+        } else {
+            delta.mul_f64(self.motion_scale)
+        };
         let mut frame = AnimationFrame {
             groups: self.tick_groups(delta)?,
             events: std::mem::take(&mut self.events),
@@ -394,6 +422,16 @@ impl Scene {
                 continue;
             };
             let slot = node.properties[key.property];
+            if snap {
+                let target = self.properties.read(slot.target)?.clone();
+                if affects_layout(key.property) {
+                    self.layout_revision = self.layout_revision.wrapping_add(1);
+                }
+                self.properties.write(slot.current, target)?;
+                frame.changed += 1;
+                physics_finished.push(key);
+                continue;
+            }
             let motion = self.physics.get_mut(&key).expect("physics key vanished");
             if let PhysicsAnimation::Color { channels } = motion {
                 let Value::Color(mut current) = *self.properties.read(slot.current)? else {
