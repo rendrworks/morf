@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::{animation::*, decoration::TextDecoration, gradient::Gradient, types::*};
+use crate::{animation::*, types::*};
+
+pub(crate) use crate::coerce::coerce;
 
 pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
     let mut properties = vec![
@@ -69,6 +71,8 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 "accepted_buttons",
                 Value::List(vec![Value::String("left".to_owned())]),
             ));
+            // The pointer's shape while it is over this area.
+            properties.push(string("cursor", "default"));
         }
         Element::Flickable => {
             properties.extend([
@@ -373,105 +377,4 @@ pub(crate) fn color(name: &'static str, default: Color) -> PropertySpec {
         kind: PropertyType::Color,
         default: Value::Color(default),
     }
-}
-
-pub(crate) fn coerce(
-    element: Element,
-    property: &str,
-    kind: PropertyType,
-    value: Value,
-) -> Result<Value, SceneError> {
-    let invalid = |message: String| SceneError::InvalidPropertyValue {
-        element: element.name(),
-        property: property.to_owned(),
-        message,
-    };
-    match property {
-        "gradient" => return Gradient::canonical(value).map_err(invalid),
-        "decoration" => return TextDecoration::canonical(value).map_err(invalid),
-        "line_height" => {
-            // A bare number is a multiple of the font size; a `px` string is
-            // a size. Checked here so a wrong one is refused where written.
-            return match &value {
-                Value::Number(multiple) if multiple.is_finite() && *multiple > 0.0 => Ok(value),
-                Value::String(text)
-                    if text
-                        .strip_suffix("px")
-                        .and_then(|pixels| pixels.trim().parse::<f64>().ok())
-                        .is_some_and(|pixels| pixels.is_finite() && pixels > 0.0) =>
-                {
-                    Ok(value)
-                }
-                _ => Err(invalid(
-                    "a multiple of the font size or a `px` size".to_owned(),
-                )),
-            };
-        }
-        "font_style" => {
-            if let Value::String(name) = &value
-                && !matches!(name.as_str(), "normal" | "italic" | "oblique")
-            {
-                return Err(invalid(format!(
-                    "`{name}` is not normal, italic or oblique"
-                )));
-            }
-        }
-        "font_stretch" => {
-            if let Value::String(name) = &value
-                && !matches!(
-                    name.as_str(),
-                    "ultra_condensed"
-                        | "extra_condensed"
-                        | "condensed"
-                        | "semi_condensed"
-                        | "normal"
-                        | "semi_expanded"
-                        | "expanded"
-                        | "extra_expanded"
-                        | "ultra_expanded"
-                )
-            {
-                return Err(invalid(format!(
-                    "`{name}` is not a width from ultra_condensed to ultra_expanded"
-                )));
-            }
-        }
-        _ => {}
-    }
-    // `color` is the one property that may say "inherit": text takes the
-    // nearest ancestor's colour, and an `Item` carries one for it without
-    // painting anything.
-    let converted = match (kind, value) {
-        (_, Value::String(value)) if property == "color" && value == "inherit" => {
-            Some(Value::String(value))
-        }
-        (PropertyType::Any, Value::String(value)) if property == "color" => {
-            Color::parse(&value).map(Value::Color)
-        }
-        (PropertyType::Any, value @ (Value::Nil | Value::Color(_))) if property == "color" => {
-            Some(value)
-        }
-        (PropertyType::Any, _) if property == "color" => None,
-        (PropertyType::Any, value) => Some(value),
-        (PropertyType::Bool, Value::Bool(value)) => Some(Value::Bool(value)),
-        (PropertyType::Number, Value::Number(value)) if value.is_finite() => {
-            Some(Value::Number(value))
-        }
-        (PropertyType::String, Value::String(value)) => Some(Value::String(value)),
-        (PropertyType::Color, Value::Color(value)) => Some(Value::Color(value)),
-        (PropertyType::Color, Value::String(value)) => Color::parse(&value).map(Value::Color),
-        _ => None,
-    };
-    converted.ok_or_else(|| SceneError::InvalidPropertyType {
-        element: element.name(),
-        property: property.to_owned(),
-        expected: match kind {
-            PropertyType::Any if property == "color" => "color, inherit or nil",
-            PropertyType::Any => "value",
-            PropertyType::Bool => "boolean",
-            PropertyType::Number => "finite number",
-            PropertyType::String => "string",
-            PropertyType::Color => "color",
-        },
-    })
 }

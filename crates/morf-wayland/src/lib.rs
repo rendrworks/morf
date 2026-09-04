@@ -10,6 +10,7 @@ mod client_layer;
 mod client_lock;
 mod client_services;
 mod client_surface;
+mod cursor;
 mod data_handlers;
 mod helpers;
 mod inhibit_handlers;
@@ -25,6 +26,7 @@ mod types;
 mod workspace_handlers;
 
 pub use client_layer::*;
+pub use cursor::cursor_shape;
 pub use helpers::*;
 pub use state_types::*;
 pub use surface_types::*;

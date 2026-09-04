@@ -60,6 +60,14 @@ ui.Rect {
       delegate = function(entry)
         return ui.MouseArea {
           on_clicked = function() server.dismiss(entry.id) end,
+          cursor = "pointer",
+          -- A card arrives from the right and fades in: `enter` is where its
+          -- first frame starts, and the behaviors carry it to where it sits.
+          enter = { opacity = 0, translate_x = 32 },
+          behavior = {
+            opacity = { duration = 220, easing = "out_cubic" },
+            translate_x = { kind = "spring", stiffness = 260, damping = 22 },
+          },
           ui.Rect {
             color = entry.urgency == 2 and "#5a1e1e" or "#1e2a36",
             radius = 8,

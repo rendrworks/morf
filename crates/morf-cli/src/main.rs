@@ -7,6 +7,7 @@ mod crash;
 mod lock;
 mod pacing;
 mod paint;
+mod pointer_cursor;
 mod services;
 mod supervisor;
 mod surface_actions;

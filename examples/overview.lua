@@ -150,6 +150,7 @@ local function tile_for(item)
   -- it means that window rather than whatever is behind the grid.
   local node = ui.MouseArea {
     width = CELL_W, height = CELL_H + LABEL,
+    cursor = "pointer",
     on_entered = function() hovered:set(true) end,
     on_exited = function() hovered:set(false) end,
     on_clicked = function()

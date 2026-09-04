@@ -166,6 +166,7 @@ pub(crate) fn handle_surface_event(
                 }
             }
             state.hovered = next_hovered;
+            crate::pointer_cursor::hover_changed(runtime, client, entered, left);
             if let Some(hit) = hit {
                 repaint |= runtime.dispatch_pointer(
                     hit.node,

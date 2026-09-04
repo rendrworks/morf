@@ -143,10 +143,14 @@ local Card = component.define {
                 text = function() return model.prompt ~= "" and model.prompt or "Password:" end,
                 color = TEXT, font_size = 13, width = 90,
               },
-              ui.Rect {
-                width = W - 52 - 100, height = 30, radius = 6, color = FIELD,
-                border_color = ACCENT, border_width = 1,
-                ui.Text { x = 10, y = 6, text = dots, color = TEXT, font_size = 14 },
+              ui.MouseArea {
+                width = W - 52 - 100, height = 30,
+                cursor = "text",
+                ui.Rect {
+                  width = W - 52 - 100, height = 30, radius = 6, color = FIELD,
+                  border_color = ACCENT, border_width = 1,
+                  ui.Text { x = 10, y = 6, text = dots, color = TEXT, font_size = 14 },
+                },
               },
             },
             ui.Text {

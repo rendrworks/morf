@@ -55,6 +55,11 @@ impl SeatHandler for LayerState {
         if capability == Capability::Pointer
             && let Some(pointer) = self.pointer.take()
         {
+            if let Some(device) = self.cursor_device.take() {
+                device.destroy();
+            }
+            self.pointer_enter_serial = None;
+            self.cursor_shape_current = None;
             pointer.release();
             self.pointer_seat = None;
         }
@@ -96,10 +101,21 @@ impl PointerHandler for LayerState {
             };
             let (x, y) = event.position;
             match event.kind {
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => self
+                PointerEventKind::Enter { serial } => {
+                    // A new entry is a new serial, and the compositor has
+                    // reset the shape, so whatever was asked for is asked
+                    // again on the next hover.
+                    self.pointer_enter_serial = Some(serial);
+                    self.cursor_shape_current = None;
+                    self.events
+                        .push_back(LayerEvent::PointerMotion { surface, x, y });
+                }
+                PointerEventKind::Motion { .. } => self
                     .events
                     .push_back(LayerEvent::PointerMotion { surface, x, y }),
                 PointerEventKind::Leave { .. } => {
+                    self.pointer_enter_serial = None;
+                    self.cursor_shape_current = None;
                     self.events.push_back(LayerEvent::PointerLeave { surface });
                 }
                 PointerEventKind::Press { button, serial, .. } => {

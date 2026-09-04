@@ -27,6 +27,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_man
 use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1;
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
@@ -80,6 +81,9 @@ impl LayerClient {
             .bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ())
             .ok();
         let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
+        let cursor_shape_manager = globals
+            .bind::<WpCursorShapeManagerV1, _, _>(&qh, 1..=2, ())
+            .ok();
         let idle_notifier = globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok();
         let idle_inhibit_manager = globals
             .bind::<ZwpIdleInhibitManagerV1, _, _>(&qh, 1..=1, ())
@@ -159,6 +163,10 @@ impl LayerClient {
             events: VecDeque::new(),
             pointer: None,
             pointer_seat: None,
+            pointer_enter_serial: None,
+            cursor_shape_manager,
+            cursor_device: None,
+            cursor_shape_current: None,
             keyboard: None,
             touch: None,
             touch_points: HashMap::new(),

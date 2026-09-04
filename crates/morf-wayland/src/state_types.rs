@@ -57,6 +57,10 @@ use wayland_protocols::ext::workspace::v1::client::{
     ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
     ext_workspace_handle_v1::ExtWorkspaceHandleV1, ext_workspace_manager_v1::ExtWorkspaceManagerV1,
 };
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1::WpCursorShapeDeviceV1,
+    wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::WpFractionalScaleV1,
@@ -193,6 +197,13 @@ pub(crate) struct LayerState {
     pub(crate) events: VecDeque<LayerEvent>,
     pub(crate) pointer: Option<wl_pointer::WlPointer>,
     pub(crate) pointer_seat: Option<wl_seat::WlSeat>,
+    /// The serial of the pointer's latest entry into one of these surfaces,
+    /// which is what a cursor shape has to be asked for against.
+    pub(crate) pointer_enter_serial: Option<u32>,
+    pub(crate) cursor_shape_manager: Option<WpCursorShapeManagerV1>,
+    pub(crate) cursor_device: Option<WpCursorShapeDeviceV1>,
+    /// The shape last asked for, so the same one is not sent every motion.
+    pub(crate) cursor_shape_current: Option<String>,
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) touch: Option<wl_touch::WlTouch>,
     pub(crate) touch_points: HashMap<i32, ((f64, f64), SurfaceRole)>,

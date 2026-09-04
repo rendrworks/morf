@@ -424,6 +424,7 @@ pub(crate) fn affects_layout(property: &str) -> bool {
             | "content_under_border"
             | "gradient"
             | "decoration"
+            | "cursor"
             | "blur"
             | "shadow_color"
             | "shadow_blur"

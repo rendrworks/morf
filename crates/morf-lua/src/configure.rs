@@ -49,6 +49,10 @@ pub(crate) fn configure_element<'gc>(
         .iter()
         .find(|(name, _)| name == "behavior")
         .map(|(_, value)| *value);
+    let named_enter = named
+        .iter()
+        .find(|(name, _)| name == "enter")
+        .map(|(_, value)| *value);
     let mut state_selector = None;
     if let Some((_, states)) = named.iter().find(|(name, _)| name == "states") {
         let transitions = named
@@ -80,7 +84,7 @@ pub(crate) fn configure_element<'gc>(
     for (property, value) in named {
         if matches!(
             property.as_str(),
-            "behavior" | "states" | "transitions" | "shader" | "shader_params"
+            "behavior" | "states" | "transitions" | "shader" | "shader_params" | "enter"
         ) {
             continue;
         }
@@ -125,8 +129,19 @@ pub(crate) fn configure_element<'gc>(
     // startup, not a transition. Qt's `Behavior` withholds itself during
     // component construction for the same reason. Anything that changes after
     // this point, including the state applied below, animates normally.
+    // `enter` is where the node's first frame starts from. Its values go in
+    // before the behaviors, so they land without animating; the declared
+    // values go back in after, so the behaviors carry the node from the one
+    // to the other. A property with no behavior simply arrives.
+    let entering = match named_enter {
+        Some(enter) => enter_values(state, ctx, node, enter)?,
+        None => Vec::new(),
+    };
     if let Some(behavior) = named_behavior {
         configure_behaviors(state, ctx, node, behavior)?;
+    }
+    for (property, settled) in entering {
+        assign_scene_property(&mut state.borrow_mut(), node, &property, settled)?;
     }
     children.sort_by_key(|(index, _)| *index);
     for (_, child) in children {
@@ -169,6 +184,36 @@ pub(crate) fn handler_event(property: &str) -> Option<UiEvent> {
         .iter()
         .find(|(_, name)| *name == property)
         .map(|(event, _)| *event)
+}
+
+/// Puts the `enter` values in place and hands back what each property is
+/// meant to settle at.
+fn enter_values<'gc>(
+    state: &Rc<RefCell<ReactiveState>>,
+    ctx: Context<'gc>,
+    node: NodeHandle,
+    value: LuaValue<'gc>,
+) -> Result<Vec<(String, morf_scene::Value)>, String> {
+    let LuaValue::Table(table) = value else {
+        return Err("enter must be a property-keyed table".to_owned());
+    };
+    let mut entering = Vec::new();
+    for (property, start) in table.iter(ctx) {
+        let LuaValue::String(property) = property else {
+            return Err("enter keys must be property names".to_owned());
+        };
+        let property = property.display_lossy().to_string();
+        let start = lua_to_scene(ctx, start, 0)?;
+        let settled = state
+            .borrow()
+            .scene
+            .current(node, &property)
+            .map_err(|error| error.to_string())?
+            .clone();
+        assign_scene_property(&mut state.borrow_mut(), node, &property, start)?;
+        entering.push((property, settled));
+    }
+    Ok(entering)
 }
 
 pub(crate) fn configure_behaviors<'gc>(

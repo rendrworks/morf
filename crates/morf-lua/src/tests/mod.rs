@@ -24,6 +24,7 @@ mod animation_playback;
 mod config;
 mod core_api;
 mod diagnostics;
+mod entering;
 mod events_animation;
 mod examples;
 mod flushing;
