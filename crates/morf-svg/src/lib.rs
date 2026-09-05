@@ -106,17 +106,21 @@ pub fn outline_from_bytes(bytes: &[u8]) -> Result<Outline, SvgError> {
 /// One `tiny-skia` path, in the outline's own terms.
 ///
 /// The two vocabularies are the same vocabulary, which is the point: a curve is
-/// a curve whether a font or a document wrote it down.
+/// a curve whether a font or a document wrote it down. A document's y runs
+/// down the page and a font's runs up it, and what leaves here is read the
+/// way a font's outline is, so the y is turned over on the way out — or every
+/// drawing arrives upside down beside every letter, and a power symbol has
+/// its gap at the bottom.
 fn steps_of(path: &resvg::tiny_skia::Path, into: &mut Vec<Step>) {
     for segment in path.segments() {
         into.push(match segment {
-            PathSegment::MoveTo(point) => Step::Move(point.x, point.y),
-            PathSegment::LineTo(point) => Step::Line(point.x, point.y),
+            PathSegment::MoveTo(point) => Step::Move(point.x, -point.y),
+            PathSegment::LineTo(point) => Step::Line(point.x, -point.y),
             PathSegment::QuadTo(control, point) => {
-                Step::Quad(control.x, control.y, point.x, point.y)
+                Step::Quad(control.x, -control.y, point.x, -point.y)
             }
             PathSegment::CubicTo(first, second, point) => {
-                Step::Cubic(first.x, first.y, second.x, second.y, point.x, point.y)
+                Step::Cubic(first.x, -first.y, second.x, -second.y, point.x, -point.y)
             }
             PathSegment::Close => Step::Close,
         });

@@ -193,12 +193,25 @@ function board.build(options)
   -- should read as two keys touching, a morph as the row having no keys in it.
   local FUSE = math.floor(GAP * 0.95)
 
-  local PANEL = morf.color("#0c1017"):alpha(0.9)
-  local KEYFACE = "#243043"
-  local LIVE = "#6fb3cc"
-  local EDGE = "#33415a"
-  local LABEL = "#e9edf5"
-  local DIM = "#8a97ad"
+  -- The board's colours and face. A host that has a look of its own hands
+  -- one in as `look`, any entry of which may be a colour or a function of
+  -- one, so a board inside a themed screen follows the theme. `edge` draws
+  -- the keys as outlines on the panel rather than as filled faces.
+  local look = options.look or {}
+  local PANEL = look.panel or morf.color("#0c1017"):alpha(0.9)
+  local KEYFACE = look.keyface or "#243043"
+  local LIVE = look.live or "#6fb3cc"
+  local EDGE = look.edge
+  local LABEL = look.label or "#e9edf5"
+  local DIM = look.dim or "#8a97ad"
+  local DOWN = look.down or "#0a0e14"
+  local FONT = look.font or "sans-serif"
+  --- A colour from the look, read now: an entry that is a function is one
+  --- that follows a theme, and a binding that returns it has to call it.
+  local function paint(value)
+    if type(value) == "function" then return value() end
+    return value
+  end
 
   --------------------------------------------------------------------------------
   -- Laying the board out.
@@ -417,6 +430,8 @@ function board.build(options)
       width = W,
       height = KEY + SWELL * 2,
       fill_color = KEYFACE,
+      stroke_color = EDGE,
+      stroke_width = EDGE and 1 or 0,
       blend = SEAM,
     }
     for index, entry in ipairs(row.keys) do
@@ -492,13 +507,14 @@ function board.build(options)
         return #text_of(entry, layer:get()) > 2 and math.floor(KEY * 0.26)
           or math.floor(KEY * 0.40)
       end,
+      font_family = FONT,
       font_weight = 500,
       horizontal_alignment = "center",
       vertical_alignment = "center",
       color = function()
-        if entry.down:get() then return "#0a0e14" end
-        if tone_of(entry) == "live" then return LIVE end
-        return tone_of(entry) == "control" and DIM or LABEL
+        if entry.down:get() then return paint(DOWN) end
+        if tone_of(entry) == "live" then return paint(LIVE) end
+        return paint(tone_of(entry) == "control" and DIM or LABEL)
       end,
       behavior = {
         color = { duration = 110, easing = "out_quad" },
