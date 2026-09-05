@@ -17,7 +17,7 @@ use morf_io::{
 use morf_menu::Menu;
 use morf_reactive::SignalId;
 use morf_scene::{Easing, GroupId, ListModel, NodeHandle, VirtualList};
-use morf_services::{GreetdClient, PamSession};
+use morf_services::{GreetdClient, GreetdConversation, PamSession};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -111,6 +111,10 @@ pub(crate) struct PamSessionToken {
 
 pub(crate) struct GreetdToken {
     pub(crate) client: RefCell<GreetdClient>,
+}
+
+pub(crate) struct GreetdSessionToken {
+    pub(crate) conversation: Rc<RefCell<GreetdConversation>>,
 }
 
 pub(crate) struct ProcessToken {

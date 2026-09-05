@@ -9,7 +9,7 @@ use luna::StashedClosure;
 use morf_io::{DbusProxy, DbusService, DbusSignal, FileWatcher, Timer as IoTimer};
 use morf_reactive::SignalId;
 use morf_scene::NodeHandle;
-use morf_services::{PamSession, PamTask, StatusNotifierHost, UdevMonitor};
+use morf_services::{GreetdConversation, PamSession, PamTask, StatusNotifierHost, UdevMonitor};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,6 +55,12 @@ pub(crate) struct PendingDbusService {
 /// the same handle from inside the callback that showed it the question.
 pub(crate) struct PendingPamSession {
     pub(crate) session: Rc<RefCell<PamSession>>,
+    pub(crate) callback: StashedClosure,
+}
+
+/// A greetd login in progress, and the configuration listening to it.
+pub(crate) struct PendingGreetdSession {
+    pub(crate) conversation: Rc<RefCell<GreetdConversation>>,
     pub(crate) callback: StashedClosure,
 }
 

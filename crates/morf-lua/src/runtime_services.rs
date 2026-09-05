@@ -1,4 +1,4 @@
-use morf_services::PamEvent;
+use morf_services::{GreetdEvent, PamEvent};
 use std::time::Duration;
 
 use morf_io::Timer as IoTimer;
@@ -19,6 +19,7 @@ impl Runtime {
         let mut dbus_signals = Vec::new();
         let mut dbus_calls = Vec::new();
         let mut pam_messages = Vec::new();
+        let mut greetd_messages = Vec::new();
         let mut udev_events = Vec::new();
         let mut status_updates = Vec::new();
         let mut loaders = Vec::new();
@@ -163,6 +164,22 @@ impl Runtime {
                     }
                 }
                 !finished
+            });
+            // The same for a greetd login: a few replies per turn, then a
+            // wait on greetd, or on a person greetd is waiting on.
+            state.greetd_sessions.retain(|entry| {
+                let mut conversation = entry.conversation.borrow_mut();
+                for _ in 0..8 {
+                    let Some(event) = conversation.next(Duration::ZERO) else {
+                        break;
+                    };
+                    let last = matches!(event, GreetdEvent::Failed(_));
+                    greetd_messages.push((entry.callback.clone(), event));
+                    if last {
+                        break;
+                    }
+                }
+                !conversation.ended()
             });
             // Bounded per frame, unlike the signal drain above. A signal that
             // arrives faster than it is read is the sender's problem; a *call*
@@ -332,6 +349,15 @@ impl Runtime {
                 self.reactive
                     .borrow_mut()
                     .log(LogLevel::Warn, format!("PAM session: {message}"));
+            }
+        }
+        for (callback, event) in greetd_messages {
+            if let Err(message) = self
+                .run_handler(|ctx, limits| execute_greetd_handler(ctx, &callback, event, limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("greetd: {message}"));
             }
         }
         for (callback, call) in dbus_calls {

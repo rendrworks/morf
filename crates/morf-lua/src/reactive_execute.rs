@@ -7,7 +7,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use morf_services::{PamEvent, PamPrompt, StatusNotifierAddress, UdevEvent};
+use morf_services::{
+    AuthMessageType, GreetdEvent, GreetdResponse, PamEvent, PamPrompt, StatusNotifierAddress,
+    UdevEvent,
+};
 
 use crate::{
     reactive_bindings::*, scene_bindings::*, serialization::*, state::*, surface_types::*, types::*,
@@ -274,6 +277,60 @@ pub(crate) fn execute_dbus_call_handler(
     table.set_field(ctx, "path", call.path.as_str());
     table.set_field(ctx, "sender", call.sender.as_str());
     table.set_field(ctx, "arguments", dbus_value_to_lua(ctx, call.arguments)?);
+    let executor = Executor::start(
+        ctx,
+        ctx.fetch(closure).into(),
+        Variadic(vec![LuaValue::Table(table)]),
+    );
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Shows a configuration one thing greetd said.
+///
+/// Keyed on `kind` like a PAM message: `auth` carries `auth_type` — `secret`,
+/// `visible`, `info` or `error` — and `text`; `success` carries nothing;
+/// `error` carries `text` and whether it was `authentication` that failed;
+/// `failed` carries `text` and means the connection is gone.
+pub(crate) fn execute_greetd_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    event: GreetdEvent,
+    limits: Limits,
+) -> Result<(), String> {
+    let table = Table::new(&ctx);
+    match event {
+        GreetdEvent::Response(GreetdResponse::AuthMessage { kind, message }) => {
+            table.set_field(ctx, "kind", "auth");
+            let auth_type = match kind {
+                AuthMessageType::Secret => "secret",
+                AuthMessageType::Visible => "visible",
+                AuthMessageType::Info => "info",
+                AuthMessageType::Error => "error",
+            };
+            table.set_field(ctx, "auth_type", auth_type);
+            table.set_field(ctx, "text", message.as_str());
+        }
+        GreetdEvent::Response(GreetdResponse::Success) => {
+            table.set_field(ctx, "kind", "success");
+        }
+        GreetdEvent::Response(GreetdResponse::Error {
+            authentication,
+            description,
+        }) => {
+            table.set_field(ctx, "kind", "error");
+            table.set_field(ctx, "authentication", authentication);
+            table.set_field(ctx, "text", description.as_str());
+        }
+        GreetdEvent::Failed(text) => {
+            table.set_field(ctx, "kind", "failed");
+            table.set_field(ctx, "text", text.as_str());
+        }
+    }
     let executor = Executor::start(
         ctx,
         ctx.fetch(closure).into(),

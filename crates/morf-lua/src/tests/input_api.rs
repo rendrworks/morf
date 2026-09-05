@@ -208,6 +208,91 @@ fn lua_greetd_client_handles_authentication_prompts() {
     fs::remove_file(path).unwrap();
 }
 
+/// The same login as a conversation: greetd's questions arrive through a
+/// handler while the runtime keeps polling, and a reader's "place your
+/// finger" is a message the configuration sees rather than a wait it
+/// disappears into.
+#[test]
+fn lua_greetd_conversation_answers_off_the_drawing_thread() {
+    let path = std::env::temp_dir().join(format!("morf-greetd-talk-{}.sock", std::process::id()));
+    let _ = fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut turn = |wanted: &str, reply: &[u8]| {
+            let mut length = [0_u8; 4];
+            stream.read_exact(&mut length).unwrap();
+            let mut request = vec![0_u8; u32::from_ne_bytes(length) as usize];
+            stream.read_exact(&mut request).unwrap();
+            let request = String::from_utf8(request).unwrap();
+            assert!(
+                request.contains(wanted),
+                "{request} should contain {wanted}"
+            );
+            stream
+                .write_all(&(reply.len() as u32).to_ne_bytes())
+                .unwrap();
+            stream.write_all(reply).unwrap();
+        };
+        turn(
+            "create_session",
+            br#"{"type":"auth_message","auth_message_type":"info","auth_message":"Place your finger"}"#,
+        );
+        turn(
+            "\"response\":null",
+            br#"{"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}"#,
+        );
+        turn("hunter2", br#"{"type":"success"}"#);
+        turn("start_session", br#"{"type":"success"}"#);
+    });
+    let mut runtime = Runtime::default();
+    let source = format!(
+        r#"
+            local morf = require("morf")
+            local ui = require("morf.ui")
+            local seen = morf.signal("greetd.seen", "")
+            local login = morf.greetd.converse("morf", {:?})
+            local started = false
+            login:on_message(function(m)
+                seen:set(seen:get() .. m.kind .. ":" .. tostring(m.auth_type or m.text or "") .. ";")
+                if m.kind == "auth" and m.auth_type == "info" then
+                    assert(m.text == "Place your finger")
+                    login:respond(nil)
+                elseif m.kind == "auth" and m.auth_type == "secret" then
+                    login:respond("hunter2")
+                elseif m.kind == "success" and not started then
+                    started = true
+                    login:start({{ "sh" }}, {{ "A=1" }})
+                elseif m.kind == "success" then
+                    seen:set(seen:get() .. "started")
+                end
+            end)
+            ui.Text {{ text = function() return seen:get() end }}
+        "#,
+        path.to_string_lossy()
+    );
+    runtime
+        .execute("greetd-talk.lua", source.as_bytes())
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let text = loop {
+        runtime.poll_services();
+        let text = runtime
+            .scene()
+            .string_value(root, "text")
+            .unwrap()
+            .to_owned();
+        if text.contains("started") || std::time::Instant::now() > deadline {
+            break text;
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(text, "auth:info;auth:secret;success:;success:;started");
+    server.join().unwrap();
+    fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn reports_syntax_errors_with_the_source_name() {
     let mut runtime = Runtime::default();
