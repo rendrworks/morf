@@ -71,19 +71,22 @@ fn main() {
         eprintln!("usage: frame_bench <config.lua> [width] [height]");
         std::process::exit(2);
     };
-    let width: f64 = std::env::args()
-        .nth(2)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(3456.0);
-    let height: f64 = std::env::args()
-        .nth(3)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(2160.0);
+    // `frame_bench config.lua gpu [WxH] [out.png]`: in GPU mode the size rides
+    // in one argument, so the picture can be of a phone as easily as this screen.
+    let args: Vec<String> = std::env::args().collect();
+    let gpu_size = args
+        .get(3)
+        .filter(|_| args.get(2).map(String::as_str) == Some("gpu"))
+        .and_then(|value| value.split_once('x'))
+        .and_then(|(w, h)| Some((w.parse::<f64>().ok()?, h.parse::<f64>().ok()?)));
+    let argument = |index: usize, fallback: f64| {
+        args.get(index)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(fallback)
+    };
+    let width: f64 = gpu_size.map_or_else(|| argument(2, 3456.0), |size| size.0);
+    let height: f64 = gpu_size.map_or_else(|| argument(3, 2160.0), |size| size.1);
 
-    // A screen, not the default screenless runtime. The documented way to
-    // write a configuration is `morf.variants(morf.screens, …)`, which builds
-    // nothing at all when there are no screens — so a benchmark that skipped
-    // this could not open the configurations most worth benchmarking.
     let mut runtime = Runtime::for_screen(
         Limits::default(),
         Screen {
@@ -277,7 +280,7 @@ fn main() {
         // A fourth argument names a PNG to write the frame to. Every gate in
         // this repository can pass while a shader is visibly wrong, and the
         // only way to find that out is to look at what it drew.
-        if let Some(path) = std::env::args().nth(3) {
+        if let Some(path) = args.get(if gpu_size.is_some() { 4 } else { 3 }) {
             let pixels = engine.backend_mut().read_pixels();
             image::RgbaImage::from_raw(width as u32, height as u32, pixels)
                 .expect("the readback is the size of the target")
