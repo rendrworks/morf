@@ -40,6 +40,19 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
     if desired.is_empty() {
         return Err("compositor advertised no named outputs".to_owned());
     }
+    // The file says what it is, and the only way to hear it is to run it. One
+    // execution here, before any worker: a configuration that asks to be a
+    // session lock is one client for every output, which is not the shape the
+    // workers below have, so it is run as that instead. Every other
+    // configuration is run again by its workers, the way a reload already
+    // runs a candidate before trusting it.
+    {
+        let mut first = Runtime::default();
+        execute_config(&mut first, &path, &source, policy)?;
+        if first.layer_surface_config().session_lock {
+            return run_lock(first);
+        }
+    }
     let path = Arc::new(path);
     let mut source: Arc<[u8]> = source.into();
     let (tx, rx) = mpsc::channel();

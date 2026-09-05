@@ -401,7 +401,7 @@ mod glyph_fields;
 mod glyph_fields_reference;
 mod glyph_morph;
 mod glyph_steps;
-pub use families::installed_families;
+pub use families::{family_files, installed_families};
 pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
 /// A closed loop of an outline, for a caller pairing letters with shapes that
 /// are not letters.

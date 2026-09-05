@@ -158,7 +158,8 @@ impl SessionLockHandler for LayerState {
         qh: &QueueHandle<Self>,
         _session_lock: SessionLock,
     ) {
-        self.lock_surfaces.clear();
+        // The surfaces were made when the lock was asked for; this fills in
+        // any output that has appeared since, without touching the rest.
         for output in self.outputs.outputs() {
             self.create_lock_surface(output, qh);
         }
@@ -241,8 +242,10 @@ impl OutputHandler for LayerState {
             && surface.scale != scale
         {
             surface.scale = scale;
+            // The scale is pending state and rides on the next frame's
+            // commit; committing it alone would be a commit without a buffer,
+            // which a lock surface is not allowed.
             surface.surface.wl_surface().set_buffer_scale(scale as i32);
-            surface.surface.wl_surface().commit();
             self.events.push_back(LayerEvent::SessionLockConfigure {
                 index,
                 width: surface.size.0,

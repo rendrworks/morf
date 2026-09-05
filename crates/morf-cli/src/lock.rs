@@ -4,13 +4,13 @@ use morf_lua::{IpcValue, Runtime};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::{Element, NodeHandle};
 use morf_wayland::{LayerClient, LayerEvent, ScreenInfo};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::{capture::*, config::*, paint::*, supervisor::*, surface_layers::*, surfaces::*};
+use crate::{capture::*, paint::*, surface_layers::*, surfaces::*};
 
 pub(crate) struct Worker {
     pub(crate) stop: Arc<AtomicBool>,
@@ -61,9 +61,12 @@ pub(crate) enum WorkerMessage {
     },
 }
 
-pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
-    let mut runtime = Runtime::default();
-    execute_config(&mut runtime, path, source, LoadPolicy::default())?;
+/// Holds the session locked with a configuration that asked to.
+///
+/// Entered from the ordinary run, once the file has said
+/// `morf.surface.session_lock = true`: the same file that would have been a
+/// layer is instead one lock surface per output, until it says otherwise.
+pub(crate) fn run_lock(mut runtime: Runtime) -> Result<(), String> {
     if runtime.scene().roots().len() != 1 {
         return Err("lock configuration must create exactly one root item".to_owned());
     }
@@ -100,6 +103,10 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
         let mut repaint = runtime.poll_services();
         apply_service_requests(&mut runtime, &mut client);
         unlock_pending |= runtime.take_session_unlock_request();
+        // The file lifts the lock the way it asked for it: by clearing
+        // `morf.surface.session_lock`. Which door was opened — a password, a
+        // finger, a face — is the file's business, not this loop's.
+        unlock_pending |= !runtime.layer_surface_config().session_lock;
         if locked && unlock_pending {
             client.unlock_session().map_err(|error| error.to_string())?;
             return Ok(());
@@ -126,6 +133,11 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
                     if let Some(renderer) = &mut renderers[index] {
                         renderer.resize(width, height);
                     } else {
+                        // The root's colour, up before the GPU is looked for,
+                        // so the compositor has a locked frame within
+                        // milliseconds rather than after three devices and
+                        // three 4K frames.
+                        client.prime_lock(index, root_color_bytes(&runtime)?);
                         let target = client
                             .lock_window_target(index)
                             .ok_or_else(|| "configured lock surface disappeared".to_owned())?;
@@ -255,10 +267,27 @@ pub(crate) fn run_lock(path: &Path, source: &[u8]) -> Result<(), String> {
             for (index, renderer) in renderers.iter_mut().enumerate() {
                 if let Some(renderer) = renderer {
                     paint_lock(&mut runtime, renderer, &client, index)?;
+                    client.release_lock_primer(index);
                 }
             }
         }
     }
+}
+
+/// The lock root's colour as bytes, for the first frame.
+fn root_color_bytes(runtime: &Runtime) -> Result<[u8; 4], String> {
+    let root = primary_surface_root(runtime)?;
+    let color = runtime
+        .scene()
+        .color_value(root, "color")
+        .map_err(|error| error.to_string())?;
+    let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Ok([
+        byte(color.red),
+        byte(color.green),
+        byte(color.blue),
+        byte(color.alpha),
+    ])
 }
 
 pub(crate) fn paint_lock(

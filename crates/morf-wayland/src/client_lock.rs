@@ -15,6 +15,15 @@ impl LayerClient {
             .lock(&self.queue.handle())
             .map_err(|error| WaylandError(format!("session lock is unavailable: {error}")))?;
         self.state.session_lock = Some(lock);
+        // A lock surface for every output now, in the same flush as the lock
+        // request, which is the order the protocol expects: `locked` comes
+        // only after a locked frame has been presented on every output, and
+        // these surfaces are what gets presented.
+        let qh = self.queue.handle();
+        let outputs: Vec<_> = self.state.outputs.outputs().collect();
+        for output in outputs {
+            self.state.create_lock_surface(output, &qh);
+        }
         self.connection
             .flush()
             .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
@@ -88,6 +97,26 @@ impl LayerClient {
             return;
         };
         surface.frame(&self.queue.handle(), FrameCallbackData(surface.clone()));
+    }
+
+    /// Presents a first frame of one colour on a lock surface, at once, from
+    /// shared memory — see `LayerState::prime_lock_surface`.
+    pub fn prime_lock(&mut self, index: usize, color: [u8; 4]) -> bool {
+        let primed = self.state.prime_lock_surface(index, color);
+        // Flushed now rather than at the next dispatch, because what comes
+        // next is finding a GPU, and that is the wait this frame exists to
+        // cover.
+        let _ = self.connection.flush();
+        primed
+    }
+
+    /// Drops a lock surface's shared-memory first frame once the GPU has
+    /// presented one. The compositor holds its own mapping, so this frees
+    /// only this side.
+    pub fn release_lock_primer(&mut self, index: usize) {
+        if let Some(surface) = self.state.lock_surfaces.get_mut(index) {
+            surface.primer = None;
+        }
     }
 
     /// Commits one lock surface without attaching a new buffer.

@@ -384,4 +384,7 @@ pub(crate) struct LockSurface {
     pub(crate) output: wl_output::WlOutput,
     pub(crate) size: (u32, u32),
     pub(crate) scale: u32,
+    /// The first frame, drawn in shared memory before a GPU exists for the
+    /// surface, and kept only until the GPU has drawn one of its own.
+    pub(crate) primer: Option<(SlotPool, ShmBuffer)>,
 }

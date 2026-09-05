@@ -114,6 +114,7 @@ fn layer_surface_settings_are_native_and_typed() {
             reserve: SurfaceReserve::default(),
             exclusive_auto: false,
             opaque: false,
+            session_lock: false,
         }
     );
 }

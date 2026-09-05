@@ -139,7 +139,8 @@ fn leading_options_combine_and_the_command_sees_none_of_them() {
     // `--no-plugin`, `--clean`, `-d` and `-i` are about how morf runs rather
     // than what it runs. They stack in any order, and by the time the command
     // is parsed they are gone.
-    let args = ["-d", "--no-plugin", "shell.lua", "--numbers-only"].map(std::ffi::OsString::from);
+    let args =
+        ["-d", "--no-plugin", "shell.lua", "--", "--numbers-only"].map(std::ffi::OsString::from);
     let Command::Run(path, policy, rest, daemonize) = parse_command(&args).unwrap() else {
         panic!("a run");
     };

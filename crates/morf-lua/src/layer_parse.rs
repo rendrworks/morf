@@ -134,6 +134,12 @@ pub(crate) fn apply_layer_setting<'gc>(
             };
             Ok(assign_layer_setting(&mut config.opaque, value))
         }
+        "session_lock" => {
+            let LuaValue::Boolean(value) = value else {
+                return Err("surface session_lock must be a boolean".into());
+            };
+            Ok(assign_layer_setting(&mut config.session_lock, value))
+        }
         "keyboard_focus" => {
             let LuaValue::String(value) = value else {
                 return Err("surface keyboard_focus must be a string".into());

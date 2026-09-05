@@ -1,4 +1,3 @@
-use smithay_client_toolkit::session_lock::SessionLock;
 use smithay_client_toolkit::shm::slot::SlotPool;
 use wayland_client::protocol::{wl_output, wl_shm};
 use wayland_client::{Proxy, QueueHandle};
@@ -332,7 +331,14 @@ impl LayerState {
         output: wl_output::WlOutput,
         qh: &QueueHandle<Self>,
     ) {
-        let Some(lock) = self.session_lock.clone().filter(SessionLock::is_locked) else {
+        // Not filtered on `is_locked`: the surfaces go up the moment the lock
+        // is asked for, before the compositor confirms it. The protocol says
+        // the client "is expected to create lock surfaces for all outputs
+        // currently present" and that `locked` "must not be sent until a new
+        // 'locked' frame has been presented on all outputs" — so a client that
+        // waits for `locked` before making any surface is waiting for
+        // something its own surfaces are the condition of.
+        let Some(lock) = self.session_lock.clone() else {
             return;
         };
         if self
@@ -349,13 +355,65 @@ impl LayerState {
             .unwrap_or(1);
         let surface = self.compositor.create_surface(qh);
         surface.set_buffer_scale(scale as i32);
+        // No commit here. A lock surface is not an xdg surface: the compositor
+        // configures it the moment it exists, and a commit before the first
+        // buffer is the protocol's `null_buffer` error — Hyprland ends the
+        // whole lock on it. The first commit is the first frame.
         let surface = lock.create_lock_surface(surface, &output, qh);
-        surface.wl_surface().commit();
         self.lock_surfaces.push(LockSurface {
             surface,
             output,
             size: (1, 1),
             scale,
+            primer: None,
         });
+    }
+
+    /// Presents one lock surface's first frame from shared memory: a plain
+    /// field of one colour, the size the compositor asked for.
+    ///
+    /// The protocol wants a locked frame on every output before it will call
+    /// the session locked, and a compositor that shows its own "the lock
+    /// screen died" screen does so within a second of the request. A GPU
+    /// device and a first real frame per output take longer than that, so
+    /// this goes up first: a memset, one commit, and the compositor has its
+    /// frame while the GPU is still being found.
+    pub(crate) fn prime_lock_surface(&mut self, index: usize, color: [u8; 4]) -> bool {
+        let Some(shm) = self.shm.as_ref() else {
+            return false;
+        };
+        let Some(record) = self.lock_surfaces.get(index) else {
+            return false;
+        };
+        let width = record.size.0.saturating_mul(record.scale).max(1);
+        let height = record.size.1.saturating_mul(record.scale).max(1);
+        let stride = width.saturating_mul(4);
+        let Ok(mut pool) = SlotPool::new((stride as usize) * (height as usize), shm) else {
+            return false;
+        };
+        let Ok((buffer, canvas)) = pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride as i32,
+            wl_shm::Format::Argb8888,
+        ) else {
+            return false;
+        };
+        // ARGB8888 is little-endian: blue first in memory.
+        let [red, green, blue, alpha] = color;
+        for pixel in canvas.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[blue, green, red, alpha]);
+        }
+        let Some(record) = self.lock_surfaces.get_mut(index) else {
+            return false;
+        };
+        let surface = record.surface.wl_surface();
+        if buffer.attach_to(surface).is_err() {
+            return false;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+        record.primer = Some((pool, buffer));
+        true
     }
 }

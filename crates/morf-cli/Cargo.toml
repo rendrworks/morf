@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 libc = "0.2"
+flate2.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 morf-layout.workspace = true
@@ -20,6 +21,7 @@ morf-io.workspace = true
 morf-region.workspace = true
 morf-render.workspace = true
 morf-scene.workspace = true
+morf-text.workspace = true
 morf-wayland.workspace = true
 pollster.workspace = true
 

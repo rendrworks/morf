@@ -1,9 +1,9 @@
 //! What a configuration was invoked with.
 //!
 //! A shell is a program, and a program takes arguments. morf owns the few it
-//! needs to find the configuration at all — `--clean`, `-c`, `lock` — and
-//! everything after that belongs to the configuration, which is the only thing
-//! that knows what its own options mean.
+//! needs to find the configuration at all — `--clean`, `-c` — and everything
+//! after the `--` belongs to the configuration, which is the only thing that
+//! knows what its own words mean.
 //!
 //! Three views of the same words, because different questions want different
 //! ones. [`Arguments::words`] is what was typed, in order and unaltered, for a

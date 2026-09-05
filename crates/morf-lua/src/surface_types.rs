@@ -80,6 +80,12 @@ pub struct LayerSurfaceConfig {
     /// blending whatever is behind it. False by default, because a bar with a
     /// transparent corner that claims otherwise draws garbage there.
     pub opaque: bool,
+    /// Whether this configuration is a session lock rather than a layer:
+    /// one surface per output, drawn under the ext-session-lock protocol,
+    /// released when the configuration says so. Asked for by the
+    /// configuration itself — `morf.surface.session_lock = true` — because
+    /// what a file is for is the file's to say, not the command line's.
+    pub session_lock: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,6 +185,7 @@ impl Default for LayerSurfaceConfig {
             reserve: SurfaceReserve::default(),
             exclusive_auto: false,
             opaque: false,
+            session_lock: false,
         }
     }
 }
