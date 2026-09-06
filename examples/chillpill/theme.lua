@@ -23,7 +23,7 @@ if type(scale) ~= "number" then
   -- The original is drawn for a 1080p-ish output; above that the pill would
   -- be a sliver. Logical height, so a scaled output is not scaled twice.
   local logical = screen_height / screen_scale
-  scale = math.max(1, math.min(2, logical / 1440))
+  scale = math.max(1, math.min(2, logical / 1700))
   scale = math.floor(scale * 4 + 0.5) / 4
 end
 theme.scale = scale

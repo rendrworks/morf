@@ -22,18 +22,20 @@ local bar = {}
 
 -- Design sizes, scaled once. `pillScale` grows the pill alone.
 local P = function(value) return S(value * config.pillScale) end
-local HEIGHT = P(46)
-local PAD = P(26)
-local GAP = P(22)
-local DISC = P(32)
--- Monocraft is a pixel face: at 16 design pixels each of its dots is two
--- output pixels at scale 1, and the words come out crisp rather than grey.
-local TEXT = 16 * config.pillScale
-local ICON = 17 * config.pillScale
+local HEIGHT = P(38)
+local PAD = P(20)
+local GAP = P(18)
+local DISC = P(27)
+local TEXT = 14 * config.pillScale
+local ICON = 15 * config.pillScale
 
---- What the pill takes from the top of the output, margins included.
+--- What the pill takes from the top of the output: the gap above it, the
+--- pill, and the gap below less what the compositor already keeps between
+--- the reserved zone and the windows, so the pill sits as far from the
+--- windows as from the edge.
 function bar.zone()
-  return S(config.pillTopMargin) + HEIGHT + S(config.pillBottomMargin)
+  local below = math.max(0, S(config.pillBottomMargin) - hypr.gaps_out())
+  return S(config.pillTopMargin) + HEIGHT + below
 end
 bar.HEIGHT = HEIGHT
 
@@ -312,7 +314,7 @@ function bar.build()
 
   local pill = theme.box {
     height = HEIGHT,
-    radius = 46 / 2 * config.pillScale,
+    radius = 38 / 2 * config.pillScale,
     color = C.pill,
     -- Slides up out of sight when the config asks for a pill on hover only.
     translate_y = function()

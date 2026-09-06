@@ -99,6 +99,38 @@ local function drain_requests()
   end
 end
 
+--- One request, answered now: for the few things needed before the first
+--- frame, such as the gap the compositor keeps between the reserved zone
+--- and the windows. Waits at most `timeout_ms`.
+function hypr.ask(payload, timeout_ms)
+  if not command_path then return nil end
+  local ok, socket = pcall(io.socket, command_path)
+  if not ok or not socket then return nil end
+  local sent = pcall(socket.send, socket, payload)
+  if sent then sent = pcall(socket.flush, socket) end
+  local reply = ""
+  if sent then
+    for _ = 1, 8 do
+      local received, chunk = pcall(socket.receive, socket, RECEIVE_LIMIT, timeout_ms or 100)
+      if not received or chunk == nil or chunk == "" then break end
+      reply = reply .. chunk
+    end
+  end
+  pcall(socket.close, socket)
+  return reply ~= "" and reply or nil
+end
+
+--- The compositor's outer gap on the top edge, in pixels; 0 when unknown.
+function hypr.gaps_out()
+  local reply = hypr.ask("j/getoption general:gaps_out", 150)
+  if not reply then return 0 end
+  local ok, option = pcall(io.json.decode, reply)
+  if not ok or type(option) ~= "table" then return 0 end
+  -- `css` is top, right, bottom, left; `int` is one number for all.
+  local top = tostring(option.css or ""):match("^%s*(%d+)")
+  return tonumber(top) or tonumber(option["int"]) or 0
+end
+
 --- Sends one Lua expression to the compositor. The reply is not needed.
 function hypr.eval(expression)
   return request("eval:" .. expression, "eval " .. expression, nil)
