@@ -94,27 +94,55 @@ pub(crate) fn handle_ipc(
 ) -> IpcReply {
     match request {
         IpcRequest::Call { target, args } => {
-            let Some(worker) = workers.values().next() else {
+            // Every output runs the configuration, so every output hears the
+            // verb: which of them acts on it is the configuration's decision
+            // (`morf.screens[1]` names the one each instance draws). The
+            // reply is the first output's that answered with something, so
+            // an instance that stayed quiet does not hide the one that spoke.
+            if workers.is_empty() {
                 return IpcReply::refused("shell has no active output");
-            };
+            }
             let args = args.iter().map(lua_ipc_value).collect::<Vec<_>>();
-            let (tx, rx) = mpsc::sync_channel(1);
-            if worker
-                .commands
-                .send(WorkerCommand::Call {
-                    target: target.clone(),
-                    args,
-                    reply: tx,
-                })
-                .is_err()
-            {
+            let mut receivers = Vec::with_capacity(workers.len());
+            for worker in workers.values() {
+                let (tx, rx) = mpsc::sync_channel(1);
+                if worker
+                    .commands
+                    .send(WorkerCommand::Call {
+                        target: target.clone(),
+                        args: args.clone(),
+                        reply: tx,
+                    })
+                    .is_ok()
+                {
+                    receivers.push(rx);
+                }
+            }
+            if receivers.is_empty() {
                 return IpcReply::refused("shell output stopped");
             }
-            match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(Ok(values)) => IpcReply::success(values.iter().map(wire_ipc_value).collect()),
-                Ok(Err(error)) => IpcReply::refused(error),
-                Err(_) => IpcReply::refused("shell output timed out"),
+            let mut answer: Option<IpcReply> = None;
+            let mut refusal: Option<IpcReply> = None;
+            for rx in receivers {
+                match rx.recv_timeout(Duration::from_secs(1)) {
+                    Ok(Ok(values)) => {
+                        let reply = IpcReply::success(values.iter().map(wire_ipc_value).collect());
+                        if !values.is_empty() {
+                            return reply;
+                        }
+                        answer.get_or_insert(reply);
+                    }
+                    Ok(Err(error)) => {
+                        refusal.get_or_insert(IpcReply::refused(error));
+                    }
+                    Err(_) => {
+                        refusal.get_or_insert(IpcReply::refused("shell output timed out"));
+                    }
+                }
             }
+            answer
+                .or(refusal)
+                .unwrap_or_else(|| IpcReply::refused("shell output stopped"))
         }
         IpcRequest::Verbs => {
             let mut verbs = Vec::new();
