@@ -130,18 +130,20 @@ local function tile(item)
   }
 end
 
-local window = morf.window.layer {
+local root
+local window
+window = morf.window.layer {
   namespace = "chillpill-wallpapers",
   layer = "overlay",
   keyboard_focus = "exclusive",
   width = WIDTH,
   height = HEIGHT,
   visible = false,
-  root = theme.box {
+  root = (function()
+    root = theme.box {
     width = WIDTH, height = HEIGHT, radius = 36,
-    enter = { opacity = 0, scale = 0.98 },
-    opacity = 1, scale = 1,
-    behavior = { opacity = { duration = 120 }, scale = { duration = 160, easing = "out_quad" } },
+    opacity = 0, scale = 0.96,
+    behavior = { opacity = theme.motion.fade, scale = theme.motion.spring },
     ui.Inset {
       margin = PAD,
       ui.Item {
@@ -166,19 +168,22 @@ local window = morf.window.layer {
       z = -2,
       on_key_pressed = function(keysym) handle_key(keysym) end,
     },
-  },
+  }
+    return root
+  end)(),
 }
 
+local motion = theme.surface_motion(window, root)
 wallpapers.open_signal = morf.signal("chillpill.wallpapers.open", false)
 
 function wallpapers.open()
   load()
-  window:open()
+  motion.open()
   wallpapers.open_signal:set(true)
 end
 
 function wallpapers.close()
-  window:close()
+  motion.close()
   wallpapers.open_signal:set(false)
 end
 

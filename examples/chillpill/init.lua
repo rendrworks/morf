@@ -58,8 +58,11 @@ local TOP = bar.zone() - S(config.pillBottomMargin) + S(14)
 -- dashboard closes the control center.
 local panel = morf.signal("chillpill.panel", core.env("CHILLPILL_OPEN") or "")
 
+local sync_panels
+
 local function toggle(name)
   panel:set(panel:get() == name and "" or name)
+  sync_panels()
 end
 
 bar.open.control = function() toggle("control") end
@@ -79,7 +82,7 @@ bar.open.weather = function() toggle("dashboard") end
 control.osd = osd.show
 
 -- Each panel's `shown` follows the one signal.
-local function sync_panels()
+function sync_panels()
   local open = panel:get() == "control"
   if control.shown:get() ~= open then
     control.shown:set(open)
@@ -125,6 +128,7 @@ end)
 -- Every instance closes; a panel may be open on any of them.
 morf.ipc.close = function()
   panel:set("")
+  sync_panels()
   for _, close in ipairs(closers) do close() end
   return "closed"
 end
@@ -149,7 +153,7 @@ ui.Item {
     anchors = { fill = true },
     z = -10,
     visible = function() return panel:get() ~= "" end,
-    on_clicked = function() panel:set("") end,
+    on_clicked = function() panel:set("") sync_panels() end,
   },
   part("control", control.build, TOP),
   part("dashboard", dashboard.build, TOP),
@@ -177,7 +181,7 @@ ui.Item {
 
 -- A password, asked in a surface of its own so it can take the keyboard.
 -- Made after the scene, so the scene's root is the first root there is.
-local prompt_window
+local prompt_window, prompt_motion
 local prompt_title = morf.signal("chillpill.prompt.title", "")
 local prompt_answer = nil
 local prompt_field = field.new {
@@ -186,24 +190,19 @@ local prompt_field = field.new {
   on_submit = function(text)
     local answer = prompt_answer
     prompt_answer = nil
-    prompt_window:close()
+    prompt_motion.close()
     if answer then answer(text) end
   end,
   on_escape = function()
     prompt_answer = nil
-    prompt_window:close()
+    prompt_motion.close()
   end,
 }
 
-prompt_window = morf.window.layer {
-  namespace = "chillpill-prompt",
-  layer = "overlay",
-  keyboard_focus = "exclusive",
-  width = S(420),
-  height = S(150),
-  visible = false,
-  root = theme.box {
+local prompt_root = theme.box {
     width = S(420), height = S(150), radius = 28,
+    opacity = 0, scale = 0.96,
+    behavior = { opacity = theme.motion.fade, scale = theme.motion.spring },
     ui.Column {
       gap = S(14),
       anchors = { left = true, top = true, margins = S(24) },
@@ -214,14 +213,23 @@ prompt_window = morf.window.layer {
       anchors = { fill = true },
       on_key_pressed = function(keysym, text) prompt_field.handle(keysym, text) end,
     },
-  },
 }
+prompt_window = morf.window.layer {
+  namespace = "chillpill-prompt",
+  layer = "overlay",
+  keyboard_focus = "exclusive",
+  width = S(420),
+  height = S(150),
+  visible = false,
+  root = prompt_root,
+}
+prompt_motion = theme.surface_motion(prompt_window, prompt_root)
 
 control.prompt = function(title, answer)
   prompt_title:set(title)
   prompt_answer = answer
   prompt_field.clear()
-  prompt_window:open()
+  prompt_motion.open()
 end
 
 -- ------------------------------------------------------------- keyboard --

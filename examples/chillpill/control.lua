@@ -363,6 +363,9 @@ local function notification_row(row)
   }
   local node = ui.Item {
     width = ROW_WIDTH,
+    enter = { opacity = 0, translate_x = S(24) },
+    opacity = 1, translate_x = 0,
+    behavior = { opacity = theme.motion.fade, translate_x = theme.motion.spring },
     ui.Column {
       anchors = { left = true, top = true, left_margin = S(18), top_margin = S(14) },
       gap = S(6),
@@ -412,7 +415,7 @@ local function notifications_card()
     ui.Item {
       width = ROW_WIDTH,
       translate_y = function() return -offset:get() end,
-      behavior = { translate_y = { duration = 120, easing = "out_quad" } },
+      behavior = { translate_y = theme.motion.spring },
       list,
     },
     ui.MouseArea {
@@ -554,11 +557,11 @@ local function network_row(row)
 end
 
 local function wifi_panel()
-  return theme.padded {
+  return theme.padded(theme.reveal(control.wifi_open, {
     width = SIDE_WIDTH,
     pad = PAD,
     radius = 36,
-    visible = function() return control.wifi_open:get() end,
+    from_x = S(28),
     ui.Flex {
       direction = "column", align = "start",
       gap = S(12),
@@ -589,7 +592,7 @@ local function wifi_panel()
         visible = function() return control.networks:len() == 0 and not scanning:get() end,
       },
     },
-  }
+  }))
 end
 
 -- -------------------------------------------------------------- bluetooth --
@@ -661,11 +664,11 @@ local function device_row(row)
 end
 
 local function bluetooth_panel()
-  return theme.padded {
+  return theme.padded(theme.reveal(control.bluetooth_open, {
     width = SIDE_WIDTH,
     pad = PAD,
     radius = 36,
-    visible = function() return control.bluetooth_open:get() end,
+    from_x = -S(28),
     ui.Flex {
       direction = "column", align = "start",
       gap = S(12),
@@ -704,7 +707,7 @@ local function bluetooth_panel()
         delegate = device_row,
       },
     },
-  }
+  }))
 end
 
 -- ------------------------------------------------------------------ panel --
@@ -744,13 +747,12 @@ function control.build(top)
     justify = "center",
     align = "start",
     anchors = { left = true, right = true, top = true, top_margin = top },
-    visible = function() return control.shown:get() end,
-    ui.Item {
-      opacity = function() return control.shown:get() and 1 or 0 end,
-      translate_y = function() return control.shown:get() and 0 or -S(12) end,
-      behavior = { opacity = { duration = 140 }, translate_y = { duration = 180, easing = "out_quad" } },
+    ui.Item(theme.reveal(control.shown, {
+      from_y = -S(28),
+      from_scale = 0.96,
+      transform_origin_y = 0,
       row,
-    },
+    })),
   }
 end
 

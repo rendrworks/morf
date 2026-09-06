@@ -295,6 +295,7 @@ local function cell(row)
   return ui.Rect {
     width = CELL, height = CELL, radius = S(10),
     color = function() return calendar.picked == row.key and C.button or morf.color("transparent") end,
+    behavior = { color = theme.motion.quick },
     border_width = function() return is_today() and 1 or 0 end,
     border_color = C.faint,
     theme.text {
@@ -308,7 +309,7 @@ local function cell(row)
   }
 end
 
-local function calendar_card(visible)
+local function calendar_card(shown)
   local function arrow(glyph, by)
     return ui.Item {
       width = S(36), height = S(36),
@@ -323,10 +324,11 @@ local function calendar_card(visible)
       theme.text { text = name, size = 13, color = C.dim, anchors = { center_in = true } },
     }
   end
-  return theme.padded {
+  return theme.padded(theme.reveal(shown, {
     radius = 32,
     pad = S(22),
-    visible = visible,
+    from_y = -S(20),
+    transform_origin_y = 0,
     ui.Column {
       gap = S(12),
       ui.Item {
@@ -345,7 +347,7 @@ local function calendar_card(visible)
         delegate = cell,
       },
     },
-  }
+  }))
 end
 
 --- The name of a holiday on the picked day, or today's.
@@ -381,12 +383,13 @@ local function day_column(row)
   }
 end
 
-local function weather_card(visible)
+local function weather_card(shown)
   local W = S(440)
-  return theme.padded {
+  return theme.padded(theme.reveal(shown, {
     radius = 32,
     pad = S(24),
-    visible = visible,
+    from_y = -S(20),
+    transform_origin_y = 0,
     ui.Column {
       gap = S(18),
       ui.Item {
@@ -440,14 +443,20 @@ local function weather_card(visible)
         },
       },
     },
-  }
+  }))
 end
 
 -- ------------------------------------------------------------------ panel --
 
 function dashboard.build(top)
-  local calendar_node = calendar_card(function() return dashboard.page:get() == "calendar" end)
-  local weather_node = weather_card(function() return dashboard.page:get() == "weather" end)
+  local on_calendar = morf.signal("chillpill.dashboard.on_calendar", true)
+  local on_weather = morf.signal("chillpill.dashboard.on_weather", false)
+  morf.timer(24, function()
+    on_calendar:set(dashboard.shown:get() and dashboard.page:get() == "calendar")
+    on_weather:set(dashboard.shown:get() and dashboard.page:get() == "weather")
+  end, true)
+  local calendar_node = calendar_card(on_calendar)
+  local weather_node = weather_card(on_weather)
   local top_card = theme.padded {
     width = WIDTH,
     pad = PAD,
@@ -472,11 +481,9 @@ function dashboard.build(top)
     align = "center",
     gap = S(20),
     anchors = { left = true, right = true, top = true, top_margin = top },
-    visible = function() return dashboard.shown:get() end,
-    ui.Item {
-      opacity = function() return dashboard.shown:get() and 1 or 0 end,
-      translate_y = function() return dashboard.shown:get() and 0 or -S(12) end,
-      behavior = { opacity = { duration = 140 }, translate_y = { duration = 180, easing = "out_quad" } },
+    ui.Item(theme.reveal(dashboard.shown, {
+      from_y = -S(28),
+      transform_origin_y = 0,
       ui.Flex {
         direction = "column",
         gap = S(20),
@@ -486,7 +493,7 @@ function dashboard.build(top)
         weather_node,
         holiday,
       },
-    },
+    })),
   }
 end
 

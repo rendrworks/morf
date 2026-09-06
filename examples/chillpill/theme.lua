@@ -23,7 +23,7 @@ if type(scale) ~= "number" then
   -- The original is drawn for a 1080p-ish output; above that the pill would
   -- be a sliver. Logical height, so a scaled output is not scaled twice.
   local logical = screen_height / screen_scale
-  scale = math.max(1, math.min(2, logical / 1200))
+  scale = math.max(1, math.min(2, logical / 1440))
   scale = math.floor(scale * 4 + 0.5) / 4
 end
 theme.scale = scale
@@ -145,7 +145,8 @@ function theme.button(values)
     if down:get() then return rest:mix(lit, 0.5) end
     return hovered:get() and lit or rest
   end
-  values.behavior = values.behavior or { color = { duration = 90 } }
+  values.scale = function() return down:get() and 0.96 or 1 end
+  values.behavior = values.behavior or { color = { duration = 90 }, scale = theme.motion.snappy }
   if values.radius then values.radius = S(values.radius) end
   values[#values + 1] = ui.MouseArea {
     anchors = { fill = true },
@@ -179,9 +180,104 @@ function theme.meter(values)
       local total = type(width) == "function" and width() or width
       return math.max(height, math.floor(math.max(0, math.min(1, value or 0)) * total))
     end,
-    behavior = { width = { duration = 120, easing = "out_quad" } },
+    behavior = { width = { duration = 160, easing = "out_cubic" } },
   }
   return ui.Rect(values)
+end
+
+-- ------------------------------------------------------------------ motion --
+
+-- One vocabulary of movement, so every panel, button and pill moves the
+-- same way: a spring for position and size, a short ease for opacity.
+theme.motion = {
+  spring = { kind = "spring", stiffness = 280, damping = 26, mass = 1 },
+  soft = { kind = "spring", stiffness = 200, damping = 22, mass = 1 },
+  snappy = { kind = "spring", stiffness = 420, damping = 30, mass = 1 },
+  fade = { duration = 180, easing = "out_quad" },
+  quick = { duration = 110, easing = "out_quad" },
+}
+local motion = theme.motion
+
+local mounted_count = 0
+
+--- A signal that goes up the moment `shown` does and down `delay`
+--- milliseconds after it, so a node can play its way out before it is
+--- hidden.
+function theme.mounted(shown, delay)
+  mounted_count = mounted_count + 1
+  local mounted = morf.signal("chillpill.mounted." .. mounted_count, shown:get())
+  local clock = morf.elapsed_timer()
+  local going = false
+  morf.timer(24, function()
+    local want = shown:get()
+    if want then
+      going = false
+      if not mounted:get() then mounted:set(true) end
+    elseif mounted:get() then
+      if not going then
+        going = true
+        clock:restart()
+      elseif clock:elapsed_ms() >= (delay or 260) then
+        mounted:set(false)
+      end
+    end
+  end, true)
+  return mounted
+end
+
+--- Fills `values` with the motion of a panel that comes and goes with
+--- `shown`: it fades, slides in from `from_y` / `from_x` and grows from
+--- `from_scale`, and stays in the tree until the way out has played.
+function theme.reveal(shown, values)
+  local from_y = values.from_y or 0
+  local from_x = values.from_x or 0
+  local from_scale = values.from_scale or 0.96
+  values.from_y, values.from_x, values.from_scale = nil, nil, nil
+  local mounted = theme.mounted(shown, values.delay or 260)
+  values.delay = nil
+  values.visible = function() return mounted:get() end
+  values.opacity = function() return shown:get() and 1 or 0 end
+  values.translate_y = function() return shown:get() and 0 or from_y end
+  values.translate_x = function() return shown:get() and 0 or from_x end
+  values.scale = function() return shown:get() and 1 or from_scale end
+  values.behavior = {
+    opacity = motion.fade,
+    translate_y = motion.spring,
+    translate_x = motion.spring,
+    scale = motion.spring,
+  }
+  return values
+end
+
+--- Opening and closing a surface of its own with motion: the root fades
+--- and grows in, shrinks and fades out, and the surface closes once that
+--- has played. The root starts at `opacity = 0, scale = 0.96` with
+--- behaviors on both.
+function theme.surface_motion(window, root)
+  local closing = false
+  local motionless = {}
+  function motionless.open()
+    closing = false
+    window:open()
+    -- A tick later, so the write is its own flush and the behavior runs
+    -- from the hidden state rather than landing there.
+    morf.timer(16, function()
+      if not closing then
+        root.opacity = 1
+        root.scale = 1
+      end
+    end, false)
+  end
+  function motionless.close()
+    if closing then return end
+    closing = true
+    root.opacity = 0
+    root.scale = 0.96
+    morf.timer(170, function()
+      if closing then window:close() end
+    end, false)
+  end
+  return motionless
 end
 
 --- The pointer's fraction along a meter, from a surface x and the meter's

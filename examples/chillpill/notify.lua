@@ -185,10 +185,12 @@ local function popup(row)
   local node = theme.box {
     radius = 24,
     width = POPUP_WIDTH,
-    enter = { opacity = 0, translate_y = -S(16) },
+    enter = { opacity = 0, translate_y = -S(28), scale = 0.94 },
     opacity = 1,
     translate_y = 0,
-    behavior = { opacity = { duration = 180 }, translate_y = { duration = 220, easing = "out_quad" } },
+    scale = 1,
+    transform_origin_y = 0,
+    behavior = { opacity = theme.motion.fade, translate_y = theme.motion.spring, scale = theme.motion.spring },
     ui.Row {
       gap = S(22),
       align = "center",

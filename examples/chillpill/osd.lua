@@ -118,10 +118,12 @@ function osd.build()
     height = HEIGHT,
     radius = 36,
     opacity = function() return osd.shown:get() and 1 or 0 end,
-    translate_y = function() return osd.shown:get() and 0 or S(24) end,
+    translate_y = function() return osd.shown:get() and 0 or S(28) end,
+    scale = function() return osd.shown:get() and 1 or 0.94 end,
     behavior = {
-      opacity = { duration = 160 },
-      translate_y = { duration = 200, easing = "out_quad" },
+      opacity = theme.motion.fade,
+      translate_y = theme.motion.spring,
+      scale = theme.motion.spring,
     },
     ui.Row {
       gap = S(24),

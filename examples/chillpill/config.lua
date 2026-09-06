@@ -14,8 +14,10 @@ local config = {
   clockFormat = "24h",
   -- What the pill shows, left to right. Also: bluetooth, weather, vpn.
   pillModules = { "battery", "volume", "workspaces", "network", "clock" },
+  -- The gap above the pill, and the same below it: what the pill reserves
+  -- is the pill and one gap each side.
   pillTopMargin = 9,
-  pillBottomMargin = 26,
+  pillBottomMargin = 9,
   pillScale = 1.0,
   -- Keep the pill out of the way until the pointer reaches the top edge.
   pillOnHover = false,

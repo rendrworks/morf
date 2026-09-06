@@ -114,13 +114,18 @@ local function module(values)
     height = HEIGHT,
     table.unpack(parts),
   }
+  local hovered = morf.signal("chillpill.bar.module." .. tostring(row), false)
   -- No width of its own: the item is as wide as its row.
   return ui.Item {
     height = HEIGHT,
+    scale = function() return hovered:get() and 1.08 or 1 end,
+    behavior = { scale = theme.motion.spring },
     row,
     ui.MouseArea {
       anchors = { fill = true },
       cursor = "pointer",
+      on_entered = function() hovered:set(true) end,
+      on_exited = function() hovered:set(false) end,
       on_clicked = values.on_click,
       on_wheel = values.on_wheel,
     },
@@ -199,7 +204,8 @@ local function workspace_disc(row)
     height = DISC,
     radius = DISC / 2,
     color = row.active and C.disc_active or (row.exists and C.disc or morf.color("transparent")),
-    behavior = { color = { duration = 140 } },
+    scale = row.active and 1 or 0.86,
+    behavior = { color = { duration = 160 }, scale = theme.motion.spring },
   }
   local label = theme.text {
     text = row.label,
@@ -220,6 +226,7 @@ local function workspace_disc(row)
   }
   return node, function(next)
     disc.color = next.active and C.disc_active or (next.exists and C.disc or morf.color("transparent"))
+    disc.scale = next.active and 1 or 0.86
     label.text = next.label
     label.color = next.urgent and C.red or C.text
   end
@@ -311,7 +318,8 @@ function bar.build()
     translate_y = function()
       return (config.pillOnHover and not bar.hovered:get()) and -(HEIGHT + S(config.pillTopMargin) - S(4)) or 0
     end,
-    behavior = { translate_y = { duration = 220, easing = "out_quad" } },
+    scale = function() return bar.hovered:get() and 1.02 or 1 end,
+    behavior = { translate_y = theme.motion.spring, scale = theme.motion.soft },
     row,
     ui.MouseArea {
       anchors = { fill = true },
