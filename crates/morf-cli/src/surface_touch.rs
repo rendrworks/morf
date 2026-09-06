@@ -7,6 +7,9 @@ use crate::surfaces::*;
 // the repository's 500-line limit. Touch is self-contained: it owns the
 // `touches` map and shares nothing with the pointer path but the hit test.
 
+/// How far a finger may wander and still be a tap, in logical pixels.
+const TAP_TRAVEL: f64 = 10.0;
+
 pub(crate) fn handle_touch_event(
     runtime: &mut Runtime,
     state: &mut SurfaceEventState,
@@ -29,7 +32,7 @@ pub(crate) fn handle_touch_event(
                 .map_err(|error| error.to_string())?;
             if let Some(hit) = hit {
                 let point = EventPoint::new((x, y), (hit.local_x, hit.local_y));
-                state.touches.insert(id, (surface, hit, x, y));
+                state.touches.insert(id, (surface, hit, x, y, 0.0));
                 if let Some(target) = runtime.key_target_for_node(hit.node) {
                     state.focused.insert(surface, target);
                 } else {
@@ -40,7 +43,9 @@ pub(crate) fn handle_touch_event(
             }
         }
         LayerEvent::TouchMotion { id, x, y, .. } => {
-            if let Some((touch_surface, hit, last_x, last_y)) = state.touches.get_mut(&id) {
+            if let Some((touch_surface, hit, last_x, last_y, travel)) = state.touches.get_mut(&id) {
+                let delta = (x - *last_x, y - *last_y);
+                *travel += delta.0.abs() + delta.1.abs();
                 *last_x = x;
                 *last_y = y;
                 let node = hit.node;
@@ -54,16 +59,16 @@ pub(crate) fn handle_touch_event(
                 )
                 .map(|layout| layout.local_point(&runtime.scene(), node, x, y))
                 .unwrap_or((x, y));
-                repaint |= runtime.dispatch_touch_event(
-                    node,
-                    UiEvent::TouchMoved,
-                    id,
-                    EventPoint::new((x, y), local),
-                );
+                let point = EventPoint::new((x, y), local);
+                repaint |= runtime.dispatch_touch_event(node, UiEvent::TouchMoved, id, point);
+                // A finger moving is a drag, as a held button moving is: the
+                // same handler, the same deltas, so a list scrolls under a
+                // finger as under a wheel.
+                repaint |= runtime.dispatch_pointer(node, UiEvent::Dragged, point, delta);
             }
         }
         LayerEvent::TouchUp { surface, id, x, y } => {
-            if let Some((touch_surface, pressed_hit, _, _)) = state.touches.remove(&id) {
+            if let Some((touch_surface, pressed_hit, _, _, travel)) = state.touches.remove(&id) {
                 let layout = surface_layout(
                     surface,
                     &state.layout,
@@ -94,8 +99,16 @@ pub(crate) fn handle_touch_event(
                     .map_err(|error| error.to_string())?
                     .flatten();
                 // A click is a release over the node the press landed on, so it
-                // is compared by node rather than by the whole hit.
-                if hit.map(|hit| hit.node) == Some(pressed_hit.node) {
+                // is compared by node rather than by the whole hit -- and a
+                // finger that travelled was a swipe, not a tap.
+                if travel > TAP_TRAVEL {
+                    repaint |= runtime.dispatch_pointer(
+                        pressed_hit.node,
+                        UiEvent::DragFinished,
+                        point,
+                        (0.0, 0.0),
+                    );
+                } else if hit.map(|hit| hit.node) == Some(pressed_hit.node) {
                     repaint |= runtime.dispatch_pointer(
                         pressed_hit.node,
                         UiEvent::Clicked,
@@ -106,7 +119,7 @@ pub(crate) fn handle_touch_event(
             }
         }
         LayerEvent::TouchCancel => {
-            for (id, (_, hit, x, y)) in state.touches.drain() {
+            for (id, (_, hit, x, y, _)) in state.touches.drain() {
                 let point = EventPoint::new((x, y), (hit.local_x, hit.local_y));
                 repaint |=
                     runtime.dispatch_touch_event(hit.node, UiEvent::TouchCanceled, id, point);

@@ -246,11 +246,13 @@ function theme.button(values)
     cursor = "pointer",
     on_entered = function() hovered:set(true) end,
     on_exited = function() hovered:set(false) down:set(false) end,
-    on_pressed = function() down:set(true) end,
-    on_released = function() down:set(false) end,
+    on_pressed = function() down:set(true) theme.drag_begin() end,
+    on_released = function() down:set(false) theme.drag_end() end,
     on_clicked = function() if on_click then on_click() end end,
-    -- A wheel over a button is meant for the page under it.
+    -- A wheel over a button is meant for the page under it, and so is a
+    -- finger dragged across it.
     on_wheel = on_wheel or function(...) theme.wheel(...) end,
+    on_dragged = function(_, _, dx, dy) theme.drag(dx or 0, dy or 0) end,
   }
   return ui.Rect(values)
 end
@@ -322,8 +324,13 @@ function theme.slider_row(values)
 end
 
 --- Where a wheel goes when the thing under the pointer has no use for
---- it: the open page's scroller. The island fills this in.
+--- it: the open page's scroller. The island fills this in. A finger
+--- dragged across a row goes the same way: `drag_begin` at the press,
+--- `drag` with each move's delta, `drag_end` at the release.
 theme.wheel = function() end
+theme.drag_begin = function() end
+theme.drag = function() end
+theme.drag_end = function() end
 
 --- The switch: a track that fills with the accent, and a knob that slides
 --- across and grows as it turns on, on a spring with a little overshoot.
@@ -394,7 +401,7 @@ function theme.slider(values)
       on_entered = function() hover:set(true) end,
       on_exited = function() hover:set(false) end,
       on_pressed = function(_, _, local_x) held:set(true) set(at(local_x)) end,
-      on_dragged = function(_, _, local_x) if held:get() then set(at(local_x)) end end,
+      on_dragged = function(_, _, _, _, local_x) if held:get() then set(at(local_x)) end end,
       on_released = function() held:set(false) end,
       on_wheel = function(_, _, _, _, _, steps_y)
         if steps_y ~= 0 then set(math.max(0, math.min(1, fraction() - steps_y * 0.05))) end

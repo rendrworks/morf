@@ -75,6 +75,8 @@ local config = {
   -- The strip's status icons, left to right: any of cellular, vpn, wifi,
   -- bluetooth, dnd, mic, volume, caffeine, airplane, hotspot.
   statusIcons = { "caffeine", "dnd", "mic", "vpn", "cellular", "wifi", "bluetooth" },
+  -- The round buttons on a phone's shade, its first pull.
+  shadeTiles = { "wifi", "bluetooth", "dnd", "sound", "caffeine" },
   -- Where recordings go.
   recordDir = "~/Videos",
   recordFps = 60,

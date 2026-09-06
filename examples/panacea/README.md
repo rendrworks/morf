@@ -81,6 +81,22 @@ button, one statistic. A page is a column of those at one gap, so every
 page is the same page with different words in it. The quick settings
 tiles are the same row, pill-shaped.
 
+## By touch, and on a phone
+
+Everything answers a finger as it answers a pointer: a tap is a click, a
+finger dragged over a page scrolls it, sideways over the tiles turns their
+page, and the wheel does the same on a desk. On a phone the strip is
+pulled: a pull down opens the shade -- a row of round tiles, the
+brightness, the notifications, as a phone's first pull shows -- and a
+further pull from its top opens the whole of quick settings; a sweep up
+from the top of a page closes it. `shadeTiles` picks the shade's round
+tiles. On a desk a tap opens everything at once.
+
+To try it without a phone: `cage` in a window the size of one, morf
+inside it, and a virtual touchscreen over `/dev/uinput` (a few dozen lines
+of Python) that taps and swipes at the window's coordinates; cage passes
+the host's touch through.
+
 ## Colours and type
 
 When lule has written `~/.cache/lule/colors.json`, the island takes its

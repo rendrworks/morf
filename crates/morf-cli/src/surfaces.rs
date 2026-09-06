@@ -82,7 +82,9 @@ pub(crate) struct SurfaceEventState {
     pub(crate) hovered: Option<(SurfaceRole, Hit)>,
     pub(crate) pressed: Option<(SurfaceRole, Hit, f64, f64, bool)>,
     pub(crate) focused: HashMap<SurfaceRole, NodeHandle>,
-    pub(crate) touches: HashMap<i32, (SurfaceRole, Hit, f64, f64)>,
+    /// Each finger down: where it landed, where it was last, and how far
+    /// it has travelled, which is what tells a tap from a swipe.
+    pub(crate) touches: HashMap<i32, (SurfaceRole, Hit, f64, f64, f64)>,
 }
 
 pub(crate) fn sync_window_surfaces(

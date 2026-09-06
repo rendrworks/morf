@@ -29,8 +29,14 @@ end
 --- A glyph that morphs into the next one its function says, in a
 --- distance field: the bell into the crossed bell, the wave into the
 --- crossed wave. The in-between frames are shapes neither glyph is.
+---
+--- A field fits the glyph's own bounds to its box, where a text glyph
+--- keeps its ink inside an em; so the box is the icon size less the
+--- em's margin, and a morphing icon reads the size of a written one.
+kit.GLYPH_FIT = 0.8
 local glyph_count = 0
 function kit.glyph(size, glyph, color)
+  size = size * kit.GLYPH_FIT
   glyph_count = glyph_count + 1
   local progress = morf.signal("panacea.kit.glyph." .. glyph_count, 0)
   local current = call(glyph) or ""
@@ -107,8 +113,11 @@ function kit.row(values)
       width = kit.CIRCLE, height = kit.CIRCLE, radius = kit.CIRCLE / 2,
       color = function() return active() and accent or C.card_hover end,
       scale = function() return pop:get() and 1.22 or 1 end,
-      behavior = { color = motion.fade, scale = motion.snappy },
-      type(values.icon) == "function" and kit.glyph(S(config.iconSize - 1), values.icon, ink)
+      -- With `spin`, the circle turns over as the row turns on.
+      rotation = values.spin and function() return active() and 360 or 0 end or nil,
+      behavior = { color = motion.fade, scale = motion.snappy,
+        rotation = { duration = config.reduceMotion and 1 or 520, easing = "out_back" } },
+      type(values.icon) == "function" and kit.glyph(S(config.iconSize), values.icon, ink)
         or theme.icon { text = values.icon, size = config.iconSize - 1, anchors = { center_in = true }, color = ink },
     }
   end

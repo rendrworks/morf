@@ -275,6 +275,9 @@ local function build_pages()
         ui.MouseArea {
           anchors = { fill = true }, z = -1,
           on_wheel = function(sx, sy, px, py, steps_x, steps_y) theme.wheel(sx, sy, px, py, steps_x, steps_y) end,
+          on_pressed = function() theme.drag_begin() end,
+          on_released = function() theme.drag_end() end,
+          on_dragged = function(_, _, dx, dy) theme.drag(dx or 0, dy or 0) end,
         },
       },
     }
@@ -587,20 +590,36 @@ function island.build()
   }
   local content = ui.Item {
     anchors = { fill = true },
-    -- Collapsed, a click on the strip opens quick settings.
+    -- Collapsed, a click on the strip opens quick settings; on a phone
+    -- the shade, and a finger pulled down the strip opens it too.
     ui.MouseArea {
       anchors = { fill = true },
       cursor = "pointer",
       visible = function() return not open() end,
       on_entered = function() hovering = true hover_clock:restart() end,
       on_exited = function() hovering = false hover_clock:restart() end,
-      on_clicked = function() island.keep() island.open("main") end,
+      on_clicked = function() island.keep() island.open(island.first_page()) end,
+      on_pressed = function() island.pull = 0 end,
+      on_dragged = function(_, _, _, dy)
+        if not island.pull then return end
+        island.pull = island.pull + (dy or 0)
+        if island.pull > S(36) then
+          island.pull = nil
+          island.keep()
+          island.open(island.first_page())
+        end
+      end,
+      on_released = function() island.pull = nil end,
     },
-    -- Open, the pointer over the island keeps it.
+    -- Open, the pointer over the island keeps it, and a finger anywhere on
+    -- the sheet pulls or sweeps it.
     ui.MouseArea {
       anchors = { fill = true },
       z = -1,
       visible = function() return open() end,
+      on_pressed = function() theme.drag_begin() end,
+      on_released = function() theme.drag_end() end,
+      on_dragged = function(_, _, dx, dy) theme.drag(dx or 0, dy or 0) end,
       on_entered = function() hovering = true hover_clock:restart() end,
       on_exited = function() hovering = false hover_clock:restart() end,
     },
@@ -632,6 +651,50 @@ function island.scroll_by(steps)
   entry.scroll:set(math.max(0, math.min(most, entry.scroll:get() + steps * S(64))))
 end
 theme.wheel = function(_, _, _, _, _, steps_y) island.scroll_by(steps_y) end
+
+--- The page a tap or a pull on the strip opens: the shade on a phone --
+--- notifications and a few tiles, as the first pull of a phone's shade
+--- shows -- and everything at once on a desk.
+function island.first_page()
+  return (PHONE and island.pages.shade) and "shade" or "main"
+end
+
+--- A finger across the page: up and down scrolls it, following the
+--- finger; sideways, over the tiles, turns their page once per gesture.
+--- On a phone the shade is pulled further open, or swept shut: a pull
+--- down past the top of the shade opens the whole of quick settings, and a
+--- sweep up from the top of any page closes it.
+local drag = { x = 0, y = 0, turned = false, axis = nil, done = false }
+theme.drag_begin = function() drag.x, drag.y, drag.turned, drag.axis, drag.done = 0, 0, false, nil, false end
+theme.drag_end = function() drag.axis = nil end
+theme.drag = function(dx, dy)
+  local name = island.page:get()
+  local entry = page_nodes[name]
+  if not entry or drag.done then return end
+  drag.x, drag.y = drag.x + dx, drag.y + dy
+  if not drag.axis and (math.abs(drag.x) > S(8) or math.abs(drag.y) > S(8)) then
+    drag.axis = math.abs(drag.x) > math.abs(drag.y) and "x" or "y"
+  end
+  if drag.axis == "y" then
+    local most = math.max(0, (entry.content.layout_height or 0) - entry.room())
+    local at_top = entry.scroll:get() <= 0
+    if PHONE and at_top and drag.y > S(70) then
+      drag.done = true
+      if name == "shade" then island.open("main") end
+      return
+    end
+    if PHONE and at_top and drag.y < -S(70) and most == 0 then
+      drag.done = true
+      island.close()
+      return
+    end
+    entry.scroll:set(math.max(0, math.min(most, entry.scroll:get() - dy)))
+  elseif drag.axis == "x" and not drag.turned and math.abs(drag.x) > S(60) then
+    drag.turned = true
+    local tiles = require("tiles")
+    if tiles.turn then tiles.turn(drag.x < 0 and 1 or -1) end
+  end
+end
 
 function island.open(name, going_back)
   if not island.pages[name] then return false end

@@ -110,7 +110,10 @@ tiles.all = {
     page = "wifi",
   },
   bluetooth = {
-    icon = "󰂯",
+    icon = function()
+      if not state.bluetooth.powered then return "󰂲" end
+      return state.bluetooth.connected ~= "" and "󰂱" or "󰂯"
+    end,
     title = "Bluetooth",
     subtitle = function()
       if not state.bluetooth.powered then return "Off" end
@@ -142,7 +145,7 @@ tiles.all = {
     available = function() return own.mic_present end,
   },
   airplane = {
-    icon = "󰀝",
+    icon = function() return own.airplane and "󰀝" or "󰀞" end,
     title = "Airplane",
     subtitle = function() return own.airplane and "On" or "Off" end,
     on = function() return own.airplane end,
@@ -150,7 +153,7 @@ tiles.all = {
     tint = C.warn_tint or C.on_tint, icon_color = C.warn,
   },
   hotspot = {
-    icon = "󰑩",
+    icon = function() return own.hotspot and "󰑩" or "󰑪" end,
     title = "Hotspot",
     subtitle = function() return own.hotspot and "Sharing" or "Off" end,
     on = function() return own.hotspot end,
@@ -160,7 +163,7 @@ tiles.all = {
     page = "wifi",
   },
   vpn = {
-    icon = "󰦝",
+    icon = function() return state.network.vpn and "󰦝" or "󰦞" end,
     title = function() return state.network.vpn and state.network.vpn_name ~= "" and state.network.vpn_name or "VPN" end,
     subtitle = function() return state.network.vpn and "Connected" or "Off" end,
     on = function() return state.network.vpn end,
@@ -181,7 +184,7 @@ tiles.all = {
     page = "notif",
   },
   caffeine = {
-    icon = "󰅶",
+    icon = function() return own.caffeine and "󰅶" or "󰛊" end,
     title = "Coffee mode",
     subtitle = function() return own.caffeine and "Screen stays on" or "Off" end,
     on = function() return own.caffeine end,
@@ -189,7 +192,7 @@ tiles.all = {
     tint = C.coffee_tint, icon_color = C.coffee, edge = C.coffee:alpha(0.6),
   },
   nightlight = {
-    icon = "󰖔",
+    icon = function() return own.nightlight and "󰖔" or "󰖙" end,
     title = "Night light",
     subtitle = function() return own.nightlight and "On" or "Off" end,
     on = function() return own.nightlight end,
@@ -350,11 +353,12 @@ function tiles.build(island, width, slots)
   local dots = {}
   for index = 1, #pages do
     dots[index] = ui.Item {
-      width = S(16), height = S(16),
+      width = S(24), height = S(16),
       ui.Rect {
-        width = S(6), height = S(6), radius = S(3), anchors = { center_in = true },
+        height = S(6), radius = S(3), anchors = { center_in = true },
+        width = function() return page:get() == index - 1 and S(18) or S(6) end,
         color = function() return page:get() == index - 1 and C.on or C.faint end,
-        behavior = { color = theme.motion.fade },
+        behavior = { color = theme.motion.fade, width = theme.motion.move },
       },
       ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = function() page:set(index - 1) end },
     }

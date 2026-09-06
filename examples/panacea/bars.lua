@@ -151,7 +151,7 @@ function bars.build(values)
     anchors = { fill = true },
     cursor = values.seek and "pointer" or "default",
     on_pressed = function(_, _, local_x) if values.seek then values.seek(local_x / width) end end,
-    on_dragged = function(_, _, local_x) if values.seek then values.seek(local_x / width) end end,
+    on_dragged = function(_, _, _, _, local_x) if values.seek then values.seek(local_x / width) end end,
   }
   return ui.Item { width = width, height = height, table.unpack(nodes) }
 end

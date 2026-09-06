@@ -65,7 +65,7 @@ end
 
 -- ------------------------------------------------------------------ pages --
 
-for _, name in ipairs { "main", "power", "battery", "record", "wifi", "bt", "notif", "clip",
+for _, name in ipairs { "main", "shade", "power", "battery", "record", "wifi", "bt", "notif", "clip",
   "launcher", "cal", "audio", "settings", "shortcuts", "overview", "media", "wallpapers", "weather" } do
   local ok, page = pcall(require, "pages." .. name)
   if ok and type(page) == "table" then island.register(name, page) end
