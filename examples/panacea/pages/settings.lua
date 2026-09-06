@@ -19,7 +19,7 @@ page.icon = "󰒓"
 page.section = morf.signal("panacea.settings.section", "island")
 page.saved = morf.signal("panacea.settings.saved", "")
 
-function page.width() return S(config.panelW * 1.4) end
+function page.width() return theme.panel_w(1.4) end
 
 local SECTIONS = {
   { id = "island", glyph = "󰍹", label = "Bar & Island" },

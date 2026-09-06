@@ -22,6 +22,7 @@ local config = require("config")
 local theme = require("theme")
 local system = require("system")
 local hypr = require("hypr")
+local bar = require("bar_glyphs")
 
 local S = theme.S
 local C = theme.color
@@ -31,8 +32,10 @@ local state = system.state
 local island = {}
 
 local PILL_H = S(config.pillH)
-local FLARE = S(config.notchFlare)
+local PHONE = theme.phone
+local FLARE = PHONE and 0 or S(config.notchFlare)
 local RADIUS = S(config.cornerR)
+local NOTCH = config.notchMode and not PHONE
 local PAD = S(16)
 -- Where a page's content starts: under the title and subtitle.
 island.HEADER_H = S(50)
@@ -65,7 +68,7 @@ end
 local function page_width(name)
   local page = island.pages[name]
   if page and page.width then return page.width() end
-  return S(config.panelW)
+  return theme.panel_w()
 end
 
 --- A page's title or subtitle right now: a string, or a function of none.
@@ -81,11 +84,7 @@ end
 local clock_format = config.clock12 and "%I:%M" or "%H:%M"
 if config.clockSeconds then clock_format = clock_format .. ":%S" end
 
-local function battery_glyph()
-  if state.battery.charging then return "󱐋" end
-  if state.battery.percent <= 15 then return "󰁺" end
-  return "󰁹"
-end
+local battery_glyph = bar.battery_glyph
 
 local function battery_color()
   if state.battery.charging then return C.ok end
@@ -113,10 +112,11 @@ local function capsule(width, height, content)
     color = C.bg,
     width = width,
     height = height,
-    top_left_radius = config.notchMode and 0 or RADIUS,
-    top_right_radius = config.notchMode and 0 or RADIUS,
-    bottom_left_radius = RADIUS,
-    bottom_right_radius = RADIUS,
+    top_left_radius = (NOTCH or PHONE) and 0 or RADIUS,
+    top_right_radius = (NOTCH or PHONE) and 0 or RADIUS,
+    -- A phone's status bar is square; the sheet under it is not.
+    bottom_left_radius = function() return (PHONE and island.page:get() == "") and 0 or RADIUS end,
+    bottom_right_radius = function() return (PHONE and island.page:get() == "") and 0 or RADIUS end,
     behavior = config.bench and {} or { width = motion.move, height = motion.move },
     -- Clipped to the body, so a page still growing does not show past the
     -- capsule. A square clip: a rounded one would render through an
@@ -128,7 +128,7 @@ local function capsule(width, height, content)
     },
   }
   local flares = {}
-  if config.notchMode then
+  if NOTCH then
     flares[1] = ui.Image {
       source = core.shell_path("assets/flare-left.svg"),
       width = FLARE, height = FLARE,
@@ -278,7 +278,7 @@ function island.build()
   -- at the largest size it ever takes, and scaled down from there: a scale
   -- is a transform the GPU applies for nothing, where a font size that
   -- moves re-shapes and re-rasterises the letters every frame.
-  local day, clock, ws, layout_text, glyph, battery_text
+  local day, clock, ws, layout_text, glyph, battery_text, status_row
   local ICON = S(config.iconSize - 1)
   local GAP = S(12)
   local BASE = {
@@ -287,6 +287,7 @@ function island.build()
     ws = config.fontSize,
     layout = config.fontSize,
     battery = config.fontSize + 4,
+    status = 1,
   }
   -- Flipped once every piece exists, so every binding that read a piece
   -- through the guard runs again and takes it up.
@@ -346,16 +347,24 @@ function island.build()
     if not ready:get() or not node then return PILL_H end
     return (node.layout_height or PILL_H) * scale_of(name)
   end
+  -- The status icons take room only while one of them shows.
+  local function status_w()
+    local width = w(status_row, "status")
+    return width > 0 and width + GAP or 0
+  end
   local function strip_total()
     return w(day, "day") + GAP + w(clock, "clock") + GAP + w(ws, "ws") + GAP
-      + w(layout_text, "layout") + GAP + ICON + S(4) + w(battery_text, "battery")
+      + w(layout_text, "layout") + GAP + status_w() + ICON + S(4) + w(battery_text, "battery")
   end
   local function island_width()
+    if PHONE then return theme.WIDTH end
     local name = island.page:get()
     if name == "" then return math.max(S(config.collapsedW), strip_total() + PAD * 3) end
     return page_width(name)
   end
-  local function start_x() return (island_width() - strip_total()) / 2 end
+  -- Centred in the pill; from the left edge on a phone, where the battery
+  -- keeps the right edge like a status bar.
+  local function start_x() return PHONE and PAD or (island_width() - strip_total()) / 2 end
   local function centred_y(node, name) return (PILL_H - h(node, name)) / 2 end
   local function title_x() return PAD + (has_icon() and (ICON + S(8)) or 0) end
   local function title_h() return S((big() and 26 or config.fontSize + 1) * 1.25) end
@@ -369,13 +378,30 @@ function island.build()
     return clock_x() + w(clock, "clock") + GAP
   end
   local function layout_x() return open() and gathered_x() or ws_x() + w(ws, "ws") + GAP end
-  local function glyph_x()
-    if open() then return slot_x("battery_glyph") or (has_icon() and PAD or gathered_x()) end
-    return layout_x() + w(layout_text, "layout") + GAP
-  end
-  local function battery_x()
-    if open() then return slot_x("battery_text") or gathered_x() end
-    return glyph_x() + ICON + S(4)
+  local status_x, glyph_x, battery_x
+  if PHONE then
+    battery_x = function()
+      if open() then return slot_x("battery_text") or gathered_x() end
+      return island_width() - PAD - w(battery_text, "battery")
+    end
+    glyph_x = function()
+      if open() then return slot_x("battery_glyph") or (has_icon() and PAD or gathered_x()) end
+      return battery_x() - S(4) - ICON
+    end
+    status_x = function()
+      if open() then return gathered_x() end
+      return glyph_x() - status_w()
+    end
+  else
+    status_x = function() return open() and gathered_x() or layout_x() + w(layout_text, "layout") + GAP end
+    glyph_x = function()
+      if open() then return slot_x("battery_glyph") or (has_icon() and PAD or gathered_x()) end
+      return status_x() + status_w()
+    end
+    battery_x = function()
+      if open() then return slot_x("battery_text") or gathered_x() end
+      return glyph_x() + ICON + S(4)
+    end
   end
   local function shown_when_kept(name)
     return function()
@@ -442,6 +468,16 @@ function island.build()
     end,
     transform_origin_x = 0, transform_origin_y = 0,
     behavior = { x = spring, y = spring, opacity = motion.fade, scale = spring },
+  })
+  -- The phone's status icons, between the layout and the battery; they
+  -- gather into the title with the rest when a page opens.
+  status_row = require("status").build(ICON - S(2), {
+    transform_origin_x = 0, transform_origin_y = 0,
+    x = status_x,
+    y = function() return open() and gathered_y() or centred_y(status_row, "status") end,
+    scale = function() return scale_of("status") end,
+    opacity = function() return open() and 0 or 1 end,
+    behavior = { x = spring, y = spring, scale = spring, opacity = motion.fade },
   })
   battery_text, battery_to = morpher {
     key = "battery", text = strip_words().battery, size = BASE.battery,
@@ -544,7 +580,7 @@ function island.build()
       on_exited = function() hovering = false hover_clock:restart() end,
     },
     ui.Item { anchors = { fill = true }, table.unpack(pages) },
-    recording, day, clock, ws, layout_text, glyph, battery_text,
+    recording, day, clock, ws, layout_text, status_row, glyph, battery_text,
     back,
   }
   body = capsule(island_width, height, content)
@@ -553,7 +589,7 @@ function island.build()
     direction = "row",
     justify = "center",
     align = "start",
-    anchors = { left = true, right = true, top = true, top_margin = config.notchMode and 0 or S(config.islandGap) },
+    anchors = { left = true, right = true, top = true, top_margin = (NOTCH or PHONE) and 0 or S(config.islandGap) },
     body,
   }
 end

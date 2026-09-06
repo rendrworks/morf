@@ -88,7 +88,7 @@ function page.on_key(keysym)
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local CELL = math.floor((W - S(6) * 6) / 7)
   local function cell(row)
     if row.day == 0 then return ui.Item { width = CELL, height = S(34) } end

@@ -89,7 +89,7 @@ page.subtitle = function()
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local function row(label, node)
     return ui.Row {
       gap = S(16), align = "center",

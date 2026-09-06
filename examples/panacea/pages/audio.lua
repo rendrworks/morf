@@ -89,7 +89,7 @@ local function set_stream(index, level)
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local function slider_row(values)
     local glyph, title, subtitle = values.glyph, values.title, values.subtitle
     return theme.card {

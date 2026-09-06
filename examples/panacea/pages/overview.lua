@@ -25,7 +25,7 @@ end
 page.tiles = morf.list_model({})
 local COLUMNS = 4
 
-function page.width() return S(config.panelW * 1.5) end
+function page.width() return theme.panel_w(1.5) end
 
 --- Reads the windows and groups them by workspace.
 function page.refresh()

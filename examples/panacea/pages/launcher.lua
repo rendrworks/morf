@@ -281,7 +281,7 @@ function page.on_open()
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local function row(item)
     return ui.Item {
       width = W, height = ROW_H,

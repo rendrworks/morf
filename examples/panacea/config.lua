@@ -63,6 +63,16 @@ local config = {
   featAudio = true,
   featPowermenu = true,
   featLock = true,
+  -- Quick settings: which tiles, in which order, how many to a row. Any of
+  -- wifi, bluetooth, sound, mic, airplane, hotspot, vpn, dnd, caffeine,
+  -- nightlight, record, screenshot, battery, powersaver.
+  -- Airplane and hotspot exist but are not here by default: one click on
+  -- either changes the machine's radios.
+  tiles = { "wifi", "bluetooth", "dnd", "caffeine", "vpn", "mic", "nightlight", "powersaver", "record" },
+  tileColumns = 2,
+  -- The strip's status icons, left to right: any of cellular, vpn, wifi,
+  -- bluetooth, dnd, mic, volume, caffeine, airplane, hotspot.
+  statusIcons = { "caffeine", "dnd", "mic", "vpn", "cellular", "wifi", "bluetooth" },
   -- Where recordings go.
   recordDir = "~/Videos",
   recordFps = 60,

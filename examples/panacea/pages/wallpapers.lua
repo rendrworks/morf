@@ -34,7 +34,7 @@ page.subtitle = function()
   return state.name .. "  ·  " .. state.index .. " / " .. state.count
 end
 
-function page.width() return S(config.panelW * 1.6) end
+function page.width() return theme.panel_w(1.6) end
 
 local function name_of(path)
   return (path:match("([^/]+)$") or path):gsub("%.%w+$", "")

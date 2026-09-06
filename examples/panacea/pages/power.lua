@@ -66,7 +66,7 @@ page.subtitle = function()
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local cell = math.floor((W - S(8) * (#ACTIONS - 1)) / #ACTIONS)
   local buttons = {}
   for index, action in ipairs(ACTIONS) do

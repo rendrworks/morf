@@ -44,12 +44,12 @@ local C = theme.color
 -- before the page runs back. The island is centred at the top edge either
 -- way, so nothing on screen moves when the surface does. Overlay mode
 -- floats over the windows; otherwise the pill's strip is reserved.
-local SURFACE_W = math.min(theme.WIDTH, S(config.panelW * 1.6) + S(80))
+local SURFACE_W = theme.phone and theme.WIDTH or math.min(theme.WIDTH, S(config.panelW * 1.6) + S(80))
 local SURFACE_H = math.min(theme.HEIGHT, S(config.expandedH) + S(160))
 morf.surface.namespace = "panacea"
 morf.surface.width = SURFACE_W
 morf.surface.height = SURFACE_H
-morf.surface.anchors = { top = true }
+morf.surface.anchors = theme.phone and { top = true, left = true, right = true } or { top = true }
 morf.surface.layer = "top"
 morf.surface.keyboard_focus = "none"
 morf.surface.exclusive_zone = -1
@@ -86,6 +86,8 @@ end
 -- is the one that opens pages.
 local own_output = ((morf.screens or {})[1] or {}).name or ""
 local function focused()
+  -- One output -- a phone, a nested compositor -- is always the one.
+  if #(morf.screens or {}) <= 1 then return true end
   return hypr.state.monitor == "" or hypr.state.monitor == own_output
 end
 

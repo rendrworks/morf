@@ -19,7 +19,7 @@ page.subtitle = function()
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local function row(entry)
     local summary = theme.text { text = entry.summary ~= "" and entry.summary or entry.app, font_weight = 700,
       size = config.fontSize - 1, width = W - S(110), elide = "right" }

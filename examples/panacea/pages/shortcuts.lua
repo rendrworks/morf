@@ -34,7 +34,7 @@ local NAMES = {
   { "bind_exitHypr", "Exit Hyprland" },
 }
 
-function page.width() return S(config.panelW * 1.3) end
+function page.width() return theme.panel_w(1.3) end
 
 function page.build(island)
   local W = page.width() - S(32)

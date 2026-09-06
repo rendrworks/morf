@@ -33,6 +33,24 @@ local S = theme.S
 theme.WIDTH = tonumber(screen.width) or 1920
 theme.HEIGHT = screen_height
 
+-- Phone mode: a screen too narrow for the island to float in the middle
+-- of. The strip becomes a status bar across the top, the clock at its
+-- left and the icons at its right, and a page a sheet the width of the
+-- screen under it.
+theme.phone = theme.WIDTH < S(config.panelW) + S(160)
+
+--- A page's width: the panel's, times `factor`, but never wider than the
+--- screen; the whole screen on a phone.
+function theme.panel_w(factor)
+  if theme.phone then return theme.WIDTH end
+  return math.min(S(config.panelW * (factor or 1)), theme.WIDTH - S(16))
+end
+
+--- The room inside a page, with its padding taken off.
+function theme.page_w(factor)
+  return theme.panel_w(factor) - S(32)
+end
+
 -- ----------------------------------------------------------------- colours --
 
 -- lule's palette, when it has written one: the wallpaper's colours, kept

@@ -31,7 +31,7 @@ function page.on_open()
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   if not w then
     return ui.Column {
       gap = S(8),

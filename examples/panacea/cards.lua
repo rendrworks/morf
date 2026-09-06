@@ -12,7 +12,7 @@ local C = theme.color
 
 local cards = {}
 
-local WIDTH = S(config.panelW * 0.8)
+local WIDTH = theme.phone and (theme.WIDTH - S(24)) or S(config.panelW * 0.8)
 
 local function card(row)
   local summary = theme.text { text = row.summary ~= "" and row.summary or row.app, font_weight = 700,

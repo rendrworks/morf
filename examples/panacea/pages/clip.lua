@@ -116,7 +116,7 @@ function page.on_key(keysym, text) return query.handle(keysym, text) end
 function page.on_open() query.clear() load() end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local function row(item)
     return ui.Item {
       width = W, height = ROW_H,

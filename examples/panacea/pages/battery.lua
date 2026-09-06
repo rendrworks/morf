@@ -91,7 +91,7 @@ page.subtitle = function()
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local third = math.floor((W - S(8) * 2) / 3)
   local function profile_button(profile)
     return theme.button {

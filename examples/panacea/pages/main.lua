@@ -1,6 +1,6 @@
--- Quick settings: the clock and date, Wi-Fi, Bluetooth and sound tiles,
--- the recorder and the battery, coffee mode, and the small buttons for the
--- lock, notifications and settings.
+-- Quick settings: the clock and date, now playing, the tile grid from
+-- `tiles.lua` in the settings' order, and the small buttons for the lock,
+-- notifications and settings.
 
 local morf = require("morf")
 local ui = require("morf.ui")
@@ -20,82 +20,15 @@ local page = {}
 page.big = true
 page.subtitle = function() return theme.clock:format("%A, " .. config.clockDateFmt) end
 
-local W = S(config.panelW) - S(16) * 2
+local W = theme.page_w()
 local GAP = S(8)
-local TILE_H = S(58)
-
--- Coffee mode: the idle inhibitor. `morf.idle`? No: a `systemd-inhibit`
--- child that lives while the switch is on.
-page.coffee = morf.signal("panacea.coffee", false)
-local coffee_process = nil
-
-local function set_coffee(on)
-  page.coffee:set(on)
-  if on and not coffee_process then
-    local io = require("morf.io")
-    local ok, process = pcall(io.process_view, {
-      command = { "systemd-inhibit", "--what=idle", "--who=panacea", "--why=Coffee mode", "sleep", "infinity" },
-      environment = { LD_LIBRARY_PATH = "" },
-    })
-    if ok then
-      pcall(process.start, process)
-      coffee_process = process
-    end
-  elseif not on and coffee_process then
-    pcall(coffee_process.kill, coffee_process)
-    coffee_process = nil
-  end
-end
 
 page.slots = {}
 
---- A tile: a round icon, a title, a line under it, a tint when on. With
---- `slot`, the icon and the title are left empty for a piece of the strip
---- to land on, and the page says where.
-local function tile(values)
-  local width = values.width
-  local on = values.on or function() return false end
-  local tint = values.tint or C.on_tint
-  local icon_on = values.icon_color or C.on
-  return theme.button {
-    width = width, height = TILE_H,
-    color = function() return on() and tint or C.card end,
-    hover_color = function() return on() and tint or C.card_hover end,
-    border_width = 1,
-    border_color = function() return on() and (values.edge or C.on_edge) or C.edge end,
-    on_click = values.on_click,
-    ui.Row {
-      gap = S(12), align = "center", height = TILE_H,
-      anchors = { left = true, left_margin = S(10) },
-      ui.Rect {
-        width = S(38), height = S(38), radius = S(19),
-        color = function() return on() and icon_on or C.card_hover end,
-        behavior = { color = theme.motion.hover },
-        values.slot and (function()
-          local icon_slot = ui.Item { width = S(config.iconSize), height = S(config.iconSize), anchors = { center_in = true } }
-          page.slots[values.slot .. "_glyph"] = { node = icon_slot, size = config.iconSize }
-          return icon_slot
-        end)() or theme.icon { text = values.icon, size = config.iconSize, anchors = { center_in = true },
-          color = function() return on() and C.fg or C.muted end },
-      },
-      ui.Column {
-        gap = S(2),
-        values.slot and (function()
-          local title_slot = ui.Item { width = width - S(72), height = S((config.fontSize - 1) * 1.3) }
-          page.slots[values.slot .. "_text"] = { node = title_slot, size = config.fontSize - 1, weight = 700 }
-          return title_slot
-        end)() or theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1,
-          width = width - S(72), elide = "right" },
-        theme.text { text = values.subtitle, size = config.fontSize - 4, color = C.muted,
-          width = width - S(72), elide = "right" },
-      },
-    },
-  }
-end
-
 local function small_button(glyph, on_click, lit)
   return theme.button {
-    width = S(44), height = S(44), radius = 12,
+    width = S(50), height = S(50), radius = 25,
+    border_width = 1, border_color = function() return lit and lit() and C.on_edge or C.edge end,
     color = function() return lit and lit() and C.on_tint or C.card end,
     on_click = on_click,
     theme.icon { text = glyph, size = config.iconSize - 2, anchors = { center_in = true },
@@ -108,10 +41,58 @@ function page.on_open()
 end
 
 function page.build(island)
-  local third = math.floor((W - GAP * 2) / 3)
-  local half = math.floor((W - GAP) / 2)
   local notify = require("notify")
+  local tiles = require("tiles")
+  local bar = require("bar_glyphs")
   local m = media.state
+  local BTN = S(50)
+
+  -- The system row, as GNOME lays it out: the battery at the left -- the
+  -- strip's own glyph and figure land on it -- and the actions at the
+  -- right: a screenshot, the notifications, the settings, the lock, power.
+  local actions = ui.Row {
+    gap = GAP, align = "center",
+    small_button("󰹑", function() tiles.all.screenshot.toggle() end),
+    small_button(function() return notify.silent:get() and "󰂛" or "󰂚" end, function() island.open("notif") end,
+      function() return notify.count:get() > 0 end),
+    small_button("󰒓", function() island.open("settings") end),
+    small_button("󰌾", function() island.lock() end),
+    small_button("󰐥", function() island.open("power") end),
+  }
+  local battery_w = W - (BTN + GAP) * 5
+  local system_row = ui.Item {
+    width = W, height = BTN,
+    tiles.pill(tiles.all.battery, battery_w, island, page.slots),
+    ui.Item { anchors = { right = true, top = true }, actions },
+  }
+
+  -- Sliders, the volume and the brightness, each an icon, a track and a
+  -- figure: what a phone puts first.
+  local function slider_row(glyph, on_glyph, fraction, set, present)
+    return ui.Row {
+      gap = S(12), align = "center", height = S(28),
+      visible = present,
+      ui.Item { width = S(6), height = 1 },
+      ui.Item {
+        width = S(24), height = S(24),
+        theme.icon { text = glyph, size = config.iconSize, anchors = { center_in = true } },
+        on_glyph and ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = on_glyph } or nil,
+      },
+      theme.slider {
+        width = W - S(6) - S(24) - S(12) * 3 - S(44), height = S(24), track = S(10), knob = S(16), color = C.on,
+        fraction = fraction, set = set,
+      },
+      theme.text { text = function() return math.floor(fraction() * 100 + 0.5) .. "%" end,
+        size = config.fontSize - 3, color = C.muted, width = S(44), horizontal_alignment = "right" },
+    }
+  end
+  local sliders = ui.Flex {
+    direction = "column", gap = S(6), width = W,
+    slider_row(bar.volume_glyph, system.toggle_mute, function() return state.volume.level end, system.set_volume,
+      function() return state.volume.available end),
+    slider_row("󰃠", nil, function() return state.brightness.level end, system.set_brightness,
+      function() return state.brightness.present end),
+  }
 
   -- Now playing, when something is: the card opens the player, and its
   -- equaliser is the seek bar.
@@ -158,134 +139,15 @@ function page.build(island)
     },
   }
 
-  local bar = require("bar_glyphs")
-  local tiles1 = ui.Row {
-    gap = GAP,
-    tile {
-      width = third,
-      icon = bar.network_glyph,
-      title = function()
-        if state.network.kind == "none" then return "Wi-Fi" end
-        return state.network.name ~= "" and state.network.name or "Wi-Fi"
-      end,
-      subtitle = function()
-        if state.network.kind == "wifi" then return state.network.strength .. "%" end
-        if state.network.kind == "wired" then return "Wired" end
-        return "Off"
-      end,
-      on = function() return state.network.kind ~= "none" end,
-      on_click = function() island.open("wifi") end,
-    },
-    tile {
-      width = third,
-      icon = "󰂯",
-      title = "Bluetooth",
-      subtitle = function()
-        if not state.bluetooth.powered then return "Off" end
-        if state.bluetooth.connected ~= "" then return state.bluetooth.connected end
-        return "On"
-      end,
-      on = function() return state.bluetooth.powered end,
-      on_click = function() island.open("bt") end,
-    },
-    theme.card {
-      width = third, height = TILE_H,
-      border_width = 1, border_color = C.edge,
-      ui.Column {
-        gap = S(6),
-        anchors = { left = true, top = true, margins = S(10) },
-        ui.Item {
-          width = third - S(20), height = S(16),
-          theme.text { text = "Sound", font_weight = 700, size = config.fontSize - 1, anchors = { left = true } },
-          theme.text { text = function() return state.volume.muted and "muted" or "" end, size = config.fontSize - 5,
-            color = C.muted, anchors = { right = true } },
-        },
-        ui.Row {
-          gap = S(6), align = "center",
-          ui.Item {
-            width = S(18), height = S(18),
-            theme.icon { text = function() return bar.volume_glyph() end, size = config.iconSize - 4, anchors = { center_in = true } },
-            ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = system.toggle_mute },
-          },
-          theme.slider {
-            width = third - S(50), height = S(18), track = S(12), knob = S(12), color = C.fg,
-            fraction = function() return state.volume.level end,
-            set = system.set_volume,
-          },
-        },
-      },
-      ui.MouseArea {
-        anchors = { fill = true }, z = -1, cursor = "pointer",
-        on_clicked = function() island.open("audio") end,
-      },
-    },
-  }
-
-  local record = require("pages.record")
-  local tiles2 = ui.Row {
-    gap = GAP,
-    tile {
-      width = half,
-      icon = function() return record.state.running and "󰓛" or "󰑊" end,
-      icon_color = C.crit,
-      tint = C.crit_tint, edge = C.crit:alpha(0.5),
-      title = function()
-        if record.state.running then return "Recording · " .. record.state.elapsed end
-        return "Screen recording"
-      end,
-      subtitle = function() return record.state.running and record.state.file or "Ready to record" end,
-      on = function() return record.state.running end,
-      on_click = function() island.open("record") end,
-    },
-    tile {
-      width = half,
-      slot = "battery",
-      icon_color = C.ok,
-      tint = C.ok_tint, edge = C.ok:alpha(0.5),
-      title = function() return state.battery.present and (state.battery.percent .. "%") or "Power" end,
-      subtitle = function()
-        if state.battery.charging then return "Charging" end
-        local profile = require("pages.battery").profile:get()
-        return profile ~= "" and profile or (state.battery.plugged and "Plugged in" or "On battery")
-      end,
-      on = function() return state.battery.charging end,
-      on_click = function() island.open("battery") end,
-    },
-  }
-
-  local row3 = ui.Row {
-    gap = GAP,
-    theme.button {
-      width = W - (S(44) + GAP) * 3, height = S(44),
-      color = function() return page.coffee:get() and C.coffee_tint or C.card end,
-      hover_color = function() return page.coffee:get() and C.coffee_tint or C.card_hover end,
-      border_width = 1,
-      border_color = function() return page.coffee:get() and C.coffee:alpha(0.6) or C.edge end,
-      on_click = function() set_coffee(not page.coffee:get()) end,
-      ui.Row {
-        gap = S(10), align = "center", height = S(44),
-        anchors = { left = true, left_margin = S(12) },
-        theme.icon { text = "󰅶", size = config.iconSize - 2, color = function() return page.coffee:get() and C.coffee or C.muted end },
-        theme.text { text = "Coffee mode", font_weight = 700, size = config.fontSize - 1 },
-      },
-      ui.Item {
-        anchors = { right = true, top = true, right_margin = S(10), top_margin = S(10) },
-        theme.toggle(function() return page.coffee:get() end, set_coffee),
-      },
-    },
-    small_button("󰌾", function() island.lock() end),
-    small_button(function() return notify.silent:get() and "󰂛" or "󰂚" end, function() island.open("notif") end,
-      function() return notify.count:get() > 0 end),
-    small_button("󰒓", function() island.open("settings") end),
-  }
-
   local tray = require("tray")
-  return ui.Column {
-    gap = S(10),
+  return ui.Flex {
+    direction = "column",
+    width = W,
+    gap = S(12),
+    system_row,
+    sliders,
+    tiles.build(island, W, page.slots),
     player,
-    tiles1,
-    tiles2,
-    row3,
     tray.build(S(config.iconSize + 2)),
   }
 end

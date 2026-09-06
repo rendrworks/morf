@@ -71,7 +71,7 @@ local function glyph_for(icon)
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local ROW = S(52)
   local function device_row(row)
     return theme.button {

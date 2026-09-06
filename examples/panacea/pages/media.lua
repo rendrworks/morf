@@ -44,7 +44,7 @@ local function transport(glyph, size, on_click, big)
 end
 
 function page.build(island)
-  local W = S(config.panelW) - S(32)
+  local W = theme.page_w()
   local ART = S(120)
   return ui.Column {
     gap = S(14),

@@ -19,7 +19,7 @@ EXAMPLE=examples/panacea/init.lua oslo make run
 
 | Page | Verb | What it does |
 |---|---|---|
-| Quick settings | `controls` | clock and date, Wi-Fi, Bluetooth and sound tiles, now playing, the recorder, the battery, coffee mode, lock, notifications, settings |
+| Quick settings | `controls` | the clock and date, the battery and the system buttons, the volume and brightness sliders, the tile grid, now playing, the tray |
 | Networks | `wifi` | scan, connect, forget; the password is typed into the page |
 | Bluetooth | `bluetooth` | the adapter's switch, scanning, connect, disconnect, forget |
 | Notifications | `notifications` | the history, do not disturb, clear; fresh ones float under the pill as cards |
@@ -42,6 +42,34 @@ the original; `dnd`, `recordToggle`, `smartClose` and `close` are there
 too. Every page closes with Escape or a click outside; a click on the
 pill opens quick settings. `pillHover` in the settings makes a hover open
 it too, as the original does; it is off by default.
+
+## Tiles and status icons
+
+The quick settings tiles are pills, as GNOME lays them out: an icon and a
+name, tinted with the accent while on. The body of a pill is its switch;
+a pill with a page behind it -- Wi-Fi, Bluetooth, the recorder, do not
+disturb -- has a chevron at its right end that opens it, split off by a
+hairline, so a tap never opens what a tap was meant to switch. A right
+click opens the page too. `tiles` in the settings picks and orders them
+from `tiles.lua`: `wifi`, `bluetooth`, `sound`, `mic`, `airplane`,
+`hotspot`, `vpn`, `dnd`, `caffeine`, `nightlight`, `record`,
+`screenshot`, `battery`, `powersaver`; `tileColumns` says how many to a
+row. A tile whose tool is not installed -- no night light, no modem --
+stays away and the rest flow up. Airplane and hotspot are not in the
+default list: one tap on either changes the machine's radios.
+
+The strip's right end shows what a phone's status bar shows, from
+`status.lua`, in the order of `statusIcons`: `cellular` (the modem's
+signal and generation, from ModemManager, only where there is a modem),
+`vpn`, `wifi`, `bluetooth`, `dnd`, `mic`, `volume`, `caffeine`,
+`airplane`, `hotspot`. Each appears only while it has something to say.
+The battery is the strip's own piece, and it morphs.
+
+On a screen narrower than the panel -- a phone, or a window in cage --
+the island is a status bar across the top, the clock at its left and the
+icons at its right, and a page a sheet the width of the screen under it.
+`cage -- morf examples/panacea/init.lua` in a window the size of a phone
+is the way to look at it.
 
 ## Colours and type
 
