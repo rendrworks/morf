@@ -108,14 +108,15 @@ does now.) The island's size is a binding on its content's laid-out
 height, with a spring on it, so every page is the same capsule at a
 different size.
 
-The surface is the island's size while anything moves, not the screen's.
-Every frame is cleared, composed and blended by the compositor at the
-surface's size, and a fullscreen surface made a small island cost a whole
-4K frame on both sides of the protocol. Once a page is open and still, the
-surface grows to the screen so a click anywhere else closes it, and
-shrinks again the moment the page starts to close; the island is centred
-at the top edge either way, so nothing on screen moves when the surface
-does.
+The surface is the island's size, not the screen's. Every frame is
+cleared, composed and blended by the compositor at the surface's size, and
+a fullscreen surface made a small island cost a whole 4K frame on both
+sides of the protocol. A click anywhere else is heard through
+`morf.surface.backdrop`: a blank surface under the island that covers the
+output, never painted, whose input region wakes with the page and whose
+click arrives as `morf.on_backdrop_click`. (A compositor that hands the
+island every press while it holds the keyboard, as Hyprland does, delivers
+the same click as a press on nothing, which counts too.)
 
 Everything that polls a little -- the reveal of a node, a settings section
 -- shares one ticker. A timer is a thread that wakes every output's loop

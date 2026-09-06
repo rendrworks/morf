@@ -233,6 +233,15 @@ pub(crate) fn handle_surface_event(
                 .hit_test(&runtime.scene(), x, y)
                 .map_err(|error| error.to_string())?;
             let hit = hit.filter(|hit| runtime.accepts_pointer_button(hit.node, button));
+            // A compositor that has given this surface the keyboard may send
+            // it every press, wherever the pointer is; one that lands on
+            // nothing is the click beside the shell the backdrop exists for.
+            if hit.is_none()
+                && surface == SurfaceRole::Layer(PRIMARY_LAYER)
+                && runtime.layer_surface_config().backdrop == Some(true)
+            {
+                repaint |= runtime.dispatch_backdrop_click();
+            }
             state.pressed = hit.map(|hit| (surface, hit, x, y, false));
             if let Some(target) = hit.and_then(|hit| runtime.key_target_for_node(hit.node)) {
                 state.focused.insert(surface, target);

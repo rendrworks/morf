@@ -1,4 +1,5 @@
 mod arguments;
+mod backdrop;
 mod colors;
 use morf_scene::NodeHandle;
 
