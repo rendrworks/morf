@@ -8,6 +8,7 @@
 use crate::contours::{CONTOUR_POINTS, Contour};
 use crate::flatten::Segment;
 
+#[derive(Clone)]
 pub struct Paired {
     from: Vec<(f32, f32)>,
     to: Vec<(f32, f32)>,

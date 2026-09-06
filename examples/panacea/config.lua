@@ -8,7 +8,8 @@ local io = require("morf.io")
 
 local config = {
   -- Type.
-  fontFam = "JetBrainsMono Nerd Font",
+  -- The face for words; icons come from a Nerd Font whatever this is.
+  fontFam = "Goku",
   fontSize = 15,
   iconSize = 17,
   -- Colours: the text, the accent, and how far the quiet text is dimmed.

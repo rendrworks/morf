@@ -29,12 +29,18 @@ pub(crate) fn paint(
         cache,
     );
     if let Some(started) = started {
-        eprintln!("frame {:.2} ms", started.elapsed().as_secs_f64() * 1000.0);
+        static FIRST: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let since = FIRST.get_or_init(std::time::Instant::now).elapsed();
+        eprintln!(
+            "frame at {:.0} ms took {:.2} ms",
+            since.as_secs_f64() * 1000.0,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
     }
     painted
 }
 
-fn frame_log_wanted() -> bool {
+pub(crate) fn frame_log_wanted() -> bool {
     static WANTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *WANTED
         .get_or_init(|| std::env::var_os("MORF_FRAME_LOG").is_some_and(|value| !value.is_empty()))

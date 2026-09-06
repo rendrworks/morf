@@ -141,11 +141,20 @@ pub(crate) fn create_surface_state(
         .find(wgpu::TextureFormat::is_srgb)
         .or_else(|| capabilities.formats.first().copied())
         .ok_or_else(|| GpuError("GPU surface exposes no texture format".to_owned()))?;
-    let present_mode = capabilities
-        .present_modes
+    // Mailbox, then immediate, then whatever there is: never FIFO by
+    // choice. The shell already paces itself on the compositor's frame
+    // callbacks, so FIFO buys nothing -- and on Wayland Mesa implements it
+    // with the commit-timing protocol, stamping each frame with a target
+    // time it works out from the pace of the last ones. A shell that paints
+    // when something moves and rests when nothing does has no steady pace
+    // to work out, the targets drift a tenth of a second ahead, the
+    // compositor holds the frames until then, and motion arrives late and
+    // in lumps.
+    let preferred = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate];
+    let present_mode = preferred
         .iter()
         .copied()
-        .find(|mode| *mode == wgpu::PresentMode::Fifo)
+        .find(|mode| capabilities.present_modes.contains(mode))
         .or_else(|| capabilities.present_modes.first().copied())
         .ok_or_else(|| GpuError("GPU surface exposes no presentation mode".to_owned()))?;
     let alpha_mode = capabilities

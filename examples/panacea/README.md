@@ -43,6 +43,19 @@ too. Every page closes with Escape or a click outside; a click on the
 pill opens quick settings. `pillHover` in the settings makes a hover open
 it too, as the original does; it is off by default.
 
+## Colours and type
+
+When lule has written `~/.cache/lule/colors.json`, the island takes its
+colours from there: the background, the foreground, and the cursor as the
+accent. `"themeId": "panacea"` in the settings keeps Panacea's own black
+and blue instead. Words are set in `fontFam` when that face is installed
+(the default here is Goku, a pixel face); icons always come from a Nerd
+Font, since a pixel face has none.
+
+A page reached from another -- Wi-Fi from quick settings, say -- has a
+back arrow at its top right that returns to the one before. Escape closes
+the island whatever page it is on.
+
 ## Settings
 
 `~/.config/panacea/settings.json`, with the original's keys: `pillH`,

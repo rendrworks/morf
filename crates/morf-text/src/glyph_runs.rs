@@ -56,6 +56,15 @@ impl TextSystem {
     ) -> Vec<GlyphPair> {
         let own = self.physical_glyphs(BufferKey::own(node), origin, scale);
         let target = self.physical_glyphs(BufferKey::target(node), origin, scale);
+        // Every pair's frames for this step, measured together first, so the
+        // loop below only ever finds them ready.
+        let mut wanted = Vec::with_capacity(own.len());
+        for (glyph, partner) in own.iter().zip(target.iter()) {
+            if let Some(from_key) = self.morph_frames(glyph, partner) {
+                wanted.push((from_key, Self::pair_target_key(partner)));
+            }
+        }
+        self.prepare_morph_frames(&wanted, travel);
         let mut target = target.into_iter();
         own.into_iter()
             .map(|glyph| {

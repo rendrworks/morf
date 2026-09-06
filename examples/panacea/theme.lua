@@ -35,12 +35,47 @@ theme.HEIGHT = screen_height
 
 -- ----------------------------------------------------------------- colours --
 
-local fg = morf.color(config.colFg)
-local on = morf.color(config.colOn)
+-- lule's palette, when it has written one: the wallpaper's colours, kept
+-- in ~/.cache/lule/colors.json as `special.background`, `.foreground`,
+-- `.cursor` and sixteen `colors`. The cursor is the accent. Panacea's own
+-- settings apply when there is no cache, or when `themeId` is "panacea".
+local io = require("morf.io")
+local lule = nil
+do
+  local cache = core.env("XDG_CACHE_HOME") or (config.home .. "/.cache")
+  for _, path in ipairs { cache .. "/lule/colors.json", config.home .. "/.lule/wal/colors.json" } do
+    local ok, handle = pcall(io.file, path)
+    if ok and handle then
+      local read, text = pcall(handle.read, handle)
+      if read and type(text) == "string" and text ~= "" then
+        local decoded, values = pcall(io.json.decode, text)
+        if decoded and type(values) == "table" and type(values.special) == "table" then
+          lule = values
+          lule.path = path
+          break
+        end
+      end
+    end
+  end
+end
+if config.themeId == "panacea" then lule = nil end
+theme.lule = lule
+
+local function colour_or(value, fallback)
+  if type(value) == "string" and value:match("^#%x%x%x%x%x%x$") then return morf.color(value) end
+  return morf.color(fallback)
+end
+
+local bg = lule and colour_or(lule.special.background, "#000000") or morf.color "#000000"
+local fg = lule and colour_or(lule.special.foreground, config.colFg) or morf.color(config.colFg)
+local on = lule and colour_or(lule.special.cursor or (lule.colors or {})[2], config.colOn) or morf.color(config.colOn)
 if config.themeId == "nothing" then on = fg end
+-- The island stays dark even on a light palette: a black capsule is the
+-- shape of the thing.
+if bg:luminance() > 0.5 then bg = bg:darken(0.6) end
 
 theme.color = {
-  bg = morf.color "#000000",
+  bg = bg,
   fg = fg,
   muted = fg:alpha(config.mutedAlpha),
   faint = fg:alpha(0.25),
@@ -61,7 +96,7 @@ theme.color = {
   -- The same names the shared modules use.
   text = fg,
   dim = fg:alpha(config.mutedAlpha),
-  pill = morf.color "#000000",
+  pill = bg,
   button = fg:alpha(0.08),
   hover = fg:alpha(0.13),
   blue = on,
@@ -72,26 +107,28 @@ local C = theme.color
 
 -- ------------------------------------------------------------------- fonts --
 
---- The configured face if installed, else the first Nerd Font, else
---- whatever monospace there is.
-local function pick_font()
-  local installed = {}
-  for _, name in ipairs(morf.font_families()) do installed[name] = true end
-  if installed[config.fontFam] then return config.fontFam end
-  for _, wanted in ipairs {
-    "JetBrainsMono Nerd Font", "JetBrainsMono Nerd Font Propo", "JetBrainsMono NF",
-    "Iosevka Nerd Font", "Iosevka Nerd Font Propo", "Iosevka NF",
-    "FiraCode Nerd Font", "Hack Nerd Font", "Symbols Nerd Font",
-  } do
-    if installed[wanted] then return wanted end
+local installed = {}
+for _, name in ipairs(morf.font_families()) do installed[name] = true end
+
+--- The first of `wanted` that is installed, else `fallback`.
+local function first_installed(wanted, fallback)
+  for _, name in ipairs(wanted) do
+    if installed[name] then return name end
   end
   for name in pairs(installed) do
     if name:find("Nerd Font") then return name end
   end
-  return "monospace"
+  return fallback
 end
-theme.font = pick_font()
-theme.icon_font = theme.font
+
+-- Words in the configured face if it is installed, else a Nerd Font. Icons
+-- always from a Nerd Font, since a pixel face has no icons in it.
+theme.font = installed[config.fontFam] and config.fontFam
+  or first_installed({ "JetBrainsMono Nerd Font", "JetBrainsMono Nerd Font Propo", "Iosevka Nerd Font", "Iosevka NF" }, "monospace")
+theme.icon_font = first_installed({
+  "JetBrainsMono Nerd Font Propo", "JetBrainsMono Nerd Font", "Iosevka Nerd Font Propo", "Iosevka Nerd Font",
+  "Symbols Nerd Font", "Iosevka NF",
+}, theme.font)
 
 theme.clock = core.system_clock { precision = "seconds" }
 

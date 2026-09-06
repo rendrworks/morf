@@ -68,8 +68,16 @@ struct TextInput {
     style: morf_layout::TextStyleKey,
 }
 
-/// Two glyphs measured over one box, and how much of them fails to overlap.
-pub(crate) type MeasuredPair = Vec<Rc<FieldImage>>;
+/// A morph between two glyphs: the outlines paired, the box every frame is
+/// measured over, and the frames themselves, measured as the morph reaches
+/// them rather than all at once -- a word of new pairs measured up front
+/// was a stall of a tenth of a second on the first frame of its motion.
+pub(crate) struct MeasuredPair {
+    pub(crate) paired: Vec<morf_outline::Paired>,
+    pub(crate) area: glyph_fields::FieldBox,
+    pub(crate) spread: f32,
+    pub(crate) frames: Vec<Option<Rc<FieldImage>>>,
+}
 
 /// Two neighbouring frames of a morph, their atlas keys, and where between
 /// them the glyph currently is.

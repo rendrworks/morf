@@ -40,6 +40,9 @@ island.BIG_HEADER_H = S(58)
 
 -- Which page is open on the expanded surface; "" is collapsed.
 island.page = morf.signal("panacea.page", "")
+-- The pages this one was reached through, for the back button.
+island.history = {}
+island.depth = morf.signal("panacea.depth", 0)
 island.expanded = morf.signal("panacea.expanded", false)
 -- What the recorder says, for the collapsed strip.
 island.recording = morf.signal("panacea.recording", "")
@@ -513,6 +516,15 @@ function island.build()
     end
   end, true)
   island.keep = function() opened_by_hover = false end
+  -- Back, at the top right, when the page was reached from another.
+  local back = theme.button {
+    width = S(32), height = S(32), radius = 10,
+    color = "transparent",
+    anchors = { right = true, top = true, right_margin = PAD - S(4), top_margin = PAD - S(4) },
+    visible = function() return open() and island.depth:get() > 0 end,
+    on_click = function() island.back() end,
+    theme.icon { text = "󰅁", size = config.iconSize, anchors = { center_in = true }, color = C.muted },
+  }
   local content = ui.Item {
     anchors = { fill = true },
     -- Collapsed, a click on the strip opens quick settings.
@@ -534,6 +546,7 @@ function island.build()
     },
     ui.Item { anchors = { fill = true }, table.unpack(pages) },
     recording, day, clock, ws, layout_text, glyph, battery_text,
+    back,
   }
   body = capsule(island_width, height, content)
   ready:set(true)
@@ -551,7 +564,7 @@ end
 -- Filled by init: opens and closes the expanded surface.
 island.surface = { open = function() end, close = function() end }
 
-function island.open(name)
+function island.open(name, going_back)
   if not island.pages[name] then return false end
   local current = island.page:get()
   if current == name then
@@ -563,7 +576,10 @@ function island.open(name)
     if leaving then leaving.shown:set(false) end
     local page = island.pages[current]
     if page and page.on_close then page.on_close() end
+    if not going_back then island.history[#island.history + 1] = current end
   end
+  if not going_back and current == "" then island.history = {} end
+  island.depth:set(#island.history)
   local entry = page_nodes[name]
   if not entry then return false end
   island.expanded:set(true)
@@ -584,9 +600,22 @@ function island.close()
   local page = island.pages[current]
   if page and page.on_close then page.on_close() end
   island.page:set("")
+  island.history = {}
+  island.depth:set(0)
   island.expanded:set(false)
   island.surface.close()
   if island.retarget then island.retarget() end
+end
+
+--- The page before this one, if it was reached from one.
+function island.back()
+  local previous = table.remove(island.history)
+  if not previous then
+    island.close()
+    return
+  end
+  island.open(previous, true)
+  island.depth:set(#island.history)
 end
 
 function island.toggle(name)
