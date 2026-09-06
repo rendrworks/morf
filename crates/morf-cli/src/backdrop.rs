@@ -27,7 +27,6 @@ pub(crate) fn open_backdrop_layer(
     config: &LayerSurfaceConfig,
     output: &str,
 ) -> Result<(), String> {
-    eprintln!("backdrop declared: {:?}", config.backdrop);
     if config.backdrop.is_none() {
         return Ok(());
     }
@@ -102,10 +101,30 @@ pub(crate) fn apply_backdrop(client: &LayerClient, config: &LayerSurfaceConfig, 
             let below = hole.y + hole.height;
             let right = hole.x + hole.width;
             vec![
-                InputRect { x: 0, y: 0, width: out.0, height: hole.y },
-                InputRect { x: 0, y: below, width: out.0, height: out.1 - below },
-                InputRect { x: 0, y: hole.y, width: hole.x, height: hole.height },
-                InputRect { x: right, y: hole.y, width: out.0 - right, height: hole.height },
+                InputRect {
+                    x: 0,
+                    y: 0,
+                    width: out.0,
+                    height: hole.y,
+                },
+                InputRect {
+                    x: 0,
+                    y: below,
+                    width: out.0,
+                    height: out.1 - below,
+                },
+                InputRect {
+                    x: 0,
+                    y: hole.y,
+                    width: hole.x,
+                    height: hole.height,
+                },
+                InputRect {
+                    x: right,
+                    y: hole.y,
+                    width: out.0 - right,
+                    height: hole.height,
+                },
             ]
         }
         _ => Vec::new(),

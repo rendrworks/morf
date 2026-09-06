@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<p align="center"><em>Rendering and shell engine implemented in Rust and compiled to Lua</em></p>
+<p align="center"><em>Rendering and shell engine implemented in Rust and configured in Lua</em></p>
 
 It exposes native scene, layout, rendering, input, surface, IO, and service primitives through Rust and Lua APIs. Widgets and complete shells are downstream projects.
 

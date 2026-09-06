@@ -1,4 +1,8 @@
+use morf_lua::Runtime;
+use morf_wayland::{LayerClient, PRIMARY_LAYER};
 use std::time::Duration;
+
+use crate::{surface_layers::*, surfaces::*};
 
 /// How a surface decides which frame callbacks it can afford to paint on.
 ///
@@ -83,4 +87,63 @@ impl FramePacer {
     pub(crate) fn rest(&mut self) {
         self.waited = None;
     }
+}
+
+/// One frame callback for the shell's own surface: motion advances, and the
+/// pacer decides whether this callback is painted on.
+pub(crate) fn primary_frame(
+    runtime: &mut Runtime,
+    client: &mut LayerClient,
+    state: &mut SurfaceEventState,
+    time_ms: u32,
+) -> Result<bool, String> {
+    let mut repaint = false;
+    let delta = animation_delta(state.last_frame, time_ms);
+    let frame = runtime
+        .tick_animations(delta)
+        .map_err(|error| error.to_string())?;
+    // Carried forward only while motion continues, so the next run of
+    // animation starts from a clean timebase rather than inheriting
+    // however long the shell was idle.
+    state.last_frame = frame.active.then_some(time_ms);
+    // The callbacks themselves are the clock: whatever rate the
+    // compositor offers this output is the rate to pace against.
+    if !delta.is_zero() {
+        state.refresh = delta;
+    }
+    // A shader reading the clock is motion like any other: it makes
+    // the frame *advance*, and the pacer still decides which callbacks
+    // are painted on. Forcing a repaint outside this path would spin as
+    // fast as the event loop turns rather than at the output's rate.
+    let advanced = frame.active || frame.changed > 0 || state.animating_shaders;
+    if advanced {
+        // A surface that cannot paint inside one refresh paints on
+        // every second callback instead, and keeps that cadence rather
+        // than missing deadlines at random.
+        if state.pacer.due(state.refresh) {
+            repaint = true;
+        } else {
+            // The next callback is asked for by painting, so a skipped
+            // frame has to ask for itself — otherwise the compositor
+            // has nothing outstanding, never calls back, and the
+            // surface stops dead on the first frame it gives up.
+            client.request_layer_frame(PRIMARY_LAYER);
+            client.commit_layer(PRIMARY_LAYER);
+        }
+    } else {
+        state.pacer.rest();
+    }
+    // Configured layer surfaces have no clock of their own; the shell's
+    // tick is what tells them a repaint is due, and a surface that is
+    // already idle needs a frame callback to come back on.
+    if advanced {
+        for surface in state.layer_surfaces.values_mut() {
+            if surface.updates_enabled && !surface.needs_paint {
+                surface.needs_paint = true;
+                client.request_layer_frame(window_layer_id(surface.id));
+            }
+        }
+    }
+
+    Ok(repaint)
 }
