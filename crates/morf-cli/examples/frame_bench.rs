@@ -226,16 +226,17 @@ fn main() {
         );
     });
 
-    let scene = runtime.scene();
-    let root = scene.roots()[0];
-    let mut nodes = 0usize;
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        nodes += 1;
-        stack.extend(scene.children(node).expect("live node").iter().copied());
-    }
+    let root = runtime.scene().roots()[0];
     let size = Size { width, height };
-    let computed = Layout::compute(&scene, root, size, &mut RuledText).expect("layout");
+    let layout = |runtime: &Runtime| {
+        Layout::compute(&runtime.scene(), root, size, &mut RuledText).expect("layout")
+    };
+    let mut computed = layout(&runtime);
+    // A binding on `layout_height` hears about a frame only after it.
+    while runtime.observe_layout(&computed) {
+        computed = layout(&runtime);
+    }
+    let scene = runtime.scene();
 
     // `gpu` renders one frame on a real adapter instead of timing anything.
     //
@@ -454,6 +455,7 @@ fn main() {
 
     let frame = layout + draw + region;
     println!("{config}");
+    let nodes = all.len();
     println!("  scene nodes        {nodes}");
     if backdrops > 0 {
         println!(

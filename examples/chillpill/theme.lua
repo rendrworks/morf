@@ -240,7 +240,8 @@ function theme.reveal(shown, values)
   values.from_y, values.from_x, values.from_scale = nil, nil, nil
   local mounted = theme.mounted(shown, values.delay or 480)
   values.delay = nil
-  values.visible = function() return mounted:get() end
+  -- Visible the moment it is shown, and until the way out has played.
+  values.visible = function() return shown:get() or mounted:get() end
   values.opacity = function() return shown:get() and 1 or 0 end
   values.translate_y = function() return shown:get() and 0 or from_y end
   values.translate_x = function() return shown:get() and 0 or from_x end
