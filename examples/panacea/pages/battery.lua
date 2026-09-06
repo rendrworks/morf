@@ -159,9 +159,11 @@ function page.build(island)
       gap = S(8),
       profile_button(PROFILES[1]), profile_button(PROFILES[2]), profile_button(PROFILES[3]),
     },
-    theme.text {
-      text = "power-profiles-daemon is not running", size = config.fontSize - 4, color = C.muted,
+    theme.card {
+      width = W, height = S(40), border_width = 1, border_color = C.edge,
       visible = function() return not page.info.profiles end,
+      theme.text { text = "Profiles need power-profiles-daemon, which is not running", size = config.fontSize - 4,
+        color = C.muted, anchors = { left = true, left_margin = S(14), top = true, top_margin = S(12) } },
     },
     ui.Row {
       gap = S(8),

@@ -90,37 +90,21 @@ end
 
 function page.build(island)
   local W = theme.page_w()
-  local function row(label, node)
-    return ui.Row {
-      gap = S(16), align = "center",
-      ui.Item { width = S(70), height = S(30), theme.label { text = label, anchors = { left = true, top = true, top_margin = S(8) } } },
-      node,
-    }
+  local function row(label, node, wide)
+    return theme.setting_row { width = W, title = label, control = node, control_h = S(30), control_w = wide or S(200) }
   end
   local function switch(glyph, label, get, set)
-    return theme.card {
-      width = W, height = S(44),
-      ui.Row {
-        gap = S(10), align = "center", height = S(44),
-        anchors = { left = true, left_margin = S(12) },
-        theme.icon { text = glyph, size = config.iconSize - 2, color = C.muted },
-        theme.text { text = label, size = config.fontSize - 1 },
-      },
-      ui.Item {
-        anchors = { right = true, top = true, right_margin = S(10), top_margin = S(10) },
-        theme.toggle(get, set),
-      },
-    }
+    return theme.switch_row { width = W, icon = glyph, title = label, on = get, set = set }
   end
   return ui.Column {
-    gap = S(12),
-    row("FPS", theme.chips({ 30, 60, 120 }, function() return state.fps end, function(v) state.fps = v end)),
+    gap = S(8),
+    row("Frame rate", theme.chips({ 30, 60, 120 }, function() return state.fps end, function(v) state.fps = v end)),
     row("Folder", theme.chips({
-      { label = "~/Videos", value = config.home .. "/Videos" },
-      { label = "~/Pictures", value = config.home .. "/Pictures" },
-      { label = "~/Desktop", value = config.home .. "/Desktop" },
-      { label = "~/", value = config.home },
-    }, function() return state.folder end, function(v) state.folder = v end)),
+      { label = "Videos", value = config.home .. "/Videos" },
+      { label = "Pictures", value = config.home .. "/Pictures" },
+      { label = "Desktop", value = config.home .. "/Desktop" },
+      { label = "Home", value = config.home },
+    }, function() return state.folder end, function(v) state.folder = v end), S(330)),
     switch("󰕾", "System audio", function() return state.audio end, function(v) state.audio = v end),
     switch("󰍬", "Microphone", function() return state.mic end, function(v) state.mic = v end),
     theme.button {

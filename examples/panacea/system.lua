@@ -203,7 +203,7 @@ proc.stream({ "nmcli", "monitor" }, function() poll_network() end)
 local bluez = nil
 do
   local ok, proxy = pcall(morf.dbus.proxy, "system", "org.bluez", "/",
-    "org.freedesktop.DBus.ObjectManager", 1500)
+    "org.freedesktop.DBus.ObjectManager", 4000)
   if ok then bluez = proxy end
 end
 

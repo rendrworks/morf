@@ -27,6 +27,9 @@ page.scanning = morf.signal("panacea.bt.scanning", false)
 
 function page.refresh()
   local _, devices = system.bluetooth_objects()
+  -- A call that failed -- bluez is slow to answer while it discovers --
+  -- says nothing about the devices; the list keeps what it had.
+  if not devices then return end
   local rows = {}
   for _, device in ipairs(devices or {}) do
     if #rows >= 10 then break end

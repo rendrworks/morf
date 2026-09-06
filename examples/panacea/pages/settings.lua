@@ -178,7 +178,7 @@ function page.build(island)
   return ui.Flex {
     direction = "column", width = W, gap = S(10),
     theme.chips(tabs, function() return page.section:get() end, function(id) page.section:set(id) end),
-    ui.Item { width = W, height = S(7 * 66), table.unpack(bodies) },
+    ui.Item { width = W, height = S(492), table.unpack(bodies) },
     ui.Item {
       width = W, height = S(36),
       theme.text { text = function() return page.saved:get() end, size = config.fontSize - 4, color = C.muted,
