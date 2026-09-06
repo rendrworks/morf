@@ -196,6 +196,9 @@ pub(crate) fn open_reserve_layers(
     config: &LayerSurfaceConfig,
     output: &str,
 ) -> Result<(), String> {
+    if !client.supports_layer_shell() {
+        return Ok(());
+    }
     for (index, (edge, thickness)) in config.reserve.edges().into_iter().enumerate() {
         let id = RESERVE_LAYER_BASE + index as u64;
         if thickness == 0 {

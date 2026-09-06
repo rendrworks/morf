@@ -393,6 +393,13 @@ impl LayerClient {
     }
 
     /// Whether the compositor reports its windows at all.
+    /// Whether the compositor speaks layer-shell at all. Without it the
+    /// shell's surface is an ordinary window, and there is no edge to hold,
+    /// nothing to reserve and nothing to put a backdrop under.
+    pub fn supports_layer_shell(&self) -> bool {
+        self.state.layer_shell.is_some()
+    }
+
     pub fn supports_toplevels(&self) -> bool {
         self.state.toplevel_list.is_some()
     }

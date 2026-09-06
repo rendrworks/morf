@@ -27,7 +27,7 @@ pub(crate) fn open_backdrop_layer(
     config: &LayerSurfaceConfig,
     output: &str,
 ) -> Result<(), String> {
-    if config.backdrop.is_none() {
+    if config.backdrop.is_none() || !client.supports_layer_shell() {
         return Ok(());
     }
     let mut bar = runtime_bar_config(config, output)?;
