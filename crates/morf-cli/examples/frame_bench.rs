@@ -236,16 +236,9 @@ fn main() {
     while runtime.observe_layout(&computed) {
         computed = layout(&runtime);
     }
-    let scene = runtime.scene();
-
-    // `gpu` renders one frame on a real adapter instead of timing anything.
-    //
-    // Everything above this line runs on the CPU, and a shader that compiles to
-    // WGSL the driver then refuses looks exactly the same from up here as one
-    // that works: the configuration loads, the scene is built, the numbers come
-    // out fine. The only way to find out is to build the pipelines and draw,
-    // which is what this does — headless, so it can run over every example
-    // without a compositor.
+    // `gpu` renders one frame on a real adapter instead of timing anything: a
+    // shader the driver refuses looks fine from the CPU side, and the only way
+    // to find out is to build the pipelines and draw, headless.
     if std::env::args().nth(2).as_deref() == Some("gpu") {
         let backend = pollster::block_on(WgpuBackend::new(width as u32, height as u32))
             .expect("a GPU adapter");
@@ -268,10 +261,16 @@ fn main() {
                 .unwrap_or_else(|error| panic!("{config}: shader pipeline: {error}"));
             shaders += 1;
         }
-        // Twice: the first frame damages everything, the second takes the
-        // incremental path, and an effect layer's target is only reused on the
-        // second.
-        for _ in 0..2 {
+        // Twice: the second frame takes the incremental path and reuses an
+        // effect layer's target. `FRAME_BENCH_GPU_FRAMES` draws more, each
+        // moved on so none is skipped, for timing the GPU (`MORF_GPU_WAIT=1`).
+        let frames: usize =
+            std::env::var("FRAME_BENCH_GPU_FRAMES").map_or(2, |value| value.parse().unwrap_or(2));
+        for _ in 0..frames.max(2) {
+            if frames > 2 {
+                let _ = runtime.tick_animations(Duration::from_millis(16));
+                computed = layout(&runtime);
+            }
             engine
                 .render(&runtime.scene(), &computed, 120, |_| {})
                 .unwrap_or_else(|error| panic!("{config}: render: {error}"));
@@ -291,6 +290,7 @@ fn main() {
         }
         return;
     }
+    let scene = runtime.scene();
 
     // Layout reads about a dozen properties per node, so this is the floor the
     // rest of the pass is built on.

@@ -180,7 +180,7 @@ where
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(read) if tx.send(event(buffer[..read].to_vec())).is_err() => break,
-                Ok(_) => {}
+                Ok(_) => crate::wake_all(),
             }
         }
     });

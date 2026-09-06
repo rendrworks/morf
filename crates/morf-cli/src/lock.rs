@@ -4,6 +4,7 @@ use morf_lua::{IpcValue, Runtime};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::{Element, NodeHandle};
 use morf_wayland::{LayerClient, LayerEvent, ScreenInfo};
+use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, mpsc};
@@ -96,10 +97,15 @@ pub(crate) fn run_lock(mut runtime: Runtime) -> Result<(), String> {
     runtime
         .update_clock(&clock)
         .map_err(|error| error.to_string())?;
+    let wake = morf_io::Wake::new().map_err(|error| error.to_string())?;
     loop {
         client
-            .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
+            .dispatch_timeout_or(
+                until_next_second().min(Duration::from_millis(100)),
+                Some(wake.as_fd()),
+            )
             .map_err(|error| error.to_string())?;
+        wake.drain();
         let mut repaint = runtime.poll_services();
         apply_service_requests(&mut runtime, &mut client);
         unlock_pending |= runtime.take_session_unlock_request();

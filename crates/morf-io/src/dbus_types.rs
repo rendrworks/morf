@@ -212,6 +212,7 @@ impl DbusProxy {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let _ = tx.send(proxy.get_value(&property));
+            crate::wake_all();
         });
         PendingReply { rx }
     }
@@ -223,6 +224,7 @@ impl DbusProxy {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let _ = tx.send(proxy.call_value_with(&method, &value));
+            crate::wake_all();
         });
         PendingReply { rx }
     }
@@ -438,7 +440,17 @@ impl SignalRouter {
         // A receiver that has gone is a subscription whose owner dropped it
         // without the route being removed — possible if a `DbusSignal` leaked.
         // Clearing them here keeps the list from growing forever.
-        routes.retain(|(_, route, tx)| !route.matches(&header) || tx.send(message.clone()).is_ok());
+        let mut delivered = false;
+        routes.retain(|(_, route, tx)| {
+            if !route.matches(&header) {
+                return true;
+            }
+            delivered = true;
+            tx.send(message.clone()).is_ok()
+        });
+        if delivered {
+            crate::wake_all();
+        }
     }
 }
 

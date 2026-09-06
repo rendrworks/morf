@@ -131,6 +131,7 @@ impl DbusService {
                 if tx.send((id, message)).is_err() {
                     break;
                 }
+                crate::wake_all();
             }
         });
         let name = if name.is_empty() {

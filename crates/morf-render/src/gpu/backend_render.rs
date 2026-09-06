@@ -417,6 +417,17 @@ impl RenderBackend for WgpuBackend {
             None
         };
         self.queue.submit(Some(encoder.finish()));
+        // `MORF_GPU_WAIT=1` waits for the GPU here and prints what it took:
+        // the one way to see a frame's cost on the GPU rather than the CPU.
+        static GPU_WAIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *GPU_WAIT.get_or_init(|| std::env::var_os("MORF_GPU_WAIT").is_some()) {
+            let started = std::time::Instant::now();
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            eprintln!(
+                "gpu done in {:.2} ms",
+                started.elapsed().as_secs_f64() * 1e3
+            );
+        }
         if let Some(frame) = frame {
             self.queue.present(frame);
         }

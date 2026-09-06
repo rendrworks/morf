@@ -2,6 +2,7 @@ use morf_lua::{Limits, Runtime, Screen};
 use morf_render::{RenderEngine, ShaderRegistration, WgpuBackend};
 use morf_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, ScreenInfo};
 use std::collections::HashMap;
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -211,13 +212,19 @@ pub(crate) fn run_surface(
         focused: HashMap::new(),
         touches: HashMap::new(),
     };
+    let wake = morf_io::Wake::new().map_err(|error| error.to_string())?;
     loop {
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
+        // Until the compositor, a service thread, the clock, or a fallback.
         client
-            .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
+            .dispatch_timeout_or(
+                until_next_second().min(Duration::from_millis(100)),
+                Some(wake.as_fd()),
+            )
             .map_err(|error| error.to_string())?;
+        wake.drain();
         let next_clock = clock_text();
         let mut repaint = runtime.poll_services();
         let mut recreate_surface = false;

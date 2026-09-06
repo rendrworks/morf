@@ -251,6 +251,7 @@ fn serve_ipc_connection(mut stream: UnixStream, requests: mpsc::Sender<IpcIncomi
         {
             break;
         }
+        crate::wake_all();
         let reply = reply_rx
             .recv_timeout(IPC_TIMEOUT)
             .unwrap_or_else(|_| IpcReply::refused("request timed out"));

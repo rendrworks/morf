@@ -151,9 +151,19 @@ pub(crate) fn create_surface_state(
     // compositor holds the frames until then, and motion arrives late and
     // in lumps.
     let preferred = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate];
-    let present_mode = preferred
-        .iter()
-        .copied()
+    // `MORF_PRESENT_MODE=fifo|immediate|mailbox` overrides it, for comparing
+    // the compositor's behaviour under each.
+    let asked = std::env::var("MORF_PRESENT_MODE")
+        .ok()
+        .and_then(|value| match value.as_str() {
+            "fifo" => Some(wgpu::PresentMode::Fifo),
+            "immediate" => Some(wgpu::PresentMode::Immediate),
+            "mailbox" => Some(wgpu::PresentMode::Mailbox),
+            _ => None,
+        });
+    let present_mode = asked
+        .into_iter()
+        .chain(preferred.iter().copied())
         .find(|mode| capabilities.present_modes.contains(mode))
         .or_else(|| capabilities.present_modes.first().copied())
         .ok_or_else(|| GpuError("GPU surface exposes no presentation mode".to_owned()))?;

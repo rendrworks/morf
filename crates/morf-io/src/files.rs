@@ -315,6 +315,7 @@ impl FileWatcher {
                         if tx.send(event).is_err() {
                             break;
                         }
+                        crate::wake_all();
                     }
                     Err(Errno::AGAIN) => thread::sleep(Duration::from_millis(10)),
                     Err(_) => break,

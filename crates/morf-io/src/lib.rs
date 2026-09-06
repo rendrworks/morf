@@ -10,6 +10,7 @@ mod process;
 mod sockets;
 mod streams;
 mod timer;
+mod wake;
 
 pub use dbus_decode::DbusSignal;
 pub use dbus_serve::{DbusCall, DbusService, NameOutcome};
@@ -20,6 +21,7 @@ pub use process::*;
 pub use sockets::*;
 pub use streams::*;
 pub use timer::*;
+pub use wake::*;
 #[cfg(test)]
 mod dbus_tests;
 #[cfg(test)]

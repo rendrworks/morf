@@ -1,4 +1,5 @@
 use rustix::event::{PollFd, PollFlags, poll};
+use rustix::fd::BorrowedFd;
 use rustix::time::Timespec;
 use std::time::Duration;
 
@@ -18,6 +19,17 @@ impl LayerClient {
 
     /// Dispatches Wayland events or returns when the timeout expires.
     pub fn dispatch_timeout(&mut self, timeout: Duration) -> Result<bool, WaylandError> {
+        self.dispatch_timeout_or(timeout, None)
+    }
+
+    /// As [`Self::dispatch_timeout`], returning early too when `wake` becomes
+    /// readable: the loop's own alarm, which a service thread rings when it
+    /// has something for the loop to collect.
+    pub fn dispatch_timeout_or(
+        &mut self,
+        timeout: Duration,
+        wake: Option<BorrowedFd<'_>>,
+    ) -> Result<bool, WaylandError> {
         if self
             .queue
             .dispatch_pending(&mut self.state)
@@ -41,10 +53,14 @@ impl LayerClient {
             tv_sec: seconds,
             tv_nsec: timeout.subsec_nanos() as i64,
         };
-        let mut fds = [PollFd::new(&self.queue, PollFlags::IN)];
+        let mut fds = Vec::with_capacity(2);
+        fds.push(PollFd::new(&self.queue, PollFlags::IN));
+        if let Some(wake) = wake {
+            fds.push(PollFd::from_borrowed_fd(wake, PollFlags::IN));
+        }
         let ready = poll(&mut fds, Some(&timeout))
             .map_err(|error| WaylandError(format!("Wayland poll failed: {error}")))?;
-        if ready == 0 {
+        if ready == 0 || fds[0].revents().is_empty() {
             drop(guard);
             return Ok(false);
         }
