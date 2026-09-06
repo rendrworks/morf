@@ -62,7 +62,10 @@ local config = {
   -- Where recordings go.
   recordDir = "~/Videos",
   recordFps = 60,
-  -- Weather, for the calendar page.
+  -- Where the wallpapers are; empty tries ~/.config/hypr/wallpaper and
+  -- ~/Pictures/wallpapers.
+  wallpaperDir = "",
+  -- Weather, for the calendar and weather pages.
   weatherLocation = "",
   weatherUnits = "metric",
   -- Programs.

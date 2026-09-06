@@ -13,6 +13,14 @@ local K = field.keys
 
 local page = {}
 
+page.title = "Clipboard"
+page.icon = "󰅌"
+page.subtitle = function()
+  if page.state.error ~= "" then return page.state.error end
+  local n = page.state.count
+  return n == 0 and "Nothing here" or (n .. (n == 1 and " entry" or " entries"))
+end
+
 local ROWS = 9
 local ROW_H = S(40)
 

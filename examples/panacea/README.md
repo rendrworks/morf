@@ -33,11 +33,14 @@ EXAMPLE=examples/panacea/init.lua oslo make run
 | Workspaces | `overview` | every workspace on the focused monitor and its windows |
 | Settings | `settings` | island, clock, appearance, motion, notifications, system |
 | Shortcuts | `shortcuts` | every binding from the settings |
+| Now playing | `media` | art, transport, and an equaliser that is also the seek bar |
+| Wallpapers | `wallpapers` | a carousel of the wallpaper folder, set through hyprpaper |
+| Weather | `weather` | conditions, three tiles, sunrise and sunset, three days |
 
 `morf ipc call <verb>` toggles a page, as `qs ipc call pill <verb>` does in
 the original; `dnd`, `recordToggle`, `smartClose` and `close` are there
-too. Every page closes with Escape or a click outside. Hovering is not
-opening here: a click on the pill opens quick settings.
+too. Every page closes with Escape or a click outside; a click or a hover
+on the pill opens quick settings, or the player when something plays.
 
 ## Settings
 
@@ -54,14 +57,41 @@ Motion follows `animMove` and `animBounce`: a spring whose settle time is
 the move and whose damping is the bounce. `reduceMotion` lands every move
 at once.
 
+## Motion
+
+Nothing fades in. The strip's five pieces -- the day, the clock, the
+workspace, the layout, the battery -- are the same nodes whether the
+island is collapsed or open. Opening a page, the clock's letters walk into
+the page's title and the day's into its subtitle (morf's text morph), the
+battery's glyph walks into the page's icon (a glyph morph in a field), and
+each piece travels on a spring from its place in the strip to where the
+page keeps it: the battery lands in the quick settings tile and on the
+battery page's card, the workspace number in the overview's active tile.
+Pieces a page has no place for gather into the title. The page's content
+grows out of the strip under them, and the capsule springs to the size of
+what it holds. Closing runs it all back.
+
+Each piece is set in type once, at the largest size it takes, and scaled
+from there: a scale is a transform the GPU applies for nothing, where a
+font size that moves re-shapes the letters every frame.
+
+Hovering the strip opens it too -- the player if something plays, quick
+settings otherwise -- and it goes when the pointer has left. A page opened
+by a click or a key stays until Escape or a click outside.
+
+The equaliser is cava when it is installed, a real spectrum; otherwise the
+loudness from pw-record on the output's monitor, normalised against the
+loudest recent moment, spread across the bars.
+
 ## Shape
 
-The collapsed pill lives on the shell's own surface, which takes no
-keyboard. A page lives on a fullscreen overlay surface with exclusive
-keyboard focus, opened when a page opens and closed once the island has
-flowed back; the surface is what hears Escape and the click outside. The
-island's size is a binding on its content's laid-out height, with a spring
-on it, so every page is the same capsule at a different size.
+The island lives on the shell's own surface, collapsed or open, so a page
+is one spring away. While a page is open the surface asks for exclusive
+keyboard focus and gives it back after; the compositor re-reads that on
+the commit. (This is what `morf.surface.keyboard_focus` written at runtime
+does now.) The island's size is a binding on its content's laid-out
+height, with a spring on it, so every page is the same capsule at a
+different size.
 
 The concave corners are two small SVGs, a square with a quarter circle
 taken out, drawn either side of the capsule's top.
@@ -76,7 +106,7 @@ layout from Hyprland's sockets), `proc.lua`, `media.lua`, `field.lua`,
 `weather.lua`, `lib/notifications.lua`.
 
 Not here: the file manager, the media viewer, the password vault, the
-agents panel, the wallpaper carousel and the lock screen. The login
+agents panel and the lock screen. The login
 example carries a lock of its own, which the lock button uses when it is
 installed as `logre`.
 

@@ -16,6 +16,13 @@ local K = field.keys
 
 local page = {}
 
+page.title = "Launcher"
+page.icon = "󰀻"
+page.subtitle = function()
+  if page.state.result ~= "" then return "= " .. page.state.result end
+  return "Apps, recents first; or type a sum"
+end
+
 local ROWS = 8
 local ROW_H = S(48)
 

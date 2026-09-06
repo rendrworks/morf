@@ -13,6 +13,9 @@ local C = theme.color
 
 local page = {}
 
+page.title = "Screen recording"
+page.icon = "󰑊"
+
 page.state = morf.state {
   running = false,
   elapsed = "00:00",
@@ -79,6 +82,12 @@ function page.stop()
   require("notify").local_notice("Recorder", "Recording saved", state.file, "󰑊")
 end
 
+page.subtitle = function()
+  if not state.available then return "wf-recorder is not installed" end
+  if state.running then return "Recording · " .. state.elapsed .. " · " .. state.file end
+  return "Ready to record"
+end
+
 function page.build(island)
   local W = S(config.panelW) - S(32)
   local function row(label, node)
@@ -105,26 +114,6 @@ function page.build(island)
   end
   return ui.Column {
     gap = S(12),
-    ui.Row {
-      gap = S(10), align = "center",
-      ui.Rect {
-        width = S(10), height = S(10), radius = S(5),
-        color = function() return state.running and C.crit or C.faint end,
-      },
-      ui.Column {
-        gap = S(2),
-        theme.text { text = "Screen recording", size = config.fontSize + 1, font_weight = 700 },
-        theme.text {
-          size = config.fontSize - 3, color = C.muted,
-          text = function()
-            if not state.available then return "wf-recorder is not installed" end
-            if state.running then return "Recording · " .. state.elapsed .. " · " .. state.file end
-            return "Ready to record"
-          end,
-        },
-      },
-    },
-    ui.Rect { width = W, height = 1, color = C.edge },
     row("FPS", theme.chips({ 30, 60, 120 }, function() return state.fps end, function(v) state.fps = v end)),
     row("Folder", theme.chips({
       { label = "~/Videos", value = config.home .. "/Videos" },

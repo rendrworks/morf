@@ -9,6 +9,10 @@ local C = theme.color
 
 local page = {}
 
+page.title = "Shortcuts"
+page.icon = "󰌌"
+page.subtitle = "From ~/.config/panacea/settings.json; Hyprland reads the same keys."
+
 local NAMES = {
   { "bind_pillControls", "Quick settings" },
   { "bind_pillLauncher", "Launcher" },
@@ -62,8 +66,6 @@ function page.build(island)
   end
   return ui.Column {
     gap = S(10),
-    theme.text { text = "Shortcuts", font_weight = 700, size = config.fontSize + 1 },
-    theme.text { text = "From ~/.config/panacea/settings.json; Hyprland reads the same keys.", size = config.fontSize - 4, color = C.muted },
     ui.Row {
       gap = S(12),
       ui.Column { gap = S(2), table.unpack(left) },

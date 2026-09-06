@@ -71,6 +71,8 @@ pub(crate) struct CachedLayout {
     /// the grid does no work at all rather than doing all of it and discovering
     /// the answer was the same.
     pub(crate) backdrop: Vec<Region>,
+    /// The keyboard focus policy last sent for this surface.
+    pub(crate) keyboard_focus: String,
 }
 
 impl CachedLayout {
@@ -106,6 +108,14 @@ pub(crate) fn paint_layer(
         .layer_logical_size(layer)
         .ok_or_else(|| "layer surface disappeared while painting".to_owned())?;
     let scale_120 = client.layer_scale_120(layer).unwrap_or(120);
+    // `morf.surface.keyboard_focus` is read every paint, so a configuration
+    // may take the keyboard for a page and hand it back after, without a
+    // second surface. Sent only when it differs from the last paint's.
+    if cache.is_none_or(|cached| cached.keyboard_focus != config.keyboard_focus)
+        && let Some(focus) = keyboard_focus_of(&config.keyboard_focus)
+    {
+        client.set_layer_keyboard_focus(layer, focus);
+    }
     let revision = runtime.scene().layout_revision();
     let reusable = cache.filter(|cached| cached.still_valid(revision, (width, height), scale_120));
     let layout = match reusable {
@@ -258,6 +268,7 @@ pub(crate) fn paint_layer(
         scale_120,
         input,
         backdrop,
+        keyboard_focus: config.keyboard_focus.clone(),
     })
 }
 
@@ -442,6 +453,7 @@ pub(crate) fn paint_auxiliary_surface(
         scale_120,
         input: Vec::new(),
         backdrop: Vec::new(),
+        keyboard_focus: String::new(),
     });
     Ok(())
 }

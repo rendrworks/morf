@@ -15,7 +15,8 @@
 --
 --   morf ipc call controls | launcher | wifi | bluetooth | notifications
 --   morf ipc call clipboard | calendar | record | audio | powermenu
---   morf ipc call overview | settings | shortcuts | dnd | smartClose
+--   morf ipc call overview | settings | shortcuts | media | wallpapers
+--   morf ipc call weather | battery | dnd | recordToggle | smartClose
 --
 -- Settings are read from ~/.config/panacea/settings.json; see config.lua.
 
@@ -50,7 +51,7 @@ end
 -- ------------------------------------------------------------------ pages --
 
 for _, name in ipairs { "main", "power", "battery", "record", "wifi", "bt", "notif", "clip",
-  "launcher", "cal", "audio", "settings", "shortcuts", "overview" } do
+  "launcher", "cal", "audio", "settings", "shortcuts", "overview", "media", "wallpapers", "weather" } do
   local ok, page = pcall(require, "pages." .. name)
   if ok and type(page) == "table" then island.register(name, page) end
 end
@@ -98,6 +99,10 @@ morf.ipc.battery = verb("battery")
 morf.ipc.overview = verb("overview")
 morf.ipc.settings = verb("settings")
 morf.ipc.shortcuts = verb("shortcuts")
+morf.ipc.media = verb("media")
+morf.ipc.theme = verb("wallpapers")
+morf.ipc.wallpapers = verb("wallpapers")
+morf.ipc.weather = verb("weather")
 morf.ipc.dnd = function()
   notify.silent:set(not notify.silent:get())
   return notify.silent:get()
@@ -121,17 +126,23 @@ morf.ipc.page = function() return island.page:get() end
 
 -- ------------------------------------------------------------------- scene --
 
--- The collapsed pill fades while the expanded surface has the island.
-local pill_shown = morf.signal("panacea.pill.shown", true)
-
 -- `PANACEA_OPEN=main` opens a page at start, for a look at it with
 -- frame_bench.
 local open_at_start = core.env("PANACEA_OPEN") or ""
 
-local scene = {
+ui.Item {
   width = theme.WIDTH,
   height = theme.HEIGHT,
-  island.build_collapsed(pill_shown),
+  -- While a page is open, a click anywhere outside the island closes it,
+  -- and every key goes to the page; Escape closes.
+  ui.MouseArea {
+    anchors = { fill = true },
+    z = -10,
+    visible = function() return island.page:get() ~= "" end,
+    on_clicked = function() island.close() end,
+    on_key_pressed = function(keysym, text) island.handle_key(keysym, text) end,
+  },
+  island.build(),
   require("cards").build(),
   ui.Timer {
     interval = 40, running = true, ["repeat"] = true,
@@ -142,49 +153,13 @@ local scene = {
   },
 }
 
--- ----------------------------------------------------------- the expanded --
+-- ---------------------------------------------------------------- keyboard --
 
--- Fullscreen, over everything, with the keyboard: a page closes with
--- Escape or a click anywhere outside the island.
-local expanded_island = island.build_expanded()
-local expanded_root = ui.Item {
-  width = theme.WIDTH,
-  height = theme.HEIGHT,
-  ui.MouseArea {
-    anchors = { fill = true },
-    z = -10,
-    on_clicked = function() island.close() end,
-    on_key_pressed = function(keysym, text) island.handle_key(keysym, text) end,
-  },
-  expanded_island,
-}
+-- The keyboard is the shell surface's own: it asks for exclusive focus
+-- while a page is open and gives it back after. The compositor re-reads
+-- the policy on the commit, so a page is one spring away, never a surface
+-- away.
+island.surface.open = function() morf.surface.keyboard_focus = "exclusive" end
+island.surface.close = function() morf.surface.keyboard_focus = "none" end
 
-if open_at_start ~= "" then
-  -- For frame_bench, which draws only the first root: the expanded island
-  -- joins the shell's own scene instead of a surface of its own.
-  scene[#scene + 1] = expanded_root
-  island.surface.open = function() pill_shown:set(false) end
-  island.surface.close = function() pill_shown:set(true) end
-  island.open(open_at_start)
-else
-  local expanded_window = morf.window.layer {
-    namespace = "panacea-island",
-    layer = "overlay",
-    keyboard_focus = "exclusive",
-    width = theme.WIDTH,
-    height = theme.HEIGHT,
-    anchors = { top = true, left = true, right = true, bottom = true },
-    visible = false,
-    root = expanded_root,
-  }
-  island.surface.open = function()
-    pill_shown:set(false)
-    expanded_window:open()
-  end
-  island.surface.close = function()
-    expanded_window:close()
-    pill_shown:set(true)
-  end
-end
-
-ui.Item(scene)
+if open_at_start ~= "" then island.open(open_at_start) end

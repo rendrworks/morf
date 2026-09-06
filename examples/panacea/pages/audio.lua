@@ -14,6 +14,17 @@ local state = system.state
 
 local page = {}
 
+page.title = "Sound"
+page.icon = "󰕾"
+page.subtitle = function()
+  local n = page.sinks:len()
+  for i = 1, n do
+    local sink = page.sinks:get(i)
+    if sink and sink.default then return sink.description end
+  end
+  return "Output, input, and what is playing"
+end
+
 page.sinks = morf.list_model({})
 page.streams = morf.list_model({})
 page.mic = morf.state { level = 0, muted = false, name = "" }
@@ -134,7 +145,6 @@ function page.build(island)
   end
   return ui.Column {
     gap = S(8),
-    theme.text { text = "Sound", font_weight = 700, size = config.fontSize + 1 },
     slider_row {
       glyph = function() return require("bar_glyphs").volume_glyph() end,
       title = "Output", subtitle = function()

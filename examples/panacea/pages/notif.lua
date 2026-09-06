@@ -10,6 +10,14 @@ local C = theme.color
 
 local page = {}
 
+page.title = "Notifications"
+page.icon = "󰂚"
+page.subtitle = function()
+  local n = notify.count:get()
+  if notify.silent:get() then return "Do not disturb is on" end
+  return n == 0 and "Nothing yet" or (n .. (n == 1 and " notification" or " notifications"))
+end
+
 function page.build(island)
   local W = S(config.panelW) - S(32)
   local function row(entry)
@@ -60,8 +68,6 @@ function page.build(island)
     gap = S(10),
     ui.Item {
       width = W, height = S(32),
-      theme.text { text = "Notifications", font_weight = 700, size = config.fontSize + 1,
-        anchors = { left = true, left_margin = S(4), top = true, top_margin = S(6) } },
       ui.Row {
         gap = S(8), align = "center", anchors = { right = true },
         theme.button {

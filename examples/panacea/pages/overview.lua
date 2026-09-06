@@ -13,6 +13,14 @@ local S = theme.S
 local C = theme.color
 
 local page = {}
+page.slots = {}
+
+page.title = "Workspaces"
+page.icon = "󰕰"
+page.subtitle = function()
+  local n = page.tiles:len()
+  return n == 0 and "Nothing reported yet" or ("Click one to go there")
+end
 
 page.tiles = morf.list_model({})
 local COLUMNS = 4
@@ -103,7 +111,13 @@ function page.build(island)
         anchors = { left = true, top = true, margins = S(12) },
         ui.Item {
           width = TILE_W - S(24), height = S(18),
-          theme.text { text = item.label, font_weight = 700, anchors = { left = true } },
+          item.active and (function()
+            -- The strip's workspace number lands here.
+            local label_slot = ui.Item { width = S(30), height = S(18), anchors = { left = true } }
+            page.slots.ws = { node = label_slot, size = config.fontSize, weight = 700 }
+            require("island").slots_changed:set(require("island").slots_changed:get() + 1)
+            return label_slot
+          end)() or theme.text { text = item.label, font_weight = 700, anchors = { left = true } },
           theme.text {
             text = item.count == 0 and "empty" or string.format("%d window%s", item.count, item.count == 1 and "" or "s"),
             size = config.fontSize - 5, color = C.muted, anchors = { right = true, top = true, top_margin = S(3) },
@@ -115,7 +129,6 @@ function page.build(island)
   end
   return ui.Column {
     gap = S(10),
-    theme.text { text = "Workspaces", font_weight = 700, size = config.fontSize + 1 },
     ui.Repeater { as = "grid", columns = COLUMNS, gap = S(10), model = page.tiles, delegate = tile },
     theme.text { text = "No workspaces reported", size = config.fontSize - 2, color = C.faint,
       visible = function() return page.tiles:len() == 0 end },

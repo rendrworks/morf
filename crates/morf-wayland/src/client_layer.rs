@@ -327,6 +327,26 @@ impl LayerClient {
         region.destroy();
     }
 
+    /// Changes what keyboard focus one open layer surface asks for, and
+    /// commits it, so a shell can take the keyboard while a page of it is
+    /// open and give it back after. A compositor re-reads the policy on
+    /// the commit; Hyprland focuses a surface that becomes exclusive and
+    /// returns focus when it stops being so. False when the surface is
+    /// not a layer surface.
+    pub fn set_layer_keyboard_focus(&self, id: u64, focus: KeyboardFocus) -> bool {
+        let Some(layer) = self
+            .state
+            .layers
+            .get(&id)
+            .and_then(|record| record.surface.as_layer())
+        else {
+            return false;
+        };
+        layer.set_keyboard_interactivity(layer_interactivity(focus));
+        layer.wl_surface().commit();
+        true
+    }
+
     /// Applies the default, empty, or rectangular input region to one surface.
     pub fn set_layer_input_region(&self, id: u64, rectangles: Option<&[InputRect]>) {
         let Some(surface) = self.layer_surface(id) else {

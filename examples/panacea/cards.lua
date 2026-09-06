@@ -67,11 +67,14 @@ local function card(row)
 end
 
 function cards.build()
+  local island = require("island")
   return ui.Flex {
     direction = "row",
     justify = "center",
     align = "start",
     anchors = { left = true, right = true, top = true, top_margin = S(config.pillH) + S(10) },
+    -- Under the strip only; a page has the room.
+    visible = function() return island.page:get() == "" end,
     ui.Repeater {
       as = "column",
       gap = S(8),

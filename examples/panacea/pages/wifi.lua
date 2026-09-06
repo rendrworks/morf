@@ -15,6 +15,14 @@ local state = system.state
 
 local page = {}
 
+page.title = "Wi-Fi"
+page.icon = "󰤨"
+page.subtitle = function()
+  if page.status:get() ~= "" then return page.status:get() end
+  if page.scanning:get() then return "Scanning…" end
+  return state.network.kind == "wifi" and ("Connected to " .. state.network.name) or "Not connected"
+end
+
 page.networks = morf.list_model({})
 page.status = morf.signal("panacea.wifi.status", "")
 page.scanning = morf.signal("panacea.wifi.scanning", false)
@@ -176,6 +184,11 @@ function page.on_open()
   page.scan()
 end
 
+-- A fresh scan every so often while the page is open.
+morf.timer(12000, function()
+  if require("island").page:get() == "wifi" then page.scan() end
+end, true)
+
 function page.on_close()
   page.asking:set("")
 end
@@ -221,28 +234,6 @@ function page.build(island)
 
   return ui.Column {
     gap = S(10),
-    ui.Item {
-      width = W, height = S(30),
-      ui.Column {
-        gap = S(2), anchors = { left = true, left_margin = S(4) },
-        theme.text { text = "Wi-Fi", font_weight = 700, size = config.fontSize + 1 },
-        theme.text {
-          size = config.fontSize - 4, color = C.muted,
-          text = function()
-            if page.status:get() ~= "" then return page.status:get() end
-            if page.scanning:get() then return "Scanning…" end
-            return state.network.kind == "wifi" and ("Connected to " .. state.network.name) or "Not connected"
-          end,
-        },
-      },
-      theme.button {
-        width = S(36), height = S(30), radius = 10,
-        anchors = { right = true },
-        on_click = page.scan,
-        theme.icon { text = "󰑐", size = config.iconSize - 3, anchors = { center_in = true },
-          color = function() return page.scanning:get() and C.faint or C.muted end },
-      },
-    },
     ui.Column {
       gap = S(6),
       visible = function() return page.asking:get() ~= "" end,

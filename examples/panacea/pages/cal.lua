@@ -11,6 +11,19 @@ local C = theme.color
 
 local page = {}
 
+page.title = function() return theme.clock:format("%A") end
+page.icon = "󰃭"
+page.subtitle = function()
+  local line = theme.clock:format(config.clockDateFmt .. " %Y")
+  if config.weatherLocation ~= "" then
+    local ok, weather = pcall(require, "weather")
+    if ok and weather.state.temperature ~= "" then
+      line = line .. "  ·  " .. weather.state.temperature .. " " .. weather.state.description
+    end
+  end
+  return line
+end
+
 local calendar = morf.state { year = 2026, month = 1, today = 1, today_month = 1, today_year = 2026 }
 local MONTHS = { "January", "February", "March", "April", "May", "June", "July", "August",
   "September", "October", "November", "December" }
@@ -106,20 +119,6 @@ function page.build(island)
   end
   return ui.Column {
     gap = S(10),
-    ui.Item {
-      width = W, height = S(44),
-      ui.Column {
-        gap = S(2), anchors = { left = true, left_margin = S(4) },
-        theme.text { text = function() return theme.clock:format("%A") end, font_weight = 700, size = config.fontSize + 1 },
-        theme.text { text = function() return theme.clock:format(config.clockDateFmt .. " %Y") end, size = config.fontSize - 3, color = C.muted },
-      },
-      weather and ui.Row {
-        gap = S(8), align = "center", anchors = { right = true, top = true, top_margin = S(6) },
-        theme.icon { text = function() return weather.glyph end, size = config.iconSize },
-        theme.text { text = function() return weather.temperature ~= "" and weather.temperature or "--" end, font_weight = 700 },
-        theme.text { text = function() return weather.description end, size = config.fontSize - 4, color = C.muted },
-      } or nil,
-    },
     ui.Item {
       width = W, height = S(30),
       ui.Item {

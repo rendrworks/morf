@@ -14,6 +14,10 @@ local C = theme.color
 local state = system.state
 
 local page = {}
+page.slots = {}
+
+page.title = "Battery"
+page.icon = "󰁹"
 
 page.profile = morf.signal("panacea.battery.profile", "")
 page.info = morf.state { capacity = "—", health = "—", rate = "—", available = false, profiles = false }
@@ -78,6 +82,14 @@ end
 poll()
 morf.timer(30000, poll, true)
 
+page.subtitle = function()
+  if not state.battery.present then return "No battery" end
+  if state.battery.charging then return "Charging" end
+  local profile = page.profile:get()
+  if profile ~= "" then return pretty(profile) end
+  return state.battery.plugged and "Plugged in" or "On battery"
+end
+
 function page.build(island)
   local W = S(config.panelW) - S(32)
   local third = math.floor((W - S(8) * 2) / 3)
@@ -114,26 +126,23 @@ function page.build(island)
   end
   return ui.Column {
     gap = S(10),
-    ui.Item {
-      width = W, height = S(28),
-      theme.text { text = "Battery", font_weight = 700, size = config.fontSize + 1, anchors = { left = true, left_margin = S(4), top = true, top_margin = S(4) } },
-      ui.Item {
-        width = S(28), height = S(28), anchors = { right = true },
-        theme.icon { text = "󰑐", size = config.iconSize - 3, color = C.muted, anchors = { center_in = true } },
-        ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = poll },
-      },
-    },
     theme.card {
       width = W, height = S(64),
       ui.Row {
         gap = S(14), align = "center", height = S(64),
         anchors = { left = true, left_margin = S(14) },
-        theme.icon { text = function() return require("bar_glyphs").battery_glyph() end, size = config.iconSize + 2,
-          color = function() return state.battery.charging and C.ok or C.fg end },
+        (function()
+          local icon_slot = ui.Item { width = S(config.iconSize + 2), height = S(config.iconSize + 2) }
+          page.slots.battery_glyph = { node = icon_slot, size = config.iconSize + 2 }
+          return icon_slot
+        end)(),
         ui.Column {
           gap = S(2),
-          theme.text { text = function() return state.battery.present and (state.battery.percent .. "%") or "No battery" end,
-            size = config.fontSize + 4, font_weight = 700 },
+          (function()
+            local text_slot = ui.Item { width = S(80), height = S((config.fontSize + 4) * 1.3) }
+            page.slots.battery_text = { node = text_slot, size = config.fontSize + 4, weight = 700 }
+            return text_slot
+          end)(),
           theme.text {
             size = config.fontSize - 3, color = C.muted,
             text = function()

@@ -8,12 +8,17 @@ local config = require("config")
 local theme = require("theme")
 local system = require("system")
 local media = require("media")
+local bars = require("bars")
 
 local S = theme.S
 local C = theme.color
 local state = system.state
 
 local page = {}
+
+-- The clock stays a clock here, large; the day becomes the date.
+page.big = true
+page.subtitle = function() return theme.clock:format("%A, " .. config.clockDateFmt) end
 
 local W = S(config.panelW) - S(16) * 2
 local GAP = S(8)
@@ -42,7 +47,11 @@ local function set_coffee(on)
   end
 end
 
---- A tile: a round icon, a title, a line under it, a tint when on.
+page.slots = {}
+
+--- A tile: a round icon, a title, a line under it, a tint when on. With
+--- `slot`, the icon and the title are left empty for a piece of the strip
+--- to land on, and the page says where.
 local function tile(values)
   local width = values.width
   local on = values.on or function() return false end
@@ -62,12 +71,20 @@ local function tile(values)
         width = S(38), height = S(38), radius = S(19),
         color = function() return on() and icon_on or C.card_hover end,
         behavior = { color = theme.motion.hover },
-        theme.icon { text = values.icon, size = config.iconSize, anchors = { center_in = true },
+        values.slot and (function()
+          local icon_slot = ui.Item { width = S(config.iconSize), height = S(config.iconSize), anchors = { center_in = true } }
+          page.slots[values.slot .. "_glyph"] = { node = icon_slot, size = config.iconSize }
+          return icon_slot
+        end)() or theme.icon { text = values.icon, size = config.iconSize, anchors = { center_in = true },
           color = function() return on() and C.fg or C.muted end },
       },
       ui.Column {
         gap = S(2),
-        theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1,
+        values.slot and (function()
+          local title_slot = ui.Item { width = width - S(72), height = S((config.fontSize - 1) * 1.3) }
+          page.slots[values.slot .. "_text"] = { node = title_slot, size = config.fontSize - 1, weight = 700 }
+          return title_slot
+        end)() or theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1,
           width = width - S(72), elide = "right" },
         theme.text { text = values.subtitle, size = config.fontSize - 4, color = C.muted,
           width = width - S(72), elide = "right" },
@@ -86,42 +103,27 @@ local function small_button(glyph, on_click, lit)
   }
 end
 
+function page.on_open()
+  bars.start()
+end
+
 function page.build(island)
   local third = math.floor((W - GAP * 2) / 3)
   local half = math.floor((W - GAP) / 2)
   local notify = require("notify")
   local m = media.state
 
-  local header = ui.Item {
-    width = W, height = S(52),
-    ui.Row {
-      gap = S(14), align = "start",
-      theme.text {
-        text = function() return theme.clock:format(config.clock12 and "%I:%M" or "%H:%M") end,
-        size = 26, font_weight = 700,
-      },
-      ui.Column {
-        gap = S(2),
-        ui.Item { width = 1, height = S(8) },
-        theme.text {
-          text = function() return theme.clock:format("%A, " .. config.clockDateFmt) end,
-          size = config.fontSize - 2, color = C.muted,
-        },
-        ui.Item {
-          height = S(18),
-          theme.text { text = "Calendar", size = config.fontSize - 4, color = C.on },
-          ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = function() island.open("cal") end },
-        },
-      },
-    },
-  }
-
-  -- Now playing, when something is.
+  -- Now playing, when something is: the card opens the player, and its
+  -- equaliser is the seek bar.
   local player = theme.card {
-    width = W, height = S(64),
+    width = W, height = S(88),
     visible = function() return m.present end,
+    ui.MouseArea {
+      anchors = { fill = true }, z = -1, cursor = "pointer",
+      on_clicked = function() island.open("media") end,
+    },
     ui.Row {
-      gap = S(12), align = "center", height = S(64),
+      gap = S(12), align = "center", height = S(60),
       anchors = { left = true, left_margin = S(10) },
       ui.ClipRect {
         width = S(44), height = S(44), radius = S(10), color = C.card_hover,
@@ -136,19 +138,23 @@ function page.build(island)
       },
     },
     ui.Row {
-      gap = S(2), align = "center", height = S(64),
+      gap = S(2), align = "center", height = S(60),
       anchors = { right = true, right_margin = S(8) },
       small_button("󰒮", media.previous),
       small_button(function() return m.status == "Playing" and "󰏤" or "󰐊" end, media.play_pause),
       small_button("󰒭", media.next),
     },
-    ui.Rect {
-      height = S(3), color = C.on, radius = S(2),
-      anchors = { left = true, bottom = true, left_margin = S(10), bottom_margin = S(4) },
-      width = function()
-        local _ = morf.clock and morf.clock:get()
-        return math.max(S(3), media.progress() * (W - S(20)))
-      end,
+    ui.Item {
+      anchors = { left = true, bottom = true, left_margin = S(10), bottom_margin = S(6) },
+      bars.build {
+        width = W - S(20), height = S(18),
+        playing = function() return m.status == "Playing" end,
+        progress = function()
+          local _ = morf.clock and morf.clock:get()
+          return media.progress()
+        end,
+        seek = media.seek,
+      },
     },
   }
 
@@ -233,7 +239,7 @@ function page.build(island)
     },
     tile {
       width = half,
-      icon = function() return state.battery.charging and "󰂄" or "󰁹" end,
+      slot = "battery",
       icon_color = C.ok,
       tint = C.ok_tint, edge = C.ok:alpha(0.5),
       title = function() return state.battery.present and (state.battery.percent .. "%") or "Power" end,
@@ -273,13 +279,14 @@ function page.build(island)
     small_button("󰒓", function() island.open("settings") end),
   }
 
+  local tray = require("tray")
   return ui.Column {
     gap = S(10),
-    header,
     player,
     tiles1,
     tiles2,
     row3,
+    tray.build(S(config.iconSize + 2)),
   }
 end
 

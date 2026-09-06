@@ -13,6 +13,9 @@ local C = theme.color
 
 local page = {}
 
+page.title = "Settings"
+page.icon = "󰒓"
+
 page.section = morf.signal("panacea.settings.section", "island")
 page.saved = morf.signal("panacea.settings.saved", "")
 
@@ -60,6 +63,13 @@ local function reset()
   draft.fontSize, draft.iconSize, draft.colOn, draft.colFg, draft.mutedAlpha, draft.themeId = 15, 17, "#3b82f6", "#ffffff", 0.45, "default"
   draft.animMove, draft.animBounce, draft.reduceMotion = 230, 79, false
   draft.notifTimeout, draft.notifDnd = 5000, false
+end
+
+page.subtitle = function()
+  for _, section in ipairs(SECTIONS) do
+    if section.id == page.section:get() then return section.label end
+  end
+  return ""
 end
 
 function page.build(island)
@@ -209,15 +219,6 @@ function page.build(island)
       gap = S(12),
       ui.Item {
         width = BODY, height = S(30),
-        theme.text {
-          size = config.fontSize - 3, color = C.muted, anchors = { left = true, top = true, top_margin = S(6) },
-          text = function()
-            for _, section in ipairs(SECTIONS) do
-              if section.id == page.section:get() then return "Panacea · " .. section.label end
-            end
-            return "Panacea"
-          end,
-        },
         ui.Row {
           gap = S(8), anchors = { right = true },
           theme.button { width = S(80), height = S(30), radius = 10, color = C.on_tint, on_click = apply,

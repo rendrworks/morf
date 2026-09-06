@@ -348,6 +348,16 @@ pub(crate) fn auto_exclusive_zone(surface: &LayerSurfaceConfig) -> i32 {
     }
 }
 
+/// The focus policy a configuration's word names.
+pub(crate) fn keyboard_focus_of(value: &str) -> Option<KeyboardFocus> {
+    match value {
+        "none" => Some(KeyboardFocus::None),
+        "exclusive" => Some(KeyboardFocus::Exclusive),
+        "on_demand" => Some(KeyboardFocus::OnDemand),
+        _ => None,
+    }
+}
+
 pub(crate) fn runtime_bar_config(
     surface: &LayerSurfaceConfig,
     output: &str,
@@ -359,12 +369,12 @@ pub(crate) fn runtime_bar_config(
         "overlay" => ShellLayer::Overlay,
         value => return Err(format!("unsupported layer surface layer `{value}`")),
     };
-    let keyboard_focus = match surface.keyboard_focus.as_str() {
-        "none" => KeyboardFocus::None,
-        "exclusive" => KeyboardFocus::Exclusive,
-        "on_demand" => KeyboardFocus::OnDemand,
-        value => return Err(format!("unsupported keyboard focus policy `{value}`")),
-    };
+    let keyboard_focus = keyboard_focus_of(&surface.keyboard_focus).ok_or_else(|| {
+        format!(
+            "unsupported keyboard focus policy `{}`",
+            surface.keyboard_focus
+        )
+    })?;
     Ok(BarConfig {
         namespace: surface.namespace.clone(),
         width: surface.width,

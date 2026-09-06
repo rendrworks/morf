@@ -13,6 +13,15 @@ local state = system.state
 
 local page = {}
 
+page.title = "Bluetooth"
+page.icon = "󰂯"
+page.subtitle = function()
+  if not state.bluetooth.present then return "No adapter" end
+  if not state.bluetooth.powered then return "Off" end
+  if page.scanning:get() then return "Looking for devices…" end
+  return "Visible as " .. state.bluetooth.adapter_name
+end
+
 page.devices = morf.list_model({})
 page.scanning = morf.signal("panacea.bt.scanning", false)
 
@@ -108,22 +117,10 @@ function page.build(island)
   return ui.Column {
     gap = S(10),
     ui.Item {
-      width = W, height = S(30),
-      ui.Column {
-        gap = S(2), anchors = { left = true, left_margin = S(4) },
-        theme.text { text = "Bluetooth", font_weight = 700, size = config.fontSize + 1 },
-        theme.text {
-          size = config.fontSize - 4, color = C.muted,
-          text = function()
-            if not state.bluetooth.present then return "No adapter" end
-            if not state.bluetooth.powered then return "Off" end
-            if page.scanning:get() then return "Looking for devices…" end
-            return "Visible as " .. state.bluetooth.adapter_name
-          end,
-        },
-      },
+      width = W, height = S(26),
+      theme.text { text = "Adapter", size = config.fontSize - 3, color = C.muted, anchors = { left = true, top = true, top_margin = S(4) } },
       ui.Item {
-        anchors = { right = true, top = true, top_margin = S(3) },
+        anchors = { right = true },
         theme.toggle(function() return state.bluetooth.powered end, function(on)
           system.set_bluetooth_power(on)
           morf.timer(800, page.refresh, false)

@@ -13,6 +13,9 @@ local C = theme.color
 
 local page = {}
 
+page.title = "Power"
+page.icon = "󰐥"
+
 page.armed = morf.signal("panacea.power.armed", 0)
 page.current = morf.signal("panacea.power.current", 1)
 local armed_clock = morf.elapsed_timer()
@@ -56,6 +59,12 @@ function page.on_open()
   page.current:set(1)
 end
 
+page.subtitle = function()
+  local armed = page.armed:get()
+  if armed ~= 0 then return "Once more to confirm: " .. ACTIONS[armed].label end
+  return "Sleep, lock, log out, restart or shut down"
+end
+
 function page.build(island)
   local W = S(config.panelW) - S(32)
   local cell = math.floor((W - S(8) * (#ACTIONS - 1)) / #ACTIONS)
@@ -83,18 +92,6 @@ function page.build(island)
   end
   return ui.Column {
     gap = S(12),
-    ui.Item {
-      width = W, height = S(20),
-      theme.text {
-        size = config.fontSize - 2, anchors = { center_in = true },
-        color = function() return page.armed:get() ~= 0 and C.fg or C.muted end,
-        text = function()
-          local armed = page.armed:get()
-          if armed ~= 0 then return "Once more to confirm: " .. ACTIONS[armed].label end
-          return "Sleep, lock, log out, restart or shut down"
-        end,
-      },
-    },
     ui.Row { gap = S(8), table.unpack(buttons) },
   }
 end
