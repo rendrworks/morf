@@ -115,10 +115,10 @@ function kit.row(values)
       color = function() return active() and accent or C.card_hover end,
       -- The circle grows and tilts under the pointer, pops as the row
       -- turns, and with `spin` turns over as the row turns on.
-      scale = function() return pop:get() and 1.22 or (hovered:get() and 1.12 or 1) end,
+      scale = function() return pop:get() and 1.3 or (hovered:get() and 1.25 or 1) end,
       rotation = function()
         local turn = (values.spin and active()) and 360 or 0
-        return turn + (hovered:get() and -8 or 0)
+        return turn + (hovered:get() and -15 or 0)
       end,
       behavior = { color = motion.fade, scale = motion.snappy,
         rotation = { duration = config.reduceMotion and 1 or 520, easing = "out_back" } },
@@ -126,8 +126,11 @@ function kit.row(values)
         or theme.icon { text = values.icon, size = config.iconSize - 1, anchors = { center_in = true }, color = ink },
     }
   end
+  -- The words step right a little under the pointer, after the circle.
   local title = values.title_node or theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1,
-    width = room, elide = "right" }
+    width = room, elide = "right",
+    translate_x = function() return hovered:get() and S(4) or 0 end,
+    behavior = { translate_x = motion.snappy } }
   -- A row with no second line centres its title; one with a second line
   -- keeps it even when the line is empty for the moment, so rows in a
   -- list stay level.
@@ -160,7 +163,7 @@ function kit.row(values)
       anchors = { right = true },
       -- The right end nudges outward under the pointer: a chevron points
       -- where a tap goes.
-      translate_x = function() return hovered:get() and S(3) or 0 end,
+      translate_x = function() return hovered:get() and S(7) or 0 end,
       behavior = { translate_x = motion.snappy },
       values.right,
     }
@@ -354,8 +357,8 @@ function kit.icon_button(glyph, on_click, lit)
     -- The glyph tilts and grows under the pointer, and springs back.
     theme.icon { text = glyph, size = config.iconSize - 2, anchors = { center_in = true },
       color = function() return (lit and lit()) and C.on or (hovered:get() and C.fg or C.muted) end,
-      scale = function() return hovered:get() and 1.2 or 1 end,
-      rotation = function() return hovered:get() and 12 or 0 end,
+      scale = function() return hovered:get() and 1.35 or 1 end,
+      rotation = function() return hovered:get() and 20 or 0 end,
       behavior = { color = motion.hover, scale = motion.snappy,
         rotation = { duration = config.reduceMotion and 1 or 380, easing = "out_back" } } },
   }

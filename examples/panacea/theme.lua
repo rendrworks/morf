@@ -237,8 +237,8 @@ function theme.button(values)
     return hovered:get() and lit or rest
   end
   -- Under the pointer a button grows a little and lifts; pressed it sinks.
-  values.scale = function() return down:get() and 0.97 or (hovered:get() and 1.025 or 1) end
-  values.translate_y = values.translate_y or function() return hovered:get() and -S(1.5) or 0 end
+  values.scale = function() return down:get() and 0.96 or (hovered:get() and 1.05 or 1) end
+  values.translate_y = values.translate_y or function() return hovered:get() and -S(3) or 0 end
   values.behavior = values.behavior or { color = motion.hover, scale = motion.snappy }
   values.behavior.scale = values.behavior.scale or motion.snappy
   values.behavior.translate_y = values.behavior.translate_y or motion.snappy
