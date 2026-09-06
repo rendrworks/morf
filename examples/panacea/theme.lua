@@ -239,6 +239,8 @@ function theme.button(values)
   values.scale = function() return down:get() and 0.97 or 1 end
   values.behavior = values.behavior or { color = motion.hover, scale = motion.snappy }
   values.radius = S(values.radius or config.cornerR)
+  local on_wheel = values.on_wheel
+  values.on_wheel = nil
   values[#values + 1] = ui.MouseArea {
     anchors = { fill = true },
     cursor = "pointer",
@@ -247,6 +249,8 @@ function theme.button(values)
     on_pressed = function() down:set(true) end,
     on_released = function() down:set(false) end,
     on_clicked = function() if on_click then on_click() end end,
+    -- A wheel over a button is meant for the page under it.
+    on_wheel = on_wheel or function(...) theme.wheel(...) end,
   }
   return ui.Rect(values)
 end
@@ -317,19 +321,29 @@ function theme.slider_row(values)
   }
 end
 
---- The pill switch: a track with a knob that slides to the right when on.
+--- Where a wheel goes when the thing under the pointer has no use for
+--- it: the open page's scroller. The island fills this in.
+theme.wheel = function() end
+
+--- The switch: a track that fills with the accent, and a knob that slides
+--- across and grows as it turns on, on a spring with a little overshoot.
 function theme.toggle(on, set)
-  local W, H = S(44), S(24)
-  local KNOB = S(18)
+  local W, H = S(46), S(26)
+  local OFF, ON = S(14), S(20)
   return ui.Rect {
     width = W, height = H, radius = H / 2,
     color = function() return on() and C.on or C.faint end,
-    behavior = { color = motion.hover },
+    border_width = 1,
+    border_color = function() return on() and C.on or C.muted end,
+    behavior = { color = motion.fade, border_color = motion.fade },
     ui.Rect {
-      width = KNOB, height = KNOB, radius = KNOB / 2, color = C.fg,
-      y = (H - KNOB) / 2,
-      x = function() return on() and (W - KNOB - S(3)) or S(3) end,
-      behavior = { x = motion.move },
+      radius = S(10),
+      width = function() return on() and ON or OFF end,
+      height = function() return on() and ON or OFF end,
+      color = function() return on() and C.bg or C.fg end,
+      y = function() return (H - (on() and ON or OFF)) / 2 end,
+      x = function() return on() and (W - ON - S(3)) or S(6) end,
+      behavior = { x = motion.move, width = motion.move, height = motion.move, y = motion.move, color = motion.fade },
     },
     ui.MouseArea {
       anchors = { fill = true }, cursor = "pointer",
@@ -340,14 +354,20 @@ end
 
 --- A slider: track, fill and a round knob. `fraction()` reads, `set(f)`
 --- writes on press, drag and wheel.
+--- A slider, the way a phone draws one now: a thick track that fills
+--- with the accent up to a thin bar for a handle, which grows while it
+--- is held. `fraction()` reads, `set(f)` writes on press, drag and wheel.
+local slider_count = 0
 function theme.slider(values)
   local width = values.width
-  local height = values.height or S(22)
-  local track_h = values.track or S(6)
-  local knob = values.knob or S(14)
+  local height = values.height or S(24)
+  local track_h = values.track or S(12)
+  local BAR_W = S(4)
   local fraction, set = values.fraction, values.set
-  local dragging = false
-  local function at(local_x) return math.max(0, math.min(1, (local_x - knob / 2) / (width - knob))) end
+  slider_count = slider_count + 1
+  local held = morf.signal("panacea.slider.held." .. slider_count, false)
+  local hover = morf.signal("panacea.slider.hover." .. slider_count, false)
+  local function at(local_x) return math.max(0, math.min(1, (local_x - BAR_W) / (width - BAR_W * 2))) end
   return ui.Item {
     width = width, height = height,
     ui.Rect {
@@ -360,16 +380,22 @@ function theme.slider(values)
       },
     },
     ui.Rect {
-      width = knob, height = knob, radius = knob / 2, color = C.fg,
-      y = (height - knob) / 2,
-      x = function() return fraction() * (width - knob) end,
-      behavior = { x = motion.hover },
+      width = BAR_W, radius = BAR_W / 2, color = C.fg,
+      height = function() return held:get() and (track_h + S(14)) or (hover:get() and track_h + S(10) or track_h + S(6)) end,
+      y = function()
+        local h = held:get() and (track_h + S(14)) or (hover:get() and track_h + S(10) or track_h + S(6))
+        return (height - h) / 2
+      end,
+      x = function() return BAR_W + fraction() * (width - BAR_W * 2) - BAR_W / 2 end,
+      behavior = { x = motion.hover, height = motion.snappy, y = motion.snappy },
     },
     ui.MouseArea {
       anchors = { fill = true }, cursor = "pointer",
-      on_pressed = function(_, _, local_x) dragging = true set(at(local_x)) end,
-      on_dragged = function(_, _, local_x) if dragging then set(at(local_x)) end end,
-      on_released = function() dragging = false end,
+      on_entered = function() hover:set(true) end,
+      on_exited = function() hover:set(false) end,
+      on_pressed = function(_, _, local_x) held:set(true) set(at(local_x)) end,
+      on_dragged = function(_, _, local_x) if held:get() then set(at(local_x)) end end,
+      on_released = function() held:set(false) end,
       on_wheel = function(_, _, _, _, _, steps_y)
         if steps_y ~= 0 then set(math.max(0, math.min(1, fraction() - steps_y * 0.05))) end
       end,

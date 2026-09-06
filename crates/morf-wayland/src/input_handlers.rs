@@ -1,7 +1,9 @@
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers,
 };
-use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::pointer::{
+    AxisScroll, PointerEvent, PointerEventKind, PointerHandler,
+};
 use smithay_client_toolkit::seat::touch::TouchHandler;
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_surface, wl_touch};
@@ -143,14 +145,25 @@ impl PointerHandler for LayerState {
                     ..
                 } => {
                     if !horizontal.is_none() || !vertical.is_none() {
+                        // A wheel notch arrives as `discrete` from an older
+                        // compositor and as `value120` (a notch is 120) from
+                        // a newer one; a configuration counts notches either
+                        // way.
+                        let steps = |axis: &AxisScroll| {
+                            if axis.discrete != 0 {
+                                axis.discrete
+                            } else {
+                                axis.value120 / 120
+                            }
+                        };
                         self.events.push_back(LayerEvent::PointerAxis {
                             surface,
                             x,
                             y,
                             horizontal: horizontal.absolute,
                             vertical: vertical.absolute,
-                            horizontal_steps: horizontal.discrete,
-                            vertical_steps: vertical.discrete,
+                            horizontal_steps: steps(&horizontal),
+                            vertical_steps: steps(&vertical),
                         });
                     }
                 }

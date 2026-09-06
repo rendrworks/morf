@@ -250,17 +250,35 @@ local function build_pages()
     -- The content grows out of the strip rather than fading in: it starts
     -- small under the title and springs to size.
     local mounted = theme.mounted(shown)
+    -- A page taller than the island scrolls: the content slides up inside
+    -- a clip on a spring, by the wheel, as far as its last row.
+    local scroll = morf.signal("panacea.page.scroll." .. name, 0)
+    local function room() return S(config.expandedH) - top - PAD end
+    local function visible_h() return math.min(content.layout_height or 0, room()) end
     local node = ui.Item {
       anchors = { left = true, top = true, right = true, left_margin = PAD, right_margin = PAD, top_margin = top },
+      height = visible_h,
       visible = function() return shown:get() or mounted:get() end,
       opacity = function() return shown:get() and 1 or 0 end,
       translate_y = function() return shown:get() and 0 or -S(40) end,
       scale = function() return shown:get() and 1 or 0.7 end,
       transform_origin_y = 0,
       behavior = { opacity = { duration = 90 }, translate_y = motion.move, scale = motion.move },
-      content,
+      ui.ClipRect {
+        anchors = { fill = true }, color = "transparent",
+        ui.Item {
+          anchors = { left = true, top = true, right = true },
+          translate_y = function() return -scroll:get() end,
+          behavior = { translate_y = motion.move },
+          content,
+        },
+        ui.MouseArea {
+          anchors = { fill = true }, z = -1,
+          on_wheel = function(sx, sy, px, py, steps_x, steps_y) theme.wheel(sx, sy, px, py, steps_x, steps_y) end,
+        },
+      },
     }
-    page_nodes[name] = { node = node, shown = shown, content = content, top = top }
+    page_nodes[name] = { node = node, shown = shown, content = content, top = top, scroll = scroll, room = room }
     nodes[#nodes + 1] = node
   end
   return nodes
@@ -606,6 +624,15 @@ end
 -- Filled by init: opens and closes the expanded surface.
 island.surface = { open = function() end, close = function() end }
 
+--- Scrolls the open page by `steps` notches of the wheel.
+function island.scroll_by(steps)
+  local entry = page_nodes[island.page:get()]
+  if not entry or steps == 0 then return end
+  local most = math.max(0, (entry.content.layout_height or 0) - entry.room())
+  entry.scroll:set(math.max(0, math.min(most, entry.scroll:get() + steps * S(64))))
+end
+theme.wheel = function(_, _, _, _, _, steps_y) island.scroll_by(steps_y) end
+
 function island.open(name, going_back)
   if not island.pages[name] then return false end
   local current = island.page:get()
@@ -624,6 +651,7 @@ function island.open(name, going_back)
   island.depth:set(#island.history)
   local entry = page_nodes[name]
   if not entry then return false end
+  entry.scroll:set(0)
   island.expanded:set(true)
   island.surface.open()
   island.page:set(name)

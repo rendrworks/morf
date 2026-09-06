@@ -291,6 +291,9 @@ function tiles.pill(entry, width, island, slots, stagger)
     on_right_click = entry.page and open_page or nil,
     translate_y = stagger and function() return open_now() and 0 or S(18 + 7 * stagger) end or nil,
     opacity = stagger and function() return open_now() and 1 or 0 end or nil,
+    on_wheel = function(sx, sy, px, py, steps_x, steps_y)
+      if steps_x ~= 0 and tiles.turn then tiles.turn(steps_x > 0 and 1 or -1) else theme.wheel(sx, sy, px, py, steps_x, steps_y) end
+    end,
   }
   if entry.page then values.right = kit.chevron(open_page, entry.toggle ~= nil) end
   if entry.slot then
@@ -339,6 +342,7 @@ function tiles.build(island, width, slots)
   end
   local page = morf.signal("panacea.tiles.page", 0)
   local function turn(by) page:set(math.max(0, math.min(#pages - 1, page:get() + by))) end
+  tiles.turn = turn
   local strip = {}
   for index, nodes in ipairs(pages) do
     strip[index] = ui.Flex { direction = "row", wrap = true, gap = GAP, width = width, table.unpack(nodes) }
@@ -367,9 +371,8 @@ function tiles.build(island, width, slots)
       },
       ui.MouseArea {
         anchors = { fill = true }, z = -1,
-        on_wheel = function(_, _, _, _, steps_x, steps_y)
-          local by = steps_y ~= 0 and steps_y or steps_x
-          if by ~= 0 then turn(by > 0 and 1 or -1) end
+        on_wheel = function(sx, sy, px, py, steps_x, steps_y)
+          if steps_x ~= 0 then turn(steps_x > 0 and 1 or -1) else theme.wheel(sx, sy, px, py, steps_x, steps_y) end
         end,
       },
     },

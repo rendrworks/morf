@@ -4,6 +4,7 @@
 -- A page is a column of these at one gap, and so every page is the same
 -- page with different words in it.
 
+local morf = require("morf")
 local ui = require("morf.ui")
 local config = require("config")
 local theme = require("theme")
@@ -25,6 +26,53 @@ local function call(value)
   return value
 end
 
+--- A glyph that morphs into the next one its function says, in a
+--- distance field: the bell into the crossed bell, the wave into the
+--- crossed wave. The in-between frames are shapes neither glyph is.
+local glyph_count = 0
+function kit.glyph(size, glyph, color)
+  glyph_count = glyph_count + 1
+  local progress = morf.signal("panacea.kit.glyph." .. glyph_count, 0)
+  local current = call(glyph) or ""
+  if current == "" then current = "󰇘" end
+  local shape = ui.SdfShape { anchors = { fill = true }, shape = "glyph", glyph = current, glyph_morph_to = current }
+  local pending = nil
+  local field = ui.Sdf {
+    width = size, height = size, anchors = { center_in = true },
+    fill_color = color,
+    morph_progress = function() return progress:get() end,
+    behavior = {
+      fill_color = motion.fade,
+      morph_progress = {
+        duration = config.reduceMotion and 1 or (config.animMove or 230) * 1.4, easing = "in_out_cubic",
+        on_finished = function()
+          if progress:get() >= 1 then
+            shape.glyph = shape.glyph_morph_to
+            progress:set(0)
+            if pending then
+              local next_glyph = pending
+              pending = nil
+              morf.timer(16, function() shape.glyph_morph_to = next_glyph progress:set(1) end, false)
+            end
+          end
+        end,
+      },
+    },
+    shape,
+  }
+  if type(glyph) == "function" then
+    theme.tick(function()
+      local want = glyph()
+      if want == nil or want == "" or want == current then return end
+      current = want
+      if progress:get() > 0 then pending = want return end
+      shape.glyph_morph_to = want
+      progress:set(1)
+    end)
+  end
+  return field
+end
+
 --- The row. `icon` at the left in a circle, `title` over `subtitle` (a
 --- row always has two lines: an empty second line is a blank, so rows
 --- line up), and `right` at the right end: a switch, a chevron, a figure,
@@ -38,16 +86,30 @@ function kit.row(values)
   local tint = values.tint or C.on_tint
   local edge = values.edge or C.on_edge
   local room = W - kit.PAD - kit.CIRCLE - S(12) - (values.right_w or S(56))
+  -- The circle pops when the row turns on or off: a little larger for a
+  -- moment, back on a spring.
+  local pop = morf.signal("panacea.kit.pop." .. tostring(values.title) .. tostring(glyph_count), false)
+  local was = active()
+  theme.tick(function()
+    local now = active()
+    if now ~= was then
+      was = now
+      pop:set(true)
+      morf.timer(120, function() pop:set(false) end, false)
+    end
+  end)
   local circle
   if values.icon_node then
     circle = values.icon_node
   else
+    local ink = function() return active() and C.bg or C.fg end
     circle = ui.Rect {
       width = kit.CIRCLE, height = kit.CIRCLE, radius = kit.CIRCLE / 2,
       color = function() return active() and accent or C.card_hover end,
-      behavior = { color = motion.hover },
-      theme.icon { text = values.icon, size = config.iconSize - 1, anchors = { center_in = true },
-        color = function() return active() and C.bg or C.fg end },
+      scale = function() return pop:get() and 1.22 or 1 end,
+      behavior = { color = motion.fade, scale = motion.snappy },
+      type(values.icon) == "function" and kit.glyph(S(config.iconSize - 1), values.icon, ink)
+        or theme.icon { text = values.icon, size = config.iconSize - 1, anchors = { center_in = true }, color = ink },
     }
   end
   local title = values.title_node or theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1,
@@ -94,14 +156,20 @@ function kit.row(values)
     width = W, height = H, radius = values.pill and H / 2 or kit.RADIUS,
     visible = values.visible,
     translate_y = values.translate_y, opacity = values.opacity,
-    color = function() return active() and tint or C.card end,
-    hover_color = function() return active() and tint or C.card_hover end,
-    border_width = 1,
-    border_color = function() return active() and edge or C.edge end,
-    on_click = values.on_click,
-    behavior = { color = motion.hover, scale = motion.snappy, border_color = motion.hover,
-      translate_y = motion.move, opacity = motion.fade },
+    -- A row arriving in a list rises into place.
+    enter = values.translate_y == nil and { opacity = 0, translate_y = S(14) } or nil,
+    on_wheel = values.on_wheel,
   }
+  if values.translate_y == nil then
+    rest.translate_y, rest.opacity = 0, 1
+  end
+  rest.color = function() return active() and tint or C.card end
+  rest.hover_color = function() return active() and tint or C.card_hover end
+  rest.border_width = 1
+  rest.border_color = function() return active() and edge or C.edge end
+  rest.on_click = values.on_click
+  rest.behavior = { color = motion.fade, scale = motion.snappy, border_color = motion.fade,
+    translate_y = motion.move, opacity = motion.fade }
   for _, child in ipairs(children) do rest[#rest + 1] = child end
   return theme.button(rest)
 end
