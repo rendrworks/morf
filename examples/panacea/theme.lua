@@ -236,16 +236,22 @@ function theme.button(values)
     if down:get() then return rest:mix(lit, 0.6) end
     return hovered:get() and lit or rest
   end
-  values.scale = function() return down:get() and 0.97 or 1 end
+  -- Under the pointer a button grows a little and lifts; pressed it sinks.
+  values.scale = function() return down:get() and 0.97 or (hovered:get() and 1.025 or 1) end
+  values.translate_y = values.translate_y or function() return hovered:get() and -S(1.5) or 0 end
   values.behavior = values.behavior or { color = motion.hover, scale = motion.snappy }
+  values.behavior.scale = values.behavior.scale or motion.snappy
+  values.behavior.translate_y = values.behavior.translate_y or motion.snappy
+  local on_hover = values.on_hover
+  values.on_hover = nil
   values.radius = S(values.radius or config.cornerR)
   local on_wheel = values.on_wheel
   values.on_wheel = nil
   values[#values + 1] = ui.MouseArea {
     anchors = { fill = true },
     cursor = "pointer",
-    on_entered = function() hovered:set(true) end,
-    on_exited = function() hovered:set(false) down:set(false) end,
+    on_entered = function() hovered:set(true) if on_hover then on_hover(true) end end,
+    on_exited = function() hovered:set(false) down:set(false) if on_hover then on_hover(false) end end,
     on_pressed = function() down:set(true) theme.drag_begin() end,
     on_released = function() down:set(false) theme.drag_end() end,
     on_clicked = function() if on_click then on_click() end end,
@@ -351,6 +357,14 @@ function theme.toggle(on, set)
       y = function() return (H - (on() and ON or OFF)) / 2 end,
       x = function() return on() and (W - ON - S(3)) or S(6) end,
       behavior = { x = motion.move, width = motion.move, height = motion.move, y = motion.move, color = motion.fade },
+      -- A check that turns in as the switch turns on, with an overshoot.
+      theme.icon {
+        text = "󰄬", size = config.iconSize - 6, anchors = { center_in = true },
+        color = function() return on() and C.on or C.bg end,
+        scale = function() return on() and 1 or 0 end,
+        rotation = function() return on() and 0 or -120 end,
+        behavior = { scale = motion.snappy, rotation = { duration = config.reduceMotion and 1 or 420, easing = "out_back" } },
+      },
     },
     ui.MouseArea {
       anchors = { fill = true }, cursor = "pointer",
@@ -410,18 +424,21 @@ function theme.slider(values)
   }
 end
 
---- A row of choices, one lit: 30 / 60 / 120, ~/Videos / ~/Pictures.
+--- A row of choices, one lit: 30 / 60 / 120, ~/Videos / ~/Pictures. The
+--- light is one pill that slides on a spring to whichever is chosen.
 function theme.chips(options, current, choose)
   local nodes = {}
+  local values = {}
   for index, option in ipairs(options) do
     local value, label = option, tostring(option)
     if type(option) == "table" then
       value, label = option.value, option.label or tostring(option.value)
     end
+    values[index] = value
     nodes[index] = theme.button {
       height = S(30), radius = 10,
-      color = function() return current() == value and C.on_tint or C.card end,
-      hover_color = function() return current() == value and C.on_tint or C.card_hover end,
+      color = "transparent",
+      hover_color = C.card_hover,
       on_click = function() choose(value) end,
       ui.Row {
         height = S(30), align = "center",
@@ -435,7 +452,35 @@ function theme.chips(options, current, choose)
       },
     }
   end
-  return ui.Row { gap = S(8), table.unpack(nodes) }
+  local row
+  local function chosen()
+    local now = current()
+    for index, value in ipairs(values) do
+      if value == now then return nodes[index] end
+    end
+    return nil
+  end
+  local light = ui.Rect {
+    height = S(30), radius = 10, z = -1,
+    color = C.on_tint, border_width = 1, border_color = C.on_edge,
+    x = function()
+      local node = chosen()
+      return node and row and ((node.layout_x or 0) - (row.layout_x or 0)) or 0
+    end,
+    width = function()
+      local node = chosen()
+      return node and (node.layout_width or 0) or 0
+    end,
+    opacity = function() return chosen() and 1 or 0 end,
+    behavior = { x = motion.move, width = motion.move, opacity = motion.fade },
+  }
+  row = ui.Row { gap = S(8), table.unpack(nodes) }
+  return ui.Item {
+    width = function() return row.layout_width or 0 end,
+    height = S(30),
+    light,
+    row,
+  }
 end
 
 -- A signal that follows `shown` up at once and down after `delay` ms.

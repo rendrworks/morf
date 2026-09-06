@@ -130,6 +130,12 @@ impl WgpuBackend {
                 (device, queue, None)
             }
         };
+        // A validation error -- a surface a nested compositor briefly will not
+        // configure, say -- is logged and the frame is skipped, rather than a
+        // panic that takes the output's thread with it.
+        device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
+            eprintln!("morf: gpu: {error}");
+        }));
         let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("morf viewport layout"),
             entries: &[wgpu::BindGroupLayoutEntry {

@@ -95,6 +95,7 @@ function kit.row(values)
   -- The circle pops when the row turns on or off: a little larger for a
   -- moment, back on a spring.
   local pop = morf.signal("panacea.kit.pop." .. tostring(values.title) .. tostring(glyph_count), false)
+  local hovered = morf.signal("panacea.kit.hover." .. tostring(values.title) .. tostring(glyph_count), false)
   local was = active()
   theme.tick(function()
     local now = active()
@@ -112,9 +113,13 @@ function kit.row(values)
     circle = ui.Rect {
       width = kit.CIRCLE, height = kit.CIRCLE, radius = kit.CIRCLE / 2,
       color = function() return active() and accent or C.card_hover end,
-      scale = function() return pop:get() and 1.22 or 1 end,
-      -- With `spin`, the circle turns over as the row turns on.
-      rotation = values.spin and function() return active() and 360 or 0 end or nil,
+      -- The circle grows and tilts under the pointer, pops as the row
+      -- turns, and with `spin` turns over as the row turns on.
+      scale = function() return pop:get() and 1.22 or (hovered:get() and 1.12 or 1) end,
+      rotation = function()
+        local turn = (values.spin and active()) and 360 or 0
+        return turn + (hovered:get() and -8 or 0)
+      end,
       behavior = { color = motion.fade, scale = motion.snappy,
         rotation = { duration = config.reduceMotion and 1 or 520, easing = "out_back" } },
       type(values.icon) == "function" and kit.glyph(S(config.iconSize), values.icon, ink)
@@ -153,6 +158,10 @@ function kit.row(values)
     children[#children + 1] = ui.Item {
       width = values.right_w or S(56), height = H, z = 2,
       anchors = { right = true },
+      -- The right end nudges outward under the pointer: a chevron points
+      -- where a tap goes.
+      translate_x = function() return hovered:get() and S(3) or 0 end,
+      behavior = { translate_x = motion.snappy },
       values.right,
     }
   end
@@ -177,6 +186,7 @@ function kit.row(values)
   rest.border_width = 1
   rest.border_color = function() return active() and edge or C.edge end
   rest.on_click = values.on_click
+  rest.on_hover = function(over) hovered:set(over) end
   rest.behavior = { color = motion.fade, scale = motion.snappy, border_color = motion.fade,
     translate_y = motion.move, opacity = motion.fade }
   for _, child in ipairs(children) do rest[#rest + 1] = child end
@@ -330,15 +340,24 @@ function kit.action(values)
 end
 
 --- A round button with a glyph, lit while `lit()`.
+local icon_button_count = 0
 function kit.icon_button(glyph, on_click, lit)
   local D = S(50)
+  icon_button_count = icon_button_count + 1
+  local hovered = morf.signal("panacea.kit.iconbutton." .. icon_button_count, false)
   return theme.button {
     width = D, height = D, radius = D / 2,
     color = function() return lit and lit() and C.on_tint or C.card end,
     border_width = 1, border_color = function() return lit and lit() and C.on_edge or C.edge end,
     on_click = on_click,
+    on_hover = function(over) hovered:set(over) end,
+    -- The glyph tilts and grows under the pointer, and springs back.
     theme.icon { text = glyph, size = config.iconSize - 2, anchors = { center_in = true },
-      color = function() return lit and lit() and C.on or C.muted end },
+      color = function() return (lit and lit()) and C.on or (hovered:get() and C.fg or C.muted) end,
+      scale = function() return hovered:get() and 1.2 or 1 end,
+      rotation = function() return hovered:get() and 12 or 0 end,
+      behavior = { color = motion.hover, scale = motion.snappy,
+        rotation = { duration = config.reduceMotion and 1 or 380, easing = "out_back" } } },
   }
 end
 

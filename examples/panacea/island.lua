@@ -480,7 +480,13 @@ function island.build()
     opacity = shown_when_kept("layout"),
     behavior = { x = spring, y = spring, scale = spring, opacity = motion.fade },
   }
-  glyph, glyph_to = glyph_morpher(ICON, battery_color, {
+  -- Ink, not the state's colour, once it sits on a page's circle that
+  -- already wears that colour: a green bolt on a green disc is no bolt.
+  local function glyph_color()
+    if open() and slot("battery_glyph") and battery_color() ~= C.fg then return C.bg end
+    return battery_color()
+  end
+  glyph, glyph_to = glyph_morpher(ICON, glyph_color, {
     x = glyph_x,
     y = function()
       if open() then return slot_y("battery_glyph") or (PAD + S(3)) end
