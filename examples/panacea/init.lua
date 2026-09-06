@@ -34,13 +34,34 @@ local notify = require("notify")
 local S = theme.S
 local C = theme.color
 
--- The shell's own surface: the collapsed pill and the notification cards.
--- Overlay mode floats over the windows; otherwise the pill's strip is
--- reserved.
+-- The shell's own surface: the island, collapsed or open, and the
+-- notification cards under it. While anything moves it is the island's
+-- size, not the screen's: every frame the shell paints is cleared,
+-- composed and then blended by the compositor at the surface's size, and
+-- a fullscreen surface made a small island cost a whole 4K frame on both
+-- sides of the protocol. Once a page is open and still, the surface grows
+-- to the screen so a click anywhere else can close it, and shrinks again
+-- before the page runs back. The island is centred at the top edge either
+-- way, so nothing on screen moves when the surface does. Overlay mode
+-- floats over the windows; otherwise the pill's strip is reserved.
+local SURFACE_W = math.min(theme.WIDTH, S(config.panelW * 1.6) + S(80))
+local SURFACE_H = math.min(theme.HEIGHT, S(config.expandedH) + S(160))
+local surface_w = morf.signal("panacea.surface.w", SURFACE_W)
+local surface_h = morf.signal("panacea.surface.h", SURFACE_H)
+local function size_surface(full)
+  local width = full and theme.WIDTH or SURFACE_W
+  local height = full and theme.HEIGHT or SURFACE_H
+  if width == surface_w:get() and height == surface_h:get() then return end
+  morf.surface.width = width
+  morf.surface.height = height
+  morf.surface.anchors = full and { top = true, left = true, right = true, bottom = true } or { top = true }
+  surface_w:set(width)
+  surface_h:set(height)
+end
 morf.surface.namespace = "panacea"
-morf.surface.width = theme.WIDTH
-morf.surface.height = theme.HEIGHT
-morf.surface.anchors = { top = true, left = true, right = true, bottom = true }
+morf.surface.width = SURFACE_W
+morf.surface.height = SURFACE_H
+morf.surface.anchors = { top = true }
 morf.surface.layer = "top"
 morf.surface.keyboard_focus = "none"
 morf.surface.exclusive_zone = -1
@@ -130,15 +151,17 @@ morf.ipc.page = function() return island.page:get() end
 -- frame_bench.
 local open_at_start = core.env("PANACEA_OPEN") or ""
 
+local function open() return island.page:get() ~= "" end
+
 ui.Item {
-  width = theme.WIDTH,
-  height = theme.HEIGHT,
-  -- While a page is open, a click anywhere outside the island closes it,
-  -- and every key goes to the page; Escape closes.
+  width = function() return surface_w:get() end,
+  height = function() return surface_h:get() end,
+  -- While a page is open, every key goes to the page, Escape closes, and
+  -- a click anywhere outside the island closes too.
   ui.MouseArea {
     anchors = { fill = true },
     z = -10,
-    visible = function() return island.page:get() ~= "" end,
+    visible = open,
     on_clicked = function() island.close() end,
     on_key_pressed = function(keysym, text) island.handle_key(keysym, text) end,
   },
@@ -158,8 +181,18 @@ ui.Item {
 -- The keyboard is the shell surface's own: it asks for exclusive focus
 -- while a page is open and gives it back after. The compositor re-reads
 -- the policy on the commit, so a page is one spring away, never a surface
--- away.
-island.surface.open = function() morf.surface.keyboard_focus = "exclusive" end
-island.surface.close = function() morf.surface.keyboard_focus = "none" end
+-- away. The surface grows to the screen once the page has settled, and
+-- shrinks the moment it starts to close.
+local SETTLED_MS = math.max(300, config.animMove * 2.5)
+island.surface.open = function()
+  morf.surface.keyboard_focus = "exclusive"
+  morf.timer(SETTLED_MS, function()
+    if island.page:get() ~= "" then size_surface(true) end
+  end, false)
+end
+island.surface.close = function()
+  morf.surface.keyboard_focus = "none"
+  size_surface(false)
+end
 
 if open_at_start ~= "" then island.open(open_at_start) end

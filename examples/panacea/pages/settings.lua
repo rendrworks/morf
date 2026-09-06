@@ -206,7 +206,7 @@ function page.build(island)
     bodies[#bodies + 1] = ui.Item(theme.reveal(
       (function()
         local shown = morf.signal("panacea.settings.shown." .. section.id, page.section:get() == section.id)
-        morf.timer(24, function() shown:set(page.section:get() == section.id) end, true)
+        theme.tick(function() shown:set(page.section:get() == section.id) end)
         return shown
       end)(),
       { anchors = { left = true, top = true }, from_y = S(8), node }))

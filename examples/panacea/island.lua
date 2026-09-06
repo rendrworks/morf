@@ -504,8 +504,7 @@ function island.build()
   local hover_clock = morf.elapsed_timer()
   local hovering = false
   local opened_by_hover = false
-  morf.timer(80, function()
-    if not config.pillHover then return end
+  if config.pillHover then morf.timer(80, function()
     if hovering and not open() and hover_clock:elapsed_ms() > 260 then
       local media = require("media")
       opened_by_hover = true
@@ -514,7 +513,7 @@ function island.build()
       opened_by_hover = false
       island.close()
     end
-  end, true)
+  end, true) end
   island.keep = function() opened_by_hover = false end
   -- Back, at the top right, when the page was reached from another.
   local back = theme.button {

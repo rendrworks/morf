@@ -323,12 +323,25 @@ end
 
 -- A signal that follows `shown` up at once and down after `delay` ms.
 local mounted_count = 0
+-- One ticker for everything that polls a little: a timer is a thread of
+-- its own that wakes every output's loop each time it fires, and fifty of
+-- them at 24ms were a quarter of a core doing nothing.
+local ticking = {}
+morf.timer(24, function()
+  for _, tick in ipairs(ticking) do tick() end
+end, true)
+
+--- Runs `tick` every 24ms, on the shared ticker.
+function theme.tick(tick)
+  ticking[#ticking + 1] = tick
+end
+
 function theme.mounted(shown, delay)
   mounted_count = mounted_count + 1
   local mounted = morf.signal("panacea.mounted." .. mounted_count, shown:get())
   local clock = morf.elapsed_timer()
   local going = false
-  morf.timer(24, function()
+  theme.tick(function()
     local want = shown:get()
     if want then
       going = false
@@ -341,7 +354,7 @@ function theme.mounted(shown, delay)
         mounted:set(false)
       end
     end
-  end, true)
+  end)
   return mounted
 end
 

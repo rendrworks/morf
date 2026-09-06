@@ -108,8 +108,11 @@ function field.node(self, values)
     color = values.color or C.card,
     border_color = C.edge,
     border_width = 1,
+    -- The blink is a repaint every half second, so only while a page is
+    -- open, which is the only time a field can be seen.
     ui.Timer {
-      interval = 530, running = true, ["repeat"] = true,
+      interval = 530, ["repeat"] = true,
+      running = function() return require("island").page:get() ~= "" end,
       on_triggered = function() blink:set(not blink:get()) end,
     },
     theme.text {

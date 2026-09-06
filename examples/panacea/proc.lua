@@ -17,7 +17,10 @@ local proc = {}
 
 local CHILD_ENVIRONMENT = { LD_LIBRARY_PATH = "" }
 local POOL_SIZE = 16
-local DRAIN_SLICE_MS = 1
+-- Reads never wait: the loop is woken the moment a child writes, so a
+-- read that finds nothing has nothing coming, and a millisecond spent
+-- waiting on each idle child every tick was the shell's biggest idle cost.
+local DRAIN_SLICE_MS = 0
 local DRAIN_SLICES = 8
 
 local pool = {}
