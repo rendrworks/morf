@@ -21,7 +21,9 @@ morf.surface.height = HEIGHT
 morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local INK = "#0e1213"
+local theme = morf.theme {
+  ink = "#0e1213",
+}
 
 -- One clock, read every frame. The orbits are plain trigonometry; the engine
 -- only ever sees `x` and `y` being assigned.
@@ -83,7 +85,7 @@ end
 ui.Item {
   width = WIDTH,
   height = HEIGHT,
-  ui.Rect { width = WIDTH, height = HEIGHT, color = INK },
+  ui.Rect { width = WIDTH, height = HEIGHT, color = theme.ink },
   ui.Sdf(field),
 
   -- 16ms is a frame; the positions are written directly rather than eased,

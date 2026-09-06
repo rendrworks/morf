@@ -47,14 +47,12 @@ impl Runtime {
             if !property.is_empty() {
                 args.insert(0, IpcValue::String(property));
             }
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, &callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, &callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("{source} on_finished: {message}"));
+                    .log(LogLevel::Warn, format!("{source} on_finished: {message}"));
             }
         }
         Ok(frame)

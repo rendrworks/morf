@@ -2,12 +2,17 @@
 
 mod gpu;
 
-pub use gpu::{GpuError, GpuInfo, WgpuBackend};
+pub use gpu::dmabuf::{
+    DmabufImage, DmabufPlane, DmabufSupport, FOURCC_ARGB8888, FOURCC_XRGB8888, MODIFIER_LINEAR,
+    split_dev_t,
+};
+pub use gpu::{GpuError, GpuInfo, ShaderRegistration, WgpuBackend};
 
 mod commands;
 mod damage;
 mod effects;
 mod field;
+mod gradient;
 mod paint;
 mod paint_fields;
 mod sdf;

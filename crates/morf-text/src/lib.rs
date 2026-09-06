@@ -5,22 +5,22 @@ use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
-use cosmic_text::{
-    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
-};
-use morf_layout::{TextAlignment, TextElide, TextOptions};
+use cosmic_text::{Buffer, Family, FontSystem, SwashCache};
+use morf_layout::{TextAlignment, TextElide};
 use morf_scene::{FastMap, NodeHandle};
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::glyph_fields::FieldImage;
 
-struct CachedBuffer {
-    buffer: Buffer,
+pub(crate) struct CachedBuffer {
+    pub(crate) buffer: Buffer,
     input: Option<TextInput>,
+    /// What shaping could not be told, applied to every glyph after it.
+    pub(crate) word_spacing: f32,
+    pub(crate) alignment: TextAlignment,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ResolvedFamily {
+pub(crate) enum ResolvedFamily {
     Name(String),
     Serif,
     SansSerif,
@@ -30,7 +30,7 @@ enum ResolvedFamily {
 }
 
 impl ResolvedFamily {
-    fn family(&self) -> Family<'_> {
+    pub(crate) fn family(&self) -> Family<'_> {
         match self {
             Self::Name(name) => Family::Name(name),
             Self::Serif => Family::Serif,
@@ -64,13 +64,75 @@ struct TextInput {
     elide: TextElide,
     font_weight: u16,
     font_source: Option<String>,
+    max_lines: usize,
+    style: morf_layout::TextStyleKey,
+}
+
+/// A morph between two glyphs: the outlines paired, the box every frame is
+/// measured over, and the frames themselves, measured as the morph reaches
+/// them rather than all at once -- a word of new pairs measured up front
+/// was a stall of a tenth of a second on the first frame of its motion.
+pub(crate) struct MeasuredPair {
+    pub(crate) paired: Vec<morf_outline::Paired>,
+    pub(crate) area: glyph_fields::FieldBox,
+    pub(crate) spread: f32,
+    pub(crate) frames: Vec<Option<Rc<FieldImage>>>,
+}
+
+/// Two neighbouring frames of a morph, their atlas keys, and where between
+/// them the glyph currently is.
+pub(crate) type MorphStep = (Rc<FieldImage>, u64, Rc<FieldImage>, u64, f32);
+
+/// How many shapes are measured along the way from one letter to the next.
+///
+/// The renderer interpolates the two either side of where it is, so this sets
+/// how far apart those two are: enough of them that neighbours differ by a
+/// twelfth of the journey, which is close enough that averaging their fields
+/// has nothing left to get wrong.
+pub(crate) const MORPH_FRAMES: usize = 13;
+
+/// One glyph paired with the glyph it is turning into, if it has one, and how
+/// far apart the two shapes are.
+pub type GlyphPair = (RasterGlyph, Option<RasterGlyph>, f32);
+
+/// Which of a node's two shaped runs a buffer holds.
+///
+/// A text node that is morphing has two: the text it is, and the text it is
+/// turning into. Both have to stay shaped and measured, because the morph
+/// interpolates between the two sets of glyphs rather than between two
+/// pictures, so one key is not enough.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct BufferKey {
+    pub(crate) node: NodeHandle,
+    pub(crate) morph: bool,
+}
+
+impl BufferKey {
+    pub(crate) fn own(node: NodeHandle) -> Self {
+        Self { node, morph: false }
+    }
+
+    pub(crate) fn target(node: NodeHandle) -> Self {
+        Self { node, morph: true }
+    }
 }
 
 /// Shared font database, per-node shaped buffers, and glyph image cache.
 pub struct TextSystem {
     fonts: FontSystem,
     glyphs: SwashCache,
-    buffers: FastMap<NodeHandle, CachedBuffer>,
+    buffers: FastMap<BufferKey, CachedBuffer>,
+    /// Fields measured for a *pair* of glyphs over their shared box.
+    ///
+    /// Separate from `fields` because the box depends on both glyphs, so the
+    /// same letter measured against two different partners is two entries.
+    field_pairs: FastMap<(u64, u64), Option<MeasuredPair>>,
+    /// Shaped keys for characters used as shapes rather than as text, by face.
+    ///
+    /// Nested rather than keyed by a `(face, character)` pair, because the pair
+    /// cannot be looked up without owning the face name — and this is asked
+    /// once per glyph layer per frame.
+    outline_keys: FastMap<Box<str>, FastMap<char, Option<cosmic_text::CacheKey>>>,
     font_sources: HashSet<String>,
     /// Fields already measured, by the glyph they belong to.
     ///
@@ -97,14 +159,20 @@ pub enum RasterContent {
 }
 
 /// Positioned glyph bitmap ready for atlas upload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RasterGlyph {
     /// Process-local key identifying the cached raster image.
     pub cache_key: u64,
     /// Physical left edge relative to the render target.
-    pub x: i32,
+    ///
+    /// Fractional. A glyph measured once and drawn at any size has no reason to
+    /// land on a whole pixel, and forcing it onto one is what makes letters sit
+    /// unevenly apart — the spacing error is the rounding, accumulated across a
+    /// word. Subpixel positioning is what a rasterizer used its subpixel bins
+    /// for; a field needs only to be told where to go.
+    pub x: f32,
     /// Physical top edge relative to the render target.
-    pub y: i32,
+    pub y: f32,
     /// Bitmap width, in the pixels the bitmap was measured at.
     pub width: u32,
     /// Bitmap height, in the pixels the bitmap was measured at.
@@ -115,9 +183,9 @@ pub struct RasterGlyph {
     /// distance field is measured once at a reference size and then drawn at
     /// whatever size is asked for, so for those two this is the only place the
     /// two numbers part company: the atlas holds `width`, the screen gets this.
-    pub draw_width: u32,
+    pub draw_width: f32,
     /// Quad height in physical pixels.
-    pub draw_height: u32,
+    pub draw_height: f32,
     /// Bitmap pixel format.
     pub content: RasterContent,
     /// Tightly packed bitmap bytes.
@@ -145,6 +213,8 @@ impl TextSystem {
             fonts,
             glyphs: SwashCache::new(),
             buffers: FastMap::default(),
+            field_pairs: FastMap::default(),
+            outline_keys: FastMap::default(),
             font_sources: HashSet::new(),
             fields: FastMap::default(),
         };
@@ -195,7 +265,9 @@ impl TextSystem {
 
     /// Returns the shaped buffer retained for a text node.
     pub fn buffer(&self, node: NodeHandle) -> Option<&Buffer> {
-        self.buffers.get(&node).map(|cached| &cached.buffer)
+        self.buffers
+            .get(&BufferKey::own(node))
+            .map(|cached| &cached.buffer)
     }
 
     /// Provides mutable access to the glyph rasterization cache and font database.
@@ -205,109 +277,11 @@ impl TextSystem {
 
     /// Drops the shaped buffer belonging to a removed scene node.
     pub fn remove(&mut self, node: NodeHandle) {
-        self.buffers.remove(&node);
-    }
-
-    /// Rasterizes one cached text node at a physical origin and scale.
-    pub fn rasterize(
-        &mut self,
-        node: NodeHandle,
-        origin: (f32, f32),
-        scale: f32,
-    ) -> Vec<RasterGlyph> {
-        let Some(buffer) = self.buffers.get(&node) else {
-            return Vec::new();
-        };
-        let physical: Vec<_> = buffer
-            .buffer
-            .layout_runs()
-            .flat_map(|run| {
-                run.glyphs.iter().map(move |glyph| {
-                    glyph.physical((origin.0, origin.1 + run.line_y * scale), scale)
-                })
-            })
-            .collect();
-        physical
-            .into_iter()
-            .filter_map(|glyph| self.raster_glyph(&glyph))
-            .collect()
+        self.buffers.remove(&BufferKey::own(node));
+        self.buffers.remove(&BufferKey::target(node));
     }
 }
-fn elided_text(
-    fonts: &mut FontSystem,
-    text: &str,
-    family: &str,
-    size: f32,
-    options: &TextOptions,
-) -> String {
-    let Some(width) = options
-        .width
-        .filter(|_| !options.wrap && options.elide != TextElide::None)
-    else {
-        return text.to_owned();
-    };
-    if shaped_width(fonts, text, family, size, options.font_weight) <= width as f32 {
-        return text.to_owned();
-    }
-    let graphemes: Vec<&str> = text.graphemes(true).collect();
-    let mut low = 0;
-    let mut high = graphemes.len();
-    while low < high {
-        let middle = (low + high).div_ceil(2);
-        let candidate = elide_candidate(&graphemes, middle, options.elide);
-        if shaped_width(fonts, &candidate, family, size, options.font_weight) <= width as f32 {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
-    elide_candidate(&graphemes, low, options.elide)
-}
-
-fn elide_candidate(graphemes: &[&str], kept: usize, mode: TextElide) -> String {
-    let kept = kept.min(graphemes.len());
-    match mode {
-        TextElide::None => graphemes.concat(),
-        TextElide::Left => format!("…{}", graphemes[graphemes.len() - kept..].concat()),
-        TextElide::Right => format!("{}…", graphemes[..kept].concat()),
-        TextElide::Middle => {
-            let left = kept.div_ceil(2);
-            let right = kept - left;
-            format!(
-                "{}…{}",
-                graphemes[..left].concat(),
-                graphemes[graphemes.len() - right..].concat()
-            )
-        }
-    }
-}
-
-fn shaped_width(
-    fonts: &mut FontSystem,
-    text: &str,
-    family: &str,
-    size: f32,
-    font_weight: f64,
-) -> f32 {
-    let family = resolve_family(fonts, family);
-    let mut buffer = Buffer::new(fonts, Metrics::relative(size, 1.2));
-    buffer.set_wrap(Wrap::None);
-    buffer.set_text(
-        text,
-        &Attrs::new()
-            .family(family.family())
-            .weight(Weight(normalize_font_weight(font_weight))),
-        Shaping::Advanced,
-        Some(Align::Left),
-    );
-    buffer.shape_until_scroll(fonts, false);
-    buffer
-        .layout_runs()
-        .map(|run| run.line_w)
-        .fold(0.0, f32::max)
-}
-
-fn resolve_family(fonts: &FontSystem, requested: &str) -> ResolvedFamily {
+pub(crate) fn resolve_family(fonts: &FontSystem, requested: &str) -> ResolvedFamily {
     for candidate in requested
         .split(',')
         .map(clean_family)
@@ -420,7 +394,7 @@ fn preferred_family(
         })
 }
 
-fn normalize_font_weight(weight: f64) -> u16 {
+pub(crate) fn normalize_font_weight(weight: f64) -> u16 {
     if weight.is_finite() {
         weight.round().clamp(100.0, 900.0) as u16
     } else {
@@ -428,13 +402,33 @@ fn normalize_font_weight(weight: f64) -> u16 {
     }
 }
 
+mod elide;
+mod families;
 mod glyph_fields;
+#[cfg(test)]
+mod glyph_fields_reference;
+mod glyph_morph;
+mod glyph_steps;
+pub use families::{family_files, installed_families};
+pub use glyph_morph::CONTOUR_POINTS as GLYPH_CONTOUR_POINTS;
+/// A closed loop of an outline, for a caller pairing letters with shapes that
+/// are not letters.
+pub use morf_outline::Contour;
+mod glyph_runs;
 mod measure;
+pub(crate) use elide::elided_text;
 mod raster_glyph;
+mod style;
+pub use style::LineBand;
 
 pub use glyph_fields::{
     FIELD_REFERENCE_PX as GLYPH_FIELD_REFERENCE_PX, FIELD_SPREAD_PX as GLYPH_FIELD_SPREAD_PX,
+    field_units_per_logical_px,
 };
 
+#[cfg(test)]
+mod probe_tests;
+#[cfg(test)]
+mod style_tests;
 #[cfg(test)]
 mod tests;

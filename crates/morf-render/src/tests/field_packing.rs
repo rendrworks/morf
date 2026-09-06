@@ -46,8 +46,16 @@ fn layers_are_packed_into_the_fields_own_space_and_scaled() {
     let mut layers = Vec::new();
     let mut materials = Vec::new();
     // 240/120 is a doubled surface: every length doubles.
-    let instance =
-        SdfFieldInstance::from_command(command, 240, &mut layers, &mut materials).unwrap();
+    let instance = SdfFieldInstance::from_command(
+        command,
+        240,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
+    )
+    .unwrap();
 
     assert_eq!(layers.len(), 1);
     // Centre is (20 + 40, 30 + 30) inside the field, doubled.
@@ -92,8 +100,26 @@ fn layer_runs_are_addressed_per_field_within_one_shared_buffer() {
 
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    let first = SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
-    let second = SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
+    let first = SdfFieldInstance::from_command(
+        command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
+    )
+    .unwrap();
+    let second = SdfFieldInstance::from_command(
+        command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
+    )
+    .unwrap();
 
     assert_eq!(first.style[2], 0.0);
     assert_eq!(first.style[3], 2.0);
@@ -127,8 +153,16 @@ fn a_composition_past_the_cap_is_truncated_rather_than_unbounded() {
 
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    let instance =
-        SdfFieldInstance::from_command(command, 120, &mut layers, &mut materials).unwrap();
+    let instance = SdfFieldInstance::from_command(
+        command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
+    )
+    .unwrap();
 
     assert_eq!(layers.len(), MAX_FIELD_LAYERS);
     assert_eq!(instance.style[3], MAX_FIELD_LAYERS as f32);
@@ -187,6 +221,12 @@ fn a_blend_widens_the_area_a_field_may_reach() {
     // the top and bottom of every join sliced off.
     let layers = |blend: f32| {
         vec![SdfLayer {
+            glyph: None,
+            glyph_morph_to: None,
+            svg_source: None,
+            svg_source_morph_to: None,
+            font_family: None,
+            font_family_morph_to: None,
             bounds: Geometry {
                 x: 0.0,
                 y: 0.0,
@@ -212,4 +252,60 @@ fn a_blend_widens_the_area_a_field_may_reach() {
     assert_eq!(field_spread(0.0, 0.0, &layers(18.0)), 18.0);
     // The outline and the softened edge are on top of it, not instead of it.
     assert_eq!(field_spread(4.0, 3.0, &layers(18.0)), 23.0);
+}
+
+/// The field shader walks a polygon layer in runs of a fixed length rather than
+/// being told one, because every contour is resampled to the same size when the
+/// outline is built. That length is written into `field.wgsl`, so a change here
+/// has to be a change there — this is what says so.
+#[test]
+fn the_shader_and_the_outline_agree_on_a_contour_length() {
+    assert_eq!(morf_text::GLYPH_CONTOUR_POINTS, 96);
+    let shader = include_str!("../field.wgsl");
+    assert!(
+        shader.contains("sd_polygon(point, u32(layer.params.x), 96u, u32(layer.extra.w))"),
+        "field.wgsl must walk polygon contours in runs of GLYPH_CONTOUR_POINTS"
+    );
+}
+
+/// A field finds its layers by an index carried from the vertex stage, and an
+/// index cannot survive being interpolated.
+///
+/// `style.z` and `style.w` are the first layer's index and the layer count.
+/// They are the same number at all four corners of the quad, but a varying
+/// that is not `flat` is interpolated anyway, and a 7.0 written at every corner
+/// comes back as 6.9999997 in the middle. `u32()` truncates towards zero, so
+/// the field read the *previous* field's layers and drew nothing anyone asked
+/// for. Which fields it hit depended on their layer index, so shapes went
+/// missing at what looked like random — and it survived every CPU test in this
+/// file, because every number on this side of the buffer was correct.
+#[test]
+fn the_field_shader_does_not_interpolate_what_it_indexes_with() {
+    let shader = include_str!("../field.wgsl");
+    for varying in [
+        "@location(1) @interpolate(flat) fill",
+        "@location(2) @interpolate(flat) outline",
+        "@location(3) @interpolate(flat) style",
+        "@location(4) @interpolate(flat) material",
+    ] {
+        assert!(
+            shader.contains(varying),
+            "field.wgsl must carry `{varying}` flat: it is one value per instance"
+        );
+    }
+}
+
+/// The boxes that let a fragment skip most of a contour are packed behind the
+/// points by the renderer and found by arithmetic in the shader, so the two
+/// have to agree on how many edges one box holds.
+#[test]
+fn the_shader_and_the_outline_agree_on_a_run_length() {
+    let shader = include_str!("../field.wgsl");
+    assert!(
+        shader.contains(&format!(
+            "const OUTLINE_SPAN: u32 = {}u;",
+            crate::field::glyph_layer::OUTLINE_SPAN
+        )),
+        "field.wgsl must box outline edges in runs of OUTLINE_SPAN"
+    );
 }

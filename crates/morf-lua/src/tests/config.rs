@@ -1,4 +1,3 @@
-use crate::*;
 use morf_layout::Layout;
 use std::collections::HashSet;
 
@@ -113,6 +112,9 @@ fn layer_surface_settings_are_native_and_typed() {
             keyboard_focus: "none".to_owned(),
             input_regions: None,
             reserve: SurfaceReserve::default(),
+            exclusive_auto: false,
+            opaque: false,
+            session_lock: false,
         }
     );
 }

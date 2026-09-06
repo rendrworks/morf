@@ -11,6 +11,21 @@ pub(crate) struct PaintContext {
     pub(crate) layer: Option<usize>,
     /// Whether an enclosing field has already taken this node's shape.
     pub(crate) in_field: bool,
+    /// The nearest ancestor's colour, for text that says `inherit`.
+    pub(crate) color: Option<Color>,
+}
+
+/// The colour a node paints with: its own, or the nearest ancestor's when it
+/// says `inherit`, or black when nothing above it has one.
+pub(crate) fn resolved_color(
+    scene: &Scene,
+    node: NodeHandle,
+    inherited: &PaintContext,
+) -> Result<Color, RenderError> {
+    Ok(match scene.current(node, "color")? {
+        morf_scene::Value::Color(color) => *color,
+        _ => inherited.color.unwrap_or(Color::rgba8(0, 0, 0, 255)),
+    })
 }
 
 pub(crate) fn append_node(
@@ -44,16 +59,34 @@ pub(crate) fn append_node(
     let rounded_clip = clips
         && matches!(element, Element::Rect | Element::ClipRect)
         && radii.iter().any(|radius| *radius > 0.0);
+    // An effect shader composites the subtree rather than colouring one node,
+    // so it is taken off the node here and given to the layer below.
+    let effect = shader_binding(scene, node)?.filter(|shader| shader.samples_behind);
+    // A shape an enclosing field composes is not drawn as a node at all — its
+    // rotation is one of the numbers the field is given, and the field turns
+    // the sample point by it. Making a layer to rotate it into would be an
+    // offscreen target for a subtree that paints nothing.
+    //
+    // It was also wrong, not merely wasteful. The layer came out empty, an
+    // empty layer claims the index of the command that would have followed it,
+    // and the frame loop then stepped over that command: a rotated shape inside
+    // a field silently ate whatever was drawn next.
+    let absorbed = inherited.in_field && absorbed_by_field(element);
     let creates_layer = layer_config.enabled
         || node_opacity < 1.0
-        || rotation != 0.0
+        || (rotation != 0.0 && !absorbed)
         || rounded_clip
         || layer_blur > 0.0
-        || layer_config.shadow_color.alpha > 0.0;
+        || layer_config.shadow_color.alpha > 0.0
+        // An effect shader has nothing to read until its subtree has been
+        // rendered somewhere, so a node carrying one becomes a layer whether or
+        // not anything else would have made it into one.
+        || effect.is_some();
     let layer = creates_layer.then(|| {
         let index = list.layers.len();
         list.layers.push(Layer {
             node,
+            shader: effect.clone(),
             commands: list.commands.len()..list.commands.len(),
             parent: inherited.layer,
             opacity: node_opacity as f32,
@@ -100,7 +133,7 @@ pub(crate) fn append_node(
     // A shape an enclosing field composed is drawn by that field, not again on
     // its own. Everything else — text, images, anything without a field —
     // paints normally over the composition.
-    let painted = !(inherited.in_field && absorbed_by_field(element));
+    let painted = !absorbed;
     // A shadow is five numbers and a flag that only matter once the colour is
     // visible, and a rect with no shadow is the overwhelming majority. Asking
     // for the colour first turns six property reads into one for all of them.
@@ -115,7 +148,7 @@ pub(crate) fn append_node(
             bounds,
             transform,
             clip,
-            color: scene.color_value(node, "color")?,
+            color: resolved_color(scene, node, &inherited)?,
             color_overlay,
             gradient: scene_gradient(scene, node)?,
             radii,
@@ -135,6 +168,10 @@ pub(crate) fn append_node(
             shadow_offset_x: shadow.offset_x,
             shadow_offset_y: shadow.offset_y,
             shadow_inner: shadow.inner,
+            // A rectangle wears a shader the same way a field does, because it
+            // *is* a field of one layer. An effect shader belongs to the layer
+            // that composites the node, not to its own fill.
+            shader: shader_binding(scene, node)?.filter(|shader| !shader.samples_behind),
         }),
         Element::Text => list.commands.push(DrawCommand::Text {
             node,
@@ -146,9 +183,10 @@ pub(crate) fn append_node(
             font_source: scene.string_value(node, "font_source")?.to_owned(),
             size: scene.number(node, "font_size")?,
             font_weight: scene.number(node, "font_weight")?,
-            color: scene.color_value(node, "color")?,
+            color: resolved_color(scene, node, &inherited)?,
             color_overlay,
             wrap: scene.bool_value(node, "wrap")?,
+            max_lines: scene.number(node, "max_lines")?.max(0.0) as usize,
             elide: render_text_elide(scene.string_value(node, "elide")?)?,
             horizontal_alignment: render_text_alignment(
                 scene.string_value(node, "horizontal_alignment")?,
@@ -157,6 +195,12 @@ pub(crate) fn append_node(
                 scene.string_value(node, "vertical_alignment")?,
             )?,
             field_style: text_field_style(scene, node)?,
+            morph_to: scene.string_value(node, "morph_to")?.to_owned(),
+            morph_progress: scene.number(node, "morph_progress")?.clamp(0.0, 1.0) as f32,
+            style: morf_layout::TextStyle::from_scene(scene, node)
+                .map_err(|error| RenderError::Scene(error.to_string()))?,
+            decoration: morf_scene::TextDecoration::parse(scene.current(node, "decoration")?)
+                .map_err(RenderError::Scene)?,
         }),
         Element::Image => list.commands.push(DrawCommand::Texture {
             node,
@@ -222,6 +266,11 @@ pub(crate) fn append_node(
                     shadow_offset_x: scene.number(node, "shadow_offset_x")?,
                     shadow_offset_y: scene.number(node, "shadow_offset_y")?,
                     shadow_inner: scene.bool_value(node, "shadow_inner")?,
+                    // An effect shader belongs to the layer that composites
+                    // this node, not to the node's own fill: leaving it here
+                    // too would have the field pass look for a program that
+                    // was registered against the composite pass.
+                    shader: shader_binding(scene, node)?.filter(|shader| !shader.samples_behind),
                     layers,
                 });
             }
@@ -236,12 +285,11 @@ pub(crate) fn append_node(
         | Element::Row
         | Element::Column
         | Element::Grid
-        | Element::RowLayout
-        | Element::ColumnLayout
-        | Element::GridLayout
         | Element::Flickable
         | Element::Loader
-        | Element::Timer => {}
+        | Element::Timer
+        | Element::Flex
+        | Element::Custom => {}
     }
     let content_layer = if element == Element::ClipRect
         && scene.number(node, "border_width")? > 0.0
@@ -264,6 +312,7 @@ pub(crate) fn append_node(
             shadow_color: Color::rgba8(0, 0, 0, 0),
             shadow_blur: 0.0,
             shadow_offset: [0.0, 0.0],
+            shader: None,
             mask: Some(LayerMask {
                 bounds: inner,
                 transform,
@@ -275,7 +324,7 @@ pub(crate) fn append_node(
     } else {
         None
     };
-    for &child in scene.children(node)? {
+    for &child in scene.paint_order(node)?.iter() {
         let child_clip = content_layer.map_or(clip, |(_, inner)| {
             let inner = transform.bounds(inner);
             Some(clip.map_or(inner, |clip| intersect_geometry(clip, inner)))
@@ -296,6 +345,12 @@ pub(crate) fn append_node(
                 // positioners nest, which is what lets an ordinary laid-out
                 // row of rects arrive as one fused surface.
                 in_field: inherited.in_field || element == Element::Sdf,
+                // Text beneath inherits the nearest colour written above it;
+                // one that says `inherit` itself passes the ancestor's on.
+                color: match scene.current(node, "color") {
+                    Ok(morf_scene::Value::Color(color)) => Some(*color),
+                    _ => inherited.color,
+                },
             },
             list,
         )?;
@@ -312,7 +367,7 @@ pub(crate) fn append_node(
             clip,
             color: Color::rgba8(0, 0, 0, 0),
             color_overlay: Color::rgba8(0, 0, 0, 0),
-            gradient: Gradient::None,
+            gradient: None,
             radii,
             border_width: scene.number(node, "border_width")?,
             antialiasing: scene.bool_value(node, "antialiasing")?,
@@ -325,6 +380,9 @@ pub(crate) fn append_node(
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
             shadow_inner: false,
+            // The border a ClipRect overlays is not the node's own fill, so it
+            // carries no shader: the shader belongs to what is inside.
+            shader: None,
         });
     }
     if let Some(layer) = layer {

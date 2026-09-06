@@ -1,5 +1,5 @@
 use luna::{Callback, CallbackReturn, Context, Table, UserData, UserRef, Value as LuaValue};
-use morf_desktop::{DesktopEntries, desktop_paths};
+use morf_desktop::{DesktopEntries, desktop_paths, session_paths};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -217,4 +217,29 @@ pub(crate) fn install_menu_desktop_api<'gc>(ctx: Context<'gc>, morf: Table<'gc>,
         Ok(CallbackReturn::Return)
     });
     morf.set_field(ctx, "desktop_entries", desktop_entries);
+
+    // Where the sessions a greeter can start are described. Handed over as
+    // paths rather than as a second kind of entry list, because they are
+    // ordinary desktop entries in two other directories — so this composes with
+    // the constructor above rather than duplicating it:
+    //
+    //     local sessions = core.desktop_entries(core.session_paths())
+    //
+    // A configuration that wants both asks for both and concatenates. The
+    // engine does not need an opinion about that.
+    let session_paths_fn = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let paths = Table::new(&ctx);
+        for (index, path) in session_paths().into_iter().enumerate() {
+            paths
+                .set(
+                    ctx,
+                    index as i64 + 1,
+                    LuaValue::String(ctx.intern(path.to_string_lossy().as_bytes())),
+                )
+                .expect("session path table accepts integer keys");
+        }
+        stack.replace(ctx, paths);
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "session_paths", session_paths_fn);
 }

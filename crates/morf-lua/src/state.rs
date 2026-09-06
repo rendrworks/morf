@@ -1,207 +1,25 @@
+pub(crate) use crate::api_shader::RegisteredShader;
 use crate::states::{Capture, StateSet};
-use luna::{StashedClosure, StashedTable, UserRef};
-use morf_desktop::DesktopEntries;
-use morf_image::ImageRect as QuantizeRect;
-use morf_io::{
-    DbusProxy, DbusSignal, FileDocument, FileView, FileWatcher, Process, ProcessConfig, Socket,
-    SocketServer, SplitParser, StreamCollector, Timer as IoTimer,
-};
+use luna::{StashedClosure, StashedTable};
 use morf_layout::{TransformTracker, TransformWatcher as NativeTransformWatcher};
 use morf_lifecycle::Retention;
-use morf_menu::Menu;
 use morf_reactive::{Graph, SignalId};
-use morf_scene::{Easing, GroupId, ListModel, ModelId, NodeHandle, Scene, VirtualList};
-use morf_services::{GreetdClient, PamTask, PipeWire, StatusNotifierHost, UdevMonitor};
-use std::cell::{Cell, RefCell};
+use morf_scene::{GroupId, ListModel, ModelId, NodeHandle, Scene, VirtualList};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
-use crate::{events::*, surface_types::*};
-
-#[derive(Debug)]
-pub(crate) struct SignalToken {
-    pub(crate) id: SignalId,
-}
-
-pub(crate) struct PersistentToken {
-    pub(crate) properties: HashMap<String, SignalId>,
-    pub(crate) reloaded: bool,
-}
-
-pub(crate) struct ScopeToken {
-    pub(crate) prefix: String,
-}
-
-pub(crate) struct RetainableToken {
-    pub(crate) node: NodeHandle,
-}
-
-pub(crate) struct WindowSurfaceToken {
-    pub(crate) id: u64,
-}
-
-pub(crate) type PopupAnchorArgs<'gc> = (
-    UserRef<'gc, WindowSurfaceToken>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-);
-
-pub(crate) type WindowMapRectArgs<'gc> = (
-    UserRef<'gc, WindowSurfaceToken>,
-    UserRef<'gc, NodeToken>,
-    f64,
-    f64,
-    f64,
-    f64,
-);
-
-pub(crate) struct TransformWatcherToken {
-    pub(crate) id: u64,
-}
-
-pub(crate) struct RetainLockToken {
-    pub(crate) node: NodeHandle,
-    pub(crate) locked: Cell<bool>,
-    pub(crate) state: Rc<RefCell<ReactiveState>>,
-}
-
-impl Drop for RetainLockToken {
-    fn drop(&mut self) {
-        if !self.locked.get() {
-            return;
-        }
-        if let Ok(mut state) = self.state.try_borrow_mut()
-            && state.retention.unlock(self.node).is_ok()
-            && state.retention.should_destroy(self.node).unwrap_or(false)
-        {
-            state.retained_destroy_queue.insert(self.node);
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct NodeToken {
-    pub(crate) handle: NodeHandle,
-}
-
-pub(crate) struct GroupToken {
-    pub(crate) id: GroupId,
-}
-
-#[derive(Debug)]
-pub(crate) struct DbusToken {
-    pub(crate) proxy: DbusProxy,
-}
-
-pub(crate) struct PipeWireToken {
-    pub(crate) service: PipeWire,
-}
-
-pub(crate) struct GreetdToken {
-    pub(crate) client: RefCell<GreetdClient>,
-}
-
-pub(crate) struct ProcessToken {
-    pub(crate) process: RefCell<Process>,
-}
-
-pub(crate) struct ProcessViewToken {
-    pub(crate) state: RefCell<ProcessViewState>,
-}
-
-pub(crate) struct ProcessViewState {
-    pub(crate) config: ProcessConfig,
-    pub(crate) process: Option<Process>,
-}
-
-pub(crate) struct FileToken {
-    pub(crate) file: FileView,
-}
-
-pub(crate) struct FileWatcherToken {
-    pub(crate) watcher: FileWatcher,
-}
-
-pub(crate) struct FileDocumentToken {
-    pub(crate) file: RefCell<FileDocument>,
-}
-
-pub(crate) struct SocketToken {
-    pub(crate) state: RefCell<SocketState>,
-}
-
-pub(crate) struct SocketState {
-    pub(crate) path: String,
-    pub(crate) socket: Option<Socket>,
-}
-
-pub(crate) struct SocketServerToken {
-    pub(crate) state: RefCell<SocketServerState>,
-}
-
-pub(crate) struct SocketServerState {
-    pub(crate) path: String,
-    pub(crate) server: Option<SocketServer>,
-}
-
-pub(crate) struct SplitParserToken {
-    pub(crate) parser: RefCell<SplitParser>,
-}
-
-pub(crate) struct StreamCollectorToken {
-    pub(crate) collector: RefCell<StreamCollector>,
-}
-
-pub(crate) struct ListModelToken {
-    pub(crate) model: Rc<RefCell<ListModel>>,
-}
-
-pub(crate) struct VirtualListToken {
-    pub(crate) model: Rc<RefCell<ListModel>>,
-    pub(crate) view: RefCell<VirtualList>,
-}
-
-pub(crate) struct ElapsedTimerToken {
-    pub(crate) started: RefCell<Instant>,
-}
-
-pub(crate) struct EasingCurveToken {
-    pub(crate) easing: Easing,
-}
-
-pub(crate) struct ColorQuantizerToken {
-    pub(crate) state: RefCell<ColorQuantizerState>,
-}
-
-#[derive(Clone)]
-pub(crate) struct ColorQuantizerState {
-    pub(crate) source: PathBuf,
-    pub(crate) depth: u8,
-    pub(crate) crop: Option<QuantizeRect>,
-    pub(crate) rescale_size: u32,
-    pub(crate) colors: Vec<[u8; 4]>,
-}
-
-pub(crate) struct SystemClockToken {
-    pub(crate) enabled: Cell<bool>,
-    pub(crate) precision: RefCell<String>,
-}
-
-pub(crate) struct JsonNullToken;
-
-pub(crate) struct DesktopEntriesToken {
-    pub(crate) entries: RefCell<DesktopEntries>,
-    pub(crate) paths: Vec<PathBuf>,
-}
-
-pub(crate) struct MenuToken {
-    pub(crate) menu: RefCell<Menu>,
-    pub(crate) callbacks: HashMap<String, StashedClosure>,
-}
+use crate::{
+    events::*,
+    surface_types::*,
+    types::{LogEntry, LogLevel, ToplevelRequest, WorkspaceRequest},
+};
+// Re-exported, because these moved out of this file only to satisfy the line
+// gate: every consumer reaches for them through `state::*` and there is no
+// reason to make them all learn a second module name.
+pub(crate) use crate::state_pending::*;
+pub(crate) use crate::state_tokens::*;
 
 pub(crate) struct LuaVirtualView {
     pub(crate) model: Rc<RefCell<ListModel>>,
@@ -213,6 +31,36 @@ pub(crate) struct LuaVirtualView {
     pub(crate) reuse_limit: usize,
     pub(crate) pool_root: Option<NodeHandle>,
     pub(crate) column_extent: f64,
+    /// Whether the view places its delegates itself (a scrolling view) or
+    /// leaves that to its own node's kind (a `Repeater`, which may be a
+    /// `Row`, a `Column` or a `Grid`).
+    pub(crate) positioned: bool,
+}
+
+/// A `morf.state` table: each named field its own signal, each nested
+/// table its own proxy, each array a list model.
+pub(crate) struct StateToken {
+    pub(crate) fields: Rc<RefCell<StateFields>>,
+}
+
+#[derive(Default)]
+pub(crate) struct StateFields {
+    pub(crate) scalars: HashMap<String, SignalId>,
+    /// A field computed from the others on every read: a theme's derived
+    /// token. Read inside a binding, whatever it reads is what the binding
+    /// tracks, so it re-derives exactly when its inputs change.
+    pub(crate) derived: HashMap<String, StashedClosure>,
+    /// A theme: a string written to a field that names a colour becomes one.
+    pub(crate) theme: bool,
+    pub(crate) tables: HashMap<String, luna::StashedUserData>,
+    pub(crate) lists: HashMap<String, (luna::StashedUserData, Rc<RefCell<ListModel>>)>,
+}
+
+/// What a `ui.Layout` container answers layout with.
+#[derive(Clone)]
+pub(crate) struct CustomLayoutFns {
+    pub(crate) measure: StashedClosure,
+    pub(crate) place: StashedClosure,
 }
 
 pub(crate) struct DelegateInstance {
@@ -225,35 +73,6 @@ pub(crate) enum ViewKind {
     Repeater,
     List,
     Grid,
-}
-
-pub(crate) struct PendingPam {
-    pub(crate) task: PamTask,
-    pub(crate) callback: StashedClosure,
-    pub(crate) unlock_on_success: bool,
-}
-
-pub(crate) struct PendingTimer {
-    pub(crate) timer: IoTimer,
-    pub(crate) callback: StashedClosure,
-    pub(crate) repeat: bool,
-    pub(crate) interval: Duration,
-    pub(crate) node: Option<NodeHandle>,
-}
-
-pub(crate) struct PendingDbusSignal {
-    pub(crate) signal: DbusSignal,
-    pub(crate) callback: StashedClosure,
-}
-
-pub(crate) struct PendingUdev {
-    pub(crate) monitor: UdevMonitor,
-    pub(crate) callback: StashedClosure,
-}
-
-pub(crate) struct PendingStatusNotifier {
-    pub(crate) host: StatusNotifierHost,
-    pub(crate) callback: StashedClosure,
 }
 
 pub(crate) struct LuaTransformWatcher {
@@ -322,12 +141,52 @@ pub(crate) struct ReactiveState {
     pub(crate) reload_request: Option<bool>,
     pub(crate) watch_files: bool,
     pub(crate) watch_files_changed: bool,
+    /// Whether the configuration has asked the shell to stop.
+    ///
+    /// One-way: nothing clears it but the supervisor reading it, and by then
+    /// the process is on its way out. A configuration cannot un-quit.
+    pub(crate) quit_requested: bool,
+    /// Whether the configuration is holding the session awake, and whether that
+    /// has changed since the compositor was last told.
+    /// What a configuration asked to do to workspaces this frame.
+    pub(crate) workspace_requests: Vec<WorkspaceRequest>,
+    /// What a configuration asked to do to other windows this frame.
+    pub(crate) toplevel_requests: Vec<ToplevelRequest>,
+    pub(crate) idle_inhibited: bool,
+    pub(crate) idle_inhibit_changed: bool,
+    pub(crate) shortcuts_inhibited: bool,
+    pub(crate) shortcuts_inhibit_changed: bool,
+    /// Told the compositor's answer, which is not always yes.
+    pub(crate) shortcuts_callbacks: Vec<StashedClosure>,
+    /// Nodes the lint has already complained about, so a bar that paints
+    /// sixty times a second says it once.
+    pub(crate) lint_warned: HashSet<NodeHandle>,
+    /// What this output's compositor and GPU can do, as name = value pairs.
+    /// Filled once the connection is up; read by `morf.capabilities` and by
+    /// `morf info`.
+    pub(crate) capabilities: Vec<(String, String)>,
+    /// The last timer id handed out. Never reused: a handle to a timer that
+    /// finished must not find a newer one wearing its number.
+    pub(crate) last_timer_id: u64,
     pub(crate) reload_completed_callbacks: Vec<StashedClosure>,
     pub(crate) reload_failed_callbacks: Vec<StashedClosure>,
     pub(crate) effects: HashMap<u64, LuaEffect>,
     pub(crate) next_effect: u64,
     pub(crate) active: Option<Capture>,
-    pub(crate) logs: Vec<String>,
+    /// How many Lua handlers are on the stack: an event handler, a timer, an
+    /// IPC verb, a D-Bus call. While one runs, a signal write or a property
+    /// write marks the graph dirty and nothing more; the one flush happens
+    /// when the outermost handler returns. Three writes in a handler used to
+    /// be three full flushes, and a bare property write was none at all.
+    pub(crate) handler_depth: u32,
+    /// Whether something wrote while a handler was running.
+    pub(crate) flush_pending: bool,
+    pub(crate) logs: Vec<LogEntry>,
+    /// Shaders the configuration registered, by name.
+    ///
+    /// Compiled once at load. The renderer is handed the generated WGSL when
+    /// the host starts up, and a node only ever carries the program's hash.
+    pub(crate) shaders: HashMap<String, RegisteredShader>,
     pub(crate) scene: Scene,
     pub(crate) effect_runs: u64,
     pub(crate) clock: SignalId,
@@ -335,12 +194,20 @@ pub(crate) struct ReactiveState {
     pub(crate) parent_transitions: Vec<ParentTransitionRequest>,
     pub(crate) states: HashMap<NodeHandle, StateSet>,
     pub(crate) ipc_handlers: HashMap<String, StashedClosure>,
-    pub(crate) idle_callbacks: HashMap<u32, Vec<StashedClosure>>,
+    /// Keyed on the threshold and whether it ignores inhibitors, because the
+    /// same number of milliseconds means two different things to the compositor.
+    pub(crate) idle_callbacks: HashMap<(u32, bool), Vec<StashedClosure>>,
     pub(crate) output_power_requests: Vec<bool>,
     pub(crate) clipboard_requests: Vec<String>,
     pub(crate) clipboard_callbacks: Vec<StashedClosure>,
+    pub(crate) keyboard_focus_callbacks: Vec<StashedClosure>,
+    pub(crate) backdrop_callbacks: Vec<StashedClosure>,
     pub(crate) screencopy_requests: Vec<ScreencopyRequest>,
     pub(crate) screencopy_callbacks: HashMap<u64, StashedClosure>,
+    /// The chosen name of each capture in flight, by request.
+    pub(crate) screencopy_names: HashMap<u64, String>,
+    /// Published captures the configuration is done with.
+    pub(crate) screencopy_releases: Vec<String>,
     pub(crate) next_screencopy: u64,
     pub(crate) virtual_keyboard_requests: Vec<VirtualKeyboardRequest>,
     pub(crate) input_method_enable_requested: bool,
@@ -351,11 +218,18 @@ pub(crate) struct ReactiveState {
     pub(crate) text_input_callbacks: Vec<StashedClosure>,
     pub(crate) views: HashMap<NodeHandle, LuaVirtualView>,
     pub(crate) pam_tasks: Vec<PendingPam>,
+    pub(crate) pam_sessions: Vec<PendingPamSession>,
+    pub(crate) greetd_sessions: Vec<PendingGreetdSession>,
     pub(crate) timers: Vec<PendingTimer>,
     pub(crate) timer_callbacks: HashMap<NodeHandle, StashedClosure>,
     pub(crate) animation_callbacks: HashMap<(NodeHandle, String), StashedClosure>,
     pub(crate) group_callbacks: HashMap<GroupId, StashedClosure>,
     pub(crate) loader_factories: HashMap<NodeHandle, StashedClosure>,
+    /// The `measure` and `place` functions of every `ui.Layout` container.
+    pub(crate) custom_layouts: HashMap<NodeHandle, CustomLayoutFns>,
+    /// The list model's metatable, kept so a list inside `morf.state` is
+    /// the same kind of object as `morf.list_model` makes.
+    pub(crate) model_metatable: Option<luna::StashedTable>,
     pub(crate) loaded_loaders: HashSet<NodeHandle>,
     pub(crate) retention: Retention<NodeHandle>,
     pub(crate) retain_callbacks: HashMap<NodeHandle, RetainCallbacks>,
@@ -378,6 +252,13 @@ pub(crate) struct ReactiveState {
     pub(crate) transform_watchers: HashMap<u64, LuaTransformWatcher>,
     pub(crate) next_transform_watcher: u64,
     pub(crate) dbus_signals: Vec<PendingDbusSignal>,
+    /// The metatable every state proxy shares, so a theme can be one.
+    pub(crate) state_metatable: Option<StashedTable>,
+    /// Theme token files being watched.
+    pub(crate) theme_sources: Vec<ThemeSource>,
+    /// `morf.prefers` and where its answers come from.
+    pub(crate) prefers: Option<Prefers>,
+    pub(crate) dbus_services: Vec<PendingDbusService>,
     pub(crate) udev_monitors: Vec<PendingUdev>,
     pub(crate) status_notifiers: Vec<PendingStatusNotifier>,
     pub(crate) session_unlock_requested: bool,
@@ -386,6 +267,30 @@ pub(crate) struct ReactiveState {
 }
 
 impl ReactiveState {
+    /// A fresh timer id.
+    pub(crate) fn next_timer_id(&mut self) -> u64 {
+        self.last_timer_id += 1;
+        self.last_timer_id
+    }
+
+    /// Records one line, stamped with when it happened.
+    ///
+    /// The one way in, so every entry gets a level and a time rather than the
+    /// flat strings this used to hold -- a shell running for a day accumulates
+    /// thousands, and without either there is no way to ask which are serious
+    /// or recent.
+    pub(crate) fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or(0);
+        self.logs.push(LogEntry {
+            level,
+            at_ms,
+            message: message.into(),
+        });
+    }
+
     pub(crate) fn new() -> Self {
         let mut graph = Graph::default();
         let initial_clock = IpcValue::String(String::new());
@@ -405,12 +310,26 @@ impl ReactiveState {
             reload_request: None,
             watch_files: true,
             watch_files_changed: false,
+            quit_requested: false,
+            workspace_requests: Vec::new(),
+            toplevel_requests: Vec::new(),
+            idle_inhibited: false,
+            idle_inhibit_changed: false,
+            shortcuts_inhibited: false,
+            shortcuts_inhibit_changed: false,
+            shortcuts_callbacks: Vec::new(),
+            lint_warned: HashSet::new(),
+            capabilities: Vec::new(),
+            last_timer_id: 0,
             reload_completed_callbacks: Vec::new(),
             reload_failed_callbacks: Vec::new(),
             effects: HashMap::new(),
             next_effect: 0,
             active: None,
+            handler_depth: 0,
+            flush_pending: false,
             logs: Vec::new(),
+            shaders: HashMap::new(),
             scene: Scene::new(),
             effect_runs: 0,
             clock,
@@ -422,8 +341,12 @@ impl ReactiveState {
             output_power_requests: Vec::new(),
             clipboard_requests: Vec::new(),
             clipboard_callbacks: Vec::new(),
+            keyboard_focus_callbacks: Vec::new(),
+            backdrop_callbacks: Vec::new(),
             screencopy_requests: Vec::new(),
             screencopy_callbacks: HashMap::new(),
+            screencopy_names: HashMap::new(),
+            screencopy_releases: Vec::new(),
             next_screencopy: 0,
             virtual_keyboard_requests: Vec::new(),
             input_method_enable_requested: false,
@@ -434,11 +357,15 @@ impl ReactiveState {
             text_input_callbacks: Vec::new(),
             views: HashMap::new(),
             pam_tasks: Vec::new(),
+            pam_sessions: Vec::new(),
+            greetd_sessions: Vec::new(),
             timers: Vec::new(),
             timer_callbacks: HashMap::new(),
             animation_callbacks: HashMap::new(),
             group_callbacks: HashMap::new(),
             loader_factories: HashMap::new(),
+            custom_layouts: HashMap::new(),
+            model_metatable: None,
             loaded_loaders: HashSet::new(),
             retention: Retention::default(),
             retain_callbacks: HashMap::new(),
@@ -453,7 +380,11 @@ impl ReactiveState {
             node_metatable: None,
             transform_watchers: HashMap::new(),
             next_transform_watcher: 0,
+            state_metatable: None,
+            theme_sources: Vec::new(),
+            prefers: None,
             dbus_signals: Vec::new(),
+            dbus_services: Vec::new(),
             udev_monitors: Vec::new(),
             status_notifiers: Vec::new(),
             session_unlock_requested: false,

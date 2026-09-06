@@ -6,9 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use morf_services::{
-    GreetdClient, PamAuthenticator, PipeWire, StatusNotifierHost, UdevMonitor, XkbKeymap,
-};
+use morf_services::{GreetdClient, GreetdConversation, StatusNotifierHost, UdevMonitor, XkbKeymap};
 
 use crate::{lua_values::*, scene_bindings::*, serialization::*, state::*, table_menu::*};
 
@@ -87,15 +85,38 @@ pub(crate) fn install_system_service_api<'gc>(
     dbus_metatable.set_field(ctx, "__index", dbus_methods);
     let dbus_metatable = ctx.stash(dbus_metatable);
     let dbus_proxy = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (bus, destination, path, interface): (String, String, String, String) =
-            stack.consume(ctx)?;
+        let (bus, destination, path, interface, timeout_ms): (
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+        ) = stack.consume(ctx)?;
         let bus = match bus.as_str() {
             "session" => Bus::Session,
             "system" => Bus::System,
             _ => return Err(HostError(format!("unknown D-Bus bus `{bus}`")).into()),
         };
-        let proxy = DbusProxy::connect(bus, destination, path, interface)
-            .map_err(|error| HostError(error.to_string()))?;
+        // A second is right for reading a property and wrong for anything a
+        // human is part of: BlueZ `Pair` does not return until the pairing
+        // succeeds, fails, or times out well past it, and a caller with no way
+        // to say so was left driving `bluetoothctl` instead.
+        let proxy = match timeout_ms {
+            Some(milliseconds) => {
+                let milliseconds = u64::try_from(milliseconds).map_err(|_| {
+                    HostError(format!("`{milliseconds}` is not a D-Bus call timeout"))
+                })?;
+                DbusProxy::connect_with_timeout(
+                    bus,
+                    destination,
+                    path,
+                    interface,
+                    Duration::from_millis(milliseconds),
+                )
+            }
+            None => DbusProxy::connect(bus, destination, path, interface),
+        }
+        .map_err(|error| HostError(error.to_string()))?;
         let userdata = UserData::new_static(&ctx, DbusToken { proxy });
         userdata.set_metatable(ctx, Some(ctx.fetch(&dbus_metatable)));
         stack.replace(ctx, userdata);
@@ -103,86 +124,8 @@ pub(crate) fn install_system_service_api<'gc>(
     });
     let dbus = Table::new(&ctx);
     dbus.set_field(ctx, "proxy", dbus_proxy);
+    crate::api_dbus_serve::install_dbus_serve_api(ctx, Rc::clone(&state), dbus);
     morf.set_field(ctx, "dbus", dbus);
-
-    let pipewire_nodes = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let pipewire: UserRef<PipeWireToken> = stack.consume(ctx)?;
-        let nodes = Table::new(&ctx);
-        for (index, node) in pipewire.service.nodes().into_iter().enumerate() {
-            let value = Table::new(&ctx);
-            value.set_field(ctx, "id", node.id as i64);
-            value.set_field(
-                ctx,
-                "serial",
-                node.serial
-                    .and_then(|value| i64::try_from(value).ok())
-                    .map_or(LuaValue::Nil, LuaValue::Integer),
-            );
-            value.set_field(ctx, "name", node.name.as_str());
-            value.set_field(ctx, "description", node.description.as_str());
-            value.set_field(ctx, "media_class", node.media_class.as_str());
-            nodes
-                .set(ctx, index as i64 + 1, value)
-                .expect("PipeWire node table accepts integer keys");
-        }
-        stack.replace(ctx, nodes);
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire_volume = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (pipewire, id): (UserRef<PipeWireToken>, i64) = stack.consume(ctx)?;
-        let id = u32::try_from(id).map_err(|_| HostError("invalid PipeWire node id".into()))?;
-        let volume = pipewire
-            .service
-            .volume(id)
-            .map_err(|error| HostError(error.to_string()))?;
-        let value = Table::new(&ctx);
-        let channels = Table::new(&ctx);
-        for (index, channel) in volume.channels.iter().enumerate() {
-            channels
-                .set(ctx, index as i64 + 1, *channel as f64)
-                .expect("PipeWire channel table accepts integer keys");
-        }
-        value.set_field(ctx, "channels", channels);
-        value.set_field(ctx, "level", volume.average() as f64);
-        value.set_field(ctx, "muted", volume.muted);
-        stack.replace(ctx, value);
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire_set_volume = Callback::from_fn(&ctx, |ctx, _, mut stack| {
-        let (pipewire, id, level, muted): (UserRef<PipeWireToken>, i64, f64, bool) =
-            stack.consume(ctx)?;
-        let id = u32::try_from(id).map_err(|_| HostError("invalid PipeWire node id".into()))?;
-        if !level.is_finite() || level < 0.0 || level > f32::MAX as f64 {
-            return Err(HostError("PipeWire volume must be finite and non-negative".into()).into());
-        }
-        let current = pipewire
-            .service
-            .volume(id)
-            .map_err(|error| HostError(error.to_string()))?;
-        let channels = vec![level as f32; current.channels.len().max(1)];
-        pipewire
-            .service
-            .set_volume(id, &channels, muted)
-            .map_err(|error| HostError(error.to_string()))?;
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire_methods = Table::new(&ctx);
-    pipewire_methods.set_field(ctx, "nodes", pipewire_nodes);
-    pipewire_methods.set_field(ctx, "volume", pipewire_volume);
-    pipewire_methods.set_field(ctx, "set_volume", pipewire_set_volume);
-    let pipewire_metatable = Table::new(&ctx);
-    pipewire_metatable.set_field(ctx, "__index", pipewire_methods);
-    let pipewire_metatable = ctx.stash(pipewire_metatable);
-    let pipewire_connect = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let service = PipeWire::connect().map_err(|error| HostError(error.to_string()))?;
-        let userdata = UserData::new_static(&ctx, PipeWireToken { service });
-        userdata.set_metatable(ctx, Some(ctx.fetch(&pipewire_metatable)));
-        stack.replace(ctx, userdata);
-        Ok(CallbackReturn::Return)
-    });
-    let pipewire = Table::new(&ctx);
-    pipewire.set_field(ctx, "connect", pipewire_connect);
-    morf.set_field(ctx, "pipewire", pipewire);
 
     let udev_state = Rc::clone(&state);
     let udev_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
@@ -200,8 +143,30 @@ pub(crate) fn install_system_service_api<'gc>(
 
     let status_notifier_state = Rc::clone(&state);
     let status_notifier_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let callback: Closure = stack.consume(ctx)?;
-        let host = StatusNotifierHost::connect().map_err(|error| HostError(error.to_string()))?;
+        // `subscribe(handler)` uses the vendor-neutral watcher name;
+        // `subscribe(handler, { "org.freedesktop", "..." })` names the ones this
+        // session actually has. The engine ships no desktop environment's
+        // prefix of its own — which watcher answers is a fact about the machine,
+        // and the configuration is the thing that knows it.
+        let (callback, watchers): (Closure, Option<Table>) = stack.consume(ctx)?;
+        let names: Vec<String> = match watchers {
+            Some(table) => (1..=table.length(&ctx))
+                .filter_map(|index| match table.get_value(ctx, index) {
+                    LuaValue::String(name) => Some(name.display_lossy().to_string()),
+                    _ => None,
+                })
+                .collect(),
+            None => StatusNotifierHost::DEFAULT_NAMESPACES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        };
+        if names.is_empty() {
+            return Err(HostError("status notifier needs at least one watcher name".into()).into());
+        }
+        let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+        let host = StatusNotifierHost::connect_to(&borrowed)
+            .map_err(|error| HostError(error.to_string()))?;
         let mut state = status_notifier_state.borrow_mut();
         if state.status_notifiers.len() >= 4 {
             return Err(HostError("status notifier subscription limit reached".into()).into());
@@ -285,36 +250,81 @@ pub(crate) fn install_system_service_api<'gc>(
         stack.replace(ctx, userdata);
         Ok(CallbackReturn::Return)
     });
+    // The login as a conversation, off the drawing thread: `converse` asks
+    // for a session and returns at once; what greetd says arrives through
+    // `on_message`, and the answers go back through `respond`, `start` and
+    // `cancel`. The blocking client above stays for a script that wants a
+    // straight line; a greeter that draws while a reader waits wants this.
+    let converse_state = Rc::clone(&state);
+    let greetd_on_message = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (session, callback): (UserRef<GreetdSessionToken>, Closure) = stack.consume(ctx)?;
+        let mut state = converse_state.borrow_mut();
+        let entry = PendingGreetdSession {
+            conversation: Rc::clone(&session.conversation),
+            callback: ctx.stash(callback),
+        };
+        let existing = state
+            .greetd_sessions
+            .iter()
+            .position(|entry| Rc::ptr_eq(&entry.conversation, &session.conversation));
+        match existing {
+            Some(index) => state.greetd_sessions[index] = entry,
+            None => state.greetd_sessions.push(entry),
+        }
+        Ok(CallbackReturn::Return)
+    });
+    let greetd_session_respond = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let (session, answer): (UserRef<GreetdSessionToken>, Option<String>) =
+            stack.consume(ctx)?;
+        let sent = session.conversation.borrow().respond(answer);
+        stack.replace(ctx, sent);
+        Ok(CallbackReturn::Return)
+    });
+    let greetd_session_start = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let (session, command, environment): (UserRef<GreetdSessionToken>, Table, Table) =
+            stack.consume(ctx)?;
+        let command = table_string_array(ctx, command, 64).map_err(HostError)?;
+        let environment = table_string_array(ctx, environment, 256).map_err(HostError)?;
+        let sent = session
+            .conversation
+            .borrow_mut()
+            .start_session(command, environment);
+        stack.replace(ctx, sent);
+        Ok(CallbackReturn::Return)
+    });
+    let greetd_session_cancel = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let session: UserRef<GreetdSessionToken> = stack.consume(ctx)?;
+        let sent = session.conversation.borrow_mut().cancel();
+        stack.replace(ctx, sent);
+        Ok(CallbackReturn::Return)
+    });
+    let session_methods = Table::new(&ctx);
+    session_methods.set_field(ctx, "on_message", greetd_on_message);
+    session_methods.set_field(ctx, "respond", greetd_session_respond);
+    session_methods.set_field(ctx, "start", greetd_session_start);
+    session_methods.set_field(ctx, "cancel", greetd_session_cancel);
+    let session_metatable = Table::new(&ctx);
+    session_metatable.set_field(ctx, "__index", session_methods);
+    let session_metatable = ctx.stash(session_metatable);
+    let greetd_converse = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (username, path): (String, Option<String>) = stack.consume(ctx)?;
+        let conversation = GreetdConversation::begin(path.map(std::path::PathBuf::from), username);
+        let userdata = UserData::new_static(
+            &ctx,
+            GreetdSessionToken {
+                conversation: Rc::new(RefCell::new(conversation)),
+            },
+        );
+        userdata.set_metatable(ctx, Some(ctx.fetch(&session_metatable)));
+        stack.replace(ctx, userdata);
+        Ok(CallbackReturn::Return)
+    });
     let greetd = Table::new(&ctx);
     greetd.set_field(ctx, "connect", greetd_connect);
+    greetd.set_field(ctx, "converse", greetd_converse);
     morf.set_field(ctx, "greetd", greetd);
 
-    let pam_state = Rc::clone(&state);
-    let pam_authenticate = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (service, username, password, callback): (String, String, String, Closure) =
-            stack.consume(ctx)?;
-        pam_state.borrow_mut().pam_tasks.push(PendingPam {
-            task: PamAuthenticator::authenticate_async(service, username, password),
-            callback: ctx.stash(callback),
-            unlock_on_success: false,
-        });
-        Ok(CallbackReturn::Return)
-    });
-    let pam = Table::new(&ctx);
-    pam.set_field(ctx, "authenticate", pam_authenticate);
-    let pam_unlock_state = Rc::clone(&state);
-    let pam_authenticate_unlock = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (service, username, password, callback): (String, String, String, Closure) =
-            stack.consume(ctx)?;
-        pam_unlock_state.borrow_mut().pam_tasks.push(PendingPam {
-            task: PamAuthenticator::authenticate_async(service, username, password),
-            callback: ctx.stash(callback),
-            unlock_on_success: true,
-        });
-        Ok(CallbackReturn::Return)
-    });
-    pam.set_field(ctx, "authenticate_unlock", pam_authenticate_unlock);
-    morf.set_field(ctx, "pam", pam);
+    crate::api_pam::install_pam_api(ctx, Rc::clone(&state), morf);
 
     let xkb_compile = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let options: Table = stack.consume(ctx)?;

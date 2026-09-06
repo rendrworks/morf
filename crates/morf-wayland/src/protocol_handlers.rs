@@ -4,11 +4,14 @@ use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::seat::keyboard::KeyEvent;
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::protocol::{wl_output, wl_region, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::{self, ExtBackgroundEffectManagerV1},
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
+};
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::{self, ExtIdleNotificationV1},
     ext_idle_notifier_v1::ExtIdleNotifierV1,
@@ -44,7 +47,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 use crate::{helpers::*, state_types::*, surface_types::*, types::*};
 
 impl LayerState {
-    pub(crate) fn layer(&self) -> &LayerSurface {
+    pub(crate) fn layer(&self) -> &ShellSurface {
         &self
             .layers
             .get(&PRIMARY_LAYER)
@@ -137,12 +140,43 @@ impl Dispatch<WpFractionalScaleV1, u64> for LayerState {
     }
 }
 
-impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
+/// The same event for a popup or a floating window.
+///
+/// A second impl rather than one keyed on something both could share, because
+/// the identifiers do not share a space: a layer surface and a popup may both
+/// be `1`, and folding them into one map would have a popup's scale change
+/// resize a bar. The role carries the kind along with the number and so cannot
+/// be confused.
+impl Dispatch<WpFractionalScaleV1, SurfaceRole> for LayerState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        role: &SurfaceRole,
+        _connection: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
+            return;
+        };
+        let Some(entry) = state.aux_scales.get_mut(role) else {
+            return;
+        };
+        entry.scale_120 = scale.max(1);
+        let scale_120 = entry.scale_120;
+        state.events.push_back(LayerEvent::AuxScale {
+            role: *role,
+            scale_120,
+        });
+    }
+}
+
+impl Dispatch<ExtIdleNotificationV1, (u32, bool)> for LayerState {
     fn event(
         state: &mut Self,
         _proxy: &ExtIdleNotificationV1,
         event: ext_idle_notification_v1::Event,
-        timeout_ms: &u32,
+        (timeout_ms, input_only): &(u32, bool),
         _connection: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
@@ -153,6 +187,7 @@ impl Dispatch<ExtIdleNotificationV1, u32> for LayerState {
         };
         state.events.push_back(LayerEvent::Idle {
             timeout_ms: *timeout_ms,
+            input_only: *input_only,
             idle,
         });
     }
@@ -406,3 +441,30 @@ wayland_client::delegate_noop!(LayerState: ignore ZwpInputMethodManagerV2);
 wayland_client::delegate_noop!(LayerState: ignore ZwpTextInputManagerV3);
 wayland_client::delegate_noop!(LayerState: ignore WpViewport);
 wayland_client::delegate_noop!(LayerState: ignore wl_region::WlRegion);
+// The per-surface object is inert: it is only ever a handle to call
+// `set_blur_region` on, and it sends nothing back.
+wayland_client::delegate_noop!(LayerState: ignore ExtBackgroundEffectSurfaceV1);
+
+impl Dispatch<ExtBackgroundEffectManagerV1, ()> for LayerState {
+    /// The manager's one event: what the compositor is currently willing to do.
+    ///
+    /// It arrives when the manager is bound and again whenever it changes, so
+    /// blur can be withdrawn while a session is running — and when it is, the
+    /// compositor stops applying it even to regions that were already set.
+    /// Tracking it means a configuration can be told the truth rather than
+    /// being left to wonder why its panel is sharp.
+    fn event(
+        state: &mut Self,
+        _manager: &ExtBackgroundEffectManagerV1,
+        event: ext_background_effect_manager_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        if let ext_background_effect_manager_v1::Event::Capabilities { flags } = event {
+            state.blur_capable = flags.into_result().is_ok_and(|capabilities| {
+                capabilities.contains(ext_background_effect_manager_v1::Capability::Blur)
+            });
+        }
+    }
+}

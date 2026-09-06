@@ -1,5 +1,5 @@
 use morf_layout::{Geometry, Transform2D};
-use morf_render::{DamageRect, DrawCommand, DrawList, Gradient, RenderBackend, WgpuBackend};
+use morf_render::{DamageRect, DrawCommand, DrawList, RenderBackend, WgpuBackend};
 use morf_scene::{Color, Element, Scene};
 use morf_wayland::{BarConfig, InputRect, LayerClient, LayerEvent, PopupConfig};
 
@@ -91,7 +91,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(event) = client.next_event() {
             match event {
                 LayerEvent::PopupFrame { time_ms, .. } => {
-                    println!("click-anchored popup {width}x{height}, frame {time_ms} ms");
+                    // The popup's own scale, which is the point: it used to
+                    // be given the primary layer's, and on a mixed-DPI desk
+                    // those differ.
+                    let popup_scale = client.surface_scale_120(morf_wayland::SurfaceRole::Popup(0));
+                    println!(
+                        "click-anchored popup {width}x{height} at {popup_scale}/120 \
+                         (layer {scale}/120), frame {time_ms} ms"
+                    );
                     break 'framed;
                 }
                 LayerEvent::PopupDone { .. } => return Err("popup was dismissed".into()),
@@ -169,7 +176,7 @@ fn quad(
         clip: None,
         color,
         color_overlay: Color::rgba8(0, 0, 0, 0),
-        gradient: Gradient::None,
+        gradient: None,
         radii: [8.0; 4],
         border_width: 1.0,
         antialiasing: true,
@@ -182,5 +189,6 @@ fn quad(
         shadow_offset_x: 0.0,
         shadow_offset_y: 3.0,
         shadow_inner: false,
+        shader: None,
     }
 }

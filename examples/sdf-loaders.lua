@@ -17,18 +17,20 @@ morf.surface.height = H
 morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local INK = "#0e1213"
-local PANEL = "#141a1c"
-local ACCENT = "#b4e1ea"
-local WARM = "#f0b47a"
-local MUTED = "#6a8389"
+local theme = morf.theme {
+  ink = "#0e1213",
+  panel = "#141a1c",
+  accent = "#b4e1ea",
+  warm = "#f0b47a",
+  muted = "#6a8389",
+}
 
 local elapsed = core.elapsed_timer()
 -- Progress runs 0 to 1 and back, so the indicators have something to report.
 local progress = morf.signal("loaders.progress", 0)
 
 local function caption(x, text)
-  return ui.Text { x = x + 18, y = 196, width = 150, text = text, font_size = 12, wrap = true, color = MUTED }
+  return ui.Text { x = x + 18, y = 196, width = 150, text = text, font_size = 12, wrap = true, line_height = 1.4, color = theme.muted }
 end
 
 local function plinth(x, title)
@@ -37,8 +39,8 @@ local function plinth(x, title)
     y = 0,
     width = 180,
     height = H,
-    ui.Rect { x = 6, y = 6, width = 168, height = 236, radius = 16, color = PANEL },
-    ui.Text { x = 18, y = 168, width = 150, text = title, font_size = 15, color = ACCENT },
+    ui.Rect { x = 6, y = 6, width = 168, height = 236, radius = 16, color = theme.panel },
+    ui.Text { x = 18, y = 168, width = 150, text = title, font_size = 15, color = theme.accent },
   }
 end
 
@@ -66,7 +68,7 @@ local sweep_track = ui.Sdf {
 }
 local sweep = ui.Sdf {
   x = 6, y = 20, width = 168, height = 140,
-  fill_color = ACCENT, stroke_color = INK, stroke_width = 2,
+  fill_color = theme.accent, stroke_color = theme.ink, stroke_width = 2,
   ui.SdfShape { x = 44, y = 20, width = 80, height = 80, shape = "ring", thickness = 11 },
   sweep_pie,
 }
@@ -83,7 +85,7 @@ local spinner_gap = ui.SdfShape {
 }
 local spinner = ui.Sdf {
   x = 6, y = 20, width = 168, height = 140,
-  fill_color = WARM, stroke_color = "#8a4a17", stroke_width = 2.5,
+  fill_color = theme.warm, stroke_color = "#8a4a17", stroke_width = 2.5,
   ui.SdfShape { x = 44, y = 20, width = 80, height = 80, shape = "ring", thickness = 12 },
   spinner_gap,
 }
@@ -98,7 +100,7 @@ local spinner = ui.Sdf {
 local dots = {}
 local dots_field = {
   x = 6, y = 20, width = 168, height = 140,
-  fill_color = ACCENT, stroke_color = INK, stroke_width = 2.5,
+  fill_color = theme.accent, stroke_color = theme.ink, stroke_width = 2.5,
 }
 for index = 1, 3 do
   dots[index] = ui.SdfShape {
@@ -125,7 +127,7 @@ local bar_fill = ui.SdfShape {
 }
 local bar = ui.Sdf {
   x = 6, y = 20, width = 168, height = 140,
-  fill_color = WARM, stroke_color = "#8a4a17", stroke_width = 2.5,
+  fill_color = theme.warm, stroke_color = "#8a4a17", stroke_width = 2.5,
   ui.SdfShape { x = 20, y = 56, width = 128, height = 26, shape = "capsule" },
   bar_fill,
 }
@@ -165,7 +167,7 @@ end
 
 ui.Item {
   width = W, height = H,
-  ui.Rect { width = W, height = H, color = INK },
+  ui.Rect { width = W, height = H, color = theme.ink },
 
   plinth(0, "Sweep"), sweep_track, sweep, caption(0, "a ring intersected with a pie"),
   plinth(190, "Spinner"), ui.Item { x = 190, width = 180, height = H, spinner },

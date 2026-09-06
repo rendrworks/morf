@@ -3,7 +3,9 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use morf_scene::{Element, ListChange, NodeHandle, Scene, Value as SceneValue, ViewTransition};
+use morf_scene::{
+    Element, ListChange, ModelId, NodeHandle, Scene, Value as SceneValue, ViewTransition,
+};
 
 use crate::{
     reactive_bindings::*, reactive_execute::*, scene_bindings::*, serialization::*, state::*,
@@ -122,10 +124,24 @@ pub(crate) fn reconcile_lua_view(
             _ => None,
         })
         .collect::<HashSet<_>>();
+    // An updated item whose live delegate came with an updater is patched in
+    // place and keeps its node; one without is rebuilt like a removal and an
+    // insertion. The difference is what a spring on that node, or a texture
+    // it published, survives.
+    let patched = updated
+        .iter()
+        .copied()
+        .filter(|id| {
+            view.active
+                .get(id)
+                .is_some_and(|instance| instance.updater.is_some())
+        })
+        .collect::<HashSet<_>>();
     let invalidated = changes
         .iter()
         .filter_map(|change| match change {
-            ListChange::Removed { id, .. } | ListChange::Updated { id, .. } => Some(*id),
+            ListChange::Removed { id, .. } => Some(*id),
+            ListChange::Updated { id, .. } if !patched.contains(id) => Some(*id),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -152,8 +168,24 @@ pub(crate) fn reconcile_lua_view(
         .collect::<Vec<_>>();
     drop(model);
     let visible_ids = visible.iter().map(|(id, _, _)| *id).collect::<HashSet<_>>();
-    let mut prepared = Vec::new();
+    let mut prepared: Vec<(ModelId, usize, DelegateInstance)> = Vec::new();
     for (id, index, item) in &visible {
+        if patched.contains(id) {
+            let instance = view.active.get(id).expect("patched delegates are active");
+            let updater = instance
+                .updater
+                .as_ref()
+                .expect("patched delegates have updaters");
+            let update = execute_delegate_updater(ctx, updater, item, *index, limits)
+                .and_then(|()| flush_reactive(state, ctx, limits));
+            if let Err(error) = update {
+                for (_, _, prepared) in prepared {
+                    let _ = state.borrow_mut().scene.remove(prepared.node);
+                }
+                return Err(error);
+            }
+            continue;
+        }
         if !view.active.contains_key(id) || updated.contains(id) {
             if let Some(instance) = view.reusable.remove(id) {
                 view.reuse_order.retain(|candidate| candidate != id);
@@ -204,7 +236,9 @@ pub(crate) fn reconcile_lua_view(
     let removed = view
         .active
         .iter()
-        .filter(|(id, _)| !visible_ids.contains(id) || updated.contains(id))
+        .filter(|(id, _)| {
+            !visible_ids.contains(id) || (updated.contains(id) && !patched.contains(id))
+        })
         .map(|(id, _)| *id)
         .collect::<Vec<_>>();
     for id in removed {
@@ -256,24 +290,7 @@ pub(crate) fn reconcile_lua_view(
         }
     }
     for (id, index, instance) in prepared {
-        position_view_child(
-            &mut state.borrow_mut().scene,
-            instance.node,
-            index,
-            view.view.item_extent(),
-            offset,
-            view.view.columns(),
-            view.column_extent,
-        )?;
-        state
-            .borrow_mut()
-            .scene
-            .reparent(instance.node, Some(parent))
-            .map_err(|error| error.to_string())?;
-        view.active.insert(id, instance);
-    }
-    for (id, index, _) in visible {
-        if let Some(instance) = view.active.get(&id) {
+        if view.positioned {
             position_view_child(
                 &mut state.borrow_mut().scene,
                 instance.node,
@@ -284,6 +301,40 @@ pub(crate) fn reconcile_lua_view(
                 view.column_extent,
             )?;
         }
+        state
+            .borrow_mut()
+            .scene
+            .reparent(instance.node, Some(parent))
+            .map_err(|error| error.to_string())?;
+        view.active.insert(id, instance);
+    }
+    if view.positioned {
+        for (id, index, _) in &visible {
+            if let Some(instance) = view.active.get(id) {
+                position_view_child(
+                    &mut state.borrow_mut().scene,
+                    instance.node,
+                    *index,
+                    view.view.item_extent(),
+                    offset,
+                    view.view.columns(),
+                    view.column_extent,
+                )?;
+            }
+        }
+    } else {
+        // Nothing positions these delegates but their order, so the order
+        // is the model's: a Row of them reads as the list does, and a moved
+        // item moves on screen.
+        let order = visible
+            .iter()
+            .filter_map(|(id, _, _)| view.active.get(id).map(|instance| instance.node))
+            .collect::<Vec<_>>();
+        state
+            .borrow_mut()
+            .scene
+            .reorder_children(parent, &order)
+            .map_err(|error| error.to_string())?;
     }
     Ok(transitions)
 }

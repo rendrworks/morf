@@ -1,4 +1,4 @@
-//! Composable surface regions, over the shape vocabulary in [`shapes`].
+//! Composable surface regions, over the shape vocabulary in `shapes`.
 //!
 //! Every family the renderer can draw can be composed into an input region
 //! here, by the same analytic distance function, so a star-shaped node is
@@ -7,8 +7,10 @@
 use std::error::Error;
 use std::fmt;
 
-pub mod shapes;
+pub mod scaled;
+mod shapes;
 
+pub use scaled::{COVERED_EDGE_GRID, build_scaled};
 pub use shapes::{Operation, Shape, ShapeParams, combine, distance};
 
 const MAX_PIXELS: usize = 16_777_216;

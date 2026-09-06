@@ -72,6 +72,26 @@ pub struct LayerSurfaceConfig {
     pub keyboard_focus: String,
     pub input_regions: Option<Vec<Region>>,
     pub reserve: SurfaceReserve,
+    /// Whether the exclusive zone follows the surface's own size on its
+    /// anchored edge, rather than being a number the configuration keeps in
+    /// step by hand. A bar that grows should push windows with it.
+    pub exclusive_auto: bool,
+    /// Whether the whole surface is opaque, so the compositor can skip
+    /// blending whatever is behind it. False by default, because a bar with a
+    /// transparent corner that claims otherwise draws garbage there.
+    pub opaque: bool,
+    /// Whether this configuration is a session lock rather than a layer:
+    /// one surface per output, drawn under the ext-session-lock protocol,
+    /// released when the configuration says so. Asked for by the
+    /// configuration itself — `morf.surface.session_lock = true` — because
+    /// what a file is for is the file's to say, not the command line's.
+    pub session_lock: bool,
+    /// Whether a click anywhere else on the output should reach the
+    /// configuration, through a blank surface under this one that covers
+    /// the output. `None` never asked: the surface is only made when the
+    /// configuration sets this at all, since its place in the layer is fixed
+    /// at creation; `Some(false)` is made but inert.
+    pub backdrop: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,6 +189,10 @@ impl Default for LayerSurfaceConfig {
             keyboard_focus: "on_demand".to_owned(),
             input_regions: None,
             reserve: SurfaceReserve::default(),
+            exclusive_auto: false,
+            opaque: false,
+            session_lock: false,
+            backdrop: None,
         }
     }
 }
@@ -190,6 +214,8 @@ pub enum IpcValue {
     Integer(i64),
     Number(f64),
     String(String),
+    /// A colour value, so a signal or a state field may hold one.
+    Color(morf_scene::Color),
 }
 
 /// Deferred virtual keyboard request produced by Lua.
@@ -251,17 +277,53 @@ pub struct Screencopy {
     pub format: String,
     /// Whether rows are ordered bottom-to-top.
     pub y_invert: bool,
+    /// Whether the picture is on the GPU, with `pixels` empty.
+    pub gpu: bool,
+    /// A source string `ui.Image` resolves, holding this capture's pixels.
+    ///
+    /// The point of it: a configuration that wants the picture on screen sets
+    /// `ui.Image { source = frame.source }` and is done. Without this the
+    /// capture protocols hand over bytes with nowhere to go — `ui.Image`
+    /// resolves paths, so showing one meant encoding a file and reading it
+    /// back, megabytes per thumbnail per refresh to move pixels already in
+    /// memory.
+    ///
+    /// Named after the request, so a thumbnail that refreshes replaces itself.
+    /// `pixels` is still there for a configuration that wants the bytes.
+    pub source: String,
     /// Captured bytes including stride padding.
     pub pixels: Vec<u8>,
 }
 
-/// Correlated output-capture request queued by Lua.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Correlated capture request queued by Lua.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScreencopyRequest {
     /// Runtime-local request identifier.
     pub id: u64,
     /// Whether the compositor should include the cursor image.
     pub include_cursor: bool,
+    /// A window to capture instead of the output, by the identifier
+    /// `morf.windows` reported.
+    ///
+    /// By identifier rather than index or title: an index means something else
+    /// the moment a window opens, and two windows of one application share a
+    /// title as readily as an app id.
+    pub window: Option<String>,
+    /// Whether the picture should stay on the GPU.
+    ///
+    /// The compositor then draws into memory the renderer exported, and the
+    /// frame's `source` is a texture rather than pixels: nothing is copied
+    /// out and nothing uploaded back. Honoured where the compositor and the
+    /// GPU allow it, and quietly shared memory where they do not.
+    pub gpu: bool,
+    /// The name the picture is published under, when the caller chose one.
+    ///
+    /// `frame.source` is then `memory:capture/<name>` or `gpu:capture/<name>`,
+    /// and a later capture under the same name replaces the picture rather
+    /// than adding one: a thumbnail that refreshes holds one image, not one
+    /// per refresh. Without a name the request's own id is used, and the
+    /// picture stays until `morf.screencopy.release(source)`.
+    pub name: Option<String>,
 }
 
 impl IpcValue {
@@ -272,6 +334,7 @@ impl IpcValue {
             Self::Integer(value) => LuaValue::Integer(*value),
             Self::Number(value) => LuaValue::Number(*value),
             Self::String(value) => LuaValue::String(ctx.intern(value.as_bytes())),
+            Self::Color(color) => crate::api_color::scene_color_userdata(ctx, *color),
         }
     }
 
@@ -282,26 +345,20 @@ impl IpcValue {
             LuaValue::Integer(value) => Ok(Self::Integer(value)),
             LuaValue::Number(value) if value.is_finite() => Ok(Self::Number(value)),
             LuaValue::String(value) => Ok(Self::String(value.display_lossy().to_string())),
+            LuaValue::UserData(userdata)
+                if userdata
+                    .downcast_static::<crate::api_color::ColorToken>()
+                    .is_ok() =>
+            {
+                let token = userdata
+                    .downcast_static::<crate::api_color::ColorToken>()
+                    .expect("checked above");
+                Ok(Self::Color(morf_scene::Color::from_pastel(&token.color)))
+            }
             value => Err(format!(
-                "values crossing the Lua boundary must be nil, boolean, number, or string, found {}",
+                "values crossing the Lua boundary must be nil, boolean, number, string or colour, found {}",
                 value.type_name()
             )),
-        }
-    }
-
-    /// The same value as the scene stores it.
-    ///
-    /// This lived on a second enum with the same five variants and the same
-    /// three conversions, which existed only because the reactive graph and the
-    /// IPC surface had each grown one — along with a pair of shims to carry a
-    /// value from one to the other.
-    pub(crate) fn to_scene(&self) -> SceneValue {
-        match self {
-            Self::Nil => SceneValue::Nil,
-            Self::Boolean(value) => SceneValue::Bool(*value),
-            Self::Integer(value) => SceneValue::Number(*value as f64),
-            Self::Number(value) => SceneValue::Number(*value),
-            Self::String(value) => SceneValue::String(value.clone()),
         }
     }
 }

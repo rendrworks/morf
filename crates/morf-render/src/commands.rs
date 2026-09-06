@@ -1,5 +1,5 @@
-use morf_layout::{Geometry, Layout, TextAlignment, TextElide, Transform2D};
-use morf_scene::{Color, NodeHandle, Scene};
+use morf_layout::{Geometry, Layout, TextAlignment, TextElide, TextStyle, Transform2D};
+use morf_scene::{Color, Gradient, NodeHandle, Scene, TextDecoration};
 use std::ops::Range;
 
 use crate::{effects::*, field::*, paint::*, sdf::*};
@@ -25,8 +25,8 @@ pub enum DrawCommand {
         color: Color,
         /// Inherited colour overlay.
         color_overlay: Color,
-        /// Optional normalized gradient fill.
-        gradient: Gradient,
+        /// A gradient across the rectangle, if it has one.
+        gradient: Option<Gradient>,
         /// Corner radii in top-left clockwise order.
         radii: [f64; 4],
         /// Border width.
@@ -51,6 +51,13 @@ pub enum DrawCommand {
         shadow_offset_y: f64,
         /// Draw the shadow inside the rectangle edge.
         shadow_inner: bool,
+        /// A configuration's own shader, if this node carries one.
+        ///
+        /// A rectangle is a field of one layer, so it wears a shader the same
+        /// way — and `ui.Rect { shader = ... }` is how anybody first reaches
+        /// for one, which is why leaving it off here made the feature look
+        /// broken rather than absent.
+        shader: Option<ShaderBinding>,
     },
     /// Shaped glyph run owned by the text subsystem.
     Text {
@@ -78,6 +85,8 @@ pub enum DrawCommand {
         color_overlay: Color,
         /// Whether lines wrap at the resolved width.
         wrap: bool,
+        /// Lines kept when wrapping, the last elided; zero keeps all.
+        max_lines: usize,
         /// Ellipsis placement for an overflowing unwrapped line.
         elide: TextElide,
         /// Horizontal line alignment.
@@ -86,6 +95,14 @@ pub enum DrawCommand {
         vertical_alignment: VerticalAlignment,
         /// How the glyph field is thresholded: edge, softness and outline.
         field_style: DistanceFieldStyle,
+        /// Text this run is interpolating towards, empty when it is not.
+        morph_to: String,
+        /// How far between the two, zero at the run's own text.
+        morph_progress: f32,
+        /// Line height, spacing, slant and width.
+        style: TextStyle,
+        /// A line under, over or through the text, if it has one.
+        decoration: Option<TextDecoration>,
     },
     /// Rasterized image or theme icon.
     Texture {
@@ -133,7 +150,7 @@ pub enum DrawCommand {
         /// Extra edge softness in logical pixels.
         softness: f64,
         /// Gradient across the node's own rectangle, if any.
-        gradient: Gradient,
+        gradient: Option<Gradient>,
         /// Multiplied over the finished surface.
         color_overlay: Color,
         /// Drop shadow colour; fully transparent means no shadow.
@@ -146,9 +163,33 @@ pub enum DrawCommand {
         shadow_offset_y: f64,
         /// Whether the shadow falls inside the shape rather than behind it.
         shadow_inner: bool,
+        /// A configuration's own shader, if this node carries one.
+        shader: Option<ShaderBinding>,
         /// Layers in composition order; the first establishes the field.
         layers: Vec<SdfLayer>,
     },
+}
+
+/// A compiled shader attached to a node, and the values it was given.
+///
+/// The WGSL itself is not here: it was compiled and registered with the backend
+/// once, at configuration load, and this only says which one and with what. A
+/// draw command is compared every frame to decide damage, so it holds the
+/// cheap half.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShaderBinding {
+    /// Which registered program, by the hash of its generated WGSL.
+    pub program: u64,
+    /// Parameter values, flattened in declaration order. The backend places
+    /// them using the layout the compiler computed, so the two cannot disagree.
+    pub params: Vec<f32>,
+    /// Values for the shader's data blocks, in binding order.
+    pub data: Vec<Vec<f32>>,
+    /// Whether the shader reads what is rendered underneath it.
+    pub samples_behind: bool,
+    /// Whether the shader decides coverage, and so needs the node's whole
+    /// rectangle rather than the reach of the shape it replaced.
+    pub owns_coverage: bool,
 }
 
 /// Edge shaping applied when sampling a cached distance field.
@@ -208,36 +249,13 @@ pub enum VerticalAlignment {
     Bottom,
 }
 
-/// Gradient fill encoded in normalized rectangle coordinates.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Gradient {
-    /// Use the rectangle's solid colour.
-    None,
-    /// Interpolate along a line.
-    Linear {
-        start_color: Color,
-        end_color: Color,
-        start: [f64; 2],
-        end: [f64; 2],
-    },
-    /// Interpolate outwards from a center point.
-    Radial {
-        start_color: Color,
-        end_color: Color,
-        center: [f64; 2],
-        radius: f64,
-    },
-    /// Interpolate around a center point from an angle in degrees.
-    Conical {
-        start_color: Color,
-        end_color: Color,
-        center: [f64; 2],
-        angle: f64,
-    },
-}
-
 impl DrawCommand {
-    pub(crate) fn node(&self) -> NodeHandle {
+    /// The scene node this command was painted for.
+    ///
+    /// Public because telling a layer's own drawing apart from its subtree's is
+    /// how a tool outside this crate can see that an effect shader wraps
+    /// nothing — a mistake that otherwise renders as silence.
+    pub fn node(&self) -> NodeHandle {
         match self {
             Self::Quad { node, .. }
             | Self::Text { node, .. }
@@ -333,6 +351,12 @@ pub struct Layer {
     pub shadow_offset: [f32; 2],
     /// Rounded owner geometry used to mask the composited subtree.
     pub mask: Option<LayerMask>,
+    /// An effect shader applied while compositing the subtree.
+    ///
+    /// It lives on the layer rather than on a command because there is nothing
+    /// to sample until the subtree has been rendered into its own target —
+    /// which is exactly what a layer is for.
+    pub shader: Option<ShaderBinding>,
     /// Logical bounds affected by this layer.
     pub bounds: Geometry,
 }
@@ -378,6 +402,7 @@ impl DrawList {
                     overlay: Color::rgba8(0, 0, 0, 0),
                     layer: None,
                     in_field: false,
+                    color: None,
                 },
                 list,
             )?;

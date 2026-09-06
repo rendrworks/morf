@@ -1,0 +1,90 @@
+mod caps;
+mod coverage;
+mod coverage_arrays;
+mod coverage_host;
+mod coverage_rest;
+mod coverage_types;
+mod diagnostics;
+mod golden;
+mod ports;
+
+use crate::*;
+
+/// Compiles a shader body with the default material inputs.
+pub(crate) fn compile_material(body: &str) -> Result<Compiled, Vec<Diagnostic>> {
+    compile_with(body, ShaderKind::Material, Vec::new())
+}
+
+pub(crate) fn compile_with(
+    body: &str,
+    kind: ShaderKind,
+    params: Vec<Binding>,
+) -> Result<Compiled, Vec<Diagnostic>> {
+    compile_bound(body, kind, params, Vec::new(), Vec::new())
+}
+
+/// Compiles with declared textures and data blocks as well as parameters.
+pub(crate) fn compile_bound(
+    body: &str,
+    kind: ShaderKind,
+    params: Vec<Binding>,
+    textures: Vec<String>,
+    data: Vec<(String, Type, u32)>,
+) -> Result<Compiled, Vec<Diagnostic>> {
+    let spec = ShaderSpec {
+        kind,
+        inputs: ShaderSpec::default_inputs(kind),
+        params,
+        textures,
+        data,
+        entry: "fragment".to_owned(),
+        vertex: false,
+    };
+    compile(body, &spec)
+}
+
+/// Compiles a vertex displacement.
+pub(crate) fn compile_vertex(body: &str) -> Result<Compiled, Vec<Diagnostic>> {
+    compile(
+        body,
+        &ShaderSpec {
+            kind: ShaderKind::Material,
+            inputs: ShaderSpec::vertex_inputs(),
+            params: Vec::new(),
+            textures: Vec::new(),
+            data: Vec::new(),
+            entry: "vertex".to_owned(),
+            vertex: true,
+        },
+    )
+}
+
+/// The WGSL for a body that is expected to compile.
+pub(crate) fn wgsl(body: &str) -> String {
+    match compile_material(body) {
+        Ok(compiled) => compiled.wgsl,
+        Err(diagnostics) => panic!(
+            "expected this to compile:\n{}",
+            report("test", &diagnostics)
+        ),
+    }
+}
+
+/// The diagnostics for a body that is expected not to.
+pub(crate) fn errors(body: &str) -> Vec<Diagnostic> {
+    match compile_material(body) {
+        Ok(_) => panic!("expected this to fail, but it compiled"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+/// Whether any diagnostic mentions the phrase.
+pub(crate) fn mentions(diagnostics: &[Diagnostic], phrase: &str) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.message.contains(phrase)
+            || diagnostic
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains(phrase))
+    })
+}

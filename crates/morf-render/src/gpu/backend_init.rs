@@ -10,6 +10,67 @@ use super::{
     targets::*,
 };
 
+/// Opens the adapter's device with the dmabuf extensions enabled, when it can.
+///
+/// `None` is the ordinary case on anything that is not Vulkan, or is Vulkan
+/// without the extensions: the caller opens the device the usual way and
+/// captures go through shared memory. Enabling extensions is the one thing
+/// that has to happen at creation, which is why this reaches into wgpu-hal at
+/// all -- everything else dmabuf needs can be done on the device afterwards.
+fn open_with_dmabuf(
+    instance: &wgpu::Instance,
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Option<(wgpu::Device, wgpu::Queue, crate::gpu::dmabuf::DmabufSupport)> {
+    use crate::gpu::dmabuf;
+    use wgpu::hal::Instance as _;
+    use wgpu::hal::api::Vulkan;
+    if adapter.get_info().backend != wgpu::Backend::Vulkan {
+        return None;
+    }
+    let hal_instance = unsafe { instance.as_hal::<Vulkan>() }?;
+    let raw_instance = hal_instance.shared_instance().raw_instance();
+    // The same physical device wgpu chose, found again among hal's adapters:
+    // hal hands out its own adapter objects, and the one to open is the one
+    // whose device is the device wgpu already reported.
+    let wanted = adapter.get_info();
+    let exposed = unsafe { hal_instance.enumerate_adapters(None) }
+        .into_iter()
+        .find(|exposed| exposed.info.device == wanted.device && exposed.info.name == wanted.name)?;
+    let physical = exposed.adapter.raw_physical_device();
+    let extensions = dmabuf::supported_extensions(raw_instance, physical)?;
+    let render_node = dmabuf::render_node(raw_instance, physical);
+    let open = unsafe {
+        exposed.adapter.open_with_callback(
+            descriptor.required_features,
+            &descriptor.required_limits,
+            &descriptor.memory_hints,
+            Some(Box::new(
+                |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
+                    for extension in &extensions {
+                        if !args.extensions.contains(extension) {
+                            args.extensions.push(extension);
+                        }
+                    }
+                },
+            )),
+        )
+    }
+    .ok()?;
+    let queue_family = open.device.queue_family_index();
+    let hal_adapter = unsafe { instance.create_adapter_from_hal::<Vulkan>(exposed) };
+    let (device, queue) =
+        unsafe { hal_adapter.create_device_from_hal::<Vulkan>(open, descriptor) }.ok()?;
+    Some((
+        device,
+        queue,
+        dmabuf::DmabufSupport {
+            render_node,
+            queue_family,
+        },
+    ))
+}
+
 impl WgpuBackend {
     /// Selects a Vulkan or GLES adapter and creates an offscreen render target.
     pub async fn new(width: u32, height: u32) -> Result<Self, GpuError> {
@@ -50,15 +111,25 @@ impl WgpuBackend {
             .map_err(|error| GpuError(format!("no compatible GPU adapter: {error}")))?;
         let adapter_info = adapter.get_info();
         let adapter_limits = adapter.limits();
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("morf device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: adapter_limits,
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| GpuError(format!("could not create GPU device: {error}")))?;
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("morf device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter_limits.clone(),
+            ..Default::default()
+        };
+        // Through wgpu-hal when the device can export dmabufs, so the
+        // extensions that need enabling at creation are enabled; through wgpu
+        // as usual otherwise, which is the same device without them.
+        let (device, queue, dmabuf) = match open_with_dmabuf(&instance, &adapter, &descriptor) {
+            Some((device, queue, support)) => (device, queue, Some(support)),
+            None => {
+                let (device, queue) = adapter
+                    .request_device(&descriptor)
+                    .await
+                    .map_err(|error| GpuError(format!("could not create GPU device: {error}")))?;
+                (device, queue, None)
+            }
+        };
         let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("morf viewport layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -112,7 +183,25 @@ impl WgpuBackend {
             texture_capacity,
             "morf texture instances",
         );
-        let (field_pipeline, field_layout) = create_field_pipeline(&device);
+        let (field_layout, field_shader_layout) = create_field_layouts(&device);
+        let field_pipeline = build_field_pipeline(
+            &device,
+            FieldPipeline {
+                layout: &field_layout,
+                shader_layout: &field_shader_layout,
+                user: None,
+                owns_coverage: false,
+                vertex: None,
+                textures: None,
+                data: None,
+            },
+        )
+        .expect("the field shader carries its own hook");
+        let field_shader_default = create_shader_bind_group(
+            &device,
+            &field_shader_layout,
+            &create_shader_uniform_buffer(&device, morf_shader::HEADER_BYTES),
+        );
         let field_capacity = 1;
         let field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
             &device,
@@ -123,12 +212,15 @@ impl WgpuBackend {
         let field_layer_buffer = create_field_layer_buffer(&device, field_layer_capacity);
         let field_material_capacity = 1;
         let field_material_buffer = create_field_material_buffer(&device, field_material_capacity);
+        let field_outline_capacity = 1;
+        let field_outline_buffer = create_field_outline_buffer(&device, field_outline_capacity);
         let field_bind_group = create_field_bind_group(
             &device,
             &field_layout,
             &viewport_buffer,
             &field_layer_buffer,
             &field_material_buffer,
+            &field_outline_buffer,
         );
         let (texture, view) = create_target(&device, width, height);
         let surface = surface
@@ -161,11 +253,19 @@ impl WgpuBackend {
             field_layer_capacity,
             field_material_buffer,
             field_material_capacity,
+            field_outline_capacity,
+            field_outline_buffer,
             field_bind_group,
+            field_shader_layout,
+            field_shader_default,
+            shaders: HashMap::new(),
+            effect_shaders: HashMap::new(),
+            elapsed: 0.0,
             images: ImageCache::default(),
             image_textures: HashMap::new(),
             layer_target_pool: Vec::new(),
             text: TextSystem::new(),
+            drawings: morf_svg::SvgOutlines::new(),
             texture,
             view,
             surface,
@@ -176,7 +276,11 @@ impl WgpuBackend {
                 backend: adapter_info.backend,
                 vendor: adapter_info.vendor,
                 device: adapter_info.device,
+                dmabuf: dmabuf.is_some(),
             },
+            dmabuf,
+            external_textures: HashMap::new(),
+            pending_exports: HashMap::new(),
         })
     }
 
@@ -186,13 +290,13 @@ impl WgpuBackend {
     }
 
     /// Recreates the physical target and updates shader viewport dimensions.
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn resize_target(&mut self, width: u32, height: u32) {
         self.width = width.max(1);
         self.height = height.max(1);
         (self.texture, self.view) = create_target(&self.device, self.width, self.height);
         // The pooled layer targets are surface-sized, so a resize retires them.
         self.layer_target_pool.clear();
-        let viewport = [self.width as f32, self.height as f32, 0.0, 0.0];
+        let viewport = [self.width as f32, self.height as f32, self.elapsed, 0.0];
         self.queue
             .write_buffer(&self.viewport_buffer, 0, bytemuck::cast_slice(&viewport));
         if let Some(surface) = &mut self.surface {
@@ -213,9 +317,35 @@ impl WgpuBackend {
         &self.texture
     }
 
-    /// Grows the field instance, layer and material buffers, rebinding when
-    /// either of the two storage buffers moves.
-    pub(crate) fn ensure_fields(&mut self, instances: usize, layers: usize, materials: usize) {
+    /// Registers a compiled shader, building its pipeline.
+    ///
+    /// Called when a configuration loads, never while rendering: compiling a
+    /// pipeline costs tens of milliseconds, and a compositor cannot spend that
+    /// at paint time. Registering the same program twice is a no-op, so a
+    /// configuration that attaches one shader to fifty nodes builds one
+    /// pipeline.
+    /// Advances the clock shaders read.
+    ///
+    /// Called once per frame by the host, which owns the frame clock; the
+    /// backend only needs the number a shader will see.
+    pub fn set_elapsed(&mut self, seconds: f32) {
+        self.elapsed = seconds;
+    }
+
+    /// Whether a program has been registered, in either registry.
+    pub fn has_shader(&self, program: u64) -> bool {
+        self.shaders.contains_key(&program) || self.effect_shaders.contains_key(&program)
+    }
+
+    /// Grows the field instance, layer, material and outline buffers, rebinding
+    /// whenever one of the storage buffers moves.
+    pub(crate) fn ensure_fields(
+        &mut self,
+        instances: usize,
+        layers: usize,
+        materials: usize,
+        outlines: usize,
+    ) {
         if instances > self.field_capacity {
             self.field_capacity = instances.next_power_of_two();
             self.field_buffer = create_instance_buffer_for::<SdfFieldInstance>(
@@ -237,6 +367,12 @@ impl WgpuBackend {
                 create_field_material_buffer(&self.device, self.field_material_capacity);
             rebind = true;
         }
+        if outlines > self.field_outline_capacity {
+            self.field_outline_capacity = outlines.next_power_of_two();
+            self.field_outline_buffer =
+                create_field_outline_buffer(&self.device, self.field_outline_capacity);
+            rebind = true;
+        }
         if rebind {
             // The bind group holds the old buffers, so it has to be rebuilt
             // whenever either storage grows or the shader reads freed memory.
@@ -246,6 +382,7 @@ impl WgpuBackend {
                 &self.viewport_buffer,
                 &self.field_layer_buffer,
                 &self.field_material_buffer,
+                &self.field_outline_buffer,
             );
         }
     }

@@ -1,20 +1,25 @@
 use morf_layout::{Layout, Size};
 use morf_lua::{LayerSurfaceConfig, Runtime};
+use morf_region::{Rect as RegionRect, Region};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
-use morf_wayland::{InputRect, LayerClient, PRIMARY_LAYER, physical_size};
+use morf_wayland::{InputRect, LayerClient, PRIMARY_LAYER, SurfaceRole, physical_size};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{surface_layers::*, surfaces::*};
 
 pub(crate) fn paint(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &LayerClient,
     root: NodeHandle,
     cache: Option<&CachedLayout>,
 ) -> Result<CachedLayout, String> {
-    paint_layer(
+    // `MORF_FRAME_LOG=1` prints how long each frame of the primary surface
+    // took on the CPU side, submission included, so a configuration that
+    // feels slow can be read rather than guessed at.
+    let started = frame_log_wanted().then(std::time::Instant::now);
+    let painted = paint_layer(
         runtime,
         renderer,
         client,
@@ -22,7 +27,24 @@ pub(crate) fn paint(
         root,
         &runtime.layer_surface_config(),
         cache,
-    )
+    );
+    if let Some(started) = started {
+        static FIRST: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let since = FIRST.get_or_init(std::time::Instant::now).elapsed();
+        eprintln!(
+            "frame on {} at {:.0} ms took {:.2} ms",
+            std::thread::current().name().unwrap_or("?"),
+            since.as_secs_f64() * 1000.0,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    painted
+}
+
+pub(crate) fn frame_log_wanted() -> bool {
+    static WANTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WANTED
+        .get_or_init(|| std::env::var_os("MORF_FRAME_LOG").is_some_and(|value| !value.is_empty()))
 }
 
 /// Lays out, masks, and renders the scene subtree of one layer surface.
@@ -48,6 +70,16 @@ pub(crate) struct CachedLayout {
     /// protocol traffic and the derivation that produced it, and changes
     /// nothing.
     pub(crate) input: Vec<InputRect>,
+    /// The backdrop-blur shapes last handed to the compositor.
+    ///
+    /// The *shapes*, not the rectangles they rasterise to, because rasterising
+    /// is the expensive half — six milliseconds for a full-screen region in
+    /// release — and comparing first means a swarm that has drifted less than
+    /// the grid does no work at all rather than doing all of it and discovering
+    /// the answer was the same.
+    pub(crate) backdrop: Vec<Region>,
+    /// The keyboard focus policy last sent for this surface.
+    pub(crate) keyboard_focus: String,
 }
 
 impl CachedLayout {
@@ -71,7 +103,7 @@ impl std::ops::Deref for CachedLayout {
 }
 
 pub(crate) fn paint_layer(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     renderer: &mut RenderEngine<WgpuBackend>,
     client: &LayerClient,
     layer: u64,
@@ -79,26 +111,40 @@ pub(crate) fn paint_layer(
     config: &LayerSurfaceConfig,
     cache: Option<&CachedLayout>,
 ) -> Result<CachedLayout, String> {
-    let scene = runtime.scene();
     let (width, height) = client
         .layer_logical_size(layer)
         .ok_or_else(|| "layer surface disappeared while painting".to_owned())?;
     let scale_120 = client.layer_scale_120(layer).unwrap_or(120);
-    let revision = scene.layout_revision();
+    // `morf.surface.keyboard_focus` is read every paint, so a configuration
+    // may take the keyboard for a page and hand it back after, without a
+    // second surface. Sent only when it differs from the last paint's.
+    if cache.is_none_or(|cached| cached.keyboard_focus != config.keyboard_focus)
+        && let Some(focus) = keyboard_focus_of(&config.keyboard_focus)
+    {
+        client.set_layer_keyboard_focus(layer, focus);
+    }
+    let revision = runtime.scene().layout_revision();
     let reusable = cache.filter(|cached| cached.still_valid(revision, (width, height), scale_120));
     let layout = match reusable {
         Some(cached) => cached.layout.clone(),
-        None => Layout::compute(
-            &scene,
-            root,
-            Size {
-                width: width as f64,
-                height: height as f64,
-            },
-            renderer.backend_mut(),
-        )
-        .map_err(|error| error.to_string())?,
+        None => {
+            // Before the scene is borrowed for painting: a `ui.Layout`
+            // container's functions run in Lua during the pass.
+            let layout = runtime.compute_layout(
+                root,
+                Size {
+                    width: width as f64,
+                    height: height as f64,
+                },
+                renderer.backend_mut(),
+            )?;
+            // Only on a fresh layout: it is the one moment the answer can have
+            // changed, and the cached one has already been looked at.
+            runtime.lint_layout(&layout, root);
+            layout
+        }
     };
+    let scene = runtime.scene();
     let input = if let Some(regions) = &config.input_regions {
         // A configured mask is a static surface setting — nothing animates it —
         // so rasterising it and re-sending it every paint asks the compositor
@@ -139,6 +185,64 @@ pub(crate) fn paint_layer(
         }
         input
     };
+    let mut backdrop = Vec::new();
+    // Where the compositor should blur what is behind this surface. Nothing is
+    // read back: the blur happens on the far side of this call, underneath a
+    // surface that is about to be composited over it, and the only thing that
+    // makes it visible is the alpha this configuration painted with.
+    if client.supports_backdrop_blur() {
+        let shapes: Vec<Region> = layout
+            .backdrop_geometry(&scene)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|(geometry, radii)| Region {
+                // Whole pixels, not grid cells. Quantising the *position*
+                // here was worth nothing — a moving shape never compares equal
+                // to its cached self whatever the grid, and a still one
+                // compares equal without any — and it cost up to half a cell of
+                // registration against the shape drawn over it, in a direction
+                // that changed every frame.
+                rect: RegionRect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..Region::default()
+            })
+            .collect();
+        // What is *sent* is the previous frame's shapes, not this frame's.
+        //
+        // We do not own the commit. Mesa's Vulkan display queue attaches and
+        // commits the buffer on its own thread, at its own pace, and repeats a
+        // buffer when it has nothing newer — so a region set here lands on
+        // whichever commit happens next, which may carry a buffer older than
+        // the geometry it was derived from. There is no pairing to rely on.
+        //
+        // Which direction that error falls in is not symmetric. A blur that
+        // trails the shape by a frame is what a blur does; a blur that arrives
+        // before the thing casting it is wrong in a way that reads instantly as
+        // the effect predicting the motion. So the region is deliberately one
+        // frame behind: it can only ever lag, and lag is the physical answer.
+        let previous = cache
+            .map(|cached| cached.backdrop.clone())
+            .unwrap_or_default();
+        if previous != shapes && !previous.is_empty() {
+            let rectangles =
+                morf_region::build_scaled(width, height, &previous, morf_region::COVERED_EDGE_GRID)
+                    .map_err(|error| error.to_string())?;
+            client
+                .set_layer_backdrop_region(layer, Some(&rectangles))
+                .map_err(|error| error.to_string())?;
+        }
+        backdrop = shapes;
+    }
+
     client.request_layer_frame(layer);
     let surface = client
         .layer_surface(layer)
@@ -170,12 +274,14 @@ pub(crate) fn paint_layer(
         size: (width, height),
         scale_120,
         input,
+        backdrop,
+        keyboard_focus: config.keyboard_focus.clone(),
     })
 }
 
 /// Paints one configured layer surface into its own renderer.
 pub(crate) fn paint_layer_surface(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {
@@ -231,6 +337,14 @@ pub(crate) enum AuxiliaryKind {
 }
 
 impl AuxiliaryKind {
+    /// How this surface is addressed, which is what its own scale is keyed on.
+    pub(crate) fn role(self, id: u64) -> SurfaceRole {
+        match self {
+            Self::Popup => SurfaceRole::Popup(id),
+            Self::Floating => SurfaceRole::Floating(id),
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Popup => "popup",
@@ -274,7 +388,7 @@ impl AuxiliaryKind {
 }
 
 pub(crate) fn paint_popup_surface(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {
@@ -282,7 +396,7 @@ pub(crate) fn paint_popup_surface(
 }
 
 pub(crate) fn paint_floating_surface(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {
@@ -292,37 +406,38 @@ pub(crate) fn paint_floating_surface(
 /// Paints one popup or floating surface.
 pub(crate) fn paint_auxiliary_surface(
     kind: AuxiliaryKind,
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     surface: &mut AuxiliarySurface,
 ) -> Result<(), String> {
     let Some(renderer) = &mut surface.renderer else {
         return Ok(());
     };
-    let scene = runtime.scene();
-    let revision = scene.layout_revision();
+    let revision = runtime.scene().layout_revision();
     let size = (surface.width, surface.height);
-    let scale_120 = client.scale_120();
+    // This surface's own scale, not the bar's. A popup opened from a panel on a
+    // 1x screen but shown on a 2x one was drawn at 1x and stretched -- and on a
+    // mixed-DPI desk that is most popups.
+    let scale_120 = client.surface_scale_120(kind.role(surface.id));
     let reusable = surface.layout.as_ref().filter(|cached| {
         cached.revision == revision && cached.size == size && cached.scale_120 == scale_120
     });
     let layout = match reusable {
         Some(cached) => cached.layout.clone(),
-        None => Layout::compute(
-            &scene,
+        None => runtime.compute_layout(
             surface.root,
             Size {
                 width: surface.width as f64,
                 height: surface.height as f64,
             },
             renderer.backend_mut(),
-        )
-        .map_err(|error| error.to_string())?,
+        )?,
     };
-    let (width, height) = physical_size((surface.width, surface.height), client.scale_120());
+    let scene = runtime.scene();
+    let (width, height) = physical_size((surface.width, surface.height), scale_120);
     kind.damage(client, surface.id, width, height)?;
     let damage = renderer
-        .render(&scene, &layout, client.scale_120(), |_| {})
+        .render(&scene, &layout, scale_120, |_| {})
         .map_err(|error| error.to_string())?;
     // Only ask for another callback when this paint actually drew something.
     //
@@ -344,6 +459,8 @@ pub(crate) fn paint_auxiliary_surface(
         size,
         scale_120,
         input: Vec::new(),
+        backdrop: Vec::new(),
+        keyboard_focus: String::new(),
     });
     Ok(())
 }

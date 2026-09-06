@@ -19,6 +19,7 @@ pub(crate) fn install_shell_api<'gc>(
             "namespace" => LuaValue::String(ctx.intern(config.namespace.as_bytes())),
             "width" => LuaValue::Integer(i64::from(config.width)),
             "height" => LuaValue::Integer(i64::from(config.height)),
+            "exclusive_zone" if config.exclusive_auto => LuaValue::String(ctx.intern(b"auto")),
             "exclusive_zone" => LuaValue::Integer(i64::from(config.exclusive_zone)),
             "margin_top" => LuaValue::Integer(i64::from(config.margin_top)),
             "margin_right" => LuaValue::Integer(i64::from(config.margin_right)),
@@ -26,6 +27,9 @@ pub(crate) fn install_shell_api<'gc>(
             "margin_left" => LuaValue::Integer(i64::from(config.margin_left)),
             "layer" => LuaValue::String(ctx.intern(config.layer.as_bytes())),
             "keyboard_focus" => LuaValue::String(ctx.intern(config.keyboard_focus.as_bytes())),
+            "opaque" => LuaValue::Boolean(config.opaque),
+            "session_lock" => LuaValue::Boolean(config.session_lock),
+            "backdrop" => config.backdrop.map_or(LuaValue::Nil, LuaValue::Boolean),
             "anchors" => {
                 let anchors = Table::new(&ctx);
                 anchors.set_field(ctx, "top", config.anchors.top);
@@ -79,7 +83,70 @@ pub(crate) fn install_shell_api<'gc>(
         Ok(CallbackReturn::Return)
     });
     morf.set_field(ctx, "env", env);
+    // What faces this machine has, so a configuration that offers a choice of
+    // font can offer the real ones rather than a list of names guessed by
+    // whoever wrote it. A call rather than a table: working the answer out
+    // means scanning the font directories, and most configurations never ask.
+    let font_families = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let names = morf_text::installed_families();
+        let table = Table::new(&ctx);
+        for (index, name) in names.iter().enumerate() {
+            table.set(ctx, index as i64 + 1, name.as_str())?;
+        }
+        stack.replace(ctx, table);
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "font_families", font_families);
+    // What this configuration was started with. Three views of the same words:
+    // `args` is what was typed, in order and unaltered; `options` is the flags
+    // resolved into names and values; `operands` is what was left over. A
+    // configuration that wants to read the line itself has the first, and one
+    // that wants an answer has the other two.
+    let given = crate::arguments::given();
+    let list_of = |items: &[String]| {
+        let table = Table::new(&ctx);
+        for (index, word) in items.iter().enumerate() {
+            table
+                .set(ctx, index as i64 + 1, word.as_str())
+                .expect("a table accepts integer keys");
+        }
+        table
+    };
+    let words = list_of(given.words());
+    morf.set_field(ctx, "args", words);
+    let options = Table::new(&ctx);
+    for (name, values) in given.options() {
+        // One value is that value; several are a list, because a repeated
+        // option keeps what it was given and only the configuration knows
+        // whether the first, the last or all of them was meant.
+        if let [only] = values.as_slice() {
+            match only.text() {
+                Some(text) => options.set_field(ctx, name.as_str(), text),
+                None => options.set_field(ctx, name.as_str(), true),
+            };
+            continue;
+        }
+        let list = Table::new(&ctx);
+        for (index, value) in values.iter().enumerate() {
+            let slot = index as i64 + 1;
+            match value.text() {
+                Some(text) => list.set(ctx, slot, text),
+                None => list.set(ctx, slot, true),
+            }
+            .expect("a table accepts integer keys");
+        }
+        options.set_field(ctx, name.as_str(), list);
+    }
+    morf.set_field(ctx, "options", options);
+    morf.set_field(ctx, "operands", list_of(given.operands()));
     morf.set_field(ctx, "process_id", i64::from(std::process::id()));
+    // The binary that is running, so a configuration can start another of
+    // itself. `"morf"` only works when morf is on `PATH`, which it is not when
+    // it is being run out of a build directory — and a greeter that cannot open
+    // its on-screen keyboard because of that is a machine nobody can log into.
+    if let Ok(executable) = std::env::current_exe() {
+        morf.set_field(ctx, "executable", executable.to_string_lossy().as_ref());
+    }
     morf.set_field(ctx, "version", env!("CARGO_PKG_VERSION"));
     let launched = launch_time_ms();
     morf.set_field(
@@ -222,6 +289,17 @@ pub(crate) fn install_shell_api<'gc>(
         Ok(CallbackReturn::Return)
     });
     morf.set_field(ctx, "watch_files", watch_files);
+    let quit_state = Rc::clone(&state);
+    // Asking to stop, rather than stopping. The call returns and the rest of
+    // the handler runs; the shell goes down at the top of the next frame, once
+    // the supervisor has seen the request and taken every output down with it.
+    // Exiting from inside a Lua callback would unwind the runtime that is
+    // running the callback.
+    let quit = Callback::from_fn(&ctx, move |_, _, _| {
+        quit_state.borrow_mut().quit_requested = true;
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "quit", quit);
     let working_directory = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let path: Option<String> = stack.consume(ctx)?;
         if let Some(path) = path {

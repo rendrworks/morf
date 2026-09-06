@@ -22,7 +22,9 @@ pub(crate) fn distance_field_from_alpha(
     let height = u16::try_from(image.height).map_err(|_| ImageError::InvalidSize)?;
     let alpha = image
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|pixel| pixel[3])
         .collect::<Vec<_>>();
     let binary = binary_image::of_byte_slice(&alpha, width, height);

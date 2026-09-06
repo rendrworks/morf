@@ -1,16 +1,52 @@
 use morf_lua::{Limits, Runtime, Screen};
-use morf_render::{RenderEngine, WgpuBackend};
+use morf_render::{RenderEngine, ShaderRegistration, WgpuBackend};
 use morf_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, ScreenInfo};
 use std::collections::HashMap;
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::{
-    config::*, lock::*, pacing::*, paint::*, services::*, supervisor::*, surface_actions::*,
-    surface_events::*, surface_layers::*, surfaces::*, workers::*,
+    backdrop::*, capture::*, config::*, lock::*, pacing::*, paint::*, services::*, supervisor::*,
+    surface_actions::*, surface_events::*, surface_layers::*, surfaces::*, workers::*,
 };
+
+/// What this output can do, as name = value pairs.
+///
+/// Booleans for the protocols, because "is there screencopy here" is the
+/// question; strings for the GPU, because "which one" is.
+fn capabilities_of(
+    client: &LayerClient,
+    renderer: &mut RenderEngine<WgpuBackend>,
+) -> Vec<(String, String)> {
+    let info = renderer.backend_mut().info();
+    let mut list = vec![
+        ("gpu".to_owned(), info.name.clone()),
+        ("gpu_backend".to_owned(), format!("{:?}", info.backend)),
+        ("scale_120".to_owned(), client.scale_120().to_string()),
+    ];
+    for (name, supported) in [
+        ("clipboard", client.supports_clipboard()),
+        ("virtual_keyboard", client.supports_virtual_keyboard()),
+        ("input_method", client.supports_input_method()),
+        ("text_input", client.supports_text_input()),
+        ("screencopy", client.supports_screencopy()),
+        ("image_capture", client.supports_image_capture()),
+        ("window_capture", client.supports_window_capture()),
+        (
+            "dmabuf_capture",
+            client.supports_dmabuf_capture() && info.dmabuf,
+        ),
+        ("backdrop_blur", client.supports_backdrop_blur()),
+        ("toplevels", client.supports_toplevels()),
+        ("toplevel_control", client.supports_toplevel_control()),
+    ] {
+        list.push((name.to_owned(), supported.to_string()));
+    }
+    list
+}
 
 pub(crate) fn run_surface(
     path: &Path,
@@ -67,13 +103,37 @@ pub(crate) fn run_surface(
                     return Err("layer surface was closed".to_owned());
                 }
                 LayerEvent::Screencopy { request_id, result } => {
-                    dispatch_screencopy(&mut runtime, request_id, result);
+                    dispatch_screencopy(&mut runtime, None, request_id, result);
+                }
+                LayerEvent::CaptureOffer {
+                    request_id,
+                    width,
+                    height,
+                    device,
+                    formats,
+                } => {
+                    // No renderer yet to export against: shared memory.
+                    answer_capture_offer(
+                        &mut runtime,
+                        None,
+                        &mut client,
+                        OfferedCapture {
+                            request_id,
+                            width,
+                            height,
+                            device,
+                            formats,
+                        },
+                    );
                 }
                 LayerEvent::Configure { .. }
                 | LayerEvent::Closed { .. }
                 | LayerEvent::Scale { .. }
+                | LayerEvent::AuxScale { .. }
+                | LayerEvent::ShortcutsInhibited { .. }
                 | LayerEvent::Idle { .. }
                 | LayerEvent::Clipboard { .. }
+                | LayerEvent::KeyboardFocus { .. }
                 | LayerEvent::InputMethod(_)
                 | LayerEvent::TextInput(_)
                 | LayerEvent::Frame { .. }
@@ -109,18 +169,25 @@ pub(crate) fn run_surface(
     ))
     .map_err(|error| error.to_string())?;
     let mut renderer = RenderEngine::new(backend);
+    // Known only now: the protocols came with the connection, the GPU with
+    // the renderer. Everything a configuration or `morf info` might ask.
+    runtime.set_capabilities(&capabilities_of(&client, &mut renderer));
+    register_shaders(&runtime, &mut renderer)?;
+    let animating_shaders = runtime.shaders_animate();
+    let started = Instant::now();
     let mut clock = clock_text();
     runtime
         .update_clock(&clock)
         .map_err(|error| error.to_string())?;
     apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
     let primary_root = primary_surface_root(&runtime)?;
-    let layout = paint(&runtime, &mut renderer, &client, primary_root, None)?;
+    let layout = paint(&mut runtime, &mut renderer, &client, primary_root, None)?;
     let mut popup_surfaces = HashMap::new();
     let mut floating_surfaces = HashMap::new();
     let mut layer_surfaces = HashMap::new();
     runtime.take_window_surface_change();
     runtime.take_layer_surface_change();
+    apply_backdrop(&client, &runtime.layer_surface_config(), &name);
     let _ = sync_window_surfaces(
         &runtime,
         &mut client,
@@ -137,6 +204,7 @@ pub(crate) fn run_surface(
         popup_surfaces,
         floating_surfaces,
         layer_surfaces,
+        animating_shaders,
         last_frame: None,
         pacer: FramePacer::new(),
         // Until a callback says otherwise, assume the commonest refresh.
@@ -146,13 +214,19 @@ pub(crate) fn run_surface(
         focused: HashMap::new(),
         touches: HashMap::new(),
     };
+    let wake = morf_io::Wake::new().map_err(|error| error.to_string())?;
     loop {
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
+        // Until the compositor, a service thread, the clock, or a fallback.
         client
-            .dispatch_timeout(until_next_second().min(Duration::from_millis(100)))
+            .dispatch_timeout_or(
+                until_next_second().min(Duration::from_millis(100)),
+                Some(wake.as_fd()),
+            )
             .map_err(|error| error.to_string())?;
+        wake.drain();
         let next_clock = clock_text();
         let mut repaint = runtime.poll_services();
         let mut recreate_surface = false;
@@ -181,6 +255,8 @@ pub(crate) fn run_surface(
             ))
             .map_err(|error| error.to_string())?;
             renderer = RenderEngine::new(backend);
+            // The adapter is new, so every pipeline it held is gone with it.
+            register_shaders(&runtime, &mut renderer)?;
             state.popup_surfaces.clear();
             state.floating_surfaces.clear();
             state.layer_surfaces.clear();
@@ -196,6 +272,17 @@ pub(crate) fn run_surface(
             tx.send(SupervisorMessage::Reload { hard })
                 .map_err(|_| "output supervisor stopped".to_owned())?;
         }
+        if runtime.quit_requested() {
+            // Told once, and then this output stops driving frames. The
+            // supervisor takes the others down; returning here rather than
+            // waiting for it keeps this thread from painting a shell that is
+            // already leaving.
+            tx.send(SupervisorMessage::Quit)
+                .map_err(|_| "output supervisor stopped".to_owned())?;
+            return Ok(());
+        }
+        apply_idle_inhibit(&mut runtime, &mut client);
+        apply_shortcuts_inhibit(&mut runtime, &mut client);
         if let Some(enabled) = runtime.take_watch_files_change() {
             tx.send(SupervisorMessage::WatchFiles(enabled))
                 .map_err(|_| "output supervisor stopped".to_owned())?;
@@ -213,6 +300,8 @@ pub(crate) fn run_surface(
                 reserve = config.reserve;
                 open_reserve_layers(&mut client, &config, &name)?;
             }
+            apply_primary_opaque(&runtime, &client);
+            apply_backdrop(&client, &config, &name);
             // The mask lives in the same configuration and is re-derived when
             // the surface paints, so the new geometry owes one frame even when
             // the compositor has no configure to send back.
@@ -249,9 +338,13 @@ pub(crate) fn run_surface(
             )?;
         }
         apply_service_requests(&mut runtime, &mut client);
+        apply_capture_releases(&mut runtime, &mut renderer);
         apply_window_surface_actions(&mut runtime, &client, &state.floating_surfaces);
         if repaint {
             let painted = Instant::now();
+            renderer
+                .backend_mut()
+                .set_elapsed(started.elapsed().as_secs_f32());
             // Before anything is drawn, tell the renderer what died. Its caches
             // are keyed on nodes and it has no other way to find out; without
             // this a shaped text buffer survives every view switch for the life
@@ -262,7 +355,7 @@ pub(crate) fn run_surface(
             }
             apply_parent_transitions(&mut runtime, &mut renderer, &client)?;
             state.layout = paint(
-                &runtime,
+                &mut runtime,
                 &mut renderer,
                 &client,
                 state.primary_root,
@@ -273,25 +366,53 @@ pub(crate) fn run_surface(
                 .values_mut()
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_popup_surface(&runtime, &client, surface)?;
+                paint_popup_surface(&mut runtime, &client, surface)?;
             }
             for surface in state
                 .floating_surfaces
                 .values_mut()
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_floating_surface(&runtime, &client, surface)?;
+                paint_floating_surface(&mut runtime, &client, surface)?;
             }
             for surface in state
                 .layer_surfaces
                 .values_mut()
                 .filter(|surface| surface.updates_enabled)
             {
-                paint_layer_surface(&runtime, &client, surface)?;
+                paint_layer_surface(&mut runtime, &client, surface)?;
             }
             // What this frame actually cost, which is what the next one is
             // paced against.
             state.pacer.observed(painted.elapsed());
         }
     }
+}
+
+/// Builds a pipeline for every shader the configuration registered.
+///
+/// Once, at startup and after a device loss — never during a frame. Compiling a
+/// pipeline costs tens of milliseconds, which is several frames' worth of
+/// budget, and a shader is known the moment the configuration finishes loading.
+fn register_shaders(
+    runtime: &Runtime,
+    renderer: &mut RenderEngine<WgpuBackend>,
+) -> Result<(), String> {
+    for shader in runtime.shaders() {
+        renderer
+            .backend_mut()
+            .register_shader(ShaderRegistration {
+                program: shader.program,
+                wgsl: Some(&shader.wgsl),
+                vertex: shader.vertex.as_deref(),
+                offsets: &shader.offsets,
+                uniform_size: shader.uniform_size,
+                owns_coverage: shader.owns_coverage,
+                effect: shader.samples_behind,
+                textures: &shader.textures,
+                data: &shader.data,
+            })
+            .map_err(|error| format!("shader pipeline: {error}"))?;
+    }
+    Ok(())
 }

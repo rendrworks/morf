@@ -32,6 +32,9 @@ impl fmt::Display for LayoutError {
             Self::InvalidCommonParent => {
                 f.write_str("transform common parent must contain both nodes")
             }
+            Self::AxisConflict { axis: "flex" } => f.write_str(
+                "anchors inside a Flex or track Grid: the container places its children",
+            ),
             Self::AxisConflict { axis } => {
                 write!(f, "anchors and positioner both control the {axis} axis")
             }
@@ -127,21 +130,6 @@ pub(crate) fn attached_layout(value: &Value) -> Result<&BTreeMap<String, Value>,
     }
 }
 
-pub(crate) fn layout_number(map: &BTreeMap<String, Value>, key: &str) -> Option<f64> {
-    number(map, key).filter(|value| value.is_finite() && *value >= 0.0)
-}
-
-pub(crate) fn clamp_layout(
-    value: f64,
-    map: &BTreeMap<String, Value>,
-    minimum: &str,
-    maximum: &str,
-) -> f64 {
-    let minimum = layout_number(map, minimum).unwrap_or(0.0);
-    let maximum = layout_number(map, maximum).unwrap_or(f64::INFINITY);
-    value.max(minimum).min(maximum.max(minimum))
-}
-
 /// Borrows a node's anchors, for the same reason as [`attached_layout`].
 pub(crate) fn anchors(value: &Value) -> Result<&BTreeMap<String, Value>, LayoutError> {
     match value {
@@ -156,17 +144,13 @@ pub(crate) fn reject_axis_conflict(
 ) -> Result<(), LayoutError> {
     let fill = flag(anchors, "fill");
     let center = flag(anchors, "center_in");
-    if matches!(
-        parent,
-        Element::Row | Element::RowLayout | Element::Grid | Element::GridLayout
-    ) && (fill || center || flag(anchors, "left") || flag(anchors, "right"))
+    if matches!(parent, Element::Row | Element::Grid)
+        && (fill || center || flag(anchors, "left") || flag(anchors, "right"))
     {
         return Err(LayoutError::AxisConflict { axis: "horizontal" });
     }
-    if matches!(
-        parent,
-        Element::Column | Element::ColumnLayout | Element::Grid | Element::GridLayout
-    ) && (fill || center || flag(anchors, "top") || flag(anchors, "bottom"))
+    if matches!(parent, Element::Column | Element::Grid)
+        && (fill || center || flag(anchors, "top") || flag(anchors, "bottom"))
     {
         return Err(LayoutError::AxisConflict { axis: "vertical" });
     }
@@ -210,6 +194,36 @@ pub(crate) fn apply_anchors(
     } else if flag(anchors, "bottom") {
         geometry.y = parent.height - geometry.height - bottom_margin;
     }
+}
+
+/// Where a packed run starts and how much extra goes between children,
+/// for `justify`.
+pub(crate) fn justify_run(
+    justify: &str,
+    free: f64,
+    count: usize,
+) -> Result<(f64, f64), LayoutError> {
+    let free = free.max(0.0);
+    let gaps = count.saturating_sub(1) as f64;
+    Ok(match justify {
+        "start" => (0.0, 0.0),
+        "center" => (free / 2.0, 0.0),
+        "end" => (free, 0.0),
+        "space_between" => (0.0, if gaps > 0.0 { free / gaps } else { 0.0 }),
+        "space_around" => {
+            let each = free / count.max(1) as f64;
+            (each / 2.0, each)
+        }
+        "space_evenly" => {
+            let each = free / (count + 1) as f64;
+            (each, each)
+        }
+        other => {
+            return Err(LayoutError::Scene(format!(
+                "unknown justify `{other}`: use start, center, end, space_between, space_around or space_evenly"
+            )));
+        }
+    })
 }
 
 pub(crate) fn flag(map: &BTreeMap<String, Value>, key: &str) -> bool {

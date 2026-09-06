@@ -78,6 +78,14 @@ struct DistanceFieldKey {
 #[derive(Default)]
 pub struct ImageCache {
     images: HashMap<CacheKey, Arc<ImageData>>,
+    /// Images that never came from a file.
+    ///
+    /// A screen capture arrives as pixels, and until this existed there was
+    /// nothing to do with them: `ui.Image` resolves a path, and the only way to
+    /// show a capture was to encode it to a file and read it back — megabytes
+    /// of PNG per thumbnail, per refresh, to move pixels that were already in
+    /// memory. Named sources beginning with `memory:` resolve here instead.
+    memory: HashMap<String, Arc<ImageData>>,
     icons: HashMap<(String, String, u32, u32), PathBuf>,
     intrinsic: HashMap<PathBuf, (u32, u32)>,
     distance_fields: HashMap<DistanceFieldKey, Arc<ImageData>>,
@@ -92,6 +100,15 @@ impl ImageCache {
         logical_height: u32,
         scale_120: u32,
     ) -> Result<Arc<ImageData>, ImageError> {
+        // A named image, if this is one. Handed back at its own size: it was
+        // not decoded from anything, so there is no larger original to resample
+        // from, and the node's `fill_mode` is what decides how it lands in the
+        // rectangle — the same as for a file whose intrinsic size differs.
+        if let Some(name) = source.as_ref().to_str().and_then(memory_name)
+            && let Some(image) = self.memory.get(name)
+        {
+            return Ok(Arc::clone(image));
+        }
         let source = normalize_source(source.as_ref())?;
         let width = physical_size(logical_width, scale_120)?;
         let height = physical_size(logical_height, scale_120)?;
@@ -107,6 +124,32 @@ impl ImageCache {
         let image = Arc::new(decode_path(&source, width, height)?);
         self.images.insert(key, Arc::clone(&image));
         Ok(image)
+    }
+
+    /// Publishes pixels under a name that `ui.Image` can resolve.
+    ///
+    /// Replaces whatever that name held. A capture refreshed every second is
+    /// the expected case, and a caller that had to invent a new name each time
+    /// would be leaking one image per refresh.
+    pub fn insert_memory(&mut self, name: impl Into<String>, image: ImageData) {
+        self.memory.insert(name.into(), Arc::new(image));
+    }
+
+    /// Drops a named image.
+    ///
+    /// Nothing collects these on their own: they are as large as the pictures
+    /// they hold, and only the caller knows when a window it was showing has
+    /// gone.
+    pub fn forget_memory(&mut self, name: &str) -> bool {
+        self.memory.remove(name).is_some()
+    }
+
+    /// How many named images are held, and how many bytes they occupy.
+    pub fn memory_usage(&self) -> (usize, usize) {
+        (
+            self.memory.len(),
+            self.memory.values().map(|image| image.rgba.len()).sum(),
+        )
     }
 
     /// Resolves and loads an icon into a logical rectangle.
@@ -351,8 +394,14 @@ fn decode_svg(bytes: &[u8], width: u32, height: u32) -> Result<ImageData, ImageE
     );
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     let mut rgba = pixmap.take();
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         let alpha = u32::from(pixel[3]);
+        // Not `checked_div`: the guard skips the whole channel loop for a
+        // fully transparent pixel, so checking once here is the point of it.
+        // `unknown_lints` because the lint below is newer than some toolchains
+        // this builds on, and an allow for a lint that does not exist yet is
+        // itself an error under `-D warnings`.
+        #[allow(unknown_lints, clippy::manual_checked_ops)]
         if alpha != 0 {
             for channel in &mut pixel[..3] {
                 *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
@@ -364,4 +413,13 @@ fn decode_svg(bytes: &[u8], width: u32, height: u32) -> Result<ImageData, ImageE
         height,
         rgba,
     })
+}
+
+/// The name inside a `memory:` source, if it is one.
+///
+/// A scheme rather than a path so that a named image can never be confused with
+/// a file: `memory:` is not a valid start to an absolute path, and a
+/// configuration that writes one has said what it meant.
+fn memory_name(source: &str) -> Option<&str> {
+    source.strip_prefix("memory:")
 }

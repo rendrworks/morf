@@ -117,11 +117,11 @@ impl Scene {
                 element: self.nodes[id].element.name(),
                 property: property.to_owned(),
             })?;
-        if !matches!(slot.kind, PropertyType::Number) {
+        if !matches!(slot.kind, PropertyType::Number | PropertyType::Color) {
             return Err(SceneError::InvalidPropertyType {
                 element: self.nodes[id].element.name(),
                 property: property.to_owned(),
-                expected: "numeric property",
+                expected: "numeric or colour property",
             });
         }
         let key = PropertyKey {

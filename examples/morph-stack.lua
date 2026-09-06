@@ -72,6 +72,7 @@ local function stage_entry(index, x)
       font_size = 13,
     },
     ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       on_entered = function() write(hovered, index) end,
       on_exited = function() write(hovered, 0) end,
@@ -85,13 +86,7 @@ ui.Item {
   height = 360,
   ui.Rect {
     anchors = { fill = true },
-    gradient_type = "linear",
-    gradient_start_color = "#0b1220",
-    gradient_end_color = "#111c31",
-    gradient_start_x = 0,
-    gradient_start_y = 0,
-    gradient_end_x = 1,
-    gradient_end_y = 1,
+    gradient = { angle = 135, stops = { "#0b1220", "#111c31" } },
   },
   ui.MouseArea {
     anchors = { fill = true },
@@ -142,7 +137,7 @@ ui.Item {
     color = "#131f32",
     border_width = 1,
     border_color = "#26364d",
-    shadow_color = "#70000000",
+    shadow_color = morf.color("black"):alpha(0.44),
     shadow_blur = 18,
     shadow_offset_y = 6,
   },
@@ -237,6 +232,7 @@ ui.Item {
       },
     },
     ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       on_clicked = function() write(pinned, not pinned:get()) end,
     },

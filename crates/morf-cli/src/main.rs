@@ -1,9 +1,15 @@
 use std::process::ExitCode;
 
+mod backdrop;
+mod bundle;
+mod capture;
+mod commands;
 mod config;
+mod crash;
 mod lock;
 mod pacing;
 mod paint;
+mod pointer_cursor;
 mod services;
 mod supervisor;
 mod surface_actions;
@@ -18,6 +24,8 @@ mod workers;
 use config::*;
 
 fn main() -> ExitCode {
+    // First, so a fault anywhere after this line leaves something to read.
+    crash::install();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

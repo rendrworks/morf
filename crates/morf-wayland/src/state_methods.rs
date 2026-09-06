@@ -1,8 +1,6 @@
-use smithay_client_toolkit::session_lock::SessionLock;
-use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shm::slot::SlotPool;
-use wayland_client::QueueHandle;
 use wayland_client::protocol::{wl_output, wl_shm};
+use wayland_client::{Proxy, QueueHandle};
 use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::{self};
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1;
 
@@ -192,6 +190,7 @@ impl LayerState {
                 .ok_or_else(|| "screencopy format is missing".to_owned())?,
             y_invert: pending.y_invert,
             pixels,
+            dmabuf: false,
         })
     }
 
@@ -223,8 +222,108 @@ impl LayerState {
         self.idle_notifications = self
             .idle_timeouts
             .iter()
-            .map(|timeout| notifier.get_idle_notification(*timeout, &seat, qh, *timeout))
+            .map(|&(timeout, input_only)| {
+                // Version 2 of the protocol added the input variant, which
+                // counts only the person and ignores inhibitors. An older
+                // compositor gets the ordinary one for the same key, so the
+                // caller's callback still fires -- on inhibited idleness rather
+                // than never, which is the better of the two ways to degrade.
+                if input_only && notifier.version() >= 2 {
+                    notifier.get_input_idle_notification(timeout, &seat, qh, (timeout, input_only))
+                } else {
+                    notifier.get_idle_notification(timeout, &seat, qh, (timeout, input_only))
+                }
+            })
             .collect();
+    }
+
+    /// Asks the compositor to stop taking the shell's keys, or lets it again.
+    ///
+    /// A compositor binds keys for itself -- Super for the launcher, Alt-Tab
+    /// for the switcher -- and a shell that draws its own launcher never sees
+    /// the one key it most wants. This says: while my surface has focus, give
+    /// me all of them. Whether the compositor agrees arrives as an event.
+    pub(crate) fn set_shortcuts_inhibited(&mut self, inhibited: bool, qh: &QueueHandle<Self>) {
+        if inhibited == self.shortcuts_inhibitor.is_some() {
+            return;
+        }
+        match self.shortcuts_inhibitor.take() {
+            Some(inhibitor) => inhibitor.destroy(),
+            None => {
+                let Some(manager) = &self.shortcuts_inhibit_manager else {
+                    return;
+                };
+                let Some(seat) = self.seats.seats().next() else {
+                    return;
+                };
+                let Some(layer) = self.layers.get(&crate::PRIMARY_LAYER) else {
+                    return;
+                };
+                self.shortcuts_inhibitor =
+                    Some(manager.inhibit_shortcuts(layer.surface.wl_surface(), &seat, qh, ()));
+            }
+        }
+    }
+
+    /// Starts tracking fractional scale for a popup or floating window.
+    ///
+    /// The same two objects a layer surface gets, kept in `aux_scales` because
+    /// those surfaces have no record of their own. A compositor offering
+    /// neither protocol leaves both `None`, and the surface stays at 1x --
+    /// which is what it did before this existed.
+    pub(crate) fn track_aux_scale(
+        &mut self,
+        role: SurfaceRole,
+        surface: &wayland_client::protocol::wl_surface::WlSurface,
+        qh: &QueueHandle<Self>,
+    ) {
+        let fractional = self
+            .fractional_manager
+            .as_ref()
+            .map(|manager| manager.get_fractional_scale(surface, qh, role));
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|manager| manager.get_viewport(surface, qh, ()));
+        self.aux_scales.insert(
+            role,
+            AuxSurfaceScale {
+                fractional,
+                viewport,
+                scale_120: 120,
+            },
+        );
+    }
+
+    /// Holds the session awake, or stops holding it.
+    ///
+    /// The protocol has no "off": an inhibitor exists or it does not, and
+    /// destroying it is how the session is released. So this is idempotent by
+    /// construction — asking twice for the same state does nothing the second
+    /// time, which matters because a configuration is likely to assign this
+    /// from a binding that re-runs on every frame.
+    pub(crate) fn set_idle_inhibited(&mut self, inhibited: bool, qh: &QueueHandle<Self>) {
+        if inhibited == self.idle_inhibitor.is_some() {
+            return;
+        }
+        match self.idle_inhibitor.take() {
+            Some(inhibitor) => inhibitor.destroy(),
+            None => {
+                let Some(manager) = &self.idle_inhibit_manager else {
+                    return;
+                };
+                // Against the shell's own surface, because the protocol scopes
+                // inhibition to a surface. Looked up rather than taken through
+                // `layer()`, which panics when there is none: a configuration
+                // may ask for this before its surface exists, and refusing to
+                // inhibit is the right answer there rather than dying.
+                let Some(layer) = self.layers.get(&crate::PRIMARY_LAYER) else {
+                    return;
+                };
+                self.idle_inhibitor =
+                    Some(manager.create_inhibitor(layer.surface.wl_surface(), qh, ()));
+            }
+        }
     }
 
     pub(crate) fn create_lock_surface(
@@ -232,7 +331,14 @@ impl LayerState {
         output: wl_output::WlOutput,
         qh: &QueueHandle<Self>,
     ) {
-        let Some(lock) = self.session_lock.clone().filter(SessionLock::is_locked) else {
+        // Not filtered on `is_locked`: the surfaces go up the moment the lock
+        // is asked for, before the compositor confirms it. The protocol says
+        // the client "is expected to create lock surfaces for all outputs
+        // currently present" and that `locked` "must not be sent until a new
+        // 'locked' frame has been presented on all outputs" — so a client that
+        // waits for `locked` before making any surface is waiting for
+        // something its own surfaces are the condition of.
+        let Some(lock) = self.session_lock.clone() else {
             return;
         };
         if self
@@ -249,13 +355,65 @@ impl LayerState {
             .unwrap_or(1);
         let surface = self.compositor.create_surface(qh);
         surface.set_buffer_scale(scale as i32);
+        // No commit here. A lock surface is not an xdg surface: the compositor
+        // configures it the moment it exists, and a commit before the first
+        // buffer is the protocol's `null_buffer` error — Hyprland ends the
+        // whole lock on it. The first commit is the first frame.
         let surface = lock.create_lock_surface(surface, &output, qh);
-        surface.wl_surface().commit();
         self.lock_surfaces.push(LockSurface {
             surface,
             output,
             size: (1, 1),
             scale,
+            primer: None,
         });
+    }
+
+    /// Presents one lock surface's first frame from shared memory: a plain
+    /// field of one colour, the size the compositor asked for.
+    ///
+    /// The protocol wants a locked frame on every output before it will call
+    /// the session locked, and a compositor that shows its own "the lock
+    /// screen died" screen does so within a second of the request. A GPU
+    /// device and a first real frame per output take longer than that, so
+    /// this goes up first: a memset, one commit, and the compositor has its
+    /// frame while the GPU is still being found.
+    pub(crate) fn prime_lock_surface(&mut self, index: usize, color: [u8; 4]) -> bool {
+        let Some(shm) = self.shm.as_ref() else {
+            return false;
+        };
+        let Some(record) = self.lock_surfaces.get(index) else {
+            return false;
+        };
+        let width = record.size.0.saturating_mul(record.scale).max(1);
+        let height = record.size.1.saturating_mul(record.scale).max(1);
+        let stride = width.saturating_mul(4);
+        let Ok(mut pool) = SlotPool::new((stride as usize) * (height as usize), shm) else {
+            return false;
+        };
+        let Ok((buffer, canvas)) = pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride as i32,
+            wl_shm::Format::Argb8888,
+        ) else {
+            return false;
+        };
+        // ARGB8888 is little-endian: blue first in memory.
+        let [red, green, blue, alpha] = color;
+        for pixel in canvas.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[blue, green, red, alpha]);
+        }
+        let Some(record) = self.lock_surfaces.get_mut(index) else {
+            return false;
+        };
+        let surface = record.surface.wl_surface();
+        if buffer.attach_to(surface).is_err() {
+            return false;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+        record.primer = Some((pool, buffer));
+        true
     }
 }

@@ -52,18 +52,18 @@ pub enum Element {
     Column,
     /// Fixed-column two-dimensional positioner.
     Grid,
-    /// Horizontal positioner honoring attached layout constraints.
-    RowLayout,
-    /// Vertical positioner honoring attached layout constraints.
-    ColumnLayout,
-    /// Two-dimensional positioner honoring attached layout constraints.
-    GridLayout,
     /// Clipped viewport over movable content.
     Flickable,
     /// Non-painting container for a lazily constructed child.
     Loader,
     /// Non-painting periodic callback object.
     Timer,
+    /// A flexbox container: its children are placed by grow, shrink, basis,
+    /// wrap and alignment rather than by their own `x` and `y`.
+    Flex,
+    /// A container whose measure and placement are functions the
+    /// configuration wrote.
+    Custom,
 }
 
 impl Element {
@@ -82,12 +82,11 @@ impl Element {
             Self::Row => "Row",
             Self::Column => "Column",
             Self::Grid => "Grid",
-            Self::RowLayout => "RowLayout",
-            Self::ColumnLayout => "ColumnLayout",
-            Self::GridLayout => "GridLayout",
             Self::Flickable => "Flickable",
             Self::Loader => "Loader",
             Self::Timer => "Timer",
+            Self::Flex => "Flex",
+            Self::Custom => "Layout",
         }
     }
 }
@@ -116,42 +115,14 @@ impl Color {
         }
     }
 
-    /// Parses a CSS-style hex string or one of the handful of named colours.
+    /// Reads a colour from any form a configuration writes: hex with or
+    /// without `#`, `0x`, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`,
+    /// `oklab()`, `oklch()`, `gray()`, `transparent`, and the CSS names.
     ///
     /// Returns `None` rather than a fallback so a typo in a colour surfaces as
     /// an error at the property that used it.
     pub fn parse(input: &str) -> Option<Self> {
-        match input {
-            "transparent" => return Some(Self::rgba8(0, 0, 0, 0)),
-            "black" => return Some(Self::rgba8(0, 0, 0, 255)),
-            "white" => return Some(Self::rgba8(255, 255, 255, 255)),
-            "red" => return Some(Self::rgba8(255, 0, 0, 255)),
-            "green" => return Some(Self::rgba8(0, 128, 0, 255)),
-            "blue" => return Some(Self::rgba8(0, 0, 255, 255)),
-            _ => {}
-        }
-        let hex = input.strip_prefix('#')?;
-        let expand = |byte: u8| (byte << 4) | byte;
-        let nibble = |at: usize| u8::from_str_radix(&hex[at..at + 1], 16).ok();
-        let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
-        let (red, green, blue, alpha) = match hex.len() {
-            3 => (
-                expand(nibble(0)?),
-                expand(nibble(1)?),
-                expand(nibble(2)?),
-                255,
-            ),
-            4 => (
-                expand(nibble(0)?),
-                expand(nibble(1)?),
-                expand(nibble(2)?),
-                expand(nibble(3)?),
-            ),
-            6 => (byte(0)?, byte(2)?, byte(4)?, 255),
-            8 => (byte(0)?, byte(2)?, byte(4)?, byte(6)?),
-            _ => return None,
-        };
-        Some(Self::rgba8(red, green, blue, alpha))
+        crate::color::parse(input)
     }
 }
 
@@ -207,6 +178,14 @@ impl From<String> for Value {
 /// Scene arena and its property signal graph.
 pub struct Scene {
     pub(crate) nodes: SlotMap<NodeId, Node>,
+    /// Shaders attached to nodes, by node.
+    ///
+    /// A side table rather than node properties: property names are `&'static
+    /// str`, so a per-shader parameter name would have to be leaked, and giving
+    /// every element a fixed set of numbered slots would make every rectangle
+    /// in the scene carry two signals per slot whether or not it has a shader.
+    /// A shader is rare; it should cost nothing when absent.
+    pub(crate) shaders: FastMap<NodeId, NodeShader>,
     pub(crate) properties: Graph<Value>,
     pub(crate) behaviors: FastMap<PropertyKey, Behavior>,
     pub(crate) animations: FastMap<PropertyKey, Animation>,
@@ -225,6 +204,8 @@ pub struct Scene {
     /// fading: none of them move a box. Recording when the geometry last
     /// actually moved lets a paint reuse the layout it already has.
     pub(crate) layout_revision: u64,
+    /// How fast motion runs: 1 is real time, 0 finishes everything at once.
+    pub(crate) motion_scale: f64,
     /// Nodes destroyed since anyone last asked.
     ///
     /// Every cache keyed on a node lives outside this crate — shaped text
@@ -241,6 +222,29 @@ pub struct Scene {
 pub(crate) struct PropertyKey {
     pub(crate) node: NodeId,
     pub(crate) property: &'static str,
+}
+
+/// A compiled shader attached to a node, and the values it was given.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeShader {
+    /// Which registered program, by the hash of its generated WGSL.
+    pub program: u64,
+    /// Parameter values, flattened in declaration order.
+    pub params: Vec<f32>,
+    /// Values for the shader's data blocks, one run per block in binding
+    /// order. Read-only to the shader; the configuration owns them.
+    pub data: Vec<Vec<f32>>,
+    /// Whether the shader reads what is rendered underneath, and so runs in
+    /// the composite pass over a layer rather than in the field pass.
+    pub samples_behind: bool,
+    /// Whether the shader decides its own coverage rather than colouring what
+    /// the node's own shape already covered.
+    ///
+    /// It travels with the attachment because it changes the *geometry* the
+    /// fragment stage walks, not just the colour: a shader that owns its
+    /// coverage has to be given the node's whole rectangle, or it paints only
+    /// where the shape it replaced would have been.
+    pub owns_coverage: bool,
 }
 
 pub(crate) struct Node {

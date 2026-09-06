@@ -238,12 +238,23 @@ pub(crate) fn a_composed_shape_can_carry_a_gradient_like_a_rectangle() {
         panic!("field_command builds a field");
     };
     *fill_color = Color::rgba8(255, 255, 255, 255);
-    *gradient = Gradient::Linear {
-        start_color: Color::rgba8(255, 0, 0, 255),
-        end_color: Color::rgba8(0, 0, 255, 255),
-        start: [0.0, 0.0],
-        end: [1.0, 0.0],
-    };
+    *gradient = Some(morf_scene::Gradient {
+        kind: morf_scene::GradientKind::Linear,
+        angle: 90.0,
+        at: [0.5, 0.5],
+        radius: None,
+        stops: vec![
+            morf_scene::GradientStop {
+                color: Color::rgba8(255, 0, 0, 255),
+                position: 0.0,
+            },
+            morf_scene::GradientStop {
+                color: Color::rgba8(0, 0, 255, 255),
+                position: 1.0,
+            },
+        ],
+        space: morf_scene::ColorSpace::Srgb,
+    });
     let list = DrawList {
         commands: vec![command],
         layers: Vec::new(),

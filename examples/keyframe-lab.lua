@@ -22,11 +22,13 @@ morf.surface.height = H
 morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local INK = "#0e1213"
-local PANEL = "#141a1c"
-local ACCENT = "#b4e1ea"
-local WARM = "#f0b47a"
-local MUTED = "#6a8389"
+local theme = morf.theme {
+  ink = "#0e1213",
+  panel = "#141a1c",
+  accent = "#b4e1ea",
+  warm = "#f0b47a",
+  muted = "#6a8389",
+}
 
 local LANE_X, LANE_W = 200, 560
 local ROW_Y, ROW_H = 40, 84
@@ -74,18 +76,18 @@ local lanes = {
 
 local pucks = {}
 local rows = { width = W, height = H }
-rows[#rows + 1] = ui.Rect { width = W, height = H, color = INK }
+rows[#rows + 1] = ui.Rect { width = W, height = H, color = theme.ink }
 
 for index, lane in ipairs(lanes) do
   local top = ROW_Y + (index - 1) * (ROW_H + 34)
   rows[#rows + 1] = ui.Rect {
-    x = 20, y = top - 14, width = W - 40, height = ROW_H + 16, radius = 14, color = PANEL,
+    x = 20, y = top - 14, width = W - 40, height = ROW_H + 16, radius = 14, color = theme.panel,
   }
   rows[#rows + 1] = ui.Text {
-    x = 40, y = top + 4, width = 150, text = lane.title, font_size = 16, color = ACCENT,
+    x = 40, y = top + 4, width = 150, text = lane.title, font_size = 16, color = theme.accent,
   }
   rows[#rows + 1] = ui.Text {
-    x = 40, y = top + 28, width = 150, text = lane.caption, font_size = 11, wrap = true, color = MUTED,
+    x = 40, y = top + 28, width = 150, text = lane.caption, font_size = 11, wrap = true, line_height = 1.4, color = theme.muted,
   }
   -- The rail the puck travels along, so the path is readable at rest.
   rows[#rows + 1] = ui.Rect {
@@ -96,8 +98,8 @@ for index, lane in ipairs(lanes) do
   -- keyframe track driving a shape that is itself a composition.
   local puck = ui.Sdf {
     x = LANE_X, y = top + 8, width = 44, height = 66,
-    fill_color = index == 2 and WARM or ACCENT,
-    stroke_color = INK,
+    fill_color = index == 2 and theme.warm or theme.accent,
+    stroke_color = theme.ink,
     stroke_width = 2.5,
     ui.SdfShape { x = 4, y = 12, width = 36, height = 36, shape = "circle" },
     ui.SdfShape {
@@ -141,7 +143,7 @@ rows[#rows + 1] = ui.Text {
   x = 40, y = H - 44, width = W - 80,
   text = "each lane is one morf.animation.play track, replayed every 2.6s",
   font_size = 12,
-  color = MUTED,
+  color = theme.muted,
 }
 rows[#rows + 1] = ui.Timer {
   interval = 2600,

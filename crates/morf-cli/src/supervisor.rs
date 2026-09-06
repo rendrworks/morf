@@ -1,6 +1,6 @@
-use morf_io::{IpcReply, IpcRequest, IpcServer};
-use morf_lua::{Runtime, Screen};
-use morf_wayland::{BarConfig, LayerClient, ScreenInfo};
+use morf_io::{IpcReply, IpcRequest, IpcServer, IpcValue as WireValue};
+use morf_lua::{LogEntry, LogLevel, Runtime, Screen};
+use morf_wayland::{LayerClient, ScreenInfo};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -13,8 +13,25 @@ use std::time::{Duration, SystemTime};
 
 use crate::{config::*, lock::*, services::*, workers::*};
 
+/// Packs one of the supervisor's own messages the way a worker's arrive.
+///
+/// The supervisor has no runtime to log through, and its lines join the
+/// workers' in one list -- so they are packed here rather than arriving bare
+/// and being shown without a level beside lines that have one.
+fn daemon_log(message: String) -> String {
+    LogEntry {
+        level: LogLevel::Warn,
+        at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or(0),
+        message,
+    }
+    .to_wire()
+}
+
 pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> Result<(), String> {
-    let probe = LayerClient::connect(BarConfig::default()).map_err(|error| error.to_string())?;
+    let probe = LayerClient::probe().map_err(|error| error.to_string())?;
     let mut desired = named_screens(probe.screens())?;
     // Seeded before the first worker exists, so the very first configuration
     // load already sees every output and not only the one it draws to.
@@ -22,6 +39,19 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
     drop(probe);
     if desired.is_empty() {
         return Err("compositor advertised no named outputs".to_owned());
+    }
+    // The file says what it is, and the only way to hear it is to run it. One
+    // execution here, before any worker: a configuration that asks to be a
+    // session lock is one client for every output, which is not the shape the
+    // workers below have, so it is run as that instead. Every other
+    // configuration is run again by its workers, the way a reload already
+    // runs a candidate before trusting it.
+    {
+        let mut first = Runtime::default();
+        execute_config(&mut first, &path, &source, policy)?;
+        if first.layer_surface_config().session_lock {
+            return run_lock(first);
+        }
     }
     let path = Arc::new(path);
     let mut source: Arc<[u8]> = source.into();
@@ -50,6 +80,7 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
             }
         }
     });
+    let started = std::time::Instant::now();
     let (ipc_tx, ipc_rx) = mpsc::channel();
     let socket = socket_path()?;
     let server = IpcServer::bind(&socket, ipc_tx).map_err(|error| {
@@ -123,7 +154,18 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
                     continue;
                 }
                 let kill = matches!(incoming.request, IpcRequest::Kill);
-                let reply = handle_ipc(&workers, &mut daemon_logs, &incoming.request);
+                // Answered here rather than in `handle_ipc`, because the
+                // supervisor is the one thing that knows which configuration
+                // it is running and when it began.
+                let reply = if matches!(incoming.request, IpcRequest::Info) {
+                    IpcReply::success(vec![
+                        WireValue::Integer(i64::from(std::process::id())),
+                        WireValue::String(path.to_string_lossy().into_owned()),
+                        WireValue::Integer(started.elapsed().as_secs() as i64),
+                    ])
+                } else {
+                    handle_ipc(&workers, &mut daemon_logs, &incoming.request)
+                };
                 incoming.reply(reply);
                 if kill {
                     stop_workers(workers);
@@ -131,33 +173,46 @@ pub(crate) fn supervise(path: PathBuf, source: Vec<u8>, policy: LoadPolicy) -> R
                     return Ok(());
                 }
             }
-            Ok(SupervisorMessage::Reload { hard }) => match fs::read(path.as_ref()) {
-                Ok(bytes) => {
-                    source = Arc::from(bytes);
-                    for (output, worker) in &workers {
-                        let (reply, result) = mpsc::sync_channel(1);
-                        if worker
-                            .commands
-                            .send(WorkerCommand::Reload {
-                                path: Arc::clone(&path),
-                                source: Arc::clone(&source),
-                                hard,
-                                reply,
-                            })
-                            .is_err()
-                        {
-                            daemon_logs.push(format!("reload {output}: output stopped"));
-                            continue;
-                        }
-                        match result.recv_timeout(Duration::from_secs(2)) {
-                            Ok(Ok(())) => {}
-                            Ok(Err(error)) => daemon_logs.push(format!("reload {output}: {error}")),
-                            Err(_) => daemon_logs.push(format!("reload {output}: timed out")),
+            Ok(SupervisorMessage::Reload { hard }) => {
+                match fs::read(path.as_ref()) {
+                    Ok(bytes) => {
+                        source = Arc::from(bytes);
+                        for (output, worker) in &workers {
+                            let (reply, result) = mpsc::sync_channel(1);
+                            if worker
+                                .commands
+                                .send(WorkerCommand::Reload {
+                                    path: Arc::clone(&path),
+                                    source: Arc::clone(&source),
+                                    hard,
+                                    reply,
+                                })
+                                .is_err()
+                            {
+                                daemon_logs
+                                    .push(daemon_log(format!("reload {output}: output stopped")));
+                                continue;
+                            }
+                            match result.recv_timeout(Duration::from_secs(2)) {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => daemon_logs
+                                    .push(daemon_log(format!("reload {output}: {error}"))),
+                                Err(_) => daemon_logs
+                                    .push(daemon_log(format!("reload {output}: timed out"))),
+                            }
                         }
                     }
+                    Err(error) => daemon_logs.push(daemon_log(format!("reload: {error}"))),
                 }
-                Err(error) => daemon_logs.push(format!("reload: {error}")),
-            },
+            }
+            Ok(SupervisorMessage::Quit) => {
+                // The same shutdown `morf kill` performs, asked for from the
+                // inside. A greeter that has launched its session has nothing
+                // left to draw, and until now had no way to say so.
+                stop_workers(workers);
+                drop(server);
+                return Ok(());
+            }
             Ok(SupervisorMessage::WatchFiles(enabled)) => {
                 watch_files.store(enabled, Ordering::Release);
             }

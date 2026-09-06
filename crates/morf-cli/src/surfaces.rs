@@ -71,6 +71,12 @@ pub(crate) struct SurfaceEventState {
     pub(crate) last_frame: Option<u32>,
     /// What this surface can afford, and when it last painted.
     pub(crate) pacer: FramePacer,
+    /// Whether any registered shader reads the clock.
+    ///
+    /// Such a shader has to be redrawn continuously, but *through* the frame
+    /// callback like everything else — treating it as a reason to repaint
+    /// outside the callback is a spin, not an animation.
+    pub(crate) animating_shaders: bool,
     /// The interval between the compositor's frame callbacks, as measured.
     pub(crate) refresh: Duration,
     pub(crate) hovered: Option<(SurfaceRole, Hit)>,
@@ -323,6 +329,35 @@ pub(crate) fn primary_surface_root(runtime: &Runtime) -> Result<NodeHandle, Stri
     Ok(primary[0])
 }
 
+/// The zone a surface reserves when it asks for "auto".
+///
+/// Its own extent on the edge it is anchored to, plus the margin between it
+/// and that edge, because the margin is space the surface has claimed too. A
+/// surface anchored to opposite edges spans the output and reserves nothing:
+/// there is no side to push windows towards.
+pub(crate) fn auto_exclusive_zone(surface: &LayerSurfaceConfig) -> i32 {
+    let anchors = &surface.anchors;
+    let height = i32::try_from(surface.height).unwrap_or(i32::MAX);
+    let width = i32::try_from(surface.width).unwrap_or(i32::MAX);
+    match (anchors.top, anchors.bottom, anchors.left, anchors.right) {
+        (true, false, _, _) => height.saturating_add(surface.margin_top),
+        (false, true, _, _) => height.saturating_add(surface.margin_bottom),
+        (_, _, true, false) => width.saturating_add(surface.margin_left),
+        (_, _, false, true) => width.saturating_add(surface.margin_right),
+        _ => 0,
+    }
+}
+
+/// The focus policy a configuration's word names.
+pub(crate) fn keyboard_focus_of(value: &str) -> Option<KeyboardFocus> {
+    match value {
+        "none" => Some(KeyboardFocus::None),
+        "exclusive" => Some(KeyboardFocus::Exclusive),
+        "on_demand" => Some(KeyboardFocus::OnDemand),
+        _ => None,
+    }
+}
+
 pub(crate) fn runtime_bar_config(
     surface: &LayerSurfaceConfig,
     output: &str,
@@ -334,17 +369,21 @@ pub(crate) fn runtime_bar_config(
         "overlay" => ShellLayer::Overlay,
         value => return Err(format!("unsupported layer surface layer `{value}`")),
     };
-    let keyboard_focus = match surface.keyboard_focus.as_str() {
-        "none" => KeyboardFocus::None,
-        "exclusive" => KeyboardFocus::Exclusive,
-        "on_demand" => KeyboardFocus::OnDemand,
-        value => return Err(format!("unsupported keyboard focus policy `{value}`")),
-    };
+    let keyboard_focus = keyboard_focus_of(&surface.keyboard_focus).ok_or_else(|| {
+        format!(
+            "unsupported keyboard focus policy `{}`",
+            surface.keyboard_focus
+        )
+    })?;
     Ok(BarConfig {
         namespace: surface.namespace.clone(),
         width: surface.width,
         height: surface.height,
-        exclusive_zone: surface.exclusive_zone,
+        exclusive_zone: if surface.exclusive_auto {
+            auto_exclusive_zone(surface)
+        } else {
+            surface.exclusive_zone
+        },
         output: Some(output.to_owned()),
         anchors: LayerAnchors {
             top: surface.anchors.top,
@@ -369,6 +408,7 @@ pub(crate) fn connect_runtime_surface(
     let mut client =
         LayerClient::connect(runtime_bar_config(&config, output)?).map_err(|e| e.to_string())?;
     open_reserve_layers(&mut client, &config, output)?;
+    crate::backdrop::open_backdrop_layer(&mut client, &config, output)?;
     loop {
         client.dispatch().map_err(|error| error.to_string())?;
         while let Some(event) = client.next_event() {

@@ -25,6 +25,7 @@ impl Runtime {
         if screens.is_empty() {
             return;
         }
+        let mut own_scale = None;
         self.lua.enter(|ctx| {
             let Ok(morf) = ctx.get_global::<Table>("morf") else {
                 return;
@@ -47,7 +48,10 @@ impl Runtime {
                 .and_then(|name| screens.iter().position(|screen| screen.name == name));
             let mut ordered = Vec::with_capacity(screens.len() + 1);
             match own_index {
-                Some(index) => ordered.push(screen_entry(ctx, &screens[index])),
+                Some(index) => {
+                    own_scale = Some(screens[index].scale);
+                    ordered.push(screen_entry(ctx, &screens[index]));
+                }
                 None if own_name.is_some() => ordered.extend(own),
                 None => {}
             }
@@ -73,5 +77,8 @@ impl Runtime {
                 index += 1;
             }
         });
+        if let Some(scale) = own_scale {
+            self.set_preferred_scale(scale);
+        }
     }
 }

@@ -184,3 +184,227 @@ fn state_property_bindings_recapture_dependencies() {
     let node = runtime.scene().roots()[0];
     assert_eq!(runtime.scene().number(node, "width").unwrap(), 80.0);
 }
+
+#[test]
+fn a_repeater_follows_its_model_and_keeps_the_rows_it_already_had() {
+    // Built once and never touched again was the whole behaviour: a model
+    // replaced under a Repeater changed the model's count and nothing on
+    // screen. Now the frame loop reconciles it by item identity, so a row
+    // that stayed keeps its node, a row that went is gone, and the order on
+    // screen is the model's order.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "repeater.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local model = morf.list_model({ "one", "two", "three" })
+                ui.Repeater {
+                    as = "column",
+                    model = model,
+                    delegate = function(item) return ui.Text { text = item } end,
+                }
+                morf.ipc.reorder = function()
+                    model:replace({ "three", "one", "four" })
+                end
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let before = runtime.scene().children(root).unwrap().to_vec();
+    assert_eq!(before.len(), 3);
+    assert_eq!(
+        runtime.scene().element(root).unwrap(),
+        morf_scene::Element::Column
+    );
+
+    runtime.call_ipc("reorder", &[]).unwrap();
+    assert!(runtime.poll_services());
+
+    let scene = runtime.scene();
+    let after = scene.children(root).unwrap();
+    let texts = after
+        .iter()
+        .map(|node| scene.string_value(*node, "text").unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["three", "one", "four"]);
+    // "one" and "three" kept their nodes; "two" is gone; "four" is new.
+    assert_eq!(after[0], before[2]);
+    assert_eq!(after[1], before[0]);
+    assert!(!scene.contains(before[1]));
+}
+
+#[test]
+fn a_repeater_delegate_with_an_updater_is_patched_rather_than_rebuilt() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "repeater-update.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local model = morf.list_model({ { id = "a", label = "A" }, { id = "b", label = "B" } })
+                ui.Repeater {
+                    model = model,
+                    delegate = function(item)
+                        local text = ui.Text { text = item.label }
+                        return text, function(next) text.text = next.label end
+                    end,
+                }
+                morf.ipc.rename = function()
+                    model:replace({ { id = "a", label = "A2" }, { id = "b", label = "B" } }, "id")
+                end
+            "#,
+        )
+        .unwrap();
+    let root = runtime.scene().roots()[0];
+    let before = runtime.scene().children(root).unwrap().to_vec();
+
+    runtime.call_ipc("rename", &[]).unwrap();
+    runtime.poll_services();
+
+    let scene = runtime.scene();
+    let after = scene.children(root).unwrap();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(scene.string_value(after[0], "text").unwrap(), "A2");
+    assert_eq!(scene.string_value(after[1], "text").unwrap(), "B");
+}
+
+#[test]
+fn a_state_with_when_selects_itself_and_default_takes_over_otherwise() {
+    // Hover and press used to be a signal each, written from four handlers
+    // and read by a `state` binding somebody wrote by hand. A state that
+    // says `when` chooses itself; `default` is where the node goes when
+    // none does.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "when.lua",
+            br##"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                local hover = morf.signal("hover", false)
+                local down = morf.signal("down", false)
+                ui.Rect {
+                    width = 10, height = 10, color = "#000000",
+                    states = {
+                        default = { property_changes = { width = 10 } },
+                        hovered = {
+                            when = function() return hover:get() end,
+                            property_changes = { width = 20 },
+                        },
+                        pressed = {
+                            when = function() return down:get() end,
+                            property_changes = { width = 5 },
+                        },
+                    },
+                }
+                morf.ipc.hover = function(on) hover:set(on) end
+                morf.ipc.press = function(on) down:set(on) end
+            "##,
+        )
+        .unwrap();
+    let node = runtime.scene().roots()[0];
+    assert_eq!(runtime.scene().number(node, "width").unwrap(), 10.0);
+
+    runtime
+        .call_ipc("hover", &[IpcValue::Boolean(true)])
+        .unwrap();
+    assert_eq!(runtime.scene().number(node, "width").unwrap(), 20.0);
+    // Both true: name order, and `hovered` sorts before `pressed`.
+    runtime
+        .call_ipc("press", &[IpcValue::Boolean(true)])
+        .unwrap();
+    assert_eq!(runtime.scene().number(node, "width").unwrap(), 20.0);
+    runtime
+        .call_ipc("hover", &[IpcValue::Boolean(false)])
+        .unwrap();
+    assert_eq!(runtime.scene().number(node, "width").unwrap(), 5.0);
+    runtime
+        .call_ipc("press", &[IpcValue::Boolean(false)])
+        .unwrap();
+    assert_eq!(runtime.scene().number(node, "width").unwrap(), 10.0);
+}
+
+#[test]
+fn a_when_state_and_a_state_binding_together_are_refused() {
+    let mut runtime = Runtime::default();
+    let error = runtime
+        .execute(
+            "when-conflict.lua",
+            br#"
+                local ui = require("morf.ui")
+                ui.Rect {
+                    states = { a = { when = function() return true end, property_changes = {} } },
+                    state = "a",
+                }
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("choose themselves"), "{error}");
+}
+
+#[test]
+fn a_state_with_order_is_asked_before_its_alphabetical_betters() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "order.lua",
+            br#"
+                local ui = require("morf.ui")
+                ui.Rect {
+                    width = 10, height = 10,
+                    states = {
+                        alpha = { when = function() return true end, property_changes = { width = 1 } },
+                        omega = { order = -1, when = function() return true end, property_changes = { width = 2 } },
+                    },
+                }
+            "#,
+        )
+        .unwrap();
+    let node = runtime.scene().roots()[0];
+    assert_eq!(runtime.scene().number(node, "width").unwrap(), 2.0);
+}
+
+#[test]
+fn a_repeater_can_lay_its_rows_out_as_a_flex() {
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "repeater-flex.lua",
+            br#"
+                local morf = require("morf")
+                local ui = require("morf.ui")
+                ui.Repeater {
+                    as = "flex", direction = "column", gap = 4,
+                    model = morf.list_model({ "a", "b" }),
+                    delegate = function(item) return ui.Text { text = item } end,
+                }
+            "#,
+        )
+        .unwrap();
+    let scene = runtime.scene();
+    let root = scene.roots()[0];
+    assert_eq!(scene.element(root).unwrap(), morf_scene::Element::Flex);
+    assert_eq!(scene.string_value(root, "direction").unwrap(), "column");
+    assert_eq!(scene.children(root).unwrap().len(), 2);
+}
+
+#[test]
+fn a_ui_kind_that_does_not_exist_is_named() {
+    let mut runtime = Runtime::default();
+    let error = runtime
+        .execute(
+            "no-kind.lua",
+            br#"
+                local ui = require("morf.ui")
+                ui.RowLayout { }
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no ui kind `RowLayout`"), "{error}");
+}

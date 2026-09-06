@@ -1,4 +1,5 @@
 use luna::{Closure, Executor, ExecutorMode, Fuel, Lua};
+use morf_scene::NodeHandle;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,7 @@ impl Runtime {
             limits,
             reactive,
             module_roots,
+            lint_queue: RefCell::new(Vec::new()),
         }
     }
 
@@ -151,8 +153,110 @@ impl Runtime {
         true
     }
 
+    /// Records what the compositor and GPU under this output can do.
+    ///
+    /// Published to the configuration as `morf.capabilities`, a plain table of
+    /// name to value, so a shell can ask "is there screencopy here" rather than
+    /// try it and read the error. And answered over IPC for `morf info`, which
+    /// is the same question asked from a terminal.
+    pub fn set_capabilities(&mut self, capabilities: &[(String, String)]) {
+        self.reactive.borrow_mut().capabilities = capabilities.to_vec();
+        self.lua.enter(|ctx| {
+            let Ok(morf) = ctx.get_global::<luna::Table>("morf") else {
+                return;
+            };
+            let table = luna::Table::new(&ctx);
+            for (name, value) in capabilities {
+                let entry: luna::Value = match value.as_str() {
+                    "true" => luna::Value::Boolean(true),
+                    "false" => luna::Value::Boolean(false),
+                    other => match other.parse::<i64>() {
+                        Ok(number) => luna::Value::Integer(number),
+                        Err(_) => luna::Value::String(ctx.intern(other.as_bytes())),
+                    },
+                };
+                // Interned, not borrowed: the key has to outlive this call.
+                let key = luna::Value::String(ctx.intern(name.as_bytes()));
+                let _ = table.set(ctx, key, entry);
+            }
+            morf.set_field(ctx, "capabilities", table);
+        });
+    }
+
+    /// The same list, as `name=value` lines for the wire.
+    pub fn capabilities(&self) -> Vec<String> {
+        self.reactive
+            .borrow()
+            .capabilities
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect()
+    }
+
+    /// Records a warning from outside the runtime, into the same log a
+    /// configuration's own diagnostics go to.
+    pub fn warn(&self, message: impl Into<String>) {
+        self.reactive.borrow_mut().log(LogLevel::Warn, message);
+    }
+
+    /// Complains about items that laid out to nothing and have children.
+    ///
+    /// The commonest way a configuration draws nothing and says nothing: a
+    /// container whose size never got set, or got set to zero, with a whole
+    /// subtree inside it that is never seen. The layout is the only place this
+    /// is knowable -- a width of zero in the scene may be "auto", and only the
+    /// resolved geometry says it resolved to nothing. Said once per node.
+    pub fn lint_layout(&self, layout: &morf_layout::Layout, root: NodeHandle) {
+        let scene = self.scene();
+        let mut pending = vec![root];
+        let mut queue = self.lint_queue.borrow_mut();
+        while let Some(node) = pending.pop() {
+            let Ok(children) = scene.children(node) else {
+                continue;
+            };
+            pending.extend(children.iter().copied());
+            if children.is_empty() {
+                continue;
+            }
+            let Some(geometry) = layout.geometry(node) else {
+                continue;
+            };
+            if geometry.width <= 0.0 || geometry.height <= 0.0 {
+                let element = scene
+                    .element(node)
+                    .map(|element| format!("{element:?}"))
+                    .unwrap_or_default();
+                queue.push((node, element, children.len()));
+            }
+        }
+    }
+
+    /// Logs what the lint found, once per node.
+    ///
+    /// Called from the poll, where nothing else holds the state, which is the
+    /// reason the lint queues rather than logs.
+    pub(crate) fn flush_lint(&mut self) {
+        let found = std::mem::take(&mut *self.lint_queue.borrow_mut());
+        if found.is_empty() {
+            return;
+        }
+        let mut state = self.reactive.borrow_mut();
+        for (node, element, count) in found {
+            if !state.lint_warned.insert(node) {
+                continue;
+            }
+            state.log(
+                LogLevel::Warn,
+                format!(
+                    "lint: {element} laid out to nothing and has {count} child{} that will never be seen",
+                    if count == 1 { "" } else { "ren" }
+                ),
+            );
+        }
+    }
+
     /// Drains non-fatal binding diagnostics produced since the previous call.
-    pub fn take_logs(&mut self) -> Vec<String> {
+    pub fn take_logs(&mut self) -> Vec<LogEntry> {
         std::mem::take(&mut self.reactive.borrow_mut().logs)
     }
 
@@ -226,6 +330,11 @@ impl Runtime {
         })
     }
 
+    /// Whether the configuration has asked the shell to stop.
+    pub fn quit_requested(&self) -> bool {
+        self.reactive.borrow().quit_requested
+    }
+
     pub fn dispatch_reload_completed(&mut self) -> bool {
         self.dispatch_reload_callbacks(true, None)
     }
@@ -249,16 +358,84 @@ impl Runtime {
         };
         let args = error.map(IpcValue::String).into_iter().collect::<Vec<_>>();
         for callback in &callbacks {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("reload callback: {message}"));
+                    .log(LogLevel::Warn, format!("reload callback: {message}"));
             }
         }
         !callbacks.is_empty()
+    }
+}
+
+/// One shader a configuration registered, as the host needs it.
+pub struct ShaderProgram {
+    /// Hash of the generated WGSL: what a node carries and the backend keys on.
+    pub program: u64,
+    pub wgsl: String,
+    /// Byte offset of each parameter in the uniform block.
+    pub offsets: Vec<u32>,
+    pub uniform_size: u32,
+    /// Whether the shader reads the frame clock, and so repaints every frame.
+    pub reads_time: bool,
+    /// Whether the shader decides its own coverage rather than colouring what
+    /// the field shaped.
+    pub owns_coverage: bool,
+    /// Whether the shader reads what is rendered underneath, and so belongs to
+    /// the composite pass rather than the field pass.
+    pub samples_behind: bool,
+    /// The vertex displacement's WGSL, if it has one.
+    pub vertex: Option<String>,
+    /// Image paths for its declared textures, in binding order.
+    pub textures: Vec<String>,
+    /// Its data blocks: name and element count, in binding order.
+    pub data: Vec<(String, u32)>,
+}
+
+impl Runtime {
+    /// Every shader the configuration registered.
+    ///
+    /// The host hands these to the renderer once, at startup: compiling a
+    /// pipeline costs tens of milliseconds and cannot happen during a frame.
+    pub fn shaders(&self) -> Vec<ShaderProgram> {
+        self.reactive
+            .borrow()
+            .shaders
+            .values()
+            .map(|shader| ShaderProgram {
+                program: shader.compiled.hash,
+                wgsl: shader.compiled.wgsl.clone(),
+                offsets: shader
+                    .compiled
+                    .params
+                    .iter()
+                    .map(|slot| slot.offset)
+                    .collect(),
+                uniform_size: shader.compiled.uniform_size,
+                reads_time: shader.compiled.reads_time,
+                owns_coverage: shader.kind == morf_shader::ShaderKind::Surface,
+                samples_behind: shader.kind == morf_shader::ShaderKind::Effect,
+                vertex: shader.vertex.as_ref().map(|compiled| compiled.wgsl.clone()),
+                textures: shader.texture_paths.clone(),
+                data: shader.compiled.data.clone(),
+            })
+            .collect()
+    }
+
+    /// Whether any registered shader animates on its own.
+    ///
+    /// A shader that reads the clock has to repaint every frame; one that does
+    /// not costs nothing after the first. Derived from the compiler rather than
+    /// declared, so it cannot be forgotten.
+    pub fn shaders_animate(&self) -> bool {
+        self.reactive.borrow().shaders.values().any(|shader| {
+            shader.compiled.reads_time
+                || shader
+                    .vertex
+                    .as_ref()
+                    .is_some_and(|vertex| vertex.reads_time)
+        })
     }
 }

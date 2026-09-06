@@ -1,7 +1,7 @@
+use morf_services::{GreetdEvent, PamEvent};
 use std::time::Duration;
 
 use morf_io::Timer as IoTimer;
-use morf_layout::Layout;
 use morf_scene::{NodeHandle, Value as SceneValue};
 
 use crate::{
@@ -10,84 +10,16 @@ use crate::{
 };
 
 impl Runtime {
-    /// Updates native transform watchers from one rendered surface layout.
-    pub fn observe_layout(&self, layout: &Layout) -> bool {
-        let mut state = self.reactive.borrow_mut();
-        state.transform_tracker.update(layout);
-        let anchors = state
-            .popup_node_anchors
-            .iter()
-            .map(|(id, anchor)| (*id, anchor.clone()))
-            .collect::<Vec<_>>();
-        for (id, anchor) in anchors {
-            let Some(geometry) = state.transform_tracker.geometry(anchor.node) else {
-                continue;
-            };
-            let node_width = geometry_i32(geometry.width).max(1);
-            let node_height = geometry_i32(geometry.height).max(1);
-            let resolved = (
-                geometry_i32(geometry.x)
-                    .saturating_add(anchor.x)
-                    .saturating_sub(anchor.margin_left),
-                geometry_i32(geometry.y)
-                    .saturating_add(anchor.y)
-                    .saturating_sub(anchor.margin_top),
-                anchor
-                    .width
-                    .unwrap_or(node_width)
-                    .saturating_add(anchor.margin_left)
-                    .saturating_add(anchor.margin_right)
-                    .max(1),
-                anchor
-                    .height
-                    .unwrap_or(node_height)
-                    .saturating_add(anchor.margin_top)
-                    .saturating_add(anchor.margin_bottom)
-                    .max(1),
-            );
-            if let Some(WindowSurfaceConfig {
-                kind: WindowSurfaceKind::Popup(config),
-                ..
-            }) = state.window_surfaces.get_mut(&id)
-                && (
-                    config.anchor_x,
-                    config.anchor_y,
-                    config.anchor_width,
-                    config.anchor_height,
-                ) != resolved
-            {
-                config.anchor_x = resolved.0;
-                config.anchor_y = resolved.1;
-                config.anchor_width = resolved.2;
-                config.anchor_height = resolved.3;
-                state.window_surfaces_changed = true;
-            }
-        }
-        let mut watchers = std::mem::take(&mut state.transform_watchers);
-        let mut changed = false;
-        for watcher in watchers.values_mut() {
-            match watcher
-                .watcher
-                .observe(&state.scene, &state.transform_tracker)
-            {
-                Ok(true) => {
-                    watcher.revision = watcher.revision.wrapping_add(1);
-                    watcher.pending = true;
-                    changed = true;
-                }
-                Ok(false) => {}
-                Err(error) => state.logs.push(format!("transform watcher: {error}")),
-            }
-        }
-        state.transform_watchers = watchers;
-        changed
-    }
-
     /// Polls native service jobs and runs completed callbacks with bounded fuel.
     pub fn poll_services(&mut self) -> bool {
+        self.flush_lint();
+        let appearance_changed = self.poll_appearance();
         let mut ready = Vec::new();
         let mut timers = Vec::new();
         let mut dbus_signals = Vec::new();
+        let mut dbus_calls = Vec::new();
+        let mut pam_messages = Vec::new();
+        let mut greetd_messages = Vec::new();
         let mut udev_events = Vec::new();
         let mut status_updates = Vec::new();
         let mut loaders = Vec::new();
@@ -144,14 +76,18 @@ impl Runtime {
                     state.timers.swap_remove(index);
                 }
                 match IoTimer::every(duration) {
-                    Ok(timer) => state.timers.push(PendingTimer {
-                        timer,
-                        callback,
-                        repeat,
-                        interval: duration,
-                        node: Some(node),
-                    }),
-                    Err(error) => state.logs.push(format!("Timer: {error}")),
+                    Ok(timer) => {
+                        let id = state.next_timer_id();
+                        state.timers.push(PendingTimer {
+                            id,
+                            timer,
+                            callback,
+                            repeat,
+                            interval: duration,
+                            node: Some(node),
+                        });
+                    }
+                    Err(error) => state.log(LogLevel::Warn, format!("Timer: {error}")),
                 }
                 service_changed = true;
             }
@@ -211,6 +147,55 @@ impl Runtime {
                     dbus_signals.push((subscription.callback.clone(), value));
                 }
             }
+            // A conversation says a few things per turn and then waits on a
+            // person, so this never runs long. A finished session leaves the
+            // list after its verdict is delivered, which is why the verdict is
+            // collected first and the removal follows it.
+            state.pam_sessions.retain(|entry| {
+                let mut finished = false;
+                for _ in 0..8 {
+                    let Some(event) = entry.session.borrow_mut().next(Duration::ZERO) else {
+                        break;
+                    };
+                    finished |= matches!(event, PamEvent::Finished(_));
+                    pam_messages.push((entry.callback.clone(), event));
+                    if finished {
+                        break;
+                    }
+                }
+                !finished
+            });
+            // The same for a greetd login: a few replies per turn, then a
+            // wait on greetd, or on a person greetd is waiting on.
+            state.greetd_sessions.retain(|entry| {
+                let mut conversation = entry.conversation.borrow_mut();
+                for _ in 0..8 {
+                    let Some(event) = conversation.next(Duration::ZERO) else {
+                        break;
+                    };
+                    let last = matches!(event, GreetdEvent::Failed(_));
+                    greetd_messages.push((entry.callback.clone(), event));
+                    if last {
+                        break;
+                    }
+                }
+                !conversation.ended()
+            });
+            // Bounded per frame, unlike the signal drain above. A signal that
+            // arrives faster than it is read is the sender's problem; a *call*
+            // that does is ours, because the caller is blocked until we answer
+            // and answering happens after this loop. Taking them all would let
+            // one chatty peer hold the frame open.
+            // How many calls one service may hand over per frame.
+            const MAX_CALLS_PER_FRAME: usize = 32;
+            for entry in &state.dbus_services {
+                for _ in 0..MAX_CALLS_PER_FRAME {
+                    let Some(call) = entry.service.borrow_mut().next_call(Duration::ZERO) else {
+                        break;
+                    };
+                    dbus_calls.push((entry.callback.clone(), call));
+                }
+            }
             let mut udev_errors = Vec::new();
             for subscription in &mut state.udev_monitors {
                 for _ in 0..32 {
@@ -226,11 +211,9 @@ impl Runtime {
                     }
                 }
             }
-            state.logs.extend(
-                udev_errors
-                    .into_iter()
-                    .map(|error| format!("udev: {error}")),
-            );
+            for error in udev_errors {
+                state.log(LogLevel::Warn, format!("udev: {error}"));
+            }
             let mut status_errors = Vec::new();
             for subscription in &mut state.status_notifiers {
                 match subscription.host.poll_changed() {
@@ -239,11 +222,9 @@ impl Runtime {
                     Err(error) => status_errors.push(error.to_string()),
                 }
             }
-            state.logs.extend(
-                status_errors
-                    .into_iter()
-                    .map(|error| format!("status notifier: {error}")),
-            );
+            for error in status_errors {
+                state.log(LogLevel::Warn, format!("status notifier: {error}"));
+            }
             retained_destroys.extend(state.retained_destroy_queue.drain());
             for watcher in state.transform_watchers.values_mut() {
                 if watcher.pending {
@@ -306,17 +287,19 @@ impl Runtime {
                         "active_async",
                         SceneValue::Bool(false),
                     );
-                    state.logs.push(format!("Loader: {error}"));
+                    state.log(LogLevel::Warn, format!("Loader: {error}"));
                 }
             }
         }
+        service_changed |= self.sync_pending_views();
         // Whether a repaint is owed is decided after the callbacks below have
         // run, by asking whether the scene actually changed. A callback merely
         // firing is not a reason to render: a 16ms timer that polls a file and
         // finds it unchanged would otherwise force a full render of every
         // output sixty times a second, forever.
         let revision_before = self.reactive.borrow().scene_revision;
-        let service_changed = service_changed || !transform_callbacks.is_empty();
+        let service_changed =
+            service_changed || appearance_changed || !transform_callbacks.is_empty();
         for (callback, unlock_on_success, result) in ready {
             if unlock_on_success && result.is_ok() {
                 self.reactive.borrow_mut().session_unlock_requested = true;
@@ -328,40 +311,62 @@ impl Runtime {
                     IpcValue::String(error.to_string()),
                 ],
             };
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, &callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, &callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("PAM callback: {message}"));
+                    .log(LogLevel::Warn, format!("PAM callback: {message}"));
             }
         }
         for callback in timers {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, &callback, &[], self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, &callback, &[], limits))
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("timer callback: {message}"));
+                    .log(LogLevel::Warn, format!("timer callback: {message}"));
             }
         }
         for (callback, revision) in transform_callbacks {
-            if let Err(message) = self.lua.enter(|ctx| {
+            if let Err(message) = self.run_handler(|ctx, limits| {
                 execute_handler_args(
                     ctx,
                     &callback,
                     &[IpcValue::Integer(revision as i64)],
-                    self.limits,
+                    limits,
                 )
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("transform callback: {message}"));
+                    .log(LogLevel::Warn, format!("transform callback: {message}"));
+            }
+        }
+        for (callback, event) in pam_messages {
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_pam_session_handler(ctx, &callback, event, limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("PAM session: {message}"));
+            }
+        }
+        for (callback, event) in greetd_messages {
+            if let Err(message) = self
+                .run_handler(|ctx, limits| execute_greetd_handler(ctx, &callback, event, limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("greetd: {message}"));
+            }
+        }
+        for (callback, call) in dbus_calls {
+            if let Err(message) = self
+                .run_handler(|ctx, limits| execute_dbus_call_handler(ctx, &callback, call, limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("D-Bus call: {message}"));
             }
         }
         for (callback, value) in dbus_signals {
@@ -370,39 +375,35 @@ impl Runtime {
                 Err(message) => {
                     self.reactive
                         .borrow_mut()
-                        .logs
-                        .push(format!("D-Bus signal: {message}"));
+                        .log(LogLevel::Warn, format!("D-Bus signal: {message}"));
                     continue;
                 }
             };
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_dbus_handler(ctx, &callback, value, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_dbus_handler(ctx, &callback, value, limits))
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("D-Bus callback: {message}"));
+                    .log(LogLevel::Warn, format!("D-Bus callback: {message}"));
             }
         }
         for (callback, event) in udev_events {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_dbus_handler(ctx, &callback, udev_event_value(event), self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_dbus_handler(ctx, &callback, udev_event_value(event), limits)
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("udev callback: {message}"));
+                    .log(LogLevel::Warn, format!("udev callback: {message}"));
             }
         }
         for (callback, items) in status_updates {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_dbus_handler(ctx, &callback, status_notifier_value(items), self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_dbus_handler(ctx, &callback, status_notifier_value(items), limits)
             }) {
-                self.reactive
-                    .borrow_mut()
-                    .logs
-                    .push(format!("status notifier callback: {message}"));
+                self.reactive.borrow_mut().log(
+                    LogLevel::Warn,
+                    format!("status notifier callback: {message}"),
+                );
             }
         }
         service_changed || self.reactive.borrow().scene_revision != revision_before

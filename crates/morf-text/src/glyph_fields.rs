@@ -1,72 +1,300 @@
-// Glyphs as distance fields rather than as coverage.
+// Glyphs as distance fields, measured from the outline rather than from a
+// picture of it.
 //
-// A coverage bitmap is a picture of a glyph at one size, with one subpixel
-// offset, and it is worth nothing at any other size: the atlas fills up with
-// the same letter over and over as a configuration animates a font size or a
-// display changes scale. A distance field is a picture of the *shape*. One
-// entry per glyph serves every size, and because the edge is a threshold
-// rather than a set of pixels, an outline is a second threshold and a heavier
-// weight is the first one moved — both of them ordinary animatable numbers
-// instead of a re-render.
+// A coverage bitmap is a glyph at one size with one subpixel offset, worth
+// nothing at any other; a distance field is the *shape*, so one entry serves
+// every size and an outline or a heavier weight is a second threshold rather
+// than a re-render.
+//
+// The field is computed from the font's own Bézier contours. The obvious way
+// to build one is to rasterize the glyph, threshold that bitmap and run a
+// distance transform over it — and that is what this did. It is wrong in a way
+// that no amount of supersampling fixes: thresholding throws the shape away and
+// keeps a grid of on-or-off pixels, so every distance afterwards is measured to
+// a staircase rather than to a curve. What comes back is an approximation of an
+// approximation, and it shows up as chewed edges at large sizes and as
+// disintegrating letterforms when two fields are interpolated.
+//
+// The outline is already in the font, exactly. Measuring straight to it makes
+// the distances true, lets the spread be as wide as we like — the transform's
+// cost used to grow with it — and removes the rasterizer from the path
+// entirely.
 
 use std::rc::Rc;
 
-use signed_distance_field::binary_image;
-use signed_distance_field::compute_f32_distance_field;
-use signed_distance_field::distance_field::DistanceStorage;
+use cosmic_text::Command;
+use morf_outline::Segment;
 
-/// The size every glyph is rasterized at before its field is measured.
+use crate::glyph_steps::steps;
+
+/// The size a field is measured at when nothing narrows it down.
 ///
-/// Large enough that the field records the shape rather than the rasterizer's
-/// opinion of it at some particular size, small enough that a page of text is
-/// a handful of atlas entries. Text is drawn at whatever size it likes by
-/// scaling the quad; nothing is rasterized again.
+/// A field records a shape, not a size, so one entry can serve any size — but
+/// only within reason. Reading a sixty-four pixel field into eleven pixels of
+/// text means resolving six texels into every screen pixel with nothing but a
+/// bilinear tap, and the letters come back scarred. So the reference is chosen
+/// per size instead; see `field_reference_for`.
 pub const FIELD_REFERENCE_PX: f32 = 64.0;
 
-/// How far outside the glyph the field is measured, in reference pixels.
+/// The reference size a glyph drawn at `size` is measured at.
 ///
-/// This is the room an outline has to live in, and the distance over which the
-/// edge can be moved to thicken or thin the letter. Everything beyond it reads
-/// as "far outside" and cannot be drawn into.
-pub const FIELD_SPREAD_PX: u32 = 8;
+/// Powers of two, so a size that animates settles on a handful of fields rather
+/// than one per frame, and so a field is never read at worse than half its own
+/// resolution — which is the point: minification is what tore small text, not
+/// the field. Bounded below because a field smaller than this stops describing
+/// a letter, and above because past it the extra detail is beyond the screen.
+pub fn field_reference_for(size: f32) -> f32 {
+    let wanted = size.max(1.0).log2().ceil().exp2();
+    wanted.clamp(16.0, 256.0)
+}
 
-/// Turns one rasterized coverage bitmap into a distance field of the same
-/// shape, padded so the field has somewhere to go outside the glyph.
+/// How far outside the glyph a field of this reference size is measured.
 ///
-/// The bytes run from zero at the outside of the spread to one at the inside,
-/// which is the direction the shader thresholds in: below the edge is ink.
-/// Returns `None` for a glyph with no ink at all — a space has no shape to
-/// measure, and the distance transform has nothing to work from.
-pub(crate) fn glyph_field(alpha: &[u8], width: u32, height: u32) -> Option<FieldImage> {
-    let pad = FIELD_SPREAD_PX;
-    let padded_width = width + pad * 2;
-    let padded_height = height + pad * 2;
-    let mut padded = vec![0u8; (padded_width * padded_height) as usize];
-    for row in 0..height {
-        let source = (row * width) as usize;
-        let target = ((row + pad) * padded_width + pad) as usize;
-        padded[target..target + width as usize]
-            .copy_from_slice(&alpha[source..source + width as usize]);
+/// Capped, and the cap is what decides how good the edges look. A field is a
+/// byte: two hundred and fifty-five levels spread over twice this distance. The
+/// only ones that matter are those inside the pixel the edge falls in, so the
+/// wider the spread the fewer levels there are to draw that pixel with — at a
+/// spread proportional to the reference, a sixty-four pixel letter had five
+/// greys across its edge and a three hundred pixel one had barely one, which is
+/// what stepped curves are made of.
+///
+/// Eight reference pixels is far more than an edge, a weight or an outline
+/// needs, and it leaves sixteen greys to draw with at the reference size rather
+/// than five. Nothing needs the wider range any more: a letter composed into a
+/// field is an outline walked exactly, not a texture sampled, so its reach is
+/// not bounded by this at all.
+pub fn field_spread_for(reference: f32) -> f32 {
+    (reference * 0.375).min(8.0).round()
+}
+
+/// How much of a field one logical pixel covers, for a glyph drawn at `size`.
+///
+/// The one place the reference and the spread are turned into the units the
+/// shader thresholds in. Everything that has to speak in field units — the
+/// width of an edge, a weight, an outline — goes through here, because the
+/// relation between the two stopped being a fixed ratio when the spread gained
+/// a cap, and two copies of it would have quietly disagreed.
+pub fn field_units_per_logical_px(size: f32) -> f32 {
+    let reference = field_reference_for(size);
+    let spread = field_spread_for(reference);
+    (reference / size.max(1.0)) / (spread * 2.0)
+}
+
+/// The spread of a field measured at the default reference size.
+pub const FIELD_SPREAD_PX: u32 = 24;
+
+/// How finely a curve is broken into straight pieces before it is measured.
+///
+/// A letter's outline, in straight pieces.
+///
+/// The flattening itself is `morf-outline`'s — this is only the conversion from
+/// what a font hands back into what an outline is.
+pub(crate) fn flatten(commands: &[Command]) -> Vec<Segment> {
+    morf_outline::flatten(&steps(commands))
+}
+
+/// Measures a glyph's outline into a distance field.
+///
+/// The outline arrives in font coordinates: the origin is the pen on the
+/// baseline and y counts upwards, which is why the rows below are walked from
+/// the top down. Returns `None` for an outline with no ink — a space has no
+/// boundary to measure a distance from.
+pub(crate) fn glyph_field(commands: &[Command], spread: f32) -> Option<FieldImage> {
+    glyph_field_in(commands, outline_box(commands, spread)?, spread)
+}
+
+/// The box a glyph's field is measured over: its ink, with the spread around
+/// it. In reference pixels relative to the pen, y counting up.
+pub(crate) fn outline_box(commands: &[Command], spread: f32) -> Option<FieldBox> {
+    segment_box(&flatten(commands), spread)
+}
+
+/// The box a set of straight pieces needs, with the spread around them.
+pub(crate) fn segment_box(segments: &[Segment], spread: f32) -> Option<FieldBox> {
+    if segments.is_empty() {
+        return None;
+    }
+    let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+    let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
+    for segment in segments {
+        min_x = min_x.min(segment.x0).min(segment.x1);
+        max_x = max_x.max(segment.x0).max(segment.x1);
+        min_y = min_y.min(segment.y0).min(segment.y1);
+        max_y = max_y.max(segment.y0).max(segment.y1);
+    }
+    // Not rounded to whole pixels. The box's edges are where the outline
+    // actually is, because this origin is what the quad is positioned from: a
+    // box snapped to the reference grid moves the letter by up to a whole
+    // reference pixel, which at a small drawn size is most of a pixel on
+    // screen and reads as letters standing unevenly apart.
+    Some(FieldBox {
+        left: min_x - spread,
+        top: max_y + spread,
+        right: max_x + spread,
+        bottom: min_y - spread,
+    })
+}
+
+/// A rectangle in reference pixels, relative to the pen, with y counting up.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FieldBox {
+    pub(crate) left: f32,
+    pub(crate) top: f32,
+    pub(crate) right: f32,
+    pub(crate) bottom: f32,
+}
+
+impl FieldBox {
+    /// The smallest box holding both.
+    ///
+    /// Two glyphs being interpolated have to be measured over the *same* box.
+    /// Their own boxes differ in width, in height and in where the ink sits
+    /// inside them, and the shader reads both through one set of texture
+    /// coordinates — so separate boxes are stretched onto one another, which
+    /// distorts the shapes and, worse, invalidates the distances they store,
+    /// since those are in units of the box they were measured in.
+    pub(crate) fn union(self, other: Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.max(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.min(other.bottom),
+        }
+    }
+}
+
+/// Measures an outline over a box chosen by the caller.
+pub(crate) fn glyph_field_in(
+    commands: &[Command],
+    area: FieldBox,
+    spread: f32,
+) -> Option<FieldImage> {
+    field_from_segments(&flatten(commands), area, spread)
+}
+
+/// Measures an outline already broken into straight pieces.
+///
+/// The pieces need not have come from a font: an outline interpolated between
+/// two letters is measured exactly the same way, which is what lets a morph be
+/// a real shape rather than an average of two fields.
+pub(crate) fn field_from_segments(
+    segments: &[Segment],
+    area: FieldBox,
+    spread: f32,
+) -> Option<FieldImage> {
+    if segments.is_empty() {
+        return None;
     }
 
-    let binary = binary_image::of_byte_slice(
-        &padded,
-        u16::try_from(padded_width).ok()?,
-        u16::try_from(padded_height).ok()?,
-    );
-    let spread = FIELD_SPREAD_PX as f32;
-    let field = compute_f32_distance_field(&binary).normalize_clamped_distances(-spread, spread)?;
-    let data = Rc::new(
-        (0..padded.len())
-            .map(|index| (field.distances.get(index).clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect(),
-    );
+    let left = area.left;
+    let top = area.top;
+    // The grid is whole texels even though the box is not: the extra fraction
+    // of a texel falls outside the spread, where the field is saturated anyway.
+    let width = (area.right - area.left).ceil().max(1.0) as u32;
+    let height = (area.top - area.bottom).ceil().max(1.0) as u32;
+
+    // Two different questions, each asked the cheap way.
+    //
+    // The distance only matters within the spread — past it every value folds
+    // to the same saturated byte — so a texel need only look at segments near
+    // it. Sorting the segments into a grid of cells one spread across means the
+    // nine cells around a texel hold every segment that could be within one,
+    // and if they hold none the answer is "further than the spread", which is
+    // the same byte either way.
+    //
+    // The sign cannot be localised like that: which side of the outline a point
+    // is on depends on every segment a ray from it crosses. But a whole row
+    // shares a ray, so the crossings are found once per row instead of once per
+    // texel, and each texel only counts the ones to its right.
+    let cell = spread.max(1.0);
+    let across = ((width as f32 / cell).ceil() as usize).max(1);
+    let down = ((height as f32 / cell).ceil() as usize).max(1);
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); across * down];
+    for (index, segment) in segments.iter().enumerate() {
+        let low_x = segment.x0.min(segment.x1) - left;
+        let high_x = segment.x0.max(segment.x1) - left;
+        let low_y = top - segment.y0.max(segment.y1);
+        let high_y = top - segment.y0.min(segment.y1);
+        let first_column = ((low_x / cell).floor().max(0.0) as usize).min(across - 1);
+        let last_column = ((high_x / cell).floor().max(0.0) as usize).min(across - 1);
+        let first_row = ((low_y / cell).floor().max(0.0) as usize).min(down - 1);
+        let last_row = ((high_y / cell).floor().max(0.0) as usize).min(down - 1);
+        for row in first_row..=last_row {
+            for column in first_column..=last_column {
+                buckets[row * across + column].push(index as u32);
+            }
+        }
+    }
+
+    let mut data = Vec::with_capacity((width * height) as usize);
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    let mut nearby: Vec<u32> = Vec::new();
+    for row in 0..height {
+        // Sampled at the centre of the texel, and downwards: the field is read
+        // as an image, where the first row is the top, while the outline it is
+        // measured from counts y upwards from the baseline.
+        let y = top - row as f32 - 0.5;
+
+        // Where this row's ray crosses the outline, and which way each crossing
+        // turns. Gathered once for the row.
+        crossings.clear();
+        for segment in segments {
+            if (segment.y0 <= y) == (segment.y1 <= y) {
+                continue;
+            }
+            let along = (y - segment.y0) / (segment.y1 - segment.y0);
+            let at = segment.x0 + along * (segment.x1 - segment.x0);
+            crossings.push((at, if segment.y1 > segment.y0 { 1 } else { -1 }));
+        }
+
+        let band = ((row as f32 / cell).floor() as usize).min(down - 1);
+        let mut last_column_cell = usize::MAX;
+        for column in 0..width {
+            let x = left + column as f32 + 0.5;
+
+            let cell_column = ((column as f32 / cell).floor() as usize).min(across - 1);
+            if cell_column != last_column_cell {
+                last_column_cell = cell_column;
+                nearby.clear();
+                for band_row in band.saturating_sub(1)..=(band + 1).min(down - 1) {
+                    for band_column in
+                        cell_column.saturating_sub(1)..=(cell_column + 1).min(across - 1)
+                    {
+                        nearby.extend_from_slice(&buckets[band_row * across + band_column]);
+                    }
+                }
+                nearby.sort_unstable();
+                nearby.dedup();
+            }
+
+            let mut nearest = f32::MAX;
+            for index in &nearby {
+                nearest = nearest.min(segments[*index as usize].distance_squared(x, y));
+            }
+            let distance = nearest.sqrt();
+
+            let mut winding = 0;
+            for (at, turn) in &crossings {
+                if *at > x {
+                    winding += turn;
+                }
+            }
+
+            // Negative inside, positive outside, then folded into the byte the
+            // shader thresholds: zero is deep inside a stroke and one is
+            // further out than the spread reaches.
+            let signed = if winding != 0 { -distance } else { distance };
+            let unit = (signed + spread) / (spread * 2.0);
+            data.push((unit.clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+    }
+
     Some(FieldImage {
-        left: 0,
-        top: 0,
-        width: padded_width,
-        height: padded_height,
-        data,
+        left,
+        top,
+        width,
+        height,
+        data: Rc::new(data),
     })
 }
 
@@ -75,8 +303,12 @@ pub(crate) fn glyph_field(alpha: &[u8], width: u32, height: u32) -> Option<Field
 /// `left` and `top` are the reference-size placement of the *padded* box, so
 /// scaling them by the size being drawn gives the quad directly.
 pub(crate) struct FieldImage {
-    pub(crate) left: i32,
-    pub(crate) top: i32,
+    /// Where the box sits relative to the pen, in reference pixels.
+    ///
+    /// Fractional, and it matters: this is what the quad is placed from, and
+    /// rounding it here is rounding the letter's position on screen.
+    pub(crate) left: f32,
+    pub(crate) top: f32,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) data: Rc<Vec<u8>>,

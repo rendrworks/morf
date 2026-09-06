@@ -4,7 +4,7 @@ use morf_render::{RenderEngine, WgpuBackend};
 use morf_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, SurfaceRole, physical_size};
 use std::sync::mpsc;
 
-use crate::{lock::*, paint::*, services::*, surface_layers::*, surface_touch::*, surfaces::*};
+use crate::{backdrop::*, capture::*, lock::*, paint::*, surface_layers::*, surface_touch::*, surfaces::*};
 
 pub(crate) fn handle_surface_event(
     runtime: &mut Runtime,
@@ -16,21 +16,34 @@ pub(crate) fn handle_surface_event(
     name: &str,
 ) -> Result<bool, String> {
     let mut repaint = false;
+    // Captures first: they are the events that need the renderer and the
+    // client at once, and they are handled where the rest of capture lives.
+    let event = match handle_capture_event(runtime, renderer, client, event) {
+        Ok(repaint) => return Ok(repaint),
+        Err(event) => event,
+    };
     match event {
         LayerEvent::Configure { id, .. } | LayerEvent::Scale { id, .. } if id == PRIMARY_LAYER => {
             let (width, height) = client.physical_size();
-            renderer.backend_mut().resize(width, height);
+            renderer.resize(width, height);
             for surface in state
                 .popup_surfaces
                 .values_mut()
                 .chain(state.floating_surfaces.values_mut())
             {
                 if let Some(renderer) = &mut surface.renderer {
+                    // Still the layer's scale here, as a fallback: a compositor
+                    // with no fractional-scale protocol never sends `AuxScale`,
+                    // and these surfaces would otherwise never be resized at
+                    // all. Where it does, `AuxScale` arrives too and corrects
+                    // this with the surface's own.
                     let (width, height) =
                         physical_size((surface.width, surface.height), client.scale_120());
-                    renderer.backend_mut().resize(width, height);
+                    renderer.resize(width, height);
                 }
             }
+            // The opaque region is a size, so it follows the new one.
+            apply_primary_opaque(runtime, client);
             repaint = true;
         }
         LayerEvent::Configure { id, width, height } => {
@@ -51,7 +64,11 @@ pub(crate) fn handle_surface_event(
             if !delta.is_zero() {
                 state.refresh = delta;
             }
-            let advanced = frame.active || frame.changed > 0;
+            // A shader reading the clock is motion like any other: it makes
+            // the frame *advance*, and the pacer still decides which callbacks
+            // are painted on. Forcing a repaint outside this path would spin as
+            // fast as the event loop turns rather than at the output's rate.
+            let advanced = frame.active || frame.changed > 0 || state.animating_shaders;
             if advanced {
                 // A surface that cannot paint inside one refresh paints on
                 // every second callback instead, and keeps that cadence rather
@@ -86,15 +103,19 @@ pub(crate) fn handle_surface_event(
             return Err("layer surface was closed".to_owned());
         }
         LayerEvent::Closed { id } => layer_surface_closed(runtime, client, state, id),
-        LayerEvent::Idle { timeout_ms, idle } => {
-            repaint |= runtime.dispatch_idle(timeout_ms, idle);
+        LayerEvent::Idle {
+            timeout_ms,
+            input_only,
+            idle,
+        } => {
+            repaint |= runtime.dispatch_idle(timeout_ms, input_only, idle);
         }
         LayerEvent::Clipboard { text } => {
             repaint |= runtime.dispatch_clipboard(text);
         }
-        LayerEvent::Screencopy { request_id, result } => {
-            repaint |= dispatch_screencopy(runtime, request_id, result);
-        }
+        LayerEvent::KeyboardFocus { active } => repaint |= runtime.dispatch_keyboard_focus(active),
+        // Already taken above; named so a new event cannot slip past unmatched.
+        LayerEvent::Screencopy { .. } | LayerEvent::CaptureOffer { .. } => {}
         LayerEvent::InputMethod(state) => {
             repaint |= runtime.dispatch_input_method(
                 state.active,
@@ -117,6 +138,9 @@ pub(crate) fn handle_surface_event(
             );
         }
         LayerEvent::PointerMotion { surface, x, y } => {
+            if surface == SurfaceRole::Layer(BACKDROP_LAYER) {
+                client.set_cursor_shape("default");
+            }
             let Some(hit_layout) = surface_layout(
                 surface,
                 &state.layout,
@@ -146,6 +170,7 @@ pub(crate) fn handle_surface_event(
                 }
             }
             state.hovered = next_hovered;
+            crate::pointer_cursor::hover_changed(runtime, client, entered, left);
             if let Some(hit) = hit {
                 repaint |= runtime.dispatch_pointer(
                     hit.node,
@@ -222,6 +247,9 @@ pub(crate) fn handle_surface_event(
                     (horizontal_steps, vertical_steps),
                 );
             }
+        }
+        LayerEvent::PointerButton { surface: SurfaceRole::Layer(BACKDROP_LAYER), pressed: true, .. } => {
+            repaint |= runtime.dispatch_backdrop_click();
         }
         LayerEvent::PointerButton {
             surface,
@@ -357,12 +385,12 @@ pub(crate) fn handle_surface_event(
                 let initial = surface.renderer.is_none();
                 surface.width = width.max(1);
                 surface.height = height.max(1);
-                let (physical_width, physical_height) =
-                    physical_size((surface.width, surface.height), client.scale_120());
+                let (physical_width, physical_height) = physical_size(
+                    (surface.width, surface.height),
+                    client.surface_scale_120(SurfaceRole::Popup(id)),
+                );
                 if let Some(renderer) = &mut surface.renderer {
-                    renderer
-                        .backend_mut()
-                        .resize(physical_width, physical_height);
+                    renderer.resize(physical_width, physical_height);
                 } else {
                     let target = client
                         .popup_window_target(id)
@@ -378,6 +406,25 @@ pub(crate) fn handle_surface_event(
                 if initial || surface.updates_enabled {
                     paint_popup_surface(runtime, client, surface)?;
                 }
+            }
+        }
+        LayerEvent::ShortcutsInhibited { active } => {
+            repaint |= runtime.dispatch_shortcuts_inhibited(active);
+        }
+        LayerEvent::AuxScale { role, scale_120 } => {
+            // A popup on a 2x screen opened from a bar on a 1x one used to be
+            // rendered at the bar's scale and stretched. It has its own now.
+            let surface = match role {
+                SurfaceRole::Popup(id) => state.popup_surfaces.get_mut(&id),
+                SurfaceRole::Floating(id) => state.floating_surfaces.get_mut(&id),
+                SurfaceRole::Layer(_) => None,
+            };
+            if let Some(surface) = surface
+                && let Some(renderer) = &mut surface.renderer
+            {
+                let (width, height) = physical_size((surface.width, surface.height), scale_120);
+                renderer.resize(width, height);
+                repaint = true;
             }
         }
         LayerEvent::PopupFrame { id, .. } => {
@@ -399,12 +446,12 @@ pub(crate) fn handle_surface_event(
                 let initial = surface.renderer.is_none();
                 surface.width = width.max(1);
                 surface.height = height.max(1);
-                let (physical_width, physical_height) =
-                    physical_size((surface.width, surface.height), client.scale_120());
+                let (physical_width, physical_height) = physical_size(
+                    (surface.width, surface.height),
+                    client.surface_scale_120(SurfaceRole::Floating(id)),
+                );
                 if let Some(renderer) = &mut surface.renderer {
-                    renderer
-                        .backend_mut()
-                        .resize(physical_width, physical_height);
+                    renderer.resize(physical_width, physical_height);
                 } else {
                     let target = client
                         .floating_window_target(id)

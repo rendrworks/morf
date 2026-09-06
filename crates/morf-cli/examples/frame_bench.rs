@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use morf_layout::{Layout, Size, TextMeasurer, TextOptions};
 use morf_lua::{Limits, Runtime, Screen};
-use morf_render::DrawList;
+use morf_render::{DrawList, RenderEngine, ShaderRegistration, WgpuBackend};
 use morf_scene::{Element, NodeHandle};
 
 /// Text measured by a rule rather than a font stack.
@@ -71,19 +71,22 @@ fn main() {
         eprintln!("usage: frame_bench <config.lua> [width] [height]");
         std::process::exit(2);
     };
-    let width: f64 = std::env::args()
-        .nth(2)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(3456.0);
-    let height: f64 = std::env::args()
-        .nth(3)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(2160.0);
+    // `frame_bench config.lua gpu [WxH] [out.png]`: in GPU mode the size rides
+    // in one argument, so the picture can be of a phone as easily as this screen.
+    let args: Vec<String> = std::env::args().collect();
+    let gpu_size = args
+        .get(3)
+        .filter(|_| args.get(2).map(String::as_str) == Some("gpu"))
+        .and_then(|value| value.split_once('x'))
+        .and_then(|(w, h)| Some((w.parse::<f64>().ok()?, h.parse::<f64>().ok()?)));
+    let argument = |index: usize, fallback: f64| {
+        args.get(index)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(fallback)
+    };
+    let width: f64 = gpu_size.map_or_else(|| argument(2, 3456.0), |size| size.0);
+    let height: f64 = gpu_size.map_or_else(|| argument(3, 2160.0), |size| size.1);
 
-    // A screen, not the default screenless runtime. The documented way to
-    // write a configuration is `morf.variants(morf.screens, …)`, which builds
-    // nothing at all when there are no screens — so a benchmark that skipped
-    // this could not open the configurations most worth benchmarking.
     let mut runtime = Runtime::for_screen(
         Limits::default(),
         Screen {
@@ -96,6 +99,12 @@ fn main() {
     );
     if let Some(parent) = PathBuf::from(&config).parent() {
         runtime.set_module_roots(vec![parent.to_path_buf()]);
+        // The same root the shell gives a configuration, and for the same
+        // reason: `core.shell_path` is how a configuration names a file beside
+        // itself. Leaving it at the default made this bench resolve those paths
+        // against the working directory instead, so a configuration could pass
+        // every gate here and find nothing at all when the shell ran it.
+        runtime.set_shell_root(parent.to_path_buf());
     }
     let source = std::fs::read(&config).expect("configuration is readable");
     if let Err(error) = runtime.execute(&config, &source) {
@@ -217,16 +226,71 @@ fn main() {
         );
     });
 
-    let scene = runtime.scene();
-    let root = scene.roots()[0];
-    let mut nodes = 0usize;
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        nodes += 1;
-        stack.extend(scene.children(node).expect("live node").iter().copied());
-    }
+    let root = runtime.scene().roots()[0];
     let size = Size { width, height };
-    let computed = Layout::compute(&scene, root, size, &mut RuledText).expect("layout");
+    let layout = |runtime: &Runtime| {
+        Layout::compute(&runtime.scene(), root, size, &mut RuledText).expect("layout")
+    };
+    let mut computed = layout(&runtime);
+    // A binding on `layout_height` hears about a frame only after it.
+    while runtime.observe_layout(&computed) {
+        computed = layout(&runtime);
+    }
+    // `gpu` renders one frame on a real adapter instead of timing anything: a
+    // shader the driver refuses looks fine from the CPU side, and the only way
+    // to find out is to build the pipelines and draw, headless.
+    if std::env::args().nth(2).as_deref() == Some("gpu") {
+        let backend = pollster::block_on(WgpuBackend::new(width as u32, height as u32))
+            .expect("a GPU adapter");
+        let mut engine = RenderEngine::new(backend);
+        let mut shaders = 0usize;
+        for shader in runtime.shaders() {
+            engine
+                .backend_mut()
+                .register_shader(ShaderRegistration {
+                    program: shader.program,
+                    wgsl: Some(&shader.wgsl),
+                    vertex: shader.vertex.as_deref(),
+                    offsets: &shader.offsets,
+                    uniform_size: shader.uniform_size,
+                    owns_coverage: shader.owns_coverage,
+                    effect: shader.samples_behind,
+                    textures: &shader.textures,
+                    data: &shader.data,
+                })
+                .unwrap_or_else(|error| panic!("{config}: shader pipeline: {error}"));
+            shaders += 1;
+        }
+        // Twice: the second frame takes the incremental path and reuses an
+        // effect layer's target. `FRAME_BENCH_GPU_FRAMES` draws more, each
+        // moved on so none is skipped, for timing the GPU (`MORF_GPU_WAIT=1`).
+        let frames: usize =
+            std::env::var("FRAME_BENCH_GPU_FRAMES").map_or(2, |value| value.parse().unwrap_or(2));
+        for _ in 0..frames.max(2) {
+            if frames > 2 {
+                let _ = runtime.tick_animations(Duration::from_millis(16));
+                computed = layout(&runtime);
+            }
+            engine
+                .render(&runtime.scene(), &computed, 120, |_| {})
+                .unwrap_or_else(|error| panic!("{config}: render: {error}"));
+        }
+        println!("{config}");
+        println!("  {shaders} shader(s) built and one frame drawn on the GPU");
+        // A fourth argument names a PNG to write the frame to. Every gate in
+        // this repository can pass while a shader is visibly wrong, and the
+        // only way to find that out is to look at what it drew.
+        if let Some(path) = args.get(if gpu_size.is_some() { 4 } else { 3 }) {
+            let pixels = engine.backend_mut().read_pixels();
+            image::RgbaImage::from_raw(width as u32, height as u32, pixels)
+                .expect("the readback is the size of the target")
+                .save(&path)
+                .expect("the image is written");
+            println!("  written to {path}");
+        }
+        return;
+    }
+    let scene = runtime.scene();
 
     // Layout reads about a dozen properties per node, so this is the floor the
     // rest of the pass is built on.
@@ -276,9 +340,141 @@ fn main() {
         std::hint::black_box(computed.input_geometry(&scene).expect("input geometry"));
     });
 
+    // Shaders are counted because the way they fail is silent. A material
+    // shader that never reached a command, or an effect whose layer holds
+    // nothing to sample, renders as a configuration that simply ignored it —
+    // and the only place that is visible without a GPU is here.
+    let shaded = DrawList::from_scene(&scene, &computed).expect("draw list");
+    let material = shaded
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                morf_render::DrawCommand::Field {
+                    shader: Some(_),
+                    ..
+                } | morf_render::DrawCommand::Quad {
+                    shader: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    // What an effect layer holds *other than the node carrying it*. A rectangle
+    // laid over its siblings still draws its own quad, so counting commands
+    // would say 1 and mean nothing; the question is whether any content came
+    // with it.
+    let effects: Vec<usize> = shaded
+        .layers
+        .iter()
+        .filter(|layer| layer.shader.is_some())
+        .map(|layer| {
+            shaded.commands[layer.commands.clone()]
+                .iter()
+                .filter(|command| command.node() != layer.node)
+                .count()
+        })
+        .collect();
+
+    // Nodes asking the compositor to blur behind them. Reported because the
+    // failure is silent from up here: the region is derived on the CPU and
+    // handed to the compositor, so a configuration that never sets the property
+    // and one whose compositor ignores it look exactly alike on screen.
+    let backdrop_shapes = computed.backdrop_geometry(&scene).unwrap_or_default();
+    let backdrops = backdrop_shapes.len();
+    // How many rectangles the region rasterises to, which is the only way to
+    // see the shape from here: a square is one, and a circle is one span per
+    // scanline. A blur region that came out as a box when a circle was asked
+    // for looks identical from every other angle.
+    let backdrop_rects = if backdrop_shapes.is_empty() {
+        0
+    } else {
+        let shapes: Vec<morf_region::Region> = backdrop_shapes
+            .iter()
+            .map(|(geometry, radii)| morf_region::Region {
+                rect: morf_region::Rect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii: *radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..morf_region::Region::default()
+            })
+            .collect();
+        morf_region::build_scaled(
+            width as u32,
+            height as u32,
+            &shapes,
+            morf_region::COVERED_EDGE_GRID,
+        )
+        .map(|rects| rects.len())
+        .unwrap_or(0)
+    };
+    // Rasterising a blur region is CPU work, done per surface per frame, and it
+    // scales with the surface — so on a full-screen overlay it is one of the
+    // largest single costs in the frame and none of the other numbers here
+    // would show it.
+    let backdrop_cost = if backdrop_shapes.is_empty() {
+        Duration::ZERO
+    } else {
+        let shapes: Vec<morf_region::Region> = backdrop_shapes
+            .iter()
+            .map(|(geometry, radii)| morf_region::Region {
+                rect: morf_region::Rect {
+                    x: geometry.x.floor() as i32,
+                    y: geometry.y.floor() as i32,
+                    width: (geometry.width.ceil() as i32).max(0),
+                    height: (geometry.height.ceil() as i32).max(0),
+                },
+                shape: morf_region::Shape::Box,
+                params: morf_region::ShapeParams {
+                    radii: *radii,
+                    ..morf_region::ShapeParams::default()
+                },
+                ..morf_region::Region::default()
+            })
+            .collect();
+        best(5, 20, || {
+            std::hint::black_box(
+                morf_region::build_scaled(
+                    width as u32,
+                    height as u32,
+                    &shapes,
+                    morf_region::COVERED_EDGE_GRID,
+                )
+                .ok(),
+            );
+        })
+    };
+
     let frame = layout + draw + region;
     println!("{config}");
+    let nodes = all.len();
     println!("  scene nodes        {nodes}");
+    if backdrops > 0 {
+        println!(
+            "  backdrop regions   {backdrops}  ({backdrop_rects} rectangles, {backdrop_cost:?} to rasterise)"
+        );
+    }
+    if material > 0 || !effects.is_empty() {
+        println!("  shaded commands    {material}");
+        for covered in &effects {
+            println!(
+                "  effect layer       {covered} command(s) to sample{}",
+                if *covered == 0 {
+                    "  <-- wraps nothing, so it will sample an empty target"
+                } else {
+                    ""
+                },
+            );
+        }
+    }
     println!(
         "  DrawCommand size   {} bytes  ({} KiB for this scene)",
         std::mem::size_of::<morf_render::DrawCommand>(),

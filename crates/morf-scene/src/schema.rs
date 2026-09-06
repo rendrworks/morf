@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{animation::*, types::*};
 
+pub(crate) use crate::coerce::coerce;
+
 pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
     let mut properties = vec![
         number("x", 0.0),
@@ -17,6 +19,12 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         color("color_overlay", Color::rgba8(0, 0, 0, 0)),
         number("z", 0.0),
         boolean("clip", element == Element::ClipRect),
+        // Whether the compositor should blur what is behind this node.
+        //
+        // On every element rather than only the drawn ones, because what it
+        // marks is an area of the surface, not a way of painting: an `Item`
+        // wrapping a panel is often the honest place to say it.
+        boolean("backdrop_blur", false),
         number("rotation", 0.0),
         number("scale", 1.0),
         number("scale_x", 1.0),
@@ -34,7 +42,9 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         any("layout", Value::Map(BTreeMap::new())),
     ];
     match element {
-        Element::Item => {}
+        // Nothing of its own to paint, but a colour for the text beneath it
+        // to inherit.
+        Element::Item => properties.push(any("color", Value::Nil)),
         Element::Inset => properties.extend([
             number("margin", 0.0),
             number("extra_margin", 0.0),
@@ -61,6 +71,8 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 "accepted_buttons",
                 Value::List(vec![Value::String("left".to_owned())]),
             ));
+            // The pointer's shape while it is over this area.
+            properties.push(string("cursor", "default"));
         }
         Element::Flickable => {
             properties.extend([
@@ -75,17 +87,7 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         Element::Rect | Element::ClipRect => {
             properties.extend([
                 color("color", Color::rgba8(255, 255, 255, 255)),
-                string("gradient_type", "none"),
-                color("gradient_start_color", Color::rgba8(255, 255, 255, 255)),
-                color("gradient_end_color", Color::rgba8(0, 0, 0, 255)),
-                number("gradient_start_x", 0.0),
-                number("gradient_start_y", 0.0),
-                number("gradient_end_x", 1.0),
-                number("gradient_end_y", 0.0),
-                number("gradient_center_x", 0.5),
-                number("gradient_center_y", 0.5),
-                number("gradient_radius", 0.5),
-                number("gradient_angle", 0.0),
+                any("gradient", Value::Map(BTreeMap::new())),
                 number("radius", 0.0),
                 number("top_left_radius", -1.0),
                 number("top_right_radius", -1.0),
@@ -118,8 +120,19 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 number("font_weight", 400.0),
                 string("font_family", "sans-serif"),
                 string("font_source", ""),
+                // A multiple of the font size, or a `px` size as a string.
+                any("line_height", Value::Number(1.2)),
+                number("letter_spacing", 0.0),
+                number("word_spacing", 0.0),
+                string("font_style", "normal"),
+                string("font_stretch", "normal"),
+                // `{ line, thickness, offset, color }`; empty is none.
+                any("decoration", Value::Map(BTreeMap::new())),
                 boolean("wrap", false),
                 string("elide", "none"),
+                // Wrapped text stops after this many lines, the last one
+                // elided. Zero is no limit.
+                number("max_lines", 0.0),
                 string("horizontal_alignment", "left"),
                 string("vertical_alignment", "top"),
                 // Glyphs are distance fields, so the edge is a threshold rather
@@ -131,6 +144,15 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 number("softness", 0.0),
                 number("outline_width", 0.0),
                 color("outline_color", Color::rgba8(0, 0, 0, 0)),
+                // The text this one turns into, and how far along it is.
+                //
+                // Not a crossfade between two labels: the glyphs are distance
+                // fields, so the two are interpolated as fields and thresholded
+                // once, and the outline travels from one letter's shape to the
+                // other's through shapes that belong to neither. Glyphs pair up
+                // by position, and one with nothing opposite it dissolves.
+                string("morph_to", ""),
+                number("morph_progress", 0.0),
             ]);
         }
         Element::Image => {
@@ -192,17 +214,7 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 // rectangle had its own pipeline and a composed shape did not.
                 // One pipeline draws both now, so a star can carry a gradient
                 // and a shadow like anything else.
-                string("gradient_type", "none"),
-                color("gradient_start_color", Color::rgba8(255, 255, 255, 255)),
-                color("gradient_end_color", Color::rgba8(0, 0, 0, 255)),
-                number("gradient_start_x", 0.0),
-                number("gradient_start_y", 0.0),
-                number("gradient_end_x", 1.0),
-                number("gradient_end_y", 0.0),
-                number("gradient_center_x", 0.5),
-                number("gradient_center_y", 0.5),
-                number("gradient_radius", 0.5),
-                number("gradient_angle", 0.0),
+                any("gradient", Value::Map(BTreeMap::new())),
                 color("shadow_color", Color::rgba8(0, 0, 0, 0)),
                 number("shadow_blur", 0.0),
                 number("shadow_spread", 0.0),
@@ -219,6 +231,36 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
         Element::SdfShape => {
             properties.extend([
                 string("shape", "circle"),
+                // A letter, as a shape in the composition rather than as text
+                // drawn beside it. Naming one makes this layer that letter's
+                // outline, which then unions, subtracts and morphs with a
+                // circle by the same arithmetic a circle does — so a numeral
+                // cut out of a disc is a subtraction, and the disc becoming a
+                // square while the numeral becomes another is one animation.
+                //
+                // `glyph_morph_to` names the letter it turns into, walked at
+                // `morph_progress` alongside whatever the shapes are doing.
+                string("glyph", ""),
+                string("glyph_morph_to", ""),
+                // A drawing, on exactly the same terms. An SVG is a set of
+                // closed curves and so is a letter, so naming a file here makes
+                // this layer that drawing's outline — which then unions,
+                // subtracts and morphs like every other shape, including into a
+                // letter or a circle. Nothing is rasterised on the way: a
+                // picture of a shape has pixels rather than points, and there is
+                // nothing in a picture to walk onto anything else.
+                //
+                // `source_morph_to` names the drawing it turns into, walked at
+                // `morph_progress` beside whatever the shapes are doing.
+                string("source", ""),
+                string("source_morph_to", ""),
+                // Which face the letter is cut from, and which the letter it
+                // turns into is cut from. Empty means the same face, which is
+                // the ordinary case; naming a second one morphs across faces,
+                // since matching two outlines is geometry and does not care
+                // which font either of them came out of.
+                string("font_family", "sans-serif"),
+                string("font_family_morph_to", ""),
                 // The layer's own fill. Fully transparent means "take the
                 // field's", which is what keeps a single-colour composition
                 // from having to repeat itself on every layer.
@@ -252,14 +294,45 @@ pub(crate) fn schema(element: Element) -> Vec<PropertySpec> {
                 number("angle", 90.0),
             ]);
         }
-        Element::Row | Element::Column | Element::RowLayout | Element::ColumnLayout => {
-            properties.push(number("spacing", 0.0));
+        Element::Row | Element::Column => {
+            properties.extend([
+                // One vocabulary for every packing container: `gap` between
+                // children, `align` across the packed axis, `justify` along it.
+                number("gap", 0.0),
+                string("align", "start"),
+                string("justify", "start"),
+            ]);
         }
-        Element::Grid | Element::GridLayout => {
+        Element::Grid => {
             properties.extend([
                 number("columns", 1.0),
-                number("row_spacing", 0.0),
-                number("column_spacing", 0.0),
+                number("gap", 0.0),
+                number("row_gap", 0.0),
+                number("column_gap", 0.0),
+                // Track lists turn a fixed-column grid into a CSS one:
+                // `{ "1fr", "auto", 40, { min = 40, max = "1fr" },
+                // "repeat(2, 1fr)" }`. Children then place themselves with
+                // `layout.column`, `layout.row` and the spans.
+                any("template_columns", Value::List(Vec::new())),
+                any("template_rows", Value::List(Vec::new())),
+                string("align", "stretch"),
+                string("justify", "start"),
+            ]);
+        }
+        Element::Custom => {}
+        Element::Flex => {
+            properties.extend([
+                string("direction", "row"),
+                boolean("wrap", false),
+                number("gap", 0.0),
+                number("padding", 0.0),
+                // `align` is across the direction, `justify` along it, and
+                // `align_content` is how wrapped lines share the cross axis.
+                // A layout stretches by default, as CSS does; a positioner
+                // (`Row`, `Column`) leaves children their own size.
+                string("align", "stretch"),
+                string("justify", "start"),
+                string("align_content", "stretch"),
             ]);
         }
     }
@@ -304,34 +377,4 @@ pub(crate) fn color(name: &'static str, default: Color) -> PropertySpec {
         kind: PropertyType::Color,
         default: Value::Color(default),
     }
-}
-
-pub(crate) fn coerce(
-    element: Element,
-    property: &str,
-    kind: PropertyType,
-    value: Value,
-) -> Result<Value, SceneError> {
-    let converted = match (kind, value) {
-        (PropertyType::Any, value) => Some(value),
-        (PropertyType::Bool, Value::Bool(value)) => Some(Value::Bool(value)),
-        (PropertyType::Number, Value::Number(value)) if value.is_finite() => {
-            Some(Value::Number(value))
-        }
-        (PropertyType::String, Value::String(value)) => Some(Value::String(value)),
-        (PropertyType::Color, Value::Color(value)) => Some(Value::Color(value)),
-        (PropertyType::Color, Value::String(value)) => Color::parse(&value).map(Value::Color),
-        _ => None,
-    };
-    converted.ok_or_else(|| SceneError::InvalidPropertyType {
-        element: element.name(),
-        property: property.to_owned(),
-        expected: match kind {
-            PropertyType::Any => "value",
-            PropertyType::Bool => "boolean",
-            PropertyType::Number => "finite number",
-            PropertyType::String => "string",
-            PropertyType::Color => "color",
-        },
-    })
 }

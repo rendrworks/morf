@@ -19,11 +19,13 @@ morf.surface.height = H
 morf.surface.anchors = { top = true, left = true }
 morf.surface.keyboard_focus = "none"
 
-local INK = "#0e1213"
-local PANEL = "#141a1c"
-local ACCENT = "#b4e1ea"
-local WARM = "#f0b47a"
-local MUTED = "#6a8389"
+local theme = morf.theme {
+  ink = "#0e1213",
+  panel = "#141a1c",
+  accent = "#b4e1ea",
+  warm = "#f0b47a",
+  muted = "#6a8389",
+}
 
 -- One number for every panel, so they move in step and the comparison is fair.
 local open = morf.signal("compound.open", 0)
@@ -38,17 +40,17 @@ local function panel(x, title, caption, body)
     y = 0,
     width = 220,
     height = H,
-    ui.Rect { x = 6, y = 6, width = 208, height = 244, radius = 16, color = PANEL },
+    ui.Rect { x = 6, y = 6, width = 208, height = 244, radius = 16, color = theme.panel },
     body,
-    ui.Text { x = 24, y = 214, width = 180, text = title, font_size = 16, color = ACCENT },
+    ui.Text { x = 24, y = 214, width = 180, text = title, font_size = 16, color = theme.accent },
     ui.Text {
       x = 24,
       y = 240,
       width = 180,
       text = caption,
       font_size = 11,
-      wrap = true,
-      color = MUTED,
+      wrap = true, line_height = 1.4,
+      color = theme.muted,
     },
   }
 end
@@ -59,7 +61,7 @@ end
 -- all change family together without any of them naming a position.
 local together = ui.Sdf {
   x = 6, y = 20, width = 208, height = 180,
-  fill_color = ACCENT,
+  fill_color = theme.accent,
   blend = 10,
   morph_progress = function() return t() end,
   behavior = { morph_progress = SWING },
@@ -85,7 +87,7 @@ local together = ui.Sdf {
 -- star holds still while everything around it moves.
 local partial = ui.Sdf {
   x = 6, y = 20, width = 208, height = 180,
-  fill_color = WARM,
+  fill_color = theme.warm,
   blend = 14,
   morph_progress = function() return t() end,
   behavior = { morph_progress = SWING },
@@ -123,7 +125,7 @@ local badge_label = ui.Text {
   font_size = lerp(52, 8),
   font_weight = 900,
   horizontal_alignment = "center",
-  color = INK,
+  color = theme.ink,
   -- Gone well before the pill has finished closing, so the numeral never looks
   -- squeezed by the shape shrinking around it.
   opacity = function() return math.max(0, 1 - t() * 2.2) end,
@@ -134,7 +136,7 @@ local badge = ui.Item {
   x = 6, y = 20, width = 208, height = 180,
   ui.Sdf {
     x = 0, y = 0, width = 208, height = 180,
-    fill_color = ACCENT,
+    fill_color = theme.accent,
     morph_progress = function() return t() end,
     behavior = { morph_progress = SWING },
     badge_shape,
@@ -144,7 +146,7 @@ local badge = ui.Item {
 
 ui.Item {
   width = W, height = H,
-  ui.Rect { width = W, height = H, color = INK },
+  ui.Rect { width = W, height = H, color = theme.ink },
 
   panel(0, "Together", "one number drives every layer", together),
   panel(235, "Opt out", "the star names its own position", partial),
@@ -154,8 +156,8 @@ ui.Item {
     x = 715, y = 40, width = 210,
     text = "A compound is one animatable number. The label is not part of the field — text has no distance field, so it paints over the composition and follows the same signal with its own opacity.",
     font_size = 12,
-    wrap = true,
-    color = MUTED,
+    wrap = true, line_height = 1.4,
+    color = theme.muted,
   },
 
   ui.Timer {

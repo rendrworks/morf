@@ -1,8 +1,6 @@
 use luna::{Callback, CallbackReturn, Closure, Context, Function, Table, Value as LuaValue};
-use morf_io::Timer as IoTimer;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 use crate::{scene_bindings::*, state::*, surface_types::*, types::*};
 
@@ -14,26 +12,44 @@ pub(crate) fn install_host_service_api<'gc>(
 ) {
     let idle_state = Rc::clone(&state);
     let idle_subscribe = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (milliseconds, callback): (i64, Closure) = stack.consume(ctx)?;
+        // The third argument asks for *input* idleness: time since the person
+        // last touched anything, ignoring idle inhibitors. A media player
+        // inhibits idle so the screen stays on, and a shell that dims its own
+        // bar after a minute of no input still wants to know about the minute.
+        let (milliseconds, callback, input_only): (i64, Closure, Option<bool>) =
+            stack.consume(ctx)?;
         let milliseconds = u32::try_from(milliseconds)
             .map_err(|_| HostError("idle timeout must fit an unsigned 32-bit value".into()))?;
+        let key = (milliseconds, input_only.unwrap_or(false));
         let mut state = idle_state.borrow_mut();
         let callback_count = state.idle_callbacks.values().map(Vec::len).sum::<usize>();
         if callback_count >= 256 {
             return Err(HostError("idle callback limit reached".into()).into());
         }
-        if !state.idle_callbacks.contains_key(&milliseconds) && state.idle_callbacks.len() >= 64 {
+        if !state.idle_callbacks.contains_key(&key) && state.idle_callbacks.len() >= 64 {
             return Err(HostError("idle timeout limit reached".into()).into());
         }
         state
             .idle_callbacks
-            .entry(milliseconds)
+            .entry(key)
             .or_default()
             .push(ctx.stash(callback));
         Ok(CallbackReturn::Return)
     });
+    let inhibit_state = Rc::clone(&state);
+    // The other direction from `subscribe`: not "tell me when the session goes
+    // idle" but "do not let it". A video player, a presentation, a long copy —
+    // each wants the screen to stay awake while nobody touches the input.
+    let idle_inhibit = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let inhibited: bool = stack.consume(ctx)?;
+        let mut state = inhibit_state.borrow_mut();
+        state.idle_inhibited = inhibited;
+        state.idle_inhibit_changed = true;
+        Ok(CallbackReturn::Return)
+    });
     let idle = Table::new(&ctx);
     idle.set_field(ctx, "subscribe", idle_subscribe);
+    idle.set_field(ctx, "inhibit", idle_inhibit);
     morf.set_field(ctx, "idle", idle);
     let output_power_state = Rc::clone(&state);
     let output_power_set = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
@@ -80,24 +96,34 @@ pub(crate) fn install_host_service_api<'gc>(
     clipboard.set_field(ctx, "set", clipboard_set);
     clipboard.set_field(ctx, "subscribe", clipboard_subscribe);
     morf.set_field(ctx, "clipboard", clipboard);
-    let screencopy_state = Rc::clone(&state);
-    let screencopy_capture = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (include_cursor, callback): (bool, Closure) = stack.consume(ctx)?;
-        let mut state = screencopy_state.borrow_mut();
-        if state.screencopy_callbacks.len() >= 4 {
-            return Err(HostError("screencopy request limit reached".into()).into());
+    // `morf.on_keyboard_focus(function(active) end)`: the keyboard came to
+    // the shell's surface, or left it. With `keyboard_focus = "on_demand"`
+    // a click anywhere else is what takes it away.
+    let keyboard_focus_state = Rc::clone(&state);
+    let on_keyboard_focus = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let callback: Closure = stack.consume(ctx)?;
+        let mut state = keyboard_focus_state.borrow_mut();
+        if state.keyboard_focus_callbacks.len() >= 64 {
+            return Err(HostError("keyboard focus callback limit reached".into()).into());
         }
-        let id = state.next_screencopy;
-        state.next_screencopy = state.next_screencopy.wrapping_add(1);
-        state
-            .screencopy_requests
-            .push(ScreencopyRequest { id, include_cursor });
-        state.screencopy_callbacks.insert(id, ctx.stash(callback));
+        state.keyboard_focus_callbacks.push(ctx.stash(callback));
         Ok(CallbackReturn::Return)
     });
-    let screencopy = Table::new(&ctx);
-    screencopy.set_field(ctx, "capture", screencopy_capture);
-    morf.set_field(ctx, "screencopy", screencopy);
+    morf.set_field(ctx, "on_keyboard_focus", on_keyboard_focus);
+    // `morf.on_backdrop_click(function() end)`: a click anywhere on the
+    // output but the shell's surface, while `morf.surface.backdrop` is true.
+    let backdrop_state = Rc::clone(&state);
+    let on_backdrop_click = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let callback: Closure = stack.consume(ctx)?;
+        let mut state = backdrop_state.borrow_mut();
+        if state.backdrop_callbacks.len() >= 64 {
+            return Err(HostError("backdrop callback limit reached".into()).into());
+        }
+        state.backdrop_callbacks.push(ctx.stash(callback));
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "on_backdrop_click", on_backdrop_click);
+    crate::api_screencopy::install_screencopy_api(ctx, Rc::clone(&state), morf);
     let virtual_key_state = Rc::clone(&state);
     let virtual_key = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
         let (keycode, pressed): (i64, bool) = stack.consume(ctx)?;
@@ -287,30 +313,7 @@ pub(crate) fn install_host_service_api<'gc>(
     text_input.set_field(ctx, "content_type", text_input_content);
     text_input.set_field(ctx, "cursor_rect", text_input_rect);
     morf.set_field(ctx, "text_input", text_input);
-    let timer_state = Rc::clone(&state);
-    let timer = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let (milliseconds, callback, repeat): (f64, Closure, LuaValue) = stack.consume(ctx)?;
-        if !milliseconds.is_finite() || milliseconds <= 0.0 {
-            return Err(HostError("timer interval must be finite and positive".into()).into());
-        }
-        let repeat = match repeat {
-            LuaValue::Nil => true,
-            LuaValue::Boolean(value) => value,
-            _ => return Err(HostError("timer repeat must be boolean".into()).into()),
-        };
-        let timer = IoTimer::every(Duration::from_secs_f64(milliseconds / 1_000.0))
-            .map_err(|error| HostError(error.to_string()))?;
-        let interval = Duration::from_secs_f64(milliseconds / 1_000.0);
-        timer_state.borrow_mut().timers.push(PendingTimer {
-            timer,
-            callback: ctx.stash(callback),
-            repeat,
-            interval,
-            node: None,
-        });
-        Ok(CallbackReturn::Return)
-    });
-    morf.set_field(ctx, "timer", timer);
+    crate::api_time::install_timer_api(ctx, Rc::clone(&state), morf);
     let ipc_register = Callback::from_fn(&ctx, {
         let state = Rc::clone(&state);
         move |ctx, _, mut stack| {
@@ -349,6 +352,22 @@ pub(crate) fn install_host_service_api<'gc>(
             .expect("screen table accepts integer keys");
     }
     morf.set_field(ctx, "screens", screens);
+
+    // Every window the compositor reports, filled by `Runtime::set_windows` and
+    // updated in place. Empty here rather than absent so a configuration can
+    // hold it and watch it from the first line, before any compositor has said
+    // anything — and so `#morf.windows` is a number rather than an error on a
+    // compositor that does not report them at all.
+    let windows = Table::new(&ctx);
+    morf.set_field(ctx, "windows", windows);
+    // Filled once the compositor connection is up; empty rather than absent so
+    // a configuration can index it from its first line.
+    morf.set_field(ctx, "capabilities", Table::new(&ctx));
+    crate::api_compositor::install_compositor_api(ctx, Rc::clone(&state), morf);
+
+    // Empty rather than absent, so a configuration can hold it and watch it
+    // from its first line — and so `#morf.workspaces` is a number rather than
+    // an error on a compositor that does not speak the protocol at all.
 }
 
 /// Builds the Lua table describing one output.

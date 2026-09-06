@@ -121,12 +121,23 @@ impl LayerShellHandler for LayerState {
         let Some(id) = self.layer_id(layer.wl_surface()) else {
             return;
         };
+        self.configure_shell_surface(id, configure.new_size.0, configure.new_size.1);
+    }
+}
+
+impl LayerState {
+    /// Records a configure for a primary surface, in either shell role.
+    ///
+    /// Layer-shell and xdg-shell deliver a configure through different handlers
+    /// but mean the same thing by it, so the response lives here once. A zero
+    /// or absent dimension means "you choose", which is why each falls back to
+    /// what the record already holds rather than to zero.
+    pub(crate) fn configure_shell_surface(&mut self, id: u64, width: u32, height: u32) {
         let Some(record) = self.layers.get_mut(&id) else {
             return;
         };
-        record.width = NonZeroU32::new(configure.new_size.0).map_or(record.width, NonZeroU32::get);
-        record.height =
-            NonZeroU32::new(configure.new_size.1).map_or(record.height, NonZeroU32::get);
+        record.width = NonZeroU32::new(width).map_or(record.width, NonZeroU32::get);
+        record.height = NonZeroU32::new(height).map_or(record.height, NonZeroU32::get);
         if let Some(viewport) = &record.viewport {
             viewport.set_destination(record.width as i32, record.height as i32);
         }
@@ -147,7 +158,8 @@ impl SessionLockHandler for LayerState {
         qh: &QueueHandle<Self>,
         _session_lock: SessionLock,
     ) {
-        self.lock_surfaces.clear();
+        // The surfaces were made when the lock was asked for; this fills in
+        // any output that has appeared since, without touching the rest.
         for output in self.outputs.outputs() {
             self.create_lock_surface(output, qh);
         }
@@ -230,8 +242,10 @@ impl OutputHandler for LayerState {
             && surface.scale != scale
         {
             surface.scale = scale;
+            // The scale is pending state and rides on the next frame's
+            // commit; committing it alone would be a commit without a buffer,
+            // which a lock surface is not allowed.
             surface.surface.wl_surface().set_buffer_scale(scale as i32);
-            surface.surface.wl_surface().commit();
             self.events.push_back(LayerEvent::SessionLockConfigure {
                 index,
                 width: surface.size.0,
@@ -297,6 +311,9 @@ impl PopupHandler for LayerState {
             return;
         };
         self.popups.remove(&id);
+        // The scale objects go with the surface: keeping them would leak two
+        // protocol objects per popup, and a popup is opened per click.
+        self.aux_scales.remove(&SurfaceRole::Popup(id));
         self.popup_repositions.remove(&id);
         self.events.push_back(LayerEvent::PopupDone { id });
     }
@@ -309,12 +326,17 @@ impl WindowHandler for LayerState {
         _qh: &QueueHandle<Self>,
         window: &Window,
     ) {
+        if let Some(id) = self.layer_id(window.wl_surface()) {
+            self.events.push_back(LayerEvent::Closed { id });
+            return;
+        }
         let Some(id) = self.floatings.iter().find_map(|(id, candidate)| {
             (candidate.wl_surface() == window.wl_surface()).then_some(*id)
         }) else {
             return;
         };
         self.floatings.remove(&id);
+        self.aux_scales.remove(&SurfaceRole::Floating(id));
         self.floating_sizes.remove(&id);
         self.events.push_back(LayerEvent::FloatingClose { id });
     }
@@ -327,6 +349,17 @@ impl WindowHandler for LayerState {
         configure: WindowConfigure,
         _serial: u32,
     ) {
+        // A primary surface standing in as a toplevel arrives here too, and
+        // it is not a floating window: it belongs to the layer map and wants
+        // the shared configure path.
+        if let Some(id) = self.layer_id(window.wl_surface()) {
+            self.configure_shell_surface(
+                id,
+                configure.new_size.0.map_or(0, NonZeroU32::get),
+                configure.new_size.1.map_or(0, NonZeroU32::get),
+            );
+            return;
+        }
         let Some(id) = self.floatings.iter().find_map(|(id, candidate)| {
             (candidate.wl_surface() == window.wl_surface()).then_some(*id)
         }) else {

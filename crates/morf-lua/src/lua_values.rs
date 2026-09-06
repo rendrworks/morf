@@ -29,6 +29,13 @@ pub(crate) fn desktop_entry_table<'gc>(ctx: Context<'gc>, entry: &DesktopEntry) 
     value.set_field(ctx, "generic_name", entry.generic_name.as_str());
     value.set_field(ctx, "startup_class", entry.startup_class.as_str());
     value.set_field(ctx, "no_display", entry.no_display);
+    value.set_field(ctx, "try_exec", entry.try_exec.as_str());
+    value.set_field(
+        ctx,
+        "desktop_names",
+        string_table(ctx, entry.desktop_names.clone()),
+    );
+    value.set_field(ctx, "source", entry.source.as_str());
     value.set_field(ctx, "comment", entry.comment.as_str());
     value.set_field(ctx, "icon", entry.icon.as_str());
     value.set_field(ctx, "exec", entry.exec.as_str());

@@ -28,8 +28,15 @@ pub enum IpcValue {
 /// One decoded IPC operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum IpcRequest {
-    Call { target: String, args: Vec<IpcValue> },
+    Call {
+        target: String,
+        args: Vec<IpcValue>,
+    },
     Verbs,
+    /// Who this instance is: pid, configuration path, and when it started.
+    Info,
+    /// What the compositor and GPU under each output can do.
+    Capabilities,
     Log,
     Bindings,
     Kill,
@@ -244,6 +251,7 @@ fn serve_ipc_connection(mut stream: UnixStream, requests: mpsc::Sender<IpcIncomi
         {
             break;
         }
+        crate::wake_all();
         let reply = reply_rx
             .recv_timeout(IPC_TIMEOUT)
             .unwrap_or_else(|_| IpcReply::refused("request timed out"));
@@ -296,6 +304,8 @@ pub(crate) fn encode_ipc_request(request: &IpcRequest) -> io::Result<Vec<u8>> {
             "args": args.iter().map(ipc_value_to_json).collect::<Vec<_>>(),
         }),
         IpcRequest::Verbs => serde_json::json!({ "op": "verbs" }),
+        IpcRequest::Info => serde_json::json!({ "op": "info" }),
+        IpcRequest::Capabilities => serde_json::json!({ "op": "capabilities" }),
         IpcRequest::Log => serde_json::json!({ "op": "log" }),
         IpcRequest::Bindings => serde_json::json!({ "op": "bindings" }),
         IpcRequest::Kill => serde_json::json!({ "op": "kill" }),
@@ -341,6 +351,8 @@ pub(crate) fn decode_ipc_request(bytes: &[u8]) -> io::Result<IpcRequest> {
             })
         }
         "verbs" => Ok(IpcRequest::Verbs),
+        "info" => Ok(IpcRequest::Info),
+        "capabilities" => Ok(IpcRequest::Capabilities),
         "log" => Ok(IpcRequest::Log),
         "bindings" => Ok(IpcRequest::Bindings),
         "kill" => Ok(IpcRequest::Kill),

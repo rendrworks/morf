@@ -316,6 +316,8 @@ fn compound_easing_helpers_share_one_curve_across_components() {
         0.3,
         Color::rgba8(0, 0, 0, 255),
         Color::rgba8(255, 255, 255, 255),
+        crate::ColorSpace::Srgb,
+        crate::HueDirection::Shorter,
     );
     assert!((f64::from(color.red) - eased).abs() < 1e-6);
 }

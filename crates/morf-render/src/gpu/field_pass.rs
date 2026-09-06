@@ -9,9 +9,14 @@ use super::shaders::*;
 /// The layers live in a storage buffer rather than in instance attributes: a
 /// composition of sixteen layers is far past the vertex-attribute limit, and
 /// keeping them in one buffer lets every field in a frame share it.
-pub(crate) fn create_field_pipeline(
+/// The bind group layouts every field pipeline shares.
+///
+/// Group zero is the field's own data; group one is a shader's uniforms. The
+/// second exists whether or not a pipeline has a shader, so one layout serves
+/// both and a shader pipeline is not a different kind of thing.
+pub(crate) fn create_field_layouts(
     device: &wgpu::Device,
-) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("morf field layout"),
         entries: &[
@@ -47,16 +52,82 @@ pub(crate) fn create_field_pipeline(
                 },
                 count: None,
             },
+            // The outline points polygon layers walk.
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
+    let shader_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("morf field shader layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    (layout, shader_layout)
+}
+
+/// Builds one field pipeline, optionally with a configuration's shader in it.
+///
+/// `None` back means the generated WGSL did not compile, which is a bug in the
+/// compiler rather than in the configuration — the configuration's own mistakes
+/// were caught and reported before anything reached here.
+/// What one field pipeline is built from.
+///
+/// A struct rather than eight arguments: four of them are optional bind group
+/// layouts and two are booleans, which is a call site nobody can read.
+pub(crate) struct FieldPipeline<'a> {
+    pub(crate) layout: &'a wgpu::BindGroupLayout,
+    pub(crate) shader_layout: &'a wgpu::BindGroupLayout,
+    /// The fragment shader spliced into the hook, if there is one.
+    pub(crate) user: Option<&'a str>,
+    /// Whether that shader decides its own coverage.
+    pub(crate) owns_coverage: bool,
+    /// The vertex displacement, if there is one.
+    pub(crate) vertex: Option<&'a str>,
+    pub(crate) textures: Option<&'a wgpu::BindGroupLayout>,
+    pub(crate) data: Option<&'a wgpu::BindGroupLayout>,
+}
+
+pub(crate) fn build_field_pipeline(
+    device: &wgpu::Device,
+    built: FieldPipeline<'_>,
+) -> Option<wgpu::RenderPipeline> {
+    let FieldPipeline {
+        layout,
+        shader_layout,
+        user,
+        owns_coverage,
+        vertex,
+        textures,
+        data,
+    } = built;
+    // Group two is a shader's own textures and three its data blocks, both
+    // present only when it declared any — an empty group is still a group wgpu
+    // would want filled.
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("morf field pipeline layout"),
-        bind_group_layouts: &[Some(&layout)],
+        bind_group_layouts: &[Some(layout), Some(shader_layout), textures, data],
         immediate_size: 0,
     });
+    let source = field_shader_source(include_str!("../field.wgsl"), user, owns_coverage, vertex)?;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("morf field shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source(include_str!("../field.wgsl")).into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let attributes = wgpu::vertex_attr_array![
         0 => Float32x4,
@@ -100,13 +171,23 @@ pub(crate) fn create_field_pipeline(
         multiview_mask: None,
         cache: None,
     });
-    (pipeline, layout)
+    Some(pipeline)
 }
 
 pub(crate) fn create_field_layer_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("morf field layers"),
         size: (capacity.max(1) * mem::size_of::<SdfFieldLayer>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// The outline points every polygon layer in a frame walks.
+pub(crate) fn create_field_outline_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("morf field outlines"),
+        size: (capacity.max(1) * mem::size_of::<[f32; 2]>()) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -127,6 +208,7 @@ pub(crate) fn create_field_bind_group(
     viewport: &wgpu::Buffer,
     layers: &wgpu::Buffer,
     materials: &wgpu::Buffer,
+    outlines: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("morf field bind group"),
@@ -144,6 +226,38 @@ pub(crate) fn create_field_bind_group(
                 binding: 2,
                 resource: materials.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: outlines.as_entire_binding(),
+            },
         ],
+    })
+}
+
+/// The uniform buffer one shader's parameters live in.
+pub(crate) fn create_shader_uniform_buffer(device: &wgpu::Device, size: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("morf shader uniforms"),
+        // A uniform binding has a minimum size whatever the shader declared, so
+        // a parameterless shader still gets a block rather than a zero-length
+        // buffer wgpu will refuse to bind.
+        size: u64::from(size.max(16)),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+pub(crate) fn create_shader_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("morf shader bind group"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniforms.as_entire_binding(),
+        }],
     })
 }

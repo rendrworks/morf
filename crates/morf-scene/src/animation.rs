@@ -1,10 +1,10 @@
 use animato::{Spring, Tween};
-use morf_reactive::GraphError;
-use std::error::Error as StdError;
-use std::fmt;
 use std::time::Duration;
 
-use crate::{groups::*, motion::*, types::*};
+use crate::color::{ColorSpace, HueDirection};
+use crate::{groups::*, motion_values::*, types::*};
+
+pub use crate::error::SceneError;
 
 /// Frame-pipeline work invalidated by an animated property.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,9 +88,18 @@ impl Easing {
     }
 
     /// Applies the curve once and interpolates every colour channel with it.
-    pub fn interpolate_color(self, progress: f64, start: Color, end: Color) -> Color {
+    /// A colour part way from `start` to `end`, travelling in `space`.
+    pub fn interpolate_color(
+        self,
+        progress: f64,
+        start: Color,
+        end: Color,
+        space: ColorSpace,
+        hue: HueDirection,
+    ) -> Color {
         let eased = self.value_at(progress);
-        let Value::Color(color) = interpolate(&Value::Color(start), &Value::Color(end), eased)
+        let Value::Color(color) =
+            interpolate_in(&Value::Color(start), &Value::Color(end), eased, space, hue)
         else {
             unreachable!("colour interpolation produced a non-colour value")
         };
@@ -198,6 +207,10 @@ pub struct Behavior {
     pub repeat: Repeat,
     /// Whether the interceptor animates writes at all.
     pub enabled: bool,
+    /// The space a colour travels through.
+    pub color_space: crate::color::ColorSpace,
+    /// Which way round the wheel a polar colour space goes.
+    pub hue: crate::color::HueDirection,
 }
 
 impl Default for Behavior {
@@ -209,6 +222,8 @@ impl Default for Behavior {
             delay: Duration::ZERO,
             time_scale: 1.0,
             repeat: Repeat::Once,
+            color_space: crate::color::ColorSpace::default(),
+            hue: crate::color::HueDirection::default(),
             enabled: true,
         }
     }
@@ -364,6 +379,10 @@ pub(crate) enum PhysicsAnimation {
         velocity: f64,
         limit: f64,
     },
+    /// A colour under physics: one motion per premultiplied OkLab component.
+    Color {
+        channels: Box<[PhysicsAnimation; 4]>,
+    },
 }
 
 impl PhysicsAnimation {
@@ -375,6 +394,9 @@ impl PhysicsAnimation {
             // hands this position, and the velocity below, to whatever takes
             // over — which is how a flick can be caught by a spring.
             Self::Decay { position, .. } => *position,
+            // A colour has no single number to hand over; a numeric taker of
+            // a colour's physics is not a thing that happens.
+            Self::Color { .. } => 0.0,
         }
     }
 
@@ -383,6 +405,15 @@ impl PhysicsAnimation {
             Self::Spring { motion, .. } => f64::from(motion.velocity()),
             Self::Smoothed { velocity, .. } => *velocity,
             Self::Decay { velocity, .. } => *velocity,
+            Self::Color { .. } => 0.0,
+        }
+    }
+
+    /// The velocity of each component of a colour under physics.
+    pub(crate) fn color_velocity(&self) -> [f64; 4] {
+        match self {
+            Self::Color { channels } => std::array::from_fn(|index| channels[index].velocity()),
+            _ => [0.0; 4],
         }
     }
 }
@@ -407,60 +438,4 @@ pub(crate) struct PropertySpec {
     pub(crate) name: &'static str,
     pub(crate) kind: PropertyType,
     pub(crate) default: Value,
-}
-
-/// A scene graph operation failure.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SceneError {
-    /// A node handle no longer refers to a live node.
-    StaleNode,
-    /// A node cannot become a child of itself or one of its descendants.
-    ParentCycle,
-    /// The named property is absent from the element schema.
-    UnknownProperty {
-        /// Element type receiving the assignment.
-        element: &'static str,
-        /// Rejected property name.
-        property: String,
-    },
-    /// A property value cannot be converted to its declared type.
-    InvalidPropertyType {
-        /// Element type receiving the assignment.
-        element: &'static str,
-        /// Property whose coercion failed.
-        property: String,
-        /// Required property type.
-        expected: &'static str,
-    },
-    /// The property signal graph rejected an operation.
-    Reactive(String),
-}
-
-impl fmt::Display for SceneError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::StaleNode => f.write_str("stale scene node handle"),
-            Self::ParentCycle => f.write_str("a node cannot parent itself or its ancestor"),
-            Self::UnknownProperty { element, property } => {
-                write!(f, "unknown {element} property `{property}`")
-            }
-            Self::InvalidPropertyType {
-                element,
-                property,
-                expected,
-            } => write!(
-                f,
-                "invalid {element} property `{property}`: expected {expected}"
-            ),
-            Self::Reactive(message) => write!(f, "reactive property error: {message}"),
-        }
-    }
-}
-
-impl StdError for SceneError {}
-
-impl From<GraphError> for SceneError {
-    fn from(error: GraphError) -> Self {
-        Self::Reactive(error.to_string())
-    }
 }

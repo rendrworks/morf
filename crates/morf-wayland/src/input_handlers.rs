@@ -55,6 +55,11 @@ impl SeatHandler for LayerState {
         if capability == Capability::Pointer
             && let Some(pointer) = self.pointer.take()
         {
+            if let Some(device) = self.cursor_device.take() {
+                device.destroy();
+            }
+            self.pointer_enter_serial = None;
+            self.cursor_shape_current = None;
             pointer.release();
             self.pointer_seat = None;
         }
@@ -96,10 +101,21 @@ impl PointerHandler for LayerState {
             };
             let (x, y) = event.position;
             match event.kind {
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => self
+                PointerEventKind::Enter { serial } => {
+                    // A new entry is a new serial, and the compositor has
+                    // reset the shape, so whatever was asked for is asked
+                    // again on the next hover.
+                    self.pointer_enter_serial = Some(serial);
+                    self.cursor_shape_current = None;
+                    self.events
+                        .push_back(LayerEvent::PointerMotion { surface, x, y });
+                }
+                PointerEventKind::Motion { .. } => self
                     .events
                     .push_back(LayerEvent::PointerMotion { surface, x, y }),
                 PointerEventKind::Leave { .. } => {
+                    self.pointer_enter_serial = None;
+                    self.cursor_shape_current = None;
                     self.events.push_back(LayerEvent::PointerLeave { surface });
                 }
                 PointerEventKind::Press { button, serial, .. } => {
@@ -247,6 +263,10 @@ impl KeyboardHandler for LayerState {
         _keysyms: &[Keysym],
     ) {
         self.keyboard_surface = self.surface_role(surface);
+        if self.keyboard_surface == Some(SurfaceRole::Layer(crate::PRIMARY_LAYER)) {
+            self.events
+                .push_back(LayerEvent::KeyboardFocus { active: true });
+        }
     }
 
     fn leave(
@@ -257,8 +277,13 @@ impl KeyboardHandler for LayerState {
         surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
-        if self.surface_role(surface) == self.keyboard_surface {
+        let role = self.surface_role(surface);
+        if role == self.keyboard_surface {
             self.keyboard_surface = None;
+        }
+        if role == Some(SurfaceRole::Layer(crate::PRIMARY_LAYER)) {
+            self.events
+                .push_back(LayerEvent::KeyboardFocus { active: false });
         }
     }
 

@@ -192,6 +192,10 @@ pub struct TextOptions {
     pub elide: TextElide,
     pub font_weight: f64,
     pub font_source: Option<String>,
+    /// Lines to keep when wrapping; zero keeps them all.
+    pub max_lines: usize,
+    /// Line height, spacing, slant and width.
+    pub style: crate::text_style::TextStyle,
 }
 
 impl Default for TextOptions {
@@ -203,6 +207,8 @@ impl Default for TextOptions {
             elide: TextElide::None,
             font_weight: 400.0,
             font_source: None,
+            max_lines: 0,
+            style: crate::text_style::TextStyle::default(),
         }
     }
 }

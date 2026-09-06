@@ -1,5 +1,9 @@
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
+use smithay_client_toolkit::shell::xdg::window::Window;
 use std::error::Error as StdError;
 use std::fmt;
+use wayland_client::protocol::wl_surface;
 use wayland_client::{Connection, EventQueue};
 use wayland_protocols::xdg::shell::client::xdg_toplevel;
 
@@ -135,6 +139,13 @@ pub enum SurfaceRole {
 /// Event produced by the layer-surface connection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayerEvent {
+    /// A popup or floating window's own scale changed.
+    ///
+    /// Separate from `Scale`, which is a layer surface's, because the two are
+    /// addressed differently and a caller resizes different things for each.
+    AuxScale { role: SurfaceRole, scale_120: u32 },
+    /// The compositor granted, or withdrew, the shell's hold on its shortcuts.
+    ShortcutsInhibited { active: bool },
     /// The compositor selected a logical size for one layer surface.
     Configure { id: u64, width: u32, height: u32 },
     /// One layer surface's preferred scale changed in protocol-native 120ths.
@@ -199,9 +210,41 @@ pub enum LayerEvent {
         repeat: bool,
     },
     /// A configured seat idle threshold changed state.
-    Idle { timeout_ms: u32, idle: bool },
+    Idle {
+        timeout_ms: u32,
+        /// Whether this threshold counts input only, ignoring idle inhibitors.
+        input_only: bool,
+        idle: bool,
+    },
     /// The compositor clipboard selection changed.
     Clipboard { text: Option<String> },
+    /// The keyboard came to the primary surface, or left it for elsewhere.
+    ///
+    /// With on-demand focus, a click anywhere else takes the keyboard away,
+    /// which is how a shell learns that the user has moved on without
+    /// covering the screen to hear the click.
+    KeyboardFocus { active: bool },
+    /// A capture asked for on the GPU has been described by its session.
+    ///
+    /// The compositor has said what size it will produce, which device the
+    /// buffer must live on, and which formats and modifiers it will draw into.
+    /// Nothing is allocated yet: the renderer answers with a dmabuf through
+    /// `attach_capture_dmabuf`, or falls back to shared memory through
+    /// `attach_capture_shm`, and the capture continues either way.
+    CaptureOffer {
+        /// Runtime-local request identifier.
+        request_id: u64,
+        /// Pixel width the compositor will produce.
+        width: u32,
+        /// Pixel height the compositor will produce.
+        height: u32,
+        /// The `dev_t` of the device the buffer must be allocated on, when
+        /// the compositor named one.
+        device: Option<u64>,
+        /// DRM fourcc codes and, for each, the modifiers the compositor can
+        /// draw with, in its order of preference.
+        formats: Vec<(u32, Vec<u64>)>,
+    },
     /// An output capture completed or failed.
     Screencopy {
         /// Runtime-local request identifier.
@@ -262,4 +305,58 @@ pub struct LayerClient {
     pub(crate) connection: Connection,
     pub(crate) queue: EventQueue<LayerState>,
     pub(crate) state: LayerState,
+}
+
+/// The shell role a primary surface is actually wearing.
+///
+/// morf wants a layer surface: it is the protocol built for shells, and it is
+/// what gives an anchored bar, an exclusive zone and keyboard focus that a
+/// toplevel cannot ask for. But `wlr-layer-shell` is an optional extension, and
+/// kiosk compositors do not carry it — `cage`, which is what greetd runs a
+/// greeter inside, offers only `xdg-shell`. Making the bind fatal meant morf
+/// refused to start there at all, which is the wrong trade: a greeter that
+/// covers the screen is precisely the case where a fullscreen toplevel is
+/// indistinguishable from the layer surface it is standing in for, because the
+/// compositor gives its single client the whole output regardless.
+///
+/// So the layer role is preferred and the toplevel is the fallback. The
+/// fallback is worth less than it looks on a general-purpose compositor —
+/// anchors, margins and the exclusive zone have no meaning for a toplevel and
+/// are dropped — which is why it is only ever reached when the compositor has
+/// no layer-shell whatsoever, leaving nothing better to fall back from.
+pub(crate) enum ShellSurface {
+    /// A `wlr-layer-shell` surface: what a shell wants.
+    Layer(LayerSurface),
+    /// A fullscreen xdg toplevel, standing in where there is no layer-shell.
+    Window(Box<Window>),
+}
+
+impl ShellSurface {
+    /// The underlying `wl_surface`, whichever role wraps it.
+    pub(crate) fn wl_surface(&self) -> &wl_surface::WlSurface {
+        match self {
+            Self::Layer(layer) => layer.wl_surface(),
+            Self::Window(window) => window.wl_surface(),
+        }
+    }
+
+    /// The layer surface, when this really is one.
+    ///
+    /// Callers use this for the things only layer-shell can do — re-anchoring,
+    /// the exclusive zone, parenting a popup — and skip them otherwise, since a
+    /// toplevel has no equivalent to skip *to*.
+    pub(crate) fn as_layer(&self) -> Option<&LayerSurface> {
+        match self {
+            Self::Layer(layer) => Some(layer),
+            Self::Window(_) => None,
+        }
+    }
+
+    /// Commits pending surface state.
+    pub(crate) fn commit(&self) {
+        match self {
+            Self::Layer(layer) => layer.commit(),
+            Self::Window(window) => window.commit(),
+        }
+    }
 }

@@ -44,6 +44,14 @@ pub enum Shape {
     /// Ellipse stretched to fill the box, which is what an input region has
     /// always meant by "ellipse" and what the renderer had no way to draw.
     Ellipse,
+    /// A closed outline given as points rather than described by a formula.
+    ///
+    /// This is how a letter joins a field. A glyph is not a family of shape
+    /// with parameters — it is a particular outline — so the only way for one
+    /// to union, subtract or morph with a circle is for the composition to
+    /// accept an outline as a shape in its own right. The points live in a
+    /// buffer beside the layers; the layer says where its own run begins.
+    Polygon,
 }
 
 impl Shape {
@@ -60,6 +68,15 @@ impl Shape {
             "pie" | "sector" => Self::Pie,
             "cross" | "plus" => Self::Cross,
             "ellipse" | "oval" => Self::Ellipse,
+            // Nameable so a layer can morph *into* an outline as well as out of
+            // one: `shape = "star", morph_to = "glyph"` is a star becoming a
+            // letter, which is the same interpolation as a star becoming a
+            // hexagon. The points come from the layer's `glyph`.
+            // And `svg`, which is the same thing again: a drawing is an outline,
+            // a letter is an outline, and the field walks whichever it is
+            // handed. Which one a layer means is said by naming a `glyph` or a
+            // `source`, not by naming a different shape.
+            "glyph" | "polygon" | "svg" | "outline" => Self::Polygon,
             _ => return None,
         })
     }
@@ -72,6 +89,7 @@ impl Shape {
             Self::Capsule => "capsule",
             Self::Triangle => "triangle",
             Self::Hexagon => "hexagon",
+            Self::Polygon => "glyph",
             Self::Star => "star",
             Self::Ring => "ring",
             Self::Pie => "pie",
@@ -228,6 +246,11 @@ pub fn distance(shape: Shape, params: &ShapeParams, half: [f32; 2], point: [f32;
         Shape::Pie => sd_pie(point, radius, params.angle),
         Shape::Cross => sd_cross(point, half, params.thickness),
         Shape::Ellipse => sd_ellipse(point, half),
+        // An input region has no points to walk — they live in the render
+        // buffer, not here — so it takes the layer's box. A click test wants a
+        // sign, and inside the box is the right answer for every point a
+        // glyph-shaped hit area is asked about.
+        Shape::Polygon => sd_box(point, half, [0.0; 4]),
     }
 }
 

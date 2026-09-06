@@ -1,12 +1,11 @@
-use crate::states::StateValue;
-use crate::states::*;
+use crate::api_shader::attach_shader;
+use crate::configure_states::configure_states;
 use luna::{Context, Function, Table, Value as LuaValue};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use morf_scene::{Behavior, NodeHandle, Physics, Repeat, RotationDirection, Value as SceneValue};
+use morf_scene::{Behavior, NodeHandle, Physics, Repeat, RotationDirection};
 
 use crate::{
     events::*, lua_values::*, reactive_bindings::*, scene_bindings::*, state::*, table_menu::*,
@@ -50,15 +49,43 @@ pub(crate) fn configure_element<'gc>(
         .iter()
         .find(|(name, _)| name == "behavior")
         .map(|(_, value)| *value);
+    let named_enter = named
+        .iter()
+        .find(|(name, _)| name == "enter")
+        .map(|(_, value)| *value);
+    let mut state_selector = None;
     if let Some((_, states)) = named.iter().find(|(name, _)| name == "states") {
         let transitions = named
             .iter()
             .find(|(name, _)| name == "transitions")
             .map_or(LuaValue::Nil, |(_, value)| *value);
-        configure_states(state, ctx, node, *states, transitions)?;
+        state_selector = configure_states(state, ctx, limits, node, *states, transitions)?;
+    }
+    // A shader is resolved here rather than kept as a property: the name is
+    // looked up once, at configuration time, so painting never consults a
+    // registry and a name that does not resolve is reported where it was
+    // written.
+    if let Some((_, LuaValue::String(name))) = named.iter().find(|(key, _)| key == "shader") {
+        let overrides = named
+            .iter()
+            .find(|(key, _)| key == "shader_params")
+            .and_then(|(_, value)| match value {
+                LuaValue::Table(table) => Some(*table),
+                _ => None,
+            });
+        attach_shader(
+            state,
+            ctx,
+            node,
+            &name.display_lossy().to_string(),
+            overrides,
+        )?;
     }
     for (property, value) in named {
-        if matches!(property.as_str(), "behavior" | "states" | "transitions") {
+        if matches!(
+            property.as_str(),
+            "behavior" | "states" | "transitions" | "shader" | "shader_params" | "enter"
+        ) {
             continue;
         }
         if property == "state" {
@@ -102,8 +129,19 @@ pub(crate) fn configure_element<'gc>(
     // startup, not a transition. Qt's `Behavior` withholds itself during
     // component construction for the same reason. Anything that changes after
     // this point, including the state applied below, animates normally.
+    // `enter` is where the node's first frame starts from. Its values go in
+    // before the behaviors, so they land without animating; the declared
+    // values go back in after, so the behaviors carry the node from the one
+    // to the other. A property with no behavior simply arrives.
+    let entering = match named_enter {
+        Some(enter) => enter_values(state, ctx, node, enter)?,
+        None => Vec::new(),
+    };
     if let Some(behavior) = named_behavior {
         configure_behaviors(state, ctx, node, behavior)?;
+    }
+    for (property, settled) in entering {
+        assign_scene_property(&mut state.borrow_mut(), node, &property, settled)?;
     }
     children.sort_by_key(|(index, _)| *index);
     for (_, child) in children {
@@ -112,6 +150,12 @@ pub(crate) fn configure_element<'gc>(
             .scene
             .reparent(child, Some(node))
             .map_err(|error| error.to_string())?;
+    }
+    if let Some(selector) = state_selector {
+        if state_value.is_some() {
+            return Err("states with `when` choose themselves; drop `state`".into());
+        }
+        register_state_binding(state, ctx, limits, node, selector);
     }
     if let Some(value) = state_value {
         match value {
@@ -142,128 +186,34 @@ pub(crate) fn handler_event(property: &str) -> Option<UiEvent> {
         .map(|(event, _)| *event)
 }
 
-pub(crate) fn configure_states<'gc>(
+/// Puts the `enter` values in place and hands back what each property is
+/// meant to settle at.
+fn enter_values<'gc>(
     state: &Rc<RefCell<ReactiveState>>,
     ctx: Context<'gc>,
     node: NodeHandle,
-    states: LuaValue<'gc>,
-    transitions: LuaValue<'gc>,
-) -> Result<(), String> {
-    let LuaValue::Table(states) = states else {
-        return Err("states must be a name-keyed table".into());
+    value: LuaValue<'gc>,
+) -> Result<Vec<(String, morf_scene::Value)>, String> {
+    let LuaValue::Table(table) = value else {
+        return Err("enter must be a property-keyed table".to_owned());
     };
-    let mut definitions = HashMap::new();
-    for (name, definition) in states.iter(ctx) {
-        let LuaValue::String(name) = name else {
-            return Err("state names must be strings".into());
+    let mut entering = Vec::new();
+    for (property, start) in table.iter(ctx) {
+        let LuaValue::String(property) = property else {
+            return Err("enter keys must be property names".to_owned());
         };
-        let LuaValue::Table(definition) = definition else {
-            return Err("each state must be a table".into());
-        };
-        let mut properties = Vec::new();
-        let mut anchors = None;
-        let mut parent = None;
-        for (key, value) in definition.iter(ctx) {
-            let LuaValue::String(key) = key else {
-                return Err("state fields must be strings".into());
-            };
-            match key.display_lossy().to_string().as_str() {
-                "property_changes" => {
-                    let LuaValue::Table(changes) = value else {
-                        return Err("property_changes must be a table".into());
-                    };
-                    for (property, value) in changes.iter(ctx) {
-                        let LuaValue::String(property) = property else {
-                            return Err("property_changes keys must be strings".into());
-                        };
-                        let property = property.display_lossy().to_string();
-                        if !state
-                            .borrow()
-                            .scene
-                            .has_property(node, &property)
-                            .map_err(|error| error.to_string())?
-                        {
-                            return Err(format!("state changes unknown property `{property}`"));
-                        }
-                        let value = match value {
-                            LuaValue::Function(Function::Closure(closure)) => {
-                                StateValue::Binding(ctx.stash(closure))
-                            }
-                            value => StateValue::Value(lua_to_scene(ctx, value, 0)?),
-                        };
-                        properties.push((property, value));
-                    }
-                }
-                "anchors" | "anchor_changes" => {
-                    let SceneValue::Map(value) = lua_to_scene(ctx, value, 0)? else {
-                        return Err("anchor_changes must be a table".into());
-                    };
-                    anchors = Some(value);
-                }
-                "parent" | "parent_change" => {
-                    let LuaValue::UserData(value) = value else {
-                        return Err("parent_change must be a morf node".into());
-                    };
-                    parent = Some(
-                        value
-                            .downcast_static::<NodeToken>()
-                            .map_err(|_| "parent_change must be a morf node".to_owned())?
-                            .handle,
-                    );
-                }
-                field => return Err(format!("unknown state field `{field}`")),
-            }
-        }
-        definitions.insert(
-            name.display_lossy().to_string(),
-            StateDefinition {
-                properties,
-                anchors,
-                parent,
-            },
-        );
+        let property = property.display_lossy().to_string();
+        let start = lua_to_scene(ctx, start, 0)?;
+        let settled = state
+            .borrow()
+            .scene
+            .current(node, &property)
+            .map_err(|error| error.to_string())?
+            .clone();
+        assign_scene_property(&mut state.borrow_mut(), node, &property, start)?;
+        entering.push((property, settled));
     }
-    let mut parsed_transitions = Vec::new();
-    if let LuaValue::Table(transitions) = transitions {
-        for (_, transition) in transitions.iter(ctx) {
-            let LuaValue::Table(transition) = transition else {
-                return Err("each transition must be a table".into());
-            };
-            let from = table_string(ctx, transition, "from", "*")?;
-            let to = table_string(ctx, transition, "to", "*")?;
-            let reversible = match transition.get_value(ctx, "reversible") {
-                LuaValue::Nil => false,
-                LuaValue::Boolean(value) => value,
-                _ => return Err("transition reversible must be boolean".into()),
-            };
-            let duration = table_number(ctx, transition, "duration", 250.0)?;
-            if duration < 0.0 {
-                return Err("transition duration cannot be negative".into());
-            }
-            parsed_transitions.push(StateTransition {
-                from,
-                to,
-                reversible,
-                behavior: Behavior {
-                    duration: Duration::from_secs_f64(duration / 1_000.0),
-                    easing: parse_easing(ctx, transition.get_value(ctx, "easing"))?,
-                    rotation_direction: parse_rotation_direction(ctx, transition)?,
-                    ..Behavior::default()
-                },
-            });
-        }
-    } else if !matches!(transitions, LuaValue::Nil) {
-        return Err("transitions must be an array table".into());
-    }
-    state.borrow_mut().states.insert(
-        node,
-        StateSet {
-            definitions,
-            transitions: parsed_transitions,
-            current: None,
-        },
-    );
-    Ok(())
+    Ok(entering)
 }
 
 pub(crate) fn configure_behaviors<'gc>(
@@ -366,6 +316,8 @@ pub(crate) fn configure_behaviors<'gc>(
                     time_scale,
                     repeat: parse_repeat(ctx, behavior)?,
                     enabled: parse_enabled(ctx, behavior)?,
+                    color_space: parse_color_space(ctx, behavior)?,
+                    hue: parse_hue(ctx, behavior)?,
                 }),
             )
             .map_err(|error| error.to_string())?;
@@ -417,6 +369,36 @@ pub(crate) fn parse_enabled<'gc>(ctx: Context<'gc>, options: Table<'gc>) -> Resu
         LuaValue::Nil => Ok(true),
         LuaValue::Boolean(value) => Ok(value),
         _ => Err("behavior enabled must be boolean".to_owned()),
+    }
+}
+
+/// `space = "srgb" | "oklab" | "oklch"`: where a colour travels.
+pub(crate) fn parse_color_space<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<morf_scene::ColorSpace, String> {
+    match options.get_value(ctx, "space") {
+        LuaValue::Nil => Ok(morf_scene::ColorSpace::default()),
+        LuaValue::String(value) => {
+            morf_scene::ColorSpace::parse(&value.display_lossy().to_string())
+                .ok_or_else(|| "space must be srgb, oklab or oklch".to_owned())
+        }
+        _ => Err("space must be a string".to_owned()),
+    }
+}
+
+/// `hue = "shorter" | "longer"`: which way round the wheel in `oklch`.
+pub(crate) fn parse_hue<'gc>(
+    ctx: Context<'gc>,
+    options: Table<'gc>,
+) -> Result<morf_scene::HueDirection, String> {
+    match options.get_value(ctx, "hue") {
+        LuaValue::Nil => Ok(morf_scene::HueDirection::default()),
+        LuaValue::String(value) => {
+            morf_scene::HueDirection::parse(&value.display_lossy().to_string())
+                .ok_or_else(|| "hue must be shorter or longer".to_owned())
+        }
+        _ => Err("hue must be a string".to_owned()),
     }
 }
 

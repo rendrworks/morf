@@ -4,7 +4,7 @@ use slotmap::SlotMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::{animation::*, hashing::*, motion::*, schema::*, types::*};
+use crate::{animation::*, hashing::*, motion::*, motion_values::*, schema::*, types::*};
 
 impl Scene {
     /// Creates an empty scene arena.
@@ -22,7 +22,9 @@ impl Scene {
             group_events: Vec::new(),
             next_group: 0,
             layout_revision: 0,
+            motion_scale: 1.0,
             removed: Vec::new(),
+            shaders: FastMap::default(),
         }
     }
 
@@ -135,14 +137,72 @@ impl Scene {
         Ok(())
     }
 
+    /// Puts `order` first among a parent's children, in that order.
+    ///
+    /// Children not named keep their relative order after the named ones.
+    /// Handles that are not this parent's children are ignored, so a stale
+    /// list is harmless. What a reconciled view uses to make paint order and
+    /// positioner order follow the model's order.
+    pub fn reorder_children(
+        &mut self,
+        parent: NodeHandle,
+        order: &[NodeHandle],
+    ) -> Result<(), SceneError> {
+        let parent_id = self.live(parent)?;
+        let current = std::mem::take(&mut self.nodes[parent_id].children);
+        let mut arranged = Vec::with_capacity(current.len());
+        for wanted in order {
+            if current.contains(wanted) && !arranged.contains(wanted) {
+                arranged.push(*wanted);
+            }
+        }
+        let changed = arranged.iter().zip(current.iter()).any(|(a, b)| a != b);
+        for child in current {
+            if !arranged.contains(&child) {
+                arranged.push(child);
+            }
+        }
+        if changed {
+            self.layout_revision = self.layout_revision.wrapping_add(1);
+        }
+        self.nodes[parent_id].children = arranged;
+        Ok(())
+    }
+
     /// Returns the current parent handle.
     pub fn parent(&self, node: NodeHandle) -> Result<Option<NodeHandle>, SceneError> {
         Ok(self.nodes[self.live(node)?].parent.map(NodeHandle))
     }
 
-    /// Returns child handles in paint order.
+    /// Returns child handles in tree order.
+    ///
+    /// Tree order is what positioners lay out by and what key focus walks.
+    /// Paint and hit testing use [`Scene::paint_order`], which is this order
+    /// with `z` applied.
     pub fn children(&self, node: NodeHandle) -> Result<&[NodeHandle], SceneError> {
         Ok(&self.nodes[self.live(node)?].children)
+    }
+
+    /// Returns child handles in paint order: tree order, stably sorted by
+    /// `z`, so a child with a higher `z` paints over, and is hit before, its
+    /// siblings whatever its place in the tree.
+    ///
+    /// Borrowed when no child sets `z`, which is nearly always.
+    pub fn paint_order(
+        &self,
+        node: NodeHandle,
+    ) -> Result<std::borrow::Cow<'_, [NodeHandle]>, SceneError> {
+        let children = self.children(node)?;
+        let z = |child: &NodeHandle| match self.current(*child, "z") {
+            Ok(Value::Number(z)) => *z,
+            _ => 0.0,
+        };
+        if children.iter().all(|child| z(child) == 0.0) {
+            return Ok(std::borrow::Cow::Borrowed(children));
+        }
+        let mut sorted = children.to_vec();
+        sorted.sort_by(|a, b| z(a).total_cmp(&z(b)));
+        Ok(std::borrow::Cow::Owned(sorted))
     }
 
     /// Removes a node and all descendants, invalidating their handles.
@@ -195,6 +255,20 @@ impl Scene {
             return Ok(());
         }
         if let Some(spec) = self.physics_specs.get(&key).copied()
+            && let Value::Color(target) = value
+            && let Value::Color(current) = *self.properties.read(slot.current)?
+        {
+            let velocity = self
+                .physics
+                .get(&key)
+                .map_or([0.0; 4], PhysicsAnimation::color_velocity);
+            self.animations.remove(&key);
+            self.properties.write(slot.target, Value::Color(target))?;
+            self.physics.insert(
+                key,
+                physics_animation_color(current, target, velocity, spec),
+            );
+        } else if let Some(spec) = self.physics_specs.get(&key).copied()
             && let Value::Number(target) = value
             && matches!(self.properties.read(slot.current)?, Value::Number(_))
         {
@@ -258,7 +332,34 @@ impl Scene {
     }
 
     /// Advances every active behavior without invoking Lua.
+    /// Sets how fast motion runs against the clock.
+    ///
+    /// 1 is real time. 0 is what a reduced-motion preference means: every
+    /// behavior, group and spring lands on its target on the next tick, so a
+    /// configuration written with motion still ends up in the same place,
+    /// only without the travel.
+    pub fn set_motion_scale(&mut self, scale: f64) {
+        self.motion_scale = if scale.is_finite() {
+            scale.max(0.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// How fast motion runs against the clock; see [`Self::set_motion_scale`].
+    pub fn motion_scale(&self) -> f64 {
+        self.motion_scale
+    }
+
     pub fn tick_animations(&mut self, delta: Duration) -> Result<AnimationFrame, SceneError> {
+        let snap = self.motion_scale == 0.0;
+        // A scale of zero is a tick long enough to finish anything timed. A
+        // spring is not timed, so it is landed by hand below.
+        let delta = if snap {
+            Duration::from_secs(1 << 20)
+        } else {
+            delta.mul_f64(self.motion_scale)
+        };
         let mut frame = AnimationFrame {
             groups: self.tick_groups(delta)?,
             events: std::mem::take(&mut self.events),
@@ -321,11 +422,34 @@ impl Scene {
                 continue;
             };
             let slot = node.properties[key.property];
+            if snap {
+                let target = self.properties.read(slot.target)?.clone();
+                if affects_layout(key.property) {
+                    self.layout_revision = self.layout_revision.wrapping_add(1);
+                }
+                self.properties.write(slot.current, target)?;
+                frame.changed += 1;
+                physics_finished.push(key);
+                continue;
+            }
+            let motion = self.physics.get_mut(&key).expect("physics key vanished");
+            if let PhysicsAnimation::Color { channels } = motion {
+                let Value::Color(mut current) = *self.properties.read(slot.current)? else {
+                    physics_finished.push(key);
+                    continue;
+                };
+                let settled = advance_physics_color(channels, &mut current, delta);
+                self.properties.write(slot.current, Value::Color(current))?;
+                frame.changed += 1;
+                if settled {
+                    physics_finished.push(key);
+                }
+                continue;
+            }
             let Value::Number(mut current) = *self.properties.read(slot.current)? else {
                 physics_finished.push(key);
                 continue;
             };
-            let motion = self.physics.get_mut(&key).expect("physics key vanished");
             let settled = advance_physics(motion, &mut current, delta);
             // Physics moves a property without any assignment, so this is the
             // one write that has to say so itself. Without it a paint reuses

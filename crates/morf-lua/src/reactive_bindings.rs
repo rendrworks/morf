@@ -101,7 +101,6 @@ pub(crate) fn apply_state(
             StateValue::Binding(closure) => {
                 execute_effect(ctx, &closure, limits, frame_remaining, true)?
                     .ok_or_else(|| format!("state property `{property}` returned no value"))?
-                    .to_scene()
             }
         };
         properties.push((property, value));
@@ -174,6 +173,14 @@ pub(crate) fn lua_to_scene<'gc>(
         LuaValue::Integer(value) => Ok(SceneValue::Number(value as f64)),
         LuaValue::Number(value) if value.is_finite() => Ok(SceneValue::Number(value)),
         LuaValue::String(value) => Ok(SceneValue::String(value.display_lossy().to_string())),
+        LuaValue::UserData(userdata) => {
+            match userdata.downcast_static::<crate::api_color::ColorToken>() {
+                Ok(token) => Ok(SceneValue::Color(morf_scene::Color::from_pastel(
+                    &token.color,
+                ))),
+                Err(_) => Err("a property cannot hold this value".to_owned()),
+            }
+        }
         LuaValue::Table(table) => {
             let entries: Vec<_> = table.iter(ctx).collect();
             let is_list = entries
@@ -257,12 +264,12 @@ pub(crate) fn flush_reactive(
                 .map(|error| format!("{}: {}", error.effect, error.message))
                 .collect::<Vec<_>>()
                 .join("; ");
-            state.logs.push(message.clone());
+            state.log(LogLevel::Warn, message.clone());
             Err(message)
         }
         Err(error) => {
             let message = error.to_string();
-            state.logs.push(message.clone());
+            state.log(LogLevel::Warn, message.clone());
             Err(message)
         }
     }

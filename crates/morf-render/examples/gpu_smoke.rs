@@ -1,9 +1,9 @@
 use morf_layout::{Geometry, TextAlignment, TextElide, Transform2D};
 use morf_render::{
-    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, Gradient, ImageFillMode, Layer,
-    LayerMask, RenderBackend, VerticalAlignment, WgpuBackend,
+    DamageRect, DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode, Layer, LayerMask,
+    RenderBackend, VerticalAlignment, WgpuBackend,
 };
-use morf_scene::{Color, Element, Scene};
+use morf_scene::{Color, ColorSpace, Element, Gradient, GradientKind, GradientStop, Scene};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_path =
@@ -36,12 +36,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }),
                 color: Color::rgba8(38, 115, 217, 255),
                 color_overlay: Color::rgba8(0, 0, 0, 0),
-                gradient: Gradient::Linear {
-                    start_color: Color::rgba8(38, 115, 217, 255),
-                    end_color: Color::rgba8(124, 58, 237, 255),
-                    start: [0.0, 0.0],
-                    end: [1.0, 0.0],
-                },
+                gradient: Some(Gradient {
+                    kind: GradientKind::Linear,
+                    angle: 90.0,
+                    at: [0.5, 0.5],
+                    radius: None,
+                    stops: vec![
+                        GradientStop {
+                            color: Color::rgba8(38, 115, 217, 255),
+                            position: 0.0,
+                        },
+                        GradientStop {
+                            color: Color::rgba8(124, 58, 237, 255),
+                            position: 1.0,
+                        },
+                    ],
+                    space: ColorSpace::Oklab,
+                }),
                 radii: [8.0, 16.0, 8.0, 16.0],
                 border_width: 1.0,
                 antialiasing: true,
@@ -54,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shadow_offset_x: 0.0,
                 shadow_offset_y: 2.0,
                 shadow_inner: true,
+                shader: None,
             },
             DrawCommand::Texture {
                 node: image,
@@ -74,6 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 distance_field_style: DistanceFieldStyle::default(),
             },
             DrawCommand::Text {
+                morph_to: String::new(),
+                morph_progress: 0.0,
+                style: morf_layout::TextStyle::default(),
+                decoration: None,
                 node: text,
                 bounds: Geometry {
                     x: 190.0,
@@ -91,6 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 color: Color::rgba8(255, 255, 255, 255),
                 color_overlay: Color::rgba8(0, 0, 0, 0),
                 wrap: false,
+                max_lines: 0,
                 elide: TextElide::None,
                 horizontal_alignment: TextAlignment::Left,
                 vertical_alignment: VerticalAlignment::Center,
@@ -101,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             node,
             commands: 0..3,
             parent: None,
+            shader: None,
             opacity: 0.8,
             blur: 6.0,
             shadow_color: Color::rgba8(0, 0, 0, 160),
@@ -144,7 +162,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         120,
     )?;
-    let info = backend.info();
+    let info = backend.info().clone();
+    // The zero-copy capture path, minus the compositor: export an image as a
+    // dmabuf with one of this device's own modifiers, take it back, and read
+    // it. A driver that exports but cannot be read from, or a modifier the
+    // device claims and then refuses, fails here rather than in front of a
+    // person with a black thumbnail.
+    let dmabuf = if backend.info().dmabuf {
+        let modifiers = backend.capture_modifiers(morf_render::FOURCC_XRGB8888);
+        let image = backend.export_capture(64, 48, morf_render::FOURCC_XRGB8888, &modifiers)?;
+        let summary = format!(
+            "exported 64x48 modifier {:#x} stride {} offset {} fd {:?}, {} modifiers offered",
+            image.modifier,
+            image.plane.stride,
+            image.plane.offset,
+            image.plane.fd,
+            modifiers.len()
+        );
+        backend.publish_texture("smoke", image)?;
+        let pixels = backend
+            .texture_pixels("smoke")
+            .ok_or("the published capture could not be read back")?;
+        assert_eq!(pixels.rgba.len(), 64 * 48 * 4, "a full picture came back");
+        format!("{summary}, read back {} bytes", pixels.rgba.len())
+    } else {
+        "unavailable on this device".to_owned()
+    };
+    println!("dmabuf: {dmabuf}");
     println!(
         "{} ({:?}, {:04x}:{:04x})",
         info.name, info.backend, info.vendor, info.device

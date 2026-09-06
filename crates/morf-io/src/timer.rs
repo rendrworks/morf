@@ -26,6 +26,7 @@ impl Timer {
             while !worker_stop.load(Ordering::Acquire) {
                 thread::park_timeout(interval);
                 let _ = tx.try_send(());
+                crate::wake_all();
             }
         });
         Ok(Self {

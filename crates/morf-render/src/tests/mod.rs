@@ -21,7 +21,7 @@ fn scene_srgb_colors_are_linearized_for_gpu_output() {
     assert_eq!(srgb_channel_to_linear(1.0), 1.0);
 }
 
-struct NoText;
+pub(crate) struct NoText;
 
 impl TextMeasurer for NoText {
     fn measure(
@@ -40,6 +40,7 @@ impl TextMeasurer for NoText {
 struct RecordingBackend {
     frames: usize,
     damage: Vec<DamageRect>,
+    size: (u32, u32),
 }
 
 impl RenderBackend for RecordingBackend {
@@ -55,10 +56,15 @@ impl RenderBackend for RecordingBackend {
         self.damage = damage.to_vec();
         Ok(())
     }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.size = (width, height);
+    }
 }
 
 mod damage;
 mod field_packing;
 mod fields;
+mod outline_boxes;
 mod transform_text;
 mod tree;

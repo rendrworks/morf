@@ -5,7 +5,7 @@ use crate::{events::*, surface_types::*, types::*};
 /// One pointer or touch position, in both spaces a Lua handler may want.
 ///
 /// `surface_x`/`surface_y` are the coordinates the compositor delivered, shared
-/// by every node on the surface — the space [`Layout::hit_test`] is queried in.
+/// by every node on the surface — the space `Layout::hit_test` is queried in.
 /// `local_x`/`local_y` are the same point inside the node whose handler runs:
 /// `0.0` at its own top-left corner, its width and height at the far edges,
 /// with every ancestor offset and transform removed. A handler that wants a

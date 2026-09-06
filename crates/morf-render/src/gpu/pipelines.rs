@@ -110,14 +110,45 @@ pub(crate) fn create_glyph_pipeline(
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
+    let pipeline = build_glyph_pipeline(device, &texture_layout, None, None, None, None)
+        .expect("the glyph shader carries its own hook");
+    (pipeline, texture_layout, sampler)
+}
+
+/// Builds one glyph-shaped pipeline, optionally with an effect shader in it.
+///
+/// The layer composite runs through this pass, so an effect shader — one that
+/// reads what is already rendered — is spliced in here rather than into the
+/// field shader: by the time a layer is composited its subtree is a texture,
+/// which is the only thing there is to sample.
+pub(crate) fn build_glyph_pipeline(
+    device: &wgpu::Device,
+    texture_layout: &wgpu::BindGroupLayout,
+    shader_layout: Option<&wgpu::BindGroupLayout>,
+    user: Option<&str>,
+    textures: Option<&wgpu::BindGroupLayout>,
+    data: Option<&wgpu::BindGroupLayout>,
+) -> Option<wgpu::RenderPipeline> {
+    // The same group numbers the field pipeline uses, because the compiler
+    // emits the same numbers whatever mode a shader is in: one for its
+    // uniforms, two for its textures, three for its data blocks. An effect
+    // declaring a data block was generating WGSL that named group three and a
+    // pipeline layout that stopped at one, and wgpu rejected the pair.
+    let mut groups = vec![Some(texture_layout)];
+    if let Some(shader_layout) = shader_layout {
+        groups.push(Some(shader_layout));
+        groups.push(textures);
+        groups.push(data);
+    }
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("morf glyph pipeline layout"),
-        bind_group_layouts: &[Some(&texture_layout)],
+        bind_group_layouts: &groups,
         immediate_size: 0,
     });
+    let source = effect_shader_source(include_str!("../glyph.wgsl"), user)?;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("morf glyph shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source(include_str!("../glyph.wgsl")).into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let attributes = wgpu::vertex_attr_array![
         0 => Float32x2,
@@ -132,7 +163,9 @@ pub(crate) fn create_glyph_pipeline(
         9 => Float32x4,
         10 => Float32x4,
         11 => Float32x4,
-        12 => Float32x4
+        12 => Float32x4,
+        13 => Float32x4,
+        14 => Float32
     ];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: mem::size_of::<GlyphInstance>() as u64,
@@ -164,7 +197,7 @@ pub(crate) fn create_glyph_pipeline(
         multiview_mask: None,
         cache: None,
     });
-    (pipeline, texture_layout, sampler)
+    Some(pipeline)
 }
 
 pub(crate) fn create_glyph_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {

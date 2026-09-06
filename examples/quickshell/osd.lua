@@ -109,7 +109,7 @@ local PULSE_DURATION = 600    -- the battery SequentialAnimation's two halves
 local TICK_INTERVAL = 60      -- process drain and hide deadlines
 
 local BATTERY_THRESHOLD = 0.15
-local WARNING_COLOR = "#d32f2f"
+local WARNING = morf.color "#d32f2f"
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -517,15 +517,16 @@ local function icon_circle(text, fill, on_clicked, enabled)
     radius = CIRCLE / 2,
     color = fill,
     border_width = BORDER_WIDTH,
-    border_color = function() return theme.color0() end,
+    border_color = function() return theme.palette.color0 end,
     behavior = {
       color = { duration = FADE_DURATION, easing = "out_cubic" },
       border_color = { duration = FADE_DURATION, easing = "out_cubic" },
     },
-    glyph(CIRCLE, CIRCLE, text, CIRCLE * 0.5, function() return theme.color0() end),
+    glyph(CIRCLE, CIRCLE, text, CIRCLE * 0.5, function() return theme.palette.color0 end),
   }
   if on_clicked then
     values[#values + 1] = ui.MouseArea {
+      cursor = "pointer",
       anchors = { fill = true },
       -- A hidden OSD must not take the click. `enabled` gates both hit
       -- testing and the derived input region
@@ -555,7 +556,7 @@ local function progress_bar(value, seek, commit, pointer, enabled)
       height = LINE_HEIGHT,
       width = function() return math.max(0, indicator_position() - INDICATOR_GAP) end,
       radius = TRACK_RADIUS,
-      color = function() return theme.color0() end,
+      color = function() return theme.palette.color0 end,
       behavior = { width = { duration = FADE_DURATION, easing = "out_cubic" } },
     },
 
@@ -565,7 +566,7 @@ local function progress_bar(value, seek, commit, pointer, enabled)
       width = INDICATOR_WIDTH,
       height = INDICATOR_HEIGHT,
       radius = math.max(0.5, INDICATOR_WIDTH * 0.5),
-      color = function() return theme.color0() end,
+      color = function() return theme.palette.color0 end,
       behavior = { x = { duration = FADE_DURATION, easing = "out_cubic" } },
     },
 
@@ -577,7 +578,7 @@ local function progress_bar(value, seek, commit, pointer, enabled)
       end,
       height = LINE_HEIGHT,
       radius = TRACK_RADIUS,
-      color = function() return theme.color240() end,
+      color = function() return theme.palette.color240 end,
       -- Width animates on the same curve as x. The original binds
       -- `width: parent.width - x` to the *animated* x so the right edge stays
       -- pinned to the end of the bar; width is affine in x, so easing both over
@@ -589,6 +590,7 @@ local function progress_bar(value, seek, commit, pointer, enabled)
     },
 
     ui.MouseArea {
+      cursor = "ew_resize",
       anchors = { fill = true },
       enabled = enabled,
       -- Press and release carry no coordinates today
@@ -625,9 +627,9 @@ local function bar_panel(shown, icon, fill, on_icon_clicked, bar)
       width = PLATE_WIDTH,
       height = PLATE_HEIGHT,
       radius = theme.progress_radius(),
-      color = function() return theme.color1() end,
+      color = function() return theme.palette.color1 end,
       border_width = BORDER_WIDTH,
-      border_color = function() return theme.color0() end,
+      border_color = function() return theme.palette.color0 end,
       behavior = {
         color = { duration = FADE_DURATION, easing = "out_cubic" },
         border_color = { duration = FADE_DURATION, easing = "out_cubic" },
@@ -642,7 +644,7 @@ local function volume_panel()
   return bar_panel(
     volume_shown,
     volume_icon,
-    function() return volume_muted:get() and theme.color240() or theme.color1() end,
+    function() return volume_muted:get() and theme.palette.color240 or theme.palette.color1 end,
     function()
       -- Optimistic, as the original is: flip locally and let `pamixer -t`
       -- catch up, so the button does not lag a poll behind the click.
@@ -669,7 +671,7 @@ local function brightness_panel()
   return bar_panel(
     brightness_shown,
     brightness_icon,
-    function() return theme.color1() end,
+    function() return theme.palette.color1 end,
     nil,
     function(enabled)
       return progress_bar(
@@ -717,9 +719,9 @@ local function battery_panel()
         width = circle,
         height = circle,
         radius = circle / 2,
-        color = WARNING_COLOR,
+        color = WARNING,
         border_width = BORDER_WIDTH,
-        border_color = function() return theme.color0() end,
+        border_color = function() return theme.palette.color0 end,
         behavior = { border_color = { duration = FADE_DURATION, easing = "out_cubic" } },
         glyph(circle, circle, BATTERY_ICON, circle * 0.5, "#ffffff"),
       },

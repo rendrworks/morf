@@ -83,3 +83,54 @@ impl Scene {
         self.nodes.get(node.id()).ok_or(SceneError::StaleNode)
     }
 }
+
+impl Scene {
+    /// Attaches a compiled shader to a node.
+    ///
+    /// The program is named by the hash of its generated WGSL, which is what
+    /// the renderer registered it under: the scene never holds shader source
+    /// and never compiles anything.
+    pub fn attach_shader(&mut self, node: NodeHandle, shader: NodeShader) {
+        self.shaders.insert(node.0, shader);
+    }
+
+    /// Removes a node's shader, if it had one.
+    pub fn detach_shader(&mut self, node: NodeHandle) {
+        self.shaders.remove(&node.0);
+    }
+
+    /// The shader attached to a node.
+    pub fn node_shader(&self, node: NodeHandle) -> Option<&NodeShader> {
+        self.shaders.get(&node.0)
+    }
+
+    /// Fills one of an attached shader's data blocks.
+    ///
+    /// The values are copied, truncated or zero-padded to the length the
+    /// shader declared — a configuration handing over the wrong number of them
+    /// is a mistake worth surviving, because the alternative is a frame that
+    /// reads past the end of a buffer.
+    pub fn set_shader_data(&mut self, node: NodeHandle, index: usize, values: &[f32]) {
+        if let Some(shader) = self.shaders.get_mut(&node.0)
+            && let Some(block) = shader.data.get_mut(index)
+        {
+            let length = block.len();
+            block.clear();
+            block.extend(values.iter().take(length).copied());
+            block.resize(length, 0.0);
+        }
+    }
+
+    /// Sets one parameter of an attached shader.
+    ///
+    /// Out-of-range indices are ignored rather than panicking: the index comes
+    /// from a configuration, and a shader can be swapped for one with fewer
+    /// parameters between the write and the read.
+    pub fn set_shader_param(&mut self, node: NodeHandle, index: usize, value: f32) {
+        if let Some(shader) = self.shaders.get_mut(&node.0)
+            && let Some(slot) = shader.params.get_mut(index)
+        {
+            *slot = value;
+        }
+    }
+}

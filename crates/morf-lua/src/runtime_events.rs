@@ -60,8 +60,9 @@ impl Runtime {
         self.dispatch_ui_event_with_args(node, event, &[])
     }
 
-    /// Returns compositor idle thresholds requested by Lua callbacks.
-    pub fn idle_timeouts(&self) -> Vec<u32> {
+    /// Returns compositor idle thresholds requested by Lua callbacks, each
+    /// with whether it should ignore idle inhibitors.
+    pub fn idle_timeouts(&self) -> Vec<(u32, bool)> {
         let mut timeouts = self
             .reactive
             .borrow()
@@ -74,22 +75,21 @@ impl Runtime {
     }
 
     /// Dispatches one compositor idle state change to registered Lua callbacks.
-    pub fn dispatch_idle(&mut self, timeout_ms: u32, idle: bool) -> bool {
+    pub fn dispatch_idle(&mut self, timeout_ms: u32, input_only: bool, idle: bool) -> bool {
         let callbacks = self
             .reactive
             .borrow()
             .idle_callbacks
-            .get(&timeout_ms)
+            .get(&(timeout_ms, input_only))
             .cloned()
             .unwrap_or_default();
         for callback in &callbacks {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_handler_args(ctx, callback, &[IpcValue::Boolean(idle)], self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, &[IpcValue::Boolean(idle)], limits)
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("idle callback: {message}"));
+                    .log(LogLevel::Warn, format!("idle callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -98,6 +98,40 @@ impl Runtime {
     /// Takes pending compositor output power requests.
     pub fn take_output_power_requests(&mut self) -> Vec<bool> {
         std::mem::take(&mut self.reactive.borrow_mut().output_power_requests)
+    }
+
+    /// Takes a pending change to whether the session is being held awake.
+    pub fn take_idle_inhibit_change(&mut self) -> Option<bool> {
+        let mut state = self.reactive.borrow_mut();
+        state.idle_inhibit_changed.then(|| {
+            state.idle_inhibit_changed = false;
+            state.idle_inhibited
+        })
+    }
+
+    /// Takes a pending change to whether the shell wants the compositor's
+    /// shortcuts held off it.
+    pub fn take_shortcuts_inhibit_change(&mut self) -> Option<bool> {
+        let mut state = self.reactive.borrow_mut();
+        state.shortcuts_inhibit_changed.then(|| {
+            state.shortcuts_inhibit_changed = false;
+            state.shortcuts_inhibited
+        })
+    }
+
+    /// Delivers the compositor's answer to that request.
+    pub fn dispatch_shortcuts_inhibited(&mut self, active: bool) -> bool {
+        let callbacks = self.reactive.borrow().shortcuts_callbacks.clone();
+        for callback in &callbacks {
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, &[IpcValue::Boolean(active)], limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("shortcuts callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
     }
 
     /// Takes pending compositor clipboard publications.
@@ -110,13 +144,43 @@ impl Runtime {
         let callbacks = self.reactive.borrow().clipboard_callbacks.clone();
         let value = text.map_or(IpcValue::Nil, IpcValue::String);
         for callback in &callbacks {
-            if let Err(message) = self.lua.enter(|ctx| {
-                execute_handler_args(ctx, callback, std::slice::from_ref(&value), self.limits)
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, std::slice::from_ref(&value), limits)
             }) {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("clipboard callback: {message}"));
+                    .log(LogLevel::Warn, format!("clipboard callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
+    /// Tells the configuration the keyboard came to its surface, or left it.
+    pub fn dispatch_keyboard_focus(&mut self, active: bool) -> bool {
+        let callbacks = self.reactive.borrow().keyboard_focus_callbacks.clone();
+        let value = IpcValue::Boolean(active);
+        for callback in &callbacks {
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, std::slice::from_ref(&value), limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("keyboard focus callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
+    /// Tells the configuration the backdrop was clicked: somewhere else.
+    pub fn dispatch_backdrop_click(&mut self) -> bool {
+        let callbacks = self.reactive.borrow().backdrop_callbacks.clone();
+        for callback in &callbacks {
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &[], limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("backdrop callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -125,6 +189,21 @@ impl Runtime {
     /// Takes pending output-capture requests.
     pub fn take_screencopy_requests(&mut self) -> Vec<ScreencopyRequest> {
         std::mem::take(&mut self.reactive.borrow_mut().screencopy_requests)
+    }
+
+    /// Takes the name a capture asked to be published under, if it chose one.
+    pub fn take_screencopy_name(&mut self, request_id: u64) -> Option<String> {
+        self.reactive
+            .borrow_mut()
+            .screencopy_names
+            .remove(&request_id)
+    }
+
+    /// Takes the published captures a configuration has released.
+    ///
+    /// Each is a source string as `frame.source` gave it, or the bare name.
+    pub fn take_screencopy_releases(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.reactive.borrow_mut().screencopy_releases)
     }
 
     /// Dispatches one output capture to its requesting Lua callback.
@@ -142,13 +221,11 @@ impl Runtime {
             return false;
         };
         if let Err(message) = self
-            .lua
-            .enter(|ctx| execute_screencopy_handler(ctx, &callback, result, self.limits))
+            .run_handler(|ctx, limits| execute_screencopy_handler(ctx, &callback, result, limits))
         {
             self.reactive
                 .borrow_mut()
-                .logs
-                .push(format!("screencopy callback: {message}"));
+                .log(LogLevel::Warn, format!("screencopy callback: {message}"));
         }
         true
     }
@@ -186,14 +263,12 @@ impl Runtime {
             IpcValue::Integer(i64::from(serial)),
         ];
         for callback in &callbacks {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("input method callback: {message}"));
+                    .log(LogLevel::Warn, format!("input method callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -234,14 +309,12 @@ impl Runtime {
             IpcValue::Integer(i64::from(serial)),
         ];
         for callback in &callbacks {
-            if let Err(message) = self
-                .lua
-                .enter(|ctx| execute_handler_args(ctx, callback, &args, self.limits))
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &args, limits))
             {
                 self.reactive
                     .borrow_mut()
-                    .logs
-                    .push(format!("text input callback: {message}"));
+                    .log(LogLevel::Warn, format!("text input callback: {message}"));
             }
         }
         !callbacks.is_empty()
@@ -307,15 +380,13 @@ impl Runtime {
         let Some(handler) = handler else {
             return false;
         };
-        let result = self
-            .lua
-            .enter(|ctx| execute_handler_args(ctx, &handler, args, self.limits));
+        let result =
+            self.run_handler(|ctx, limits| execute_handler_args(ctx, &handler, args, limits));
         if let Err(message) = result {
-            self.reactive.borrow_mut().logs.push(format!(
-                "{:?}.{}: {message}",
-                node,
-                event.property()
-            ));
+            self.reactive.borrow_mut().log(
+                LogLevel::Warn,
+                format!("{:?}.{}: {message}", node, event.property()),
+            );
         }
         true
     }

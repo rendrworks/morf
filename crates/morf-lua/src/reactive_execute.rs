@@ -1,12 +1,16 @@
 use crate::states::Capture;
 use luna::{Context, Executor, Fuel, StashedClosure, Table, Value as LuaValue, Variadic};
-use morf_io::DbusValue;
+use morf_io::{DbusCall, DbusValue};
 use morf_reactive::EffectContext;
+use morf_scene::Value as SceneValue;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use morf_services::{StatusNotifierAddress, UdevEvent};
+use morf_services::{
+    AuthMessageType, GreetdEvent, GreetdResponse, PamEvent, PamPrompt, StatusNotifierAddress,
+    UdevEvent,
+};
 
 use crate::{
     reactive_bindings::*, scene_bindings::*, serialization::*, state::*, surface_types::*, types::*,
@@ -86,7 +90,12 @@ pub(crate) fn evaluate_effect(
         (&result, lua_effect.sink.clone())
     {
         match value {
-            IpcValue::String(name) => apply_state(state, ctx, limits, frame_remaining, node, name),
+            SceneValue::String(name) => {
+                apply_state(state, ctx, limits, frame_remaining, node, name)
+            }
+            // No state chose itself and none is the default: the node stays
+            // as it is.
+            SceneValue::Nil => Ok(()),
             _ => Err("state binding must return a string".into()),
         }
     } else {
@@ -99,7 +108,7 @@ pub(crate) fn evaluate_effect(
                     &mut state.borrow_mut(),
                     sink.node,
                     &sink.property,
-                    value.to_scene(),
+                    value.clone(),
                 ),
                 EffectSink::State(_) => Ok(()),
             }
@@ -148,7 +157,7 @@ pub(crate) fn execute_effect(
     limits: Limits,
     frame_remaining: &mut u64,
     capture_value: bool,
-) -> Result<Option<IpcValue>, String> {
+) -> Result<Option<SceneValue>, String> {
     let budget = limits.effect_fuel.min(*frame_remaining);
     if budget == 0 {
         return Err("Lua frame fuel exhausted".to_owned());
@@ -162,8 +171,10 @@ pub(crate) fn execute_effect(
         Ok(spent) => {
             *frame_remaining = frame_remaining.saturating_sub(spent);
             if capture_value {
+                // Whatever a binding hands back goes to the property as it
+                // is: a table is a gradient, a decoration, an anchor set.
                 match executor.take_result::<LuaValue>(ctx) {
-                    Ok(Ok(value)) => IpcValue::from_lua(value).map(Some),
+                    Ok(Ok(value)) => lua_to_scene(ctx, value, 0).map(Some),
                     Ok(Err(error)) => Err(error.to_string()),
                     Err(error) => Err(error.to_string()),
                 }
@@ -212,6 +223,8 @@ pub(crate) fn execute_screencopy_handler(
             value.set_field(ctx, "stride", i64::from(frame.stride));
             value.set_field(ctx, "format", frame.format.as_str());
             value.set_field(ctx, "y_invert", frame.y_invert);
+            value.set_field(ctx, "gpu", frame.gpu);
+            value.set_field(ctx, "source", ctx.intern(frame.source.as_bytes()));
             value.set_field(ctx, "pixels", ctx.intern(&frame.pixels));
             Variadic(vec![LuaValue::Table(value), LuaValue::Nil])
         }
@@ -237,6 +250,143 @@ pub(crate) fn execute_dbus_handler(
 ) -> Result<(), String> {
     let argument = dbus_value_to_lua(ctx, value)?;
     let executor = Executor::start(ctx, ctx.fetch(closure).into(), Variadic(vec![argument]));
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Hands one arriving method call to its Lua handler.
+///
+/// The call arrives as a table rather than as positional arguments because most
+/// handlers dispatch on `member` and ignore the rest, and a handler that has to
+/// name five parameters to read the second reads worse than one that does not.
+/// `id` is opaque and only meaningful to `service:reply`.
+pub(crate) fn execute_dbus_call_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    call: DbusCall,
+    limits: Limits,
+) -> Result<(), String> {
+    let table = Table::new(&ctx);
+    table.set_field(ctx, "id", call.id as i64);
+    table.set_field(ctx, "interface", call.interface.as_str());
+    table.set_field(ctx, "member", call.member.as_str());
+    table.set_field(ctx, "path", call.path.as_str());
+    table.set_field(ctx, "sender", call.sender.as_str());
+    table.set_field(ctx, "arguments", dbus_value_to_lua(ctx, call.arguments)?);
+    let executor = Executor::start(
+        ctx,
+        ctx.fetch(closure).into(),
+        Variadic(vec![LuaValue::Table(table)]),
+    );
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Shows a configuration one thing greetd said.
+///
+/// Keyed on `kind` like a PAM message: `auth` carries `auth_type` — `secret`,
+/// `visible`, `info` or `error` — and `text`; `success` carries nothing;
+/// `error` carries `text` and whether it was `authentication` that failed;
+/// `failed` carries `text` and means the connection is gone.
+pub(crate) fn execute_greetd_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    event: GreetdEvent,
+    limits: Limits,
+) -> Result<(), String> {
+    let table = Table::new(&ctx);
+    match event {
+        GreetdEvent::Response(GreetdResponse::AuthMessage { kind, message }) => {
+            table.set_field(ctx, "kind", "auth");
+            let auth_type = match kind {
+                AuthMessageType::Secret => "secret",
+                AuthMessageType::Visible => "visible",
+                AuthMessageType::Info => "info",
+                AuthMessageType::Error => "error",
+            };
+            table.set_field(ctx, "auth_type", auth_type);
+            table.set_field(ctx, "text", message.as_str());
+        }
+        GreetdEvent::Response(GreetdResponse::Success) => {
+            table.set_field(ctx, "kind", "success");
+        }
+        GreetdEvent::Response(GreetdResponse::Error {
+            authentication,
+            description,
+        }) => {
+            table.set_field(ctx, "kind", "error");
+            table.set_field(ctx, "authentication", authentication);
+            table.set_field(ctx, "text", description.as_str());
+        }
+        GreetdEvent::Failed(text) => {
+            table.set_field(ctx, "kind", "failed");
+            table.set_field(ctx, "text", text.as_str());
+        }
+    }
+    let executor = Executor::start(
+        ctx,
+        ctx.fetch(closure).into(),
+        Variadic(vec![LuaValue::Table(table)]),
+    );
+    drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
+    match executor.take_result::<()>(ctx) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Shows a configuration one thing a PAM module said.
+///
+/// A table rather than positional arguments, keyed on `kind`, because a
+/// handler dispatches on what happened and reads the rest: `prompt` carries
+/// `text` and `echo`, `info` and `error` carry `text`, and `finished` carries
+/// `ok` with `error` and `code` when it is not.
+pub(crate) fn execute_pam_session_handler(
+    ctx: Context<'_>,
+    closure: &StashedClosure,
+    event: PamEvent,
+    limits: Limits,
+) -> Result<(), String> {
+    let table = Table::new(&ctx);
+    match event {
+        PamEvent::Message(PamPrompt::Prompt { text, echo }) => {
+            table.set_field(ctx, "kind", "prompt");
+            table.set_field(ctx, "text", text.as_str());
+            table.set_field(ctx, "echo", echo);
+        }
+        PamEvent::Message(PamPrompt::Info(text)) => {
+            table.set_field(ctx, "kind", "info");
+            table.set_field(ctx, "text", text.as_str());
+        }
+        PamEvent::Message(PamPrompt::Error(text)) => {
+            table.set_field(ctx, "kind", "error");
+            table.set_field(ctx, "text", text.as_str());
+        }
+        PamEvent::Finished(verdict) => {
+            table.set_field(ctx, "kind", "finished");
+            table.set_field(ctx, "ok", verdict.is_ok());
+            if let Err(error) = verdict {
+                table.set_field(ctx, "error", error.to_string().as_str());
+                if let Some(code) = error.code() {
+                    table.set_field(ctx, "code", i64::from(code));
+                }
+            }
+        }
+    }
+    let executor = Executor::start(
+        ctx,
+        ctx.fetch(closure).into(),
+        Variadic(vec![LuaValue::Table(table)]),
+    );
     drive_executor(ctx, executor, limits, limits.effect_fuel, "handler")?;
     match executor.take_result::<()>(ctx) {
         Ok(Ok(())) => Ok(()),

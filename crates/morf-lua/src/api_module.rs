@@ -15,7 +15,12 @@ pub(crate) fn install_module_api<'gc>(
     let core = Table::new(&ctx);
     for name in [
         "env",
+        "font_families",
         "process_id",
+        "executable",
+        "args",
+        "options",
+        "operands",
         "version",
         "instance_id",
         "shell_id",
@@ -44,6 +49,8 @@ pub(crate) fn install_module_api<'gc>(
         "has_icon",
         "exec_detached",
         "signal",
+        "theme",
+        "prefers",
         "reloadable",
         "persistent",
         "scope",
@@ -61,6 +68,7 @@ pub(crate) fn install_module_api<'gc>(
         "flickable",
         "transition_parent",
         "desktop_entries",
+        "session_paths",
         "menu",
     ] {
         core.set(ctx, name, morf.get_value(ctx, name))

@@ -120,6 +120,9 @@ pub(crate) struct SurfaceState {
     pub(crate) texture_layout: wgpu::BindGroupLayout,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) bind_group: wgpu::BindGroup,
+    /// Whether the surface asked to be reconfigured while a frame was still in
+    /// hand, so it has to be done before the next one is acquired.
+    pub(crate) stale: bool,
 }
 
 pub(crate) fn create_surface_state(
@@ -138,11 +141,30 @@ pub(crate) fn create_surface_state(
         .find(wgpu::TextureFormat::is_srgb)
         .or_else(|| capabilities.formats.first().copied())
         .ok_or_else(|| GpuError("GPU surface exposes no texture format".to_owned()))?;
-    let present_mode = capabilities
-        .present_modes
-        .iter()
-        .copied()
-        .find(|mode| *mode == wgpu::PresentMode::Fifo)
+    // Mailbox, then immediate, then whatever there is: never FIFO by
+    // choice. The shell already paces itself on the compositor's frame
+    // callbacks, so FIFO buys nothing -- and on Wayland Mesa implements it
+    // with the commit-timing protocol, stamping each frame with a target
+    // time it works out from the pace of the last ones. A shell that paints
+    // when something moves and rests when nothing does has no steady pace
+    // to work out, the targets drift a tenth of a second ahead, the
+    // compositor holds the frames until then, and motion arrives late and
+    // in lumps.
+    let preferred = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate];
+    // `MORF_PRESENT_MODE=fifo|immediate|mailbox` overrides it, for comparing
+    // the compositor's behaviour under each.
+    let asked = std::env::var("MORF_PRESENT_MODE")
+        .ok()
+        .and_then(|value| match value.as_str() {
+            "fifo" => Some(wgpu::PresentMode::Fifo),
+            "immediate" => Some(wgpu::PresentMode::Immediate),
+            "mailbox" => Some(wgpu::PresentMode::Mailbox),
+            _ => None,
+        });
+    let present_mode = asked
+        .into_iter()
+        .chain(preferred.iter().copied())
+        .find(|mode| capabilities.present_modes.contains(mode))
         .or_else(|| capabilities.present_modes.first().copied())
         .ok_or_else(|| GpuError("GPU surface exposes no presentation mode".to_owned()))?;
     let alpha_mode = capabilities
@@ -229,6 +251,7 @@ pub(crate) fn create_surface_state(
         cache: None,
     });
     Ok(SurfaceState {
+        stale: false,
         surface,
         config,
         pipeline,
@@ -260,23 +283,59 @@ pub(crate) fn create_composite_bind_group(
     })
 }
 
+/// The next image to draw into, or `None` if this frame should be skipped.
+///
+/// Not every unsuccessful acquisition is a failure, and wgpu says as much for
+/// each one. A timeout means the compositor has not released a buffer yet, and
+/// occlusion means the surface is not on screen to draw to; the documented
+/// answer to both is to skip this frame and try the next. Treating them as
+/// errors instead took the whole surface down — which is how a shell died with
+/// `could not acquire GPU surface: Timeout` for what is, on a busy compositor
+/// driving three large outputs, an ordinary event.
+///
+/// The genuinely broken states still error. The difference is that they are now
+/// the ones wgpu describes that way.
 pub(crate) fn acquire_frame(
     device: &wgpu::Device,
     surface: &mut SurfaceState,
-) -> Result<wgpu::SurfaceTexture, GpuError> {
+) -> Result<Option<wgpu::SurfaceTexture>, GpuError> {
+    // Anything the last frame asked for, done now — before a texture is in
+    // hand rather than while one is, which is the only moment it is allowed.
+    if surface.stale {
+        surface.surface.configure(device, &surface.config);
+        surface.stale = false;
+    }
     match surface.surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(frame) => Ok(frame),
+        wgpu::CurrentSurfaceTexture::Success(frame) => Ok(Some(frame)),
+        // Suboptimal hands back a frame that is perfectly drawable — it only
+        // says the surface no longer matches the swapchain, which is what a
+        // compositor reports when it rescales or rotates a window. So it is
+        // drawn, and the reconfigure waits for the next acquire.
+        //
+        // Reconfiguring here instead is a validation error, and a fatal one:
+        // wgpu requires the surface texture to be dropped first, and this still
+        // held it. Nothing on the desk ever returned Suboptimal, so nothing
+        // ever hit it; a phone whose compositor scales the window returns it on
+        // the very first frame and the process aborts before drawing anything.
         wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-            surface.surface.configure(device, &surface.config);
-            Ok(frame)
+            surface.stale = true;
+            Ok(Some(frame))
         }
-        wgpu::CurrentSurfaceTexture::Outdated => {
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => Ok(None),
+        // Outdated wants a reconfigure; lost wants the surface recreated, which
+        // needs a window handle this layer does not hold — so it gets the
+        // reconfigure too, because attempting it and failing is no worse than
+        // failing immediately and is sometimes enough.
+        status @ (wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost) => {
             surface.surface.configure(device, &surface.config);
             match surface.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
-                status => Err(GpuError(format!(
-                    "could not acquire reconfigured GPU surface: {status:?}"
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(Some(frame)),
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    Ok(None)
+                }
+                after => Err(GpuError(format!(
+                    "could not acquire GPU surface after {status:?}: {after:?}"
                 ))),
             }
         }

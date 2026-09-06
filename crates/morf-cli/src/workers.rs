@@ -1,5 +1,5 @@
 use morf_io::{IpcReply, IpcRequest, IpcValue as WireValue};
-use morf_lua::{Limits, Runtime, Screen};
+use morf_lua::{Limits, LogEntry, Runtime, Screen};
 use morf_wayland::ScreenInfo;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -94,27 +94,55 @@ pub(crate) fn handle_ipc(
 ) -> IpcReply {
     match request {
         IpcRequest::Call { target, args } => {
-            let Some(worker) = workers.values().next() else {
+            // Every output runs the configuration, so every output hears the
+            // verb: which of them acts on it is the configuration's decision
+            // (`morf.screens[1]` names the one each instance draws). The
+            // reply is the first output's that answered with something, so
+            // an instance that stayed quiet does not hide the one that spoke.
+            if workers.is_empty() {
                 return IpcReply::refused("shell has no active output");
-            };
+            }
             let args = args.iter().map(lua_ipc_value).collect::<Vec<_>>();
-            let (tx, rx) = mpsc::sync_channel(1);
-            if worker
-                .commands
-                .send(WorkerCommand::Call {
-                    target: target.clone(),
-                    args,
-                    reply: tx,
-                })
-                .is_err()
-            {
+            let mut receivers = Vec::with_capacity(workers.len());
+            for worker in workers.values() {
+                let (tx, rx) = mpsc::sync_channel(1);
+                if worker
+                    .commands
+                    .send(WorkerCommand::Call {
+                        target: target.clone(),
+                        args: args.clone(),
+                        reply: tx,
+                    })
+                    .is_ok()
+                {
+                    receivers.push(rx);
+                }
+            }
+            if receivers.is_empty() {
                 return IpcReply::refused("shell output stopped");
             }
-            match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(Ok(values)) => IpcReply::success(values.iter().map(wire_ipc_value).collect()),
-                Ok(Err(error)) => IpcReply::refused(error),
-                Err(_) => IpcReply::refused("shell output timed out"),
+            let mut answer: Option<IpcReply> = None;
+            let mut refusal: Option<IpcReply> = None;
+            for rx in receivers {
+                match rx.recv_timeout(Duration::from_secs(1)) {
+                    Ok(Ok(values)) => {
+                        let reply = IpcReply::success(values.iter().map(wire_ipc_value).collect());
+                        if !values.is_empty() {
+                            return reply;
+                        }
+                        answer.get_or_insert(reply);
+                    }
+                    Ok(Err(error)) => {
+                        refusal.get_or_insert(IpcReply::refused(error));
+                    }
+                    Err(_) => {
+                        refusal.get_or_insert(IpcReply::refused("shell output timed out"));
+                    }
+                }
             }
+            answer
+                .or(refusal)
+                .unwrap_or_else(|| IpcReply::refused("shell output stopped"))
         }
         IpcRequest::Verbs => {
             let mut verbs = Vec::new();
@@ -142,6 +170,21 @@ pub(crate) fn handle_ipc(
             }
             IpcReply::success(logs.into_iter().map(WireValue::String).collect())
         }
+        IpcRequest::Capabilities => {
+            let mut lines = Vec::new();
+            for (output, worker) in workers {
+                let (tx, rx) = mpsc::sync_channel(1);
+                if worker
+                    .commands
+                    .send(WorkerCommand::Capabilities(tx))
+                    .is_ok()
+                    && let Ok(found) = rx.recv_timeout(Duration::from_secs(1))
+                {
+                    lines.extend(found.into_iter().map(|line| format!("{output}:{line}")));
+                }
+            }
+            IpcReply::success(lines.into_iter().map(WireValue::String).collect())
+        }
         IpcRequest::Bindings => {
             let mut bindings = Vec::new();
             for worker in workers.values() {
@@ -157,6 +200,9 @@ pub(crate) fn handle_ipc(
             IpcReply::success(bindings.into_iter().map(WireValue::String).collect())
         }
         IpcRequest::Kill => IpcReply::success(Vec::new()),
+        // The supervisor answers this before it reaches here; it is the one
+        // thing that knows which configuration it is running.
+        IpcRequest::Info => IpcReply::refused("info is answered by the supervisor"),
     }
 }
 
@@ -201,7 +247,19 @@ pub(crate) fn handle_worker_command(
             WorkerUpdate::default()
         }
         WorkerCommand::Logs(reply) => {
-            let _ = reply.send(runtime.take_logs());
+            // Packed here rather than at the socket, because the entry is
+            // structured on this side and a string by the time it leaves.
+            let _ = reply.send(
+                runtime
+                    .take_logs()
+                    .iter()
+                    .map(LogEntry::to_wire)
+                    .collect::<Vec<_>>(),
+            );
+            WorkerUpdate::default()
+        }
+        WorkerCommand::Capabilities(reply) => {
+            let _ = reply.send(runtime.capabilities());
             WorkerUpdate::default()
         }
         WorkerCommand::Bindings(reply) => {

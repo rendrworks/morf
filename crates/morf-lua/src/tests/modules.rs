@@ -1,4 +1,3 @@
-use crate::*;
 use std::fs;
 
 use super::*;
@@ -133,12 +132,12 @@ fn list_handlers_preserve_order_and_isolate_failures() {
         )
         .unwrap();
 
-    assert!(runtime.dispatch_idle(1000, true));
+    assert!(runtime.dispatch_idle(1000, false, true));
     assert_eq!(
         runtime.call_ipc("calls", &[]).unwrap(),
         [IpcValue::String("ab".into())]
     );
-    assert!(runtime.take_logs()[0].contains("broken"));
+    assert!(runtime.take_logs()[0].message.contains("broken"));
 }
 
 #[test]
@@ -274,8 +273,8 @@ fn idle_callbacks_receive_compositor_state() {
         )
         .unwrap();
 
-    assert_eq!(runtime.idle_timeouts(), [30_000]);
-    assert!(runtime.dispatch_idle(30_000, true));
+    assert_eq!(runtime.idle_timeouts(), [(30_000, false)]);
+    assert!(runtime.dispatch_idle(30_000, false, true));
     assert_eq!(
         runtime.call_ipc("idle.get", &[]).unwrap(),
         [IpcValue::Boolean(true)]
@@ -357,10 +356,16 @@ fn screencopy_bridges_bounded_requests_and_pixels() {
             ScreencopyRequest {
                 id: 0,
                 include_cursor: true,
+                window: None,
+                gpu: false,
+                name: None,
             },
             ScreencopyRequest {
                 id: 1,
                 include_cursor: false,
+                window: None,
+                gpu: false,
+                name: None,
             },
         ]
     );
@@ -373,6 +378,8 @@ fn screencopy_bridges_bounded_requests_and_pixels() {
             stride: 8,
             format: "argb8888".to_owned(),
             y_invert: false,
+            gpu: false,
+            source: "memory:capture/0".to_owned(),
             pixels: vec![7; 8],
         })
     ));
@@ -418,5 +425,70 @@ fn virtual_keyboard_requests_preserve_protocol_order() {
                 pressed: false,
             },
         ]
+    );
+}
+
+#[test]
+fn the_window_list_is_there_before_any_compositor_speaks() {
+    // `morf.windows` exists from the first line of a configuration, empty, and
+    // is filled in place when the compositor reports something. Empty rather
+    // than absent so `#morf.windows` is a number on a compositor that does not
+    // report windows at all, and so a configuration can capture the table and
+    // watch it rather than having to ask for it again.
+    let mut runtime = Runtime::default();
+    runtime
+        .execute(
+            "windows.lua",
+            br#"
+                morf.ipc["count"] = function() return #morf.windows end
+                morf.ipc["first"] = function()
+                    local window = morf.windows[1]
+                    return window and (window.app_id .. ":" .. window.title) or "none"
+                end
+            "#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        runtime.call_ipc("count", &[]).unwrap(),
+        [IpcValue::Integer(0)],
+        "the table is there before any compositor has said anything",
+    );
+
+    runtime.set_windows(&[
+        Toplevel {
+            identifier: "b".to_owned(),
+            title: "second".to_owned(),
+            app_id: "kitty".to_owned(),
+            ..Toplevel::default()
+        },
+        Toplevel {
+            identifier: "a".to_owned(),
+            title: "first".to_owned(),
+            app_id: "zen".to_owned(),
+            ..Toplevel::default()
+        },
+    ]);
+    assert_eq!(
+        runtime.call_ipc("count", &[]).unwrap(),
+        [IpcValue::Integer(2)]
+    );
+    assert_eq!(
+        runtime.call_ipc("first", &[]).unwrap(),
+        [IpcValue::String("kitty:second".to_owned())],
+        "the order handed in is the order seen",
+    );
+
+    // And a shorter list does not leave the tail of a longer one behind.
+    runtime.set_windows(&[Toplevel {
+        identifier: "a".to_owned(),
+        title: "only".to_owned(),
+        app_id: "zen".to_owned(),
+        ..Toplevel::default()
+    }]);
+    assert_eq!(
+        runtime.call_ipc("count", &[]).unwrap(),
+        [IpcValue::Integer(1)],
+        "the table is replaced, not appended to",
     );
 }

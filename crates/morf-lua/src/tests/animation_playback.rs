@@ -202,8 +202,12 @@ fn lua_evaluates_timing_curves_directly() {
                 local bezier = morf.easing.value({ x1 = 0.4, y1 = 0, x2 = 0.2, y2 = 1 }, 0.5)
                 assert(bezier > 0 and bezier < 1, "bezier out of range")
 
+                -- Halfway in OkLab is the perceptual middle grey, lighter in
+                -- sRGB terms than the numeric midpoint; halfway in sRGB is it.
                 local color = morf.easing.color("linear", 0.5, "#000000", "#ffffff")
-                assert(math.abs(color.r - 0.5) < 1e-6, "colour did not interpolate")
+                assert(color.r > 0.3 and color.r < 0.5, "colour did not interpolate perceptually")
+                local plain = morf.easing.color("linear", 0.5, "#000000", "#ffffff", { space = "srgb" })
+                assert(math.abs(plain.r - 0.5) < 1e-2, "colour did not interpolate in sRGB")
                 assert(color.a == 1, "colour lost its alpha")
 
                 local ok = pcall(morf.easing.value, "not_a_curve", 0.5)

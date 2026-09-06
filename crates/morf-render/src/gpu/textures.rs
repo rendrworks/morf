@@ -3,7 +3,6 @@ use crate::{DistanceFieldStyle, DrawCommand, DrawList, ImageFillMode};
 use morf_image::ImageCache;
 use morf_layout::{Geometry, Transform2D};
 use morf_scene::Color;
-use morf_text::{GLYPH_FIELD_REFERENCE_PX, GLYPH_FIELD_SPREAD_PX};
 use std::collections::{HashMap, HashSet};
 
 use super::glyphs::*;
@@ -100,6 +99,8 @@ pub(crate) struct TextureBatchContext<'a> {
     pub(crate) layout: &'a wgpu::BindGroupLayout,
     pub(crate) sampler: &'a wgpu::Sampler,
     pub(crate) target_size: (u32, u32),
+    /// Textures the compositor drew into directly, by name.
+    pub(crate) external: &'a HashMap<String, super::backend_types::ExternalTexture>,
 }
 
 pub(crate) fn create_texture_batch(
@@ -132,6 +133,34 @@ pub(crate) fn create_texture_batch(
             continue;
         };
         if source.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
+            continue;
+        }
+        // A capture the compositor drew straight into GPU memory. Nothing to
+        // decode, nothing to upload, nothing to cache: the texture is the
+        // picture, at the size it was captured at.
+        if let Some(name) = source.strip_prefix("gpu:") {
+            let Some(external) = context.external.get(name) else {
+                continue;
+            };
+            let intrinsic = (external.image.width, external.image.height);
+            let placement = texture_placement(*bounds, intrinsic, *fill_mode, *transform);
+            push_texture_instance(
+                &mut batch,
+                command_index,
+                TextureImage {
+                    _texture: external.image.texture.clone(),
+                    bind_group: external.bind_group.clone(),
+                },
+                placement,
+                TextureStyle {
+                    overlay: *color_overlay,
+                    distance_field: *distance_field,
+                    field: *distance_field_style,
+                    spread: *distance_field_spread,
+                },
+                context.target_size,
+                scale,
+            );
             continue;
         }
         let preferred = bounds.width.max(bounds.height).ceil().max(1.0) as u32;
@@ -337,15 +366,37 @@ pub(crate) fn texture_placement(
 /// so an outline asked for in logical pixels has to be converted through the
 /// ratio between the two. Doing it here rather than in the configuration is
 /// what lets an outline width mean the same thing at every font size.
+/// Extra edge outset for small text, in logical pixels.
+///
+/// A hinted rasterizer snaps a stem onto the pixel grid, so a one-pixel stem is
+/// one solid pixel. A field has no hinting: the same stem lands wherever the
+/// outline puts it, usually spread across two pixels at part strength each, and
+/// the letter reads lighter than the hinted one it replaced. Moving the edge out
+/// by a fraction of a pixel gives that back.
+///
+/// Only where it is the problem. Above the fade the stems are wide enough that
+/// the grid no longer decides how solid they look, and the same outset there
+/// would simply be a heavier font than the one asked for.
+fn hinting_bias(size: f64) -> f32 {
+    const FULL_BELOW: f64 = 10.0;
+    const NONE_ABOVE: f64 = 20.0;
+    const OUTSET: f32 = 0.18;
+    let reach = ((NONE_ABOVE - size) / (NONE_ABOVE - FULL_BELOW)).clamp(0.0, 1.0);
+    OUTSET * reach as f32
+}
+
 pub(crate) fn glyph_field_uniform(style: DistanceFieldStyle, size: f64) -> [f32; 4] {
-    let per_logical_pixel = GLYPH_FIELD_REFERENCE_PX / (size.max(1.0) as f32);
-    let span = GLYPH_FIELD_SPREAD_PX as f32 * 2.0;
+    // How much of the field one logical pixel covers at this size. Asked for
+    // rather than derived here: the spread is capped, so it is no longer a
+    // fixed fraction of the reference and a second copy of the arithmetic would
+    // disagree with the first.
+    let per_pixel = morf_text::field_units_per_logical_px(size.max(1.0) as f32);
     [
         // Positive thickness moves the edge outwards, which is the direction
         // that adds ink — the field counts upwards away from the glyph.
-        0.5 + style.thickness * per_logical_pixel / span,
-        style.softness * per_logical_pixel / span,
-        style.outline_width * per_logical_pixel / span,
+        0.5 + (style.thickness + hinting_bias(size)) * per_pixel,
+        style.softness * per_pixel,
+        style.outline_width * per_pixel,
         0.0,
     ]
 }
@@ -393,4 +444,48 @@ pub(crate) fn push_texture_instance(
         ..GlyphInstance::default()
     });
     batch.images.push(image);
+}
+
+impl super::backend_types::WgpuBackend {
+    /// Uploads one decoded image as a texture a shader can sample.
+    ///
+    /// Kept apart from the image-texture cache: that one is keyed by node and
+    /// evicted when a node dies, and a shader's textures live as long as the
+    /// shader does.
+    pub(crate) fn upload_shader_texture(&self, image: &morf_image::ImageData) -> wgpu::TextureView {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("morf shader texture"),
+            size: wgpu::Extent3d {
+                width: image.width.max(1),
+                height: image.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(image.width.max(1) * 4),
+                rows_per_image: Some(image.height.max(1)),
+            },
+            wgpu::Extent3d {
+                width: image.width.max(1),
+                height: image.height.max(1),
+                depth_or_array_layers: 1,
+            },
+        );
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
 }

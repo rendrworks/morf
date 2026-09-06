@@ -5,11 +5,16 @@ mod backend_init;
 mod backend_render;
 mod backend_types;
 mod batches;
+mod capture;
 mod clear_pipeline;
+pub mod dmabuf;
+mod dmabuf_acquire;
 mod field_pass;
 mod glyph_batch;
 mod glyphs;
+mod layer_targets;
 mod pipelines;
+mod shader_registry;
 mod shaders;
 mod targets;
 mod textures;
@@ -23,6 +28,17 @@ mod field_color_tests;
 mod field_shape_tests;
 #[cfg(test)]
 mod field_tests;
+mod readback;
+#[cfg(test)]
+mod shader_host_tests;
+#[cfg(test)]
+mod shader_language_tests;
+#[cfg(test)]
+mod shader_mode_tests;
+#[cfg(test)]
+mod shader_scene_tests;
+#[cfg(test)]
+mod shader_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

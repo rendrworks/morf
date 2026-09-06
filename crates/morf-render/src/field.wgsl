@@ -43,14 +43,18 @@ struct Material {
     // [offset x, offset y, inner, unused]
     shadow: vec4<f32>,
     shadow_color: vec4<f32>,
-    // [unused, shadow blur, shadow spread, conic rotation]
+    // [unused, shadow blur, shadow spread, unused]
     effects: vec4<f32>,
-    gradient_start_color: vec4<f32>,
-    gradient_end_color: vec4<f32>,
-    // Normalised start and end of a linear gradient.
-    gradient_points: vec4<f32>,
-    // [kind, centre x, centre y, radius]
-    gradient_data: vec4<f32>,
+    // [kind, centre x, centre y, radius]. Kind is 0 none, 1 linear, 2 radial,
+    // 3 conic; the centre and radius are fractions of `shape`.
+    gradient: vec4<f32>,
+    // [angle in radians, stop count, space, unused]. Space is 0 sRGB, 1 OkLab,
+    // 2 OkLCh.
+    gradient_extra: vec4<f32>,
+    // Stop positions, four to a vector.
+    gradient_positions: array<vec4<f32>, 4>,
+    // Linear-light stop colours, straight alpha.
+    gradient_colors: array<vec4<f32>, 16>,
     color_overlay: vec4<f32>,
     // The rectangle a gradient is measured across, in the field's own space:
     // origin then size.
@@ -60,16 +64,39 @@ struct Material {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> layers: array<Layer>;
 @group(0) @binding(2) var<storage, read> materials: array<Material>;
+// The outlines polygon layers walk. One flat buffer for the whole frame; a
+// layer says where its own run starts and how long it is.
+@group(0) @binding(3) var<storage, read> outline: array<vec2<f32>>;
 
+/// Only `local` varies across the quad. Everything else here is one number per
+/// instance, written identically at all four corners — so it is `flat`, and not
+/// only to save three interpolators.
+///
+/// `style.z` and `style.w` are the first layer's index and the layer count,
+/// carried as floats because that is what a varying is. Interpolated, a value
+/// written as 7.0 at every corner comes back as 6.9999997 in the middle, and
+/// `u32()` truncates towards zero: the field then reads the *previous* field's
+/// layers and draws nothing anyone asked for. Which fields it hit depended on
+/// their layer index, so it looked like shapes going missing at random.
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
-    @location(1) fill: vec4<f32>,
-    @location(2) outline: vec4<f32>,
+    @location(1) @interpolate(flat) fill: vec4<f32>,
+    @location(2) @interpolate(flat) outline: vec4<f32>,
     // [stroke width, softness, first layer, layer count]
-    @location(3) style: vec4<f32>,
+    @location(3) @interpolate(flat) style: vec4<f32>,
     @location(4) @interpolate(flat) material: u32,
 };
+
+/// Where a configuration's own shader gets to move a corner.
+///
+/// The default returns it untouched, so an ordinary field costs nothing.
+/// A vertex shader moves the *quad*, not the shape inside it: the fragment
+/// stage still walks the field in the node's own space, so a displaced node
+/// keeps its geometry and takes it somewhere else.
+fn morf_vertex_hook(corner: vec2<f32>, size: vec2<f32>, time: f32) -> vec2<f32> {
+    return corner;
+}
 
 @vertex
 fn vs_main(
@@ -93,8 +120,19 @@ fn vs_main(
         vec2<f32>(area.x, area.w),
         vec2<f32>(area.z, area.w),
     );
+    // Where a configuration's own shader gets to move a corner.
+    //
+    // The default returns it untouched, so an ordinary field costs nothing.
+    // A vertex shader moves the *quad*, not the shape inside it: the fragment
+    // stage still walks the field in the node's own space, so a displaced node
+    // keeps its geometry and takes it somewhere else.
     let local = corners[vertex_index];
-    let point = bounds.xy + local;
+    // The displacement moves where the corner is *drawn*, not where the
+    // fragment stage looks. `local` goes to the fragment unchanged, so the
+    // field is still evaluated in the node's own space — displacing both would
+    // move the quad and the shape inside it by the same amount and cancel out,
+    // which is the shape this took before the GPU test caught it.
+    let point = bounds.xy + morf_vertex_hook(local, bounds.zw, uniforms.viewport.z);
     let placed = vec2<f32>(
         transform.x * point.x + transform.z * point.y + transform_offset.x,
         transform.y * point.x + transform.w * point.y + transform_offset.y,
@@ -236,6 +274,75 @@ fn sd_ellipse(point: vec2<f32>, half: vec2<f32>) -> f32 {
     return (length(point / r) - 1.0) * min(r.x, r.y);
 }
 
+/// Edges per bounding box, matching `glyph_layer::OUTLINE_SPAN`, which a test
+/// asserts. The boxes are packed after the points, so where they start can be
+/// worked out from the run rather than sent.
+const OUTLINE_SPAN: u32 = 6u;
+
+/// Distance to a closed outline, with the sign from its winding.
+///
+/// The same measurement the glyph fields use, done per pixel instead of once
+/// into a texture — which is the whole point of a letter being a shape here
+/// rather than a picture. A pixel walks the boxes and only opens the runs it
+/// could be answered by, but it is still a walk per pixel: this is for the
+/// letters a configuration composes with, not for a page of text.
+fn sd_polygon(point: vec2<f32>, first: u32, stride: u32, loops: u32) -> f32 {
+    if stride < 3u || loops == 0u {
+        return 1.0e9;
+    }
+    var nearest = 1.0e9;
+    var winding = 0;
+    let spans = (stride + OUTLINE_SPAN - 1u) / OUTLINE_SPAN;
+    let boxes = first + stride * loops;
+    for (var contour = 0u; contour < loops; contour = contour + 1u) {
+        // Each loop closes on itself rather than on the next one along, which
+        // is what lets one layer hold a letter with holes in it: the counters
+        // of `8` are wound against its body and cancel it, so they come out
+        // hollow instead of being threaded onto it.
+        let loop_start = first + contour * stride;
+        for (var span = 0u; span < spans; span = span + 1u) {
+            let corner = boxes + (contour * spans + span) * 2u;
+            let low = outline[corner];
+            let high = outline[corner + 1u];
+            // A rightward ray can only meet a run that straddles the point's
+            // height and reaches past it — the same half-open band the edge
+            // test below uses, so a run on the boundary is dropped by both.
+            let may_cross = point.y >= low.y && point.y < high.y && point.x < high.x;
+            // And the box is a floor on how near the run's edges can come, so
+            // a run further off than the nearest edge so far cannot win.
+            let away = max(max(low - point, point - high), vec2<f32>(0.0, 0.0));
+            if !may_cross && dot(away, away) >= nearest {
+                continue;
+            }
+            for (var step = 0u; step < OUTLINE_SPAN; step = step + 1u) {
+                let index = span * OUTLINE_SPAN + step;
+                if index >= stride {
+                    break;
+                }
+                let a = outline[loop_start + index];
+                let b = outline[loop_start + (index + 1u) % stride];
+                let edge = b - a;
+                let to_point = point - a;
+                let along = clamp(dot(to_point, edge) / max(dot(edge, edge), 1e-9), 0.0, 1.0);
+                let offset = to_point - edge * along;
+                nearest = min(nearest, dot(offset, offset));
+                // A ray going right: an edge crossing the point's height flips
+                // the count, and the total says inside from outside. Wound the
+                // other way, a letter's counter cancels its body and comes out
+                // hollow.
+                let crosses = (a.y <= point.y) != (b.y <= point.y);
+                if crosses {
+                    let t = (point.y - a.y) / (b.y - a.y);
+                    if a.x + t * edge.x > point.x {
+                        winding = winding + select(-1, 1, b.y > a.y);
+                    }
+                }
+            }
+        }
+    }
+    return select(sqrt(nearest), -sqrt(nearest), winding != 0);
+}
+
 fn shape_distance(kind: u32, point: vec2<f32>, layer: Layer) -> f32 {
     let half = layer.rect.zw;
     let radius = min(half.x, half.y);
@@ -249,6 +356,12 @@ fn shape_distance(kind: u32, point: vec2<f32>, layer: Layer) -> f32 {
         case 6u: { return sd_ring(point, radius, layer.params.w); }
         case 7u: { return sd_pie(point, radius, layer.extra.x); }
         case 9u: { return sd_ellipse(point, half); }
+        case 10u: {
+            // Every contour is resampled to the same length when the outline
+            // is built, so the stride is known here rather than sent. It must
+            // match `morf_text::GLYPH_CONTOUR_POINTS`, which a test asserts.
+            return sd_polygon(point, u32(layer.params.x), 96u, u32(layer.extra.w));
+        }
         default: { return sd_cross(point, half, layer.params.w); }
     }
 }
@@ -366,39 +479,177 @@ fn compose(local: vec2<f32>, base: vec4<f32>, first: u32, count: u32) -> Compose
     return out;
 }
 
+/// Where a configuration's own shader gets to decide the colour.
+///
+/// The default hands back what the field already resolved, so the base pipeline
+/// costs nothing. When a node carries a shader, this body is replaced at
+/// pipeline creation with a call into the compiled `morf_shader_main` — a
+/// distinct pipeline per shader, because WGSL has no way to swap a function at
+/// run time and a branch on a uniform would pay for a shader on every node that
+/// does not have one.
+///
+/// The shape still comes from the field, so clipping, damage, hit testing and
+/// the input region are untouched by anything a shader does.
+fn morf_shader_hook(
+    uv: vec2<f32>,
+    local: vec2<f32>,
+    coverage: f32,
+    base: vec4<f32>,
+) -> vec4<f32> {
+    return base;
+}
+
+/// Who decides how much of this pixel the node covers.
+///
+/// A material shader colours what the field already shaped, so the default
+/// hands back the field's own coverage. A surface shader decides for itself,
+/// and this body is replaced with one that returns the shader's alpha —
+/// geometry and shader stop composing there, which is inherent to the mode
+/// rather than a gap in it.
+fn morf_coverage_hook(shader_alpha: f32, filled: f32) -> f32 {
+    return filled;
+}
+
+const TAU: f32 = 6.28318530718;
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let low = c * 12.92;
+    let high = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(high, low, c <= vec3<f32>(0.0031308));
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((max(c, vec3<f32>(0.0)) + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
+
+fn linear_to_oklab(c: vec3<f32>) -> vec3<f32> {
+    let l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+    let m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+    let s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+    let l_ = sign(l) * pow(abs(l), 1.0 / 3.0);
+    let m_ = sign(m) * pow(abs(m), 1.0 / 3.0);
+    let s_ = sign(s) * pow(abs(s), 1.0 / 3.0);
+    return vec3<f32>(
+        0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+        1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+        0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+    );
+}
+
+fn oklab_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let l_ = c.x + 0.3963377774 * c.y + 0.2158037573 * c.z;
+    let m_ = c.x - 0.1055613458 * c.y - 0.0638541728 * c.z;
+    let s_ = c.x - 0.0894841775 * c.y - 1.2914855480 * c.z;
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+    return vec3<f32>(
+        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+    );
+}
+
+/// Two stop colours mixed in the gradient's space. The mix is weighted by
+/// alpha, so a run into `transparent` fades the colour out rather than
+/// passing through grey.
+fn mix_stops(a: vec4<f32>, b: vec4<f32>, t: f32, space: f32) -> vec4<f32> {
+    let weight_a = (1.0 - t) * a.a;
+    let weight_b = t * b.a;
+    let alpha = weight_a + weight_b;
+    if alpha <= 0.000001 {
+        return vec4<f32>(mix(a.rgb, b.rgb, t), 0.0);
+    }
+    let ta = weight_a / alpha;
+    let tb = weight_b / alpha;
+    var rgb: vec3<f32>;
+    if space == 0.0 {
+        rgb = srgb_to_linear(linear_to_srgb(a.rgb) * ta + linear_to_srgb(b.rgb) * tb);
+    } else {
+        let lab_a = linear_to_oklab(a.rgb);
+        let lab_b = linear_to_oklab(b.rgb);
+        if space == 1.0 {
+            rgb = oklab_to_linear(lab_a * ta + lab_b * tb);
+        } else {
+            // Polar: lightness and chroma straight, hue by the shorter arc.
+            let chroma_a = length(lab_a.yz);
+            let chroma_b = length(lab_b.yz);
+            let hue_a = atan2(lab_a.z, lab_a.y);
+            var hue_b = atan2(lab_b.z, lab_b.y);
+            let turn = hue_b - hue_a;
+            if turn > 3.14159265359 {
+                hue_b = hue_b - TAU;
+            } else if turn < -3.14159265359 {
+                hue_b = hue_b + TAU;
+            }
+            let lightness = lab_a.x * ta + lab_b.x * tb;
+            let chroma = chroma_a * ta + chroma_b * tb;
+            let hue = hue_a * ta + hue_b * tb;
+            rgb = oklab_to_linear(vec3<f32>(lightness, chroma * cos(hue), chroma * sin(hue)));
+        }
+    }
+    return vec4<f32>(rgb, alpha);
+}
+
+fn stop_position(material: u32, index: u32) -> f32 {
+    return materials[material].gradient_positions[index / 4u][index % 4u];
+}
+
+/// The stop list sampled at `amount`: the colour between the two stops it
+/// falls among, the end colours beyond them, and a hard edge where two
+/// stops share a position.
+fn gradient_sample(material: u32, amount: f32) -> vec4<f32> {
+    let count = u32(materials[material].gradient_extra.y);
+    let space = materials[material].gradient_extra.z;
+    var previous_position = stop_position(material, 0u);
+    var previous_color = materials[material].gradient_colors[0];
+    if amount <= previous_position {
+        return previous_color;
+    }
+    for (var index = 1u; index < count; index++) {
+        let position = stop_position(material, index);
+        let color = materials[material].gradient_colors[index];
+        if amount <= position {
+            let span = position - previous_position;
+            let t = select(1.0, (amount - previous_position) / span, span > 0.000001);
+            return mix_stops(previous_color, color, t, space);
+        }
+        previous_position = position;
+        previous_color = color;
+    }
+    return previous_color;
+}
+
 /// The fill a gradient paints at this point, or the flat colour if there is none.
-fn gradient_fill(material: Material, local: vec2<f32>, flat_color: vec4<f32>) -> vec4<f32> {
-    let kind = material.gradient_data.x;
+fn gradient_fill(material: u32, local: vec2<f32>, flat_color: vec4<f32>) -> vec4<f32> {
+    let kind = materials[material].gradient.x;
     if kind == 0.0 {
         return flat_color;
     }
-    // Normalised across the material's own rectangle, so a gradient reads the
-    // same whatever the node's size — which is what a configuration means by
-    // giving its endpoints as fractions.
-    let point = local - material.shape.xy;
-    let normalized = point / max(material.shape.zw, vec2<f32>(0.000001));
+    let shape = materials[material].shape;
+    let point = local - shape.xy;
+    let angle = materials[material].gradient_extra.x;
+    let centre = materials[material].gradient.yz;
+    var amount = 0.0;
     if kind == 1.0 {
-        let direction = material.gradient_points.zw - material.gradient_points.xy;
-        let amount = dot(normalized - material.gradient_points.xy, direction)
-            / max(dot(direction, direction), 0.000001);
-        return mix(
-            material.gradient_start_color,
-            material.gradient_end_color,
-            clamp(amount, 0.0, 1.0),
-        );
+        // A line through the centre at `angle`, 0 pointing up and turning
+        // clockwise, long enough that 0 and 1 land on the corners it points
+        // between — the same line a stylesheet draws.
+        let direction = vec2<f32>(sin(angle), -cos(angle));
+        let length = abs(shape.z * direction.x) + abs(shape.w * direction.y);
+        amount = dot(point - shape.zw * 0.5, direction) / max(length, 0.000001) + 0.5;
+    } else if kind == 2.0 {
+        // Measured as fractions of the rectangle, so the reach is an ellipse
+        // the shape of the node.
+        let normalized = point / max(shape.zw, vec2<f32>(0.000001));
+        amount = distance(normalized, centre) / max(materials[material].gradient.w, 0.000001);
+    } else {
+        let delta = point - centre * shape.zw;
+        amount = fract((atan2(delta.x, -delta.y) - angle) / TAU);
     }
-    if kind == 2.0 {
-        let amount = distance(normalized, material.gradient_data.yz)
-            / max(material.gradient_data.w, 0.000001);
-        return mix(
-            material.gradient_start_color,
-            material.gradient_end_color,
-            clamp(amount, 0.0, 1.0),
-        );
-    }
-    let delta = normalized - material.gradient_data.yz;
-    let amount = fract((atan2(delta.y, delta.x) - material.effects.w) / 6.28318530718);
-    return mix(material.gradient_start_color, material.gradient_end_color, amount);
+    return gradient_sample(material, clamp(amount, 0.0, 1.0));
 }
 
 @fragment
@@ -428,8 +679,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let coverage = smoothstep(ramp, -ramp, distance - outset);
     let filled = smoothstep(ramp, -ramp, distance + inset);
 
-    var fill_color = gradient_fill(material, input.local, surface.fill);
-    let fill_alpha = fill_color.a * filled;
+    var fill_color = gradient_fill(input.material, input.local, surface.fill);
+    // Normalised across the node's own rectangle, which is what a shader means
+    // by `uv` and what makes one read the same at any size.
+    let shader_uv = (input.local - material.shape.xy) / max(material.shape.zw, vec2<f32>(0.000001));
+    fill_color = morf_shader_hook(shader_uv, input.local, coverage, fill_color);
+    let fill_alpha = fill_color.a * morf_coverage_hook(fill_color.a, filled);
     let outline_alpha = input.outline.a * max(coverage - filled, 0.0);
     let shape = vec4<f32>(
         fill_color.rgb * fill_alpha + input.outline.rgb * outline_alpha,

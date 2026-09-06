@@ -22,7 +22,7 @@ local shape = ui.Rect {
   skew_x = function() return transformed:get() and -8 or 0 end,
   translate_x = function() return transformed:get() and 270 or 0 end,
   translate_y = function() return transformed:get() and 18 or 0 end,
-  shadow_color = "#80000000",
+  shadow_color = morf.color("black"):alpha(0.5),
   shadow_blur = function() return transformed:get() and 24 or 8 end,
   shadow_spread = function() return transformed:get() and 5 or 1 end,
   behavior = {
@@ -66,6 +66,7 @@ local shape = ui.Rect {
     shadow_spread = { duration = 300, easing = "out_cubic" },
   },
   ui.MouseArea {
+    cursor = "pointer",
     anchors = { fill = true },
     on_clicked = function()
       local ok, error = transformed:set(not transformed:get())

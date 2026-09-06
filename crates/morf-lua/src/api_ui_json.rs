@@ -27,9 +27,7 @@ pub(crate) fn install_ui_json_api<'gc>(
         ("Row", Element::Row),
         ("Column", Element::Column),
         ("Grid", Element::Grid),
-        ("RowLayout", Element::RowLayout),
-        ("ColumnLayout", Element::ColumnLayout),
-        ("GridLayout", Element::GridLayout),
+        ("Flex", Element::Flex),
     ] {
         ui.set_field(
             ctx,
@@ -37,6 +35,51 @@ pub(crate) fn install_ui_json_api<'gc>(
             element_constructor(ctx, Rc::clone(&state), limits, element),
         );
     }
+    // `ui.each(list, delegate, options)`: a Repeater over a list, which is
+    // what a `morf.state` array is. `options.as` lays the rows out as a
+    // column, row or grid, as for a Repeater.
+    let each_state = Rc::clone(&state);
+    let each = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let (model, delegate, options): (LuaValue, LuaValue, Option<Table>) = stack.consume(ctx)?;
+        let properties = Table::new(&ctx);
+        if let Some(options) = options {
+            for (key, value) in options.iter(ctx) {
+                properties.set(ctx, key, value)?;
+            }
+        }
+        properties.set_field(ctx, "model", model);
+        properties.set_field(ctx, "delegate", delegate);
+        let node = crate::constructors::construct_view(
+            ctx,
+            &each_state,
+            limits,
+            ViewKind::Repeater,
+            properties,
+        )?;
+        stack.replace(ctx, node);
+        Ok(CallbackReturn::Return)
+    });
+    ui.set_field(ctx, "each", each);
+    // A kind that does not exist is named, not a nil that fails to call.
+    let unknown_kind = Callback::from_fn(&ctx, |ctx, _, mut stack| {
+        let (_, key): (Table, LuaValue) = stack.consume(ctx)?;
+        let key = match key {
+            LuaValue::String(name) => name.display_lossy().to_string(),
+            other => format!("{other:?}"),
+        };
+        Err(HostError(format!(
+            "no ui kind `{key}`: the kinds are Item, Inset, Rect, ClipRect, Text, Image, Icon, Sdf, SdfShape, MouseArea, Row, Column, Grid, Flex, Flickable, Loader, Timer, Layout, Repeater, ListView, GridView, each"
+        ))
+        .into())
+    });
+    let ui_metatable = Table::new(&ctx);
+    ui_metatable.set_field(ctx, "__index", unknown_kind);
+    ui.set_metatable(ctx, Some(ui_metatable));
+    ui.set_field(
+        ctx,
+        "Layout",
+        crate::constructors_layout::layout_constructor(ctx, Rc::clone(&state), limits),
+    );
     ui.set_field(
         ctx,
         "Repeater",

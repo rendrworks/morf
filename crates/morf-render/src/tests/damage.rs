@@ -53,6 +53,48 @@ fn unchanged_frames_submit_no_gpu_work() {
     assert_eq!(engine.backend_mut().frames, 1);
 }
 
+/// A resize hands back a blank target, so the frame after one cannot be the
+/// difference from the frame before it.
+///
+/// Left as a difference, a resized surface comes up black and then fills in one
+/// piece at a time as things happen to animate — every pixel the tracker still
+/// believed was on screen went with the old target. This is why resizing goes
+/// through the engine rather than straight at the backend.
+#[test]
+fn a_resize_repaints_the_whole_screen() {
+    let mut scene = Scene::new();
+    let root = scene.create(Element::Rect);
+    scene.assign(root, "width", 20.0).unwrap();
+    scene.assign(root, "height", 10.0).unwrap();
+    let layout = Layout::compute(
+        &scene,
+        root,
+        Size {
+            width: 20.0,
+            height: 10.0,
+        },
+        &mut NoText,
+    )
+    .unwrap();
+    let mut engine = RenderEngine::new(RecordingBackend::default());
+    assert!(
+        !engine
+            .render(&scene, &layout, 120, |_| {})
+            .unwrap()
+            .is_empty()
+    );
+    // Nothing has changed, so without the resize this frame would be empty —
+    // which is exactly what `unchanged_frames_submit_no_gpu_work` asserts.
+    engine.resize(40, 20);
+    assert_eq!(engine.backend_mut().size, (40, 20));
+    let damage = engine.render(&scene, &layout, 120, |_| {}).unwrap();
+    assert!(
+        !damage.is_empty(),
+        "the frame after a resize is painted in full, not diffed against a target that is gone"
+    );
+    assert_eq!(engine.backend_mut().frames, 2);
+}
+
 #[test]
 fn fractional_scale_rounds_damage_outward() {
     let geometry = Geometry {
@@ -121,7 +163,7 @@ fn changed_command_damages_old_and_new_bounds() {
             clip: None,
             color: Color::rgba8(0, 0, 0, 255),
             color_overlay: Color::rgba8(0, 0, 0, 0),
-            gradient: Gradient::None,
+            gradient: None,
             radii: [0.0; 4],
             border_width: 0.0,
             antialiasing: true,
@@ -134,6 +176,7 @@ fn changed_command_damages_old_and_new_bounds() {
             shadow_offset_x: 0.0,
             shadow_offset_y: 0.0,
             shadow_inner: false,
+            shader: None,
         }],
         layers: Vec::new(),
     };
@@ -166,7 +209,7 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
         clip: None,
         color: Color::rgba8(255, 255, 255, 255),
         color_overlay: Color::rgba8(0, 0, 0, 0),
-        gradient: Gradient::None,
+        gradient: None,
         radii: [4.0; 4],
         border_width: 0.6,
         antialiasing: false,
@@ -179,6 +222,7 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
         shadow_offset_x: 3.0,
         shadow_offset_y: 4.0,
         shadow_inner: false,
+        shader: None,
     };
 
     assert_eq!(
@@ -196,8 +240,16 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
     // inside it.
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    let instance =
-        SdfFieldInstance::from_command(&command, 120, &mut layers, &mut materials).unwrap();
+    let instance = SdfFieldInstance::from_command(
+        &command,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
+    )
+    .unwrap();
     assert_eq!(instance.bounds, [20.0, 20.0, 40.0, 20.0]);
     assert_eq!(instance.area, [-5.0, -4.0, 51.0, 32.0]);
     assert_eq!(instance.style[..2], [1.0, 2.0]);
@@ -223,7 +275,16 @@ fn blur_and_shadow_expand_damage_and_gpu_bounds() {
     );
     let mut layers = Vec::new();
     let mut materials = Vec::new();
-    SdfFieldInstance::from_command(&inner, 120, &mut layers, &mut materials).unwrap();
+    SdfFieldInstance::from_command(
+        &inner,
+        120,
+        &mut layers,
+        &mut materials,
+        &mut Vec::new(),
+        &mut morf_text::TextSystem::new(),
+        &mut morf_svg::SvgOutlines::new(),
+    )
+    .unwrap();
     assert_eq!(materials[0].shadow[2], 1.0);
 }
 

@@ -1,12 +1,16 @@
-use morf_lua::{LayerSurfaceConfig, Runtime, WindowSurfaceConfig, WindowSurfaceKind};
+use morf_lua::{
+    LayerSurfaceConfig, Runtime, Toplevel, WindowSurfaceConfig, WindowSurfaceKind, Workspace,
+    WorkspaceRequest,
+};
 use morf_render::{RenderEngine, WgpuBackend};
 use morf_scene::NodeHandle;
 use morf_wayland::{
-    BarConfig, KeyboardFocus, LayerAnchors, LayerClient, PRIMARY_LAYER, ShellLayer, physical_size,
+    BarConfig, KeyboardFocus, LayerAnchors, LayerClient, PRIMARY_LAYER, ShellLayer, ToplevelAction,
+    physical_size,
 };
 use std::collections::{HashMap, HashSet};
 
-use crate::{paint::*, services::*, surfaces::*};
+use crate::{capture::*, paint::*, services::*, surfaces::*};
 
 /// Hands every request a configuration has queued to the compositor.
 ///
@@ -24,6 +28,110 @@ pub(crate) fn apply_service_requests(runtime: &mut Runtime, client: &mut LayerCl
     apply_virtual_keyboard_requests(runtime, client);
     apply_input_method_requests(runtime, client);
     apply_text_input_requests(runtime, client);
+    publish_windows(runtime, client);
+    publish_workspaces(runtime, client);
+    apply_workspace_requests(runtime, client);
+    apply_toplevel_requests(runtime, client);
+}
+
+/// Re-states the primary surface's opacity claim.
+///
+/// Called wherever its size or its configuration can have changed, because the
+/// claim is a region of a particular size and a stale one is worse than none:
+/// a bar that grew keeps a smaller opaque region, and the compositor is right
+/// to blend the difference.
+pub(crate) fn apply_primary_opaque(runtime: &Runtime, client: &LayerClient) {
+    client.set_layer_opaque(PRIMARY_LAYER, runtime.layer_surface_config().opaque);
+}
+
+/// Hands the compositor's window list to the configuration, when it changed.
+///
+/// Only when it changed. The list is rebuilt from scratch each time — cheap for
+/// a dozen windows, and cheaper than a diff that would have to decide what
+/// identity means for a renamed window — but doing it every frame would rebuild
+/// a dozen Lua tables sixty times a second to say nothing new.
+fn publish_windows(runtime: &mut Runtime, client: &mut LayerClient) {
+    if !client.take_toplevels_changed() {
+        return;
+    }
+    let windows: Vec<Toplevel> = client
+        .toplevels()
+        .into_iter()
+        .map(|window| Toplevel {
+            identifier: window.identifier,
+            title: window.title,
+            app_id: window.app_id,
+            activated: window.activated,
+            maximized: window.maximized,
+            minimized: window.minimized,
+            fullscreen: window.fullscreen,
+            controllable: window.controllable,
+        })
+        .collect();
+    runtime.set_windows(&windows);
+}
+
+/// Hands the compositor's workspace list to the configuration, when it changed.
+///
+/// The same contract as the window list above, and rebuilt the same way for the
+/// same reason.
+fn publish_workspaces(runtime: &mut Runtime, client: &mut LayerClient) {
+    if !client.take_workspaces_changed() {
+        return;
+    }
+    let workspaces: Vec<Workspace> = client
+        .workspaces()
+        .into_iter()
+        .map(|workspace| Workspace {
+            key: workspace.key,
+            id: workspace.id,
+            name: workspace.name,
+            coordinates: workspace.coordinates,
+            output: workspace.output,
+            active: workspace.active,
+            urgent: workspace.urgent,
+            hidden: workspace.hidden,
+            activatable: workspace.activatable,
+            removable: workspace.removable,
+            assignable: workspace.assignable,
+        })
+        .collect();
+    runtime.set_workspaces(&workspaces);
+}
+
+/// Acts on other windows, if the configuration asked.
+fn apply_toplevel_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    for request in runtime.take_toplevel_requests() {
+        let action = match request.action.as_str() {
+            "activate" => ToplevelAction::Activate,
+            "close" => ToplevelAction::Close,
+            "set_maximized" => ToplevelAction::Maximized(request.value),
+            "set_minimized" => ToplevelAction::Minimized(request.value),
+            "set_fullscreen" => ToplevelAction::Fullscreen(request.value),
+            "set_minimize_target" => match request.rect {
+                Some((x, y, width, height)) => ToplevelAction::MinimizeTarget {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+                None => continue,
+            },
+            _ => continue,
+        };
+        client.control_toplevel(&request.identifier, action);
+    }
+}
+
+/// Acts on workspaces, if the configuration asked.
+fn apply_workspace_requests(runtime: &mut Runtime, client: &mut LayerClient) {
+    for request in runtime.take_workspace_requests() {
+        match request {
+            WorkspaceRequest::Activate(key) => client.activate_workspace(&key),
+            WorkspaceRequest::Remove(key) => client.remove_workspace(&key),
+            WorkspaceRequest::Assign { key, output } => client.assign_workspace(&key, &output),
+        };
+    }
 }
 
 /// First identifier of the four internal edge reservers.
@@ -42,7 +150,7 @@ pub(crate) fn window_layer_id(id: u64) -> u64 {
 
 /// Inverse of [`window_layer_id`], or `None` for engine-owned surfaces.
 pub(crate) fn window_surface_id(layer: u64) -> Option<u64> {
-    (layer != PRIMARY_LAYER && layer < RESERVE_LAYER_BASE).then(|| layer - 1)
+    (layer != PRIMARY_LAYER && layer < crate::backdrop::BACKDROP_LAYER).then(|| layer - 1)
 }
 
 /// Builds the configuration for one single-edge reserver surface.
@@ -245,7 +353,7 @@ pub(crate) fn sync_layer_surfaces(
 
 /// Applies one compositor configure to a configured layer surface.
 pub(crate) fn layer_surface_configure(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     state: &mut SurfaceEventState,
     layer: u64,
@@ -264,9 +372,7 @@ pub(crate) fn layer_surface_configure(
     let scale = client.layer_scale_120(layer).unwrap_or(120);
     let (physical_width, physical_height) = physical_size((surface.width, surface.height), scale);
     if let Some(renderer) = &mut surface.renderer {
-        renderer
-            .backend_mut()
-            .resize(physical_width, physical_height);
+        renderer.resize(physical_width, physical_height);
     } else {
         let target = client
             .layer_window_target(layer)
@@ -287,7 +393,7 @@ pub(crate) fn layer_surface_configure(
 
 /// Resizes one configured layer surface after its preferred scale changed.
 pub(crate) fn layer_surface_scale(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     state: &mut SurfaceEventState,
     layer: u64,
@@ -301,7 +407,7 @@ pub(crate) fn layer_surface_scale(
     let scale = client.layer_scale_120(layer).unwrap_or(120);
     if let Some(renderer) = &mut surface.renderer {
         let (width, height) = physical_size((surface.width, surface.height), scale);
-        renderer.backend_mut().resize(width, height);
+        renderer.resize(width, height);
     }
     // And then draw into it. Resizing the swapchain without repainting leaves
     // the surface showing whatever the old buffer held, at the new size, until
@@ -316,7 +422,7 @@ pub(crate) fn layer_surface_scale(
 
 /// Paints one configured layer surface when the compositor permits a frame.
 pub(crate) fn layer_surface_frame(
-    runtime: &Runtime,
+    runtime: &mut Runtime,
     client: &LayerClient,
     state: &mut SurfaceEventState,
     layer: u64,

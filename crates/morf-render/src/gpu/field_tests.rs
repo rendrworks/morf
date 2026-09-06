@@ -82,6 +82,12 @@ pub(super) fn read_frame(backend: &mut WgpuBackend, list: &DrawList, size: u32) 
 
 pub(super) fn field_layer(x: f64, y: f64, size: f64, shape: Shape) -> SdfLayer {
     SdfLayer {
+        glyph: None,
+        glyph_morph_to: None,
+        svg_source: None,
+        svg_source_morph_to: None,
+        font_family: None,
+        font_family_morph_to: None,
         bounds: Geometry {
             x,
             y,
@@ -119,7 +125,7 @@ pub(super) fn field_command(node: NodeHandle, layers: Vec<SdfLayer>) -> DrawComm
         stroke_width: 0.0,
         stroke_alignment: BorderAlignment::Centred,
         softness: 0.0,
-        gradient: Gradient::None,
+        gradient: None,
         color_overlay: Color::rgba8(0, 0, 0, 0),
         shadow_color: Color::rgba8(0, 0, 0, 0),
         shadow_blur: 0.0,
@@ -127,6 +133,7 @@ pub(super) fn field_command(node: NodeHandle, layers: Vec<SdfLayer>) -> DrawComm
         shadow_offset_x: 0.0,
         shadow_offset_y: 0.0,
         shadow_inner: false,
+        shader: None,
         layers,
     }
 }
@@ -404,7 +411,7 @@ pub(crate) fn a_layer_reaching_outside_its_node_is_drawn_whole() {
         // No blend and no outline, so nothing else widens the quad: if the
         // layers are not accounted for, the overhang is simply gone.
         softness: 0.0,
-        gradient: Gradient::None,
+        gradient: None,
         color_overlay: Color::rgba8(0, 0, 0, 0),
         shadow_color: Color::rgba8(0, 0, 0, 0),
         shadow_blur: 0.0,
@@ -412,6 +419,7 @@ pub(crate) fn a_layer_reaching_outside_its_node_is_drawn_whole() {
         shadow_offset_x: 0.0,
         shadow_offset_y: 0.0,
         shadow_inner: false,
+        shader: None,
         layers: vec![layer],
     };
     let pixels = render_readback(

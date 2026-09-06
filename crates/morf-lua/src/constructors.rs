@@ -126,7 +126,9 @@ pub(crate) fn timer_constructor<'gc>(
             let timer = IoTimer::every(Duration::from_secs_f64(interval / 1_000.0))
                 .map_err(|error| HostError(error.to_string()))?;
             let interval = Duration::from_secs_f64(interval / 1_000.0);
+            let id = state.borrow_mut().next_timer_id();
             state.borrow_mut().timers.push(PendingTimer {
+                id,
                 timer,
                 callback: callback.clone(),
                 repeat,
@@ -149,8 +151,24 @@ pub(crate) fn view_constructor<'gc>(
     kind: ViewKind,
 ) -> Callback<'gc> {
     Callback::from_fn(&ctx, move |ctx, _, mut stack| {
-        let virtualized = !matches!(kind, ViewKind::Repeater);
         let properties: Table = stack.consume(ctx)?;
+        let node = construct_view(ctx, &state, limits, kind, properties)?;
+        stack.replace(ctx, node);
+        Ok(CallbackReturn::Return)
+    })
+}
+
+/// Builds a view node from its properties table; shared by `ui.Repeater`,
+/// `ui.ListView`, `ui.GridView` and `ui.each`.
+pub(crate) fn construct_view<'gc>(
+    ctx: Context<'gc>,
+    state: &Rc<RefCell<ReactiveState>>,
+    limits: Limits,
+    kind: ViewKind,
+    properties: Table<'gc>,
+) -> Result<LuaValue<'gc>, luna::Error<'gc>> {
+    {
+        let virtualized = !matches!(kind, ViewKind::Repeater);
         let model = match properties.get_value(ctx, "model") {
             LuaValue::UserData(model) => model
                 .downcast_static::<ListModelToken>()
@@ -161,6 +179,31 @@ pub(crate) fn view_constructor<'gc>(
             LuaValue::Function(Function::Closure(delegate)) => ctx.stash(delegate),
             _ => return Err(HostError("view delegate must be a function".to_owned()).into()),
         };
+        // A Repeater lays its delegates out as whatever it is asked to be:
+        // `as = "column"` makes it a Column of them, `as = "grid"` a Grid
+        // with the `columns` and spacings a Grid takes. Without it the
+        // delegates keep their own positions, as before.
+        let element = match kind {
+            ViewKind::Repeater => match properties.get_value(ctx, "as") {
+                LuaValue::Nil => Element::Item,
+                LuaValue::String(name) => match name.display_lossy().to_string().as_str() {
+                    "item" => Element::Item,
+                    "row" => Element::Row,
+                    "column" => Element::Column,
+                    "grid" => Element::Grid,
+                    "flex" => Element::Flex,
+                    other => {
+                        return Err(HostError(format!(
+                            "Repeater `as` must be item, row, column, grid or flex, not `{other}`"
+                        ))
+                        .into());
+                    }
+                },
+                _ => return Err(HostError("Repeater `as` must be a string".to_owned()).into()),
+            },
+            _ => Element::Item,
+        };
+        let repeater_keeps_columns = element == Element::Grid;
         let clean = Table::new(&ctx);
         for (key, value) in properties.iter(ctx) {
             let special = matches!(
@@ -170,13 +213,13 @@ pub(crate) fn view_constructor<'gc>(
                         name.display_lossy().to_string().as_str(),
                         "model"
                             | "delegate"
+                            | "as"
                             | "item_extent"
                             | "overscan"
                             | "content_y"
                             | "cell_width"
                             | "cell_height"
-                            | "columns"
-                    )
+                    ) || (name.display_lossy().to_string() == "columns" && !repeater_keeps_columns)
             );
             if !special {
                 clean
@@ -187,13 +230,16 @@ pub(crate) fn view_constructor<'gc>(
         if virtualized {
             clean.set_field(ctx, "clip", true);
         }
-        let node = create_node(&state, Element::Item);
-        configure_element(&state, ctx, limits, node, clean).map_err(HostError)?;
+        let node = create_node(state, element);
+        configure_element(state, ctx, limits, node, clean).map_err(HostError)?;
         let model_handle = Rc::clone(&model.model);
         let model = model_handle.borrow();
-        let mut configured_view = None;
+        let configured_view;
         let (range, item_extent, offset, columns, column_extent) = match kind {
-            ViewKind::Repeater => (0..model.len(), 0.0, 0.0, 1, 0.0),
+            ViewKind::Repeater => {
+                configured_view = Some(VirtualList::new_unbounded());
+                (0..model.len(), 0.0, 0.0, 1, 0.0)
+            }
             ViewKind::List => {
                 let item_extent =
                     table_number(ctx, properties, "item_extent", 1.0).map_err(HostError)?;
@@ -284,10 +330,14 @@ pub(crate) fn view_constructor<'gc>(
                     reuse_limit,
                     pool_root: None,
                     column_extent,
+                    positioned: virtualized,
                 },
             );
         }
-        stack.replace(ctx, node_userdata(ctx, Rc::clone(&state), node));
-        Ok(CallbackReturn::Return)
-    })
+        Ok(LuaValue::UserData(node_userdata(
+            ctx,
+            Rc::clone(state),
+            node,
+        )))
+    }
 }
