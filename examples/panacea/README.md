@@ -71,6 +71,16 @@ icons at its right, and a page a sheet the width of the screen under it.
 `cage -- morf examples/panacea/init.lua` in a window the size of a phone
 is the way to look at it.
 
+## The kit
+
+Every page is built from `kit.lua` and nothing else: one row (an icon in
+a circle, a title over a line of state, one thing at the right -- a
+switch, a chevron, a figure, a cross), one card with a slider, one row
+with choices, one section label, one full-width action, one round
+button, one statistic. A page is a column of those at one gap, so every
+page is the same page with different words in it. The quick settings
+tiles are the same row, pill-shaped.
+
 ## Colours and type
 
 When lule has written `~/.cache/lule/colors.json`, the island takes its

@@ -272,79 +272,42 @@ tiles.all = {
   },
 }
 
---- One pill, `width` wide: an icon and a name, tinted with the accent
---- while on. The body flips the switch; a tile with a page behind it has
---- a chevron at its right end that opens it, split off by a hairline, so
---- a tap never opens what a tap was meant to switch. A tile with a page
---- and no switch opens it from anywhere. With `slot`, the icon and the
---- name are left empty for a piece of the strip to land on, registered
---- in `slots`.
+--- One pill, `width` wide: the kit's row, pill-shaped. The body flips
+--- the switch; a tile with a page behind it has a chevron that opens it,
+--- split off by a hairline when the body does something else. With
+--- `slot`, the icon and the name are left empty for a piece of the strip
+--- to land on, registered in `slots`. In a grid the pills cascade in.
 function tiles.pill(entry, width, island, slots, stagger)
-  local H = S(50)
+  local kit = require("kit")
   local on = entry.on or function() return false end
-  local tint = entry.tint or C.on_tint
-  local edge = entry.edge or C.on_edge
-  local lit = entry.icon_color or C.on
-  local ARROW = entry.page and S(44) or 0
   local function open_page() if entry.page then island.open(entry.page) end end
-  local function icon_node()
-    if entry.slot then
-      local node = ui.Item { width = S(config.iconSize), height = S(config.iconSize) }
-      slots[entry.slot .. "_glyph"] = { node = node, size = config.iconSize }
-      return node
-    end
-    return theme.icon { text = entry.icon, size = config.iconSize, color = function() return on() and lit or C.muted end }
-  end
-  local function label_node(room)
-    if entry.slot then
-      local node = ui.Item { width = room, height = S((config.fontSize - 1) * 1.3) }
-      slots[entry.slot .. "_text"] = { node = node, size = config.fontSize - 1, weight = 700 }
-      return node
-    end
-    return theme.text { text = entry.title, font_weight = 700, size = config.fontSize - 1, width = room, elide = "right" }
-  end
-  local room = width - S(58) - ARROW
-  -- In a grid the pills cascade in: each one rises from a little further
-  -- down than the one before, so the page opening reads as a wave.
   local function open_now() return island.page:get() ~= "" end
-  return theme.button {
-    width = width, height = H, radius = H / 2,
+  local values = {
+    width = width, pill = true,
     visible = entry.available,
+    icon = entry.icon, title = entry.title, subtitle = entry.subtitle,
+    active = on, accent = entry.icon_color, tint = entry.tint, edge = entry.edge,
+    on_click = entry.toggle or open_page,
+    on_right_click = entry.page and open_page or nil,
     translate_y = stagger and function() return open_now() and 0 or S(18 + 7 * stagger) end or nil,
     opacity = stagger and function() return open_now() and 1 or 0 end or nil,
-    behavior = { color = theme.motion.hover, scale = theme.motion.snappy,
-      translate_y = theme.motion.move, opacity = theme.motion.fade },
-    color = function() return on() and tint or C.card end,
-    hover_color = function() return on() and tint or C.card_hover end,
-    border_width = 1,
-    border_color = function() return on() and edge or C.edge end,
-    on_click = entry.toggle or open_page,
-    ui.Row {
-      gap = S(10), align = "center", height = H,
-      anchors = { left = true, left_margin = S(18) },
-      icon_node(),
-      ui.Column {
-        gap = S(1),
-        label_node(room),
-        entry.subtitle and theme.text { text = entry.subtitle, size = config.fontSize - 5, color = C.muted,
-          width = room, elide = "right" } or nil,
-      },
-    },
-    -- Above the pill's own click area, or the switch would take the tap
-    -- meant for the chevron.
-    entry.page and ui.Item {
-      width = ARROW, height = H, z = 2,
-      anchors = { right = true },
-      ui.Rect { width = 1, height = H - S(22), y = S(11), color = C.edge, visible = entry.toggle ~= nil },
-      theme.icon { text = "󰅂", size = config.iconSize - 2, anchors = { center_in = true }, color = C.muted },
-      entry.toggle and ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = open_page } or nil,
-    } or nil,
-    ui.MouseArea {
-      anchors = { fill = true },
-      accepted_buttons = "right",
-      on_clicked = open_page,
-    },
   }
+  if entry.page then values.right = kit.chevron(open_page, entry.toggle ~= nil) end
+  if entry.slot then
+    local icon_slot = ui.Item { width = S(config.iconSize), height = S(config.iconSize), anchors = { center_in = true } }
+    local circle = ui.Rect {
+      width = kit.CIRCLE, height = kit.CIRCLE, radius = kit.CIRCLE / 2,
+      color = function() return on() and (entry.icon_color or C.on) or C.card_hover end,
+      behavior = { color = theme.motion.hover },
+      icon_slot,
+    }
+    slots[entry.slot .. "_glyph"] = { node = icon_slot, size = config.iconSize }
+    local room = width - kit.PAD - kit.CIRCLE - S(12) - S(56)
+    local title_slot = ui.Item { width = room, height = S((config.fontSize - 1) * 1.3) }
+    slots[entry.slot .. "_text"] = { node = title_slot, size = config.fontSize - 1, weight = 700 }
+    values.icon_node, values.title_node = circle, title_slot
+  end
+  return kit.row(values)
 end
 
 --- The grid, `width` wide, in the settings' order: `tileColumns` to a
@@ -356,7 +319,7 @@ function tiles.build(island, width, slots)
   local columns = math.max(1, math.floor(tonumber(config.tileColumns) or 2))
   local rows = math.max(1, math.floor(tonumber(config.tileRows) or 3))
   local GAP = S(8)
-  local H = S(50)
+  local H = require("kit").ROW
   local tile_w = math.floor((width - GAP * (columns - 1)) / columns)
   local per_page = columns * rows
   local pages = {}

@@ -6,6 +6,7 @@ local morf = require("morf")
 local ui = require("morf.ui")
 local config = require("config")
 local theme = require("theme")
+local kit = require("kit")
 local system = require("system")
 local proc = require("proc")
 
@@ -92,86 +93,41 @@ end
 
 function page.build(island)
   local W = theme.page_w()
-  local third = math.floor((W - S(8) * 2) / 3)
-  local function profile_button(profile)
-    return theme.button {
-      width = third, height = S(56),
-      color = function() return page.profile:get() == profile.id and C.ok_tint or C.card end,
-      hover_color = function() return page.profile:get() == profile.id and C.ok_tint or C.card_hover end,
-      border_width = 1,
-      border_color = function() return page.profile:get() == profile.id and C.ok:alpha(0.5) or C.edge end,
-      on_click = function() page.set_profile(profile.id) end,
-      ui.Column {
-        gap = S(4), anchors = { center_in = true },
-        ui.Item { width = third - S(20), height = S(18),
-          theme.icon { text = profile.glyph, size = config.iconSize - 2, anchors = { center_in = true },
-            color = function() return page.profile:get() == profile.id and C.ok or C.muted end } },
-        ui.Item { width = third - S(20), height = S(16),
-          theme.text { text = profile.label, size = config.fontSize - 3, anchors = { center_in = true },
-            color = function() return page.profile:get() == profile.id and C.fg or C.muted end } },
-      },
-    }
-  end
-  local function stat(label, value)
-    return theme.card {
-      width = third, height = S(46),
-      ui.Column {
-        gap = S(2), anchors = { center_in = true },
-        ui.Item { width = third - S(20), height = S(14),
-          theme.text { text = label, size = config.fontSize - 5, color = C.muted, anchors = { center_in = true } } },
-        ui.Item { width = third - S(20), height = S(18),
-          theme.text { text = value, size = config.fontSize - 1, font_weight = 700, anchors = { center_in = true } } },
-      },
-    }
-  end
-  return ui.Column {
-    gap = S(10),
-    theme.card {
-      width = W, height = S(64),
-      ui.Row {
-        gap = S(14), align = "center", height = S(64),
-        anchors = { left = true, left_margin = S(14) },
-        (function()
-          local icon_slot = ui.Item { width = S(config.iconSize + 2), height = S(config.iconSize + 2) }
-          page.slots.battery_glyph = { node = icon_slot, size = config.iconSize + 2 }
-          return icon_slot
-        end)(),
-        ui.Column {
-          gap = S(2),
-          (function()
-            local text_slot = ui.Item { width = S(80), height = S((config.fontSize + 4) * 1.3) }
-            page.slots.battery_text = { node = text_slot, size = config.fontSize + 4, weight = 700 }
-            return text_slot
-          end)(),
-          theme.text {
-            size = config.fontSize - 3, color = C.muted,
-            text = function()
-              if state.battery.charging then return "Charging" end
-              local profile = page.profile:get()
-              if profile ~= "" then return pretty(profile) end
-              return state.battery.plugged and "Plugged in" or "On battery"
-            end,
-          },
-        },
-      },
-    },
-    ui.Row {
-      gap = S(8),
-      profile_button(PROFILES[1]), profile_button(PROFILES[2]), profile_button(PROFILES[3]),
-    },
-    theme.card {
-      width = W, height = S(40), border_width = 1, border_color = C.edge,
-      visible = function() return not page.info.profiles end,
-      theme.text { text = "Profiles need power-profiles-daemon, which is not running", size = config.fontSize - 4,
-        color = C.muted, anchors = { left = true, left_margin = S(14), top = true, top_margin = S(12) } },
-    },
-    ui.Row {
-      gap = S(8),
-      stat("Capacity", function() return page.info.capacity end),
-      stat("Health", function() return page.info.health end),
-      stat("Power", function() return page.info.rate end),
-    },
+  local third = kit.cell(W, 3)
+  -- The strip's glyph and figure land on this row.
+  local icon_slot = ui.Item { width = S(config.iconSize + 2), height = S(config.iconSize + 2), anchors = { center_in = true } }
+  local circle = ui.Rect {
+    width = kit.CIRCLE, height = kit.CIRCLE, radius = kit.CIRCLE / 2,
+    color = function() return state.battery.charging and C.ok or C.card_hover end,
+    behavior = { color = theme.motion.hover },
+    icon_slot,
   }
+  page.slots.battery_glyph = { node = icon_slot, size = config.iconSize + 2 }
+  local text_slot = ui.Item { width = S(120), height = S((config.fontSize + 4) * 1.3) }
+  page.slots.battery_text = { node = text_slot, size = config.fontSize + 4, weight = 700 }
+  local profiles = {}
+  for _, profile in ipairs(PROFILES) do profiles[#profiles + 1] = { label = profile.label, value = profile.id } end
+  return kit.page(W, {
+    kit.row {
+      width = W, height = S(64),
+      icon_node = circle, title_node = text_slot,
+      subtitle = function()
+        if state.battery.charging then return "Charging" end
+        local profile = page.profile:get()
+        if profile ~= "" then return pretty(profile) end
+        return state.battery.plugged and "Plugged in" or "On battery"
+      end,
+      active = function() return state.battery.charging end, accent = C.ok, tint = C.ok_tint, edge = C.ok:alpha(0.5),
+    },
+    kit.choice_row { width = W, title = "Profile", options = profiles,
+      current = function() return page.profile:get() end, choose = page.set_profile },
+    kit.empty("Profiles need power-profiles-daemon, which is not running", function() return not page.info.profiles end),
+    kit.grid(W, 3, {
+      kit.stat(third, "Capacity", function() return page.info.capacity end),
+      kit.stat(third, "Health", function() return page.info.health end),
+      kit.stat(third, "Power", function() return page.info.rate end),
+    }),
+  })
 end
 
 return page

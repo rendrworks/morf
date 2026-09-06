@@ -5,6 +5,7 @@ local morf = require("morf")
 local ui = require("morf.ui")
 local config = require("config")
 local theme = require("theme")
+local kit = require("kit")
 local system = require("system")
 local hypr = require("hypr")
 
@@ -21,11 +22,11 @@ page.current = morf.signal("panacea.power.current", 1)
 local armed_clock = morf.elapsed_timer()
 
 local ACTIONS = {
-  { id = "sleep", glyph = "󰒲", label = "Sleep", accent = morf.color "#38bdf8", run = function() system.launch({ "systemctl", "suspend" }) end },
-  { id = "lock", glyph = "󰌾", label = "Lock", accent = morf.color "#a78bfa", instant = true, run = function() require("island").lock() end },
-  { id = "logout", glyph = "󰗽", label = "Log out", accent = C.warn, run = function() hypr.eval("hl.dispatch(hl.dsp.exit())") end },
-  { id = "reboot", glyph = "󰜉", label = "Restart", accent = morf.color "#fb923c", run = function() system.launch({ "systemctl", "reboot" }) end },
-  { id = "poweroff", glyph = "󰐥", label = "Shut down", accent = C.crit, run = function() system.launch({ "systemctl", "poweroff" }) end },
+  { id = "sleep", glyph = "󰒲", label = "Sleep", hint = "Suspend to memory", accent = morf.color "#38bdf8", run = function() system.launch({ "systemctl", "suspend" }) end },
+  { id = "lock", glyph = "󰌾", label = "Lock", hint = "Keep everything running", accent = morf.color "#a78bfa", instant = true, run = function() require("island").lock() end },
+  { id = "logout", glyph = "󰗽", label = "Log out", hint = "End the session", accent = C.warn, run = function() hypr.eval("hl.dispatch(hl.dsp.exit())") end },
+  { id = "reboot", glyph = "󰜉", label = "Restart", hint = "Reboot the machine", accent = morf.color "#fb923c", run = function() system.launch({ "systemctl", "reboot" }) end },
+  { id = "poweroff", glyph = "󰐥", label = "Shut down", hint = "Power off", accent = C.crit, run = function() system.launch({ "systemctl", "poweroff" }) end },
 }
 
 local function trigger(index, island)
@@ -67,33 +68,18 @@ end
 
 function page.build(island)
   local W = theme.page_w()
-  local cell = math.floor((W - S(8) * (#ACTIONS - 1)) / #ACTIONS)
-  local buttons = {}
+  local rows = {}
   for index, action in ipairs(ACTIONS) do
-    buttons[index] = theme.button {
-      width = cell, height = S(84),
-      color = function()
-        if page.armed:get() == index then return action.accent:alpha(0.3) end
-        return page.current:get() == index and C.card_hover or C.card
-      end,
-      hover_color = function() return page.armed:get() == index and action.accent:alpha(0.3) or C.card_hover end,
-      border_width = 1,
-      border_color = function() return page.armed:get() == index and action.accent:alpha(0.7) or C.edge end,
+    rows[index] = kit.row {
+      width = W,
+      icon = action.glyph, accent = action.accent, tint = action.accent:alpha(0.25), edge = action.accent:alpha(0.6),
+      title = action.label,
+      subtitle = function() return page.armed:get() == index and "Once more to confirm" or action.hint end,
+      active = function() return page.armed:get() == index end,
       on_click = function() trigger(index, island) end,
-      ui.Column {
-        gap = S(8), anchors = { center_in = true },
-        ui.Item { width = cell - S(10), height = S(26),
-          theme.icon { text = action.glyph, size = config.iconSize + 4, anchors = { center_in = true }, color = action.accent } },
-        ui.Item { width = cell - S(10), height = S(16),
-          theme.text { text = action.label, size = config.fontSize - 3, anchors = { center_in = true },
-            color = function() return page.armed:get() == index and C.fg or C.muted end } },
-      },
     }
   end
-  return ui.Column {
-    gap = S(12),
-    ui.Row { gap = S(8), table.unpack(buttons) },
-  }
+  return kit.page(W, rows)
 end
 
 return page

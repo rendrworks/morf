@@ -4,6 +4,7 @@
 local ui = require("morf.ui")
 local config = require("config")
 local theme = require("theme")
+local kit = require("kit")
 
 local S = theme.S
 local C = theme.color
@@ -33,58 +34,35 @@ end
 function page.build(island)
   local W = theme.page_w()
   if not w then
-    return ui.Column {
-      gap = S(8),
-      theme.text { text = "No location set.", size = config.fontSize - 1 },
-      theme.text { text = 'Add "weatherLocation": "Berlin" to ' .. config.path, size = config.fontSize - 4, color = C.muted,
-        width = W, wrap = true, max_lines = 2 },
-    }
+    return kit.page(W, {
+      kit.empty("No location set", function() return true end),
+      kit.empty('Add "weatherLocation": "Berlin" to ' .. config.path, function() return true end),
+    })
   end
-  local third = math.floor((W - S(8) * 2) / 3)
-  local function tile(glyph, color, value, label)
-    return theme.card {
-      width = third, height = S(78),
-      ui.Column {
-        gap = S(4), anchors = { center_in = true },
-        ui.Item { width = third - S(20), height = S(20), theme.icon { text = glyph, size = config.iconSize, color = color, anchors = { center_in = true } } },
-        ui.Item { width = third - S(20), height = S(18), theme.text { text = value, font_weight = 700, size = config.fontSize - 1, anchors = { center_in = true } } },
-        ui.Item { width = third - S(20), height = S(14), theme.text { text = label, size = config.fontSize - 5, color = C.muted, anchors = { center_in = true } } },
-      },
-    }
-  end
+  local third = kit.cell(W, 3)
   local function day(row)
-    return ui.Column {
-      gap = S(6),
-      ui.Item { width = S(70), height = S(16), theme.text { text = row.name, size = config.fontSize - 4, color = C.muted, anchors = { center_in = true } } },
-      ui.Item { width = S(70), height = S(24), theme.icon { text = row.glyph, size = config.iconSize + 2, anchors = { center_in = true } } },
-      ui.Item { width = S(70), height = S(16), theme.text { text = row.high .. "/" .. row.low, size = config.fontSize - 4, color = C.muted, anchors = { center_in = true } } },
+    return kit.row {
+      width = W, height = S(44),
+      icon = row.glyph, title = row.name, subtitle = nil,
+      right = kit.figure(row.high .. " / " .. row.low, S(120)), right_w = S(120),
     }
   end
-  return ui.Column {
-    gap = S(12),
-    ui.Row {
-      gap = S(20), align = "center",
-      theme.icon { text = function() return w.glyph end, size = 48, color = C.muted },
-      theme.text { text = function() return w.temperature ~= "" and w.temperature or "--" end, size = 40, font_weight = 700 },
+  return kit.page(W, {
+    kit.row {
+      width = W, height = S(64),
+      icon = function() return w.glyph end,
+      title = function() return w.temperature ~= "" and w.temperature or "--" end,
+      subtitle = function() return w.description end,
+      right = kit.figure(function() return w.sunrise .. "  󰖜   " .. w.sunset .. "  󰖛" end, S(200)), right_w = S(200),
     },
-    ui.Row {
-      gap = S(8),
-      tile("󰔏", C.warn, function() return w.feels end, "Feels like"),
-      tile("󰖎", C.on, function() return w.humidity end, "Humidity"),
-      tile("󰖝", C.ok, function() return w.wind end, "Wind"),
-    },
-    ui.Item {
-      width = W, height = S(22),
-      ui.Row { gap = S(8), align = "center", anchors = { left = true },
-        theme.icon { text = "󰖜", size = config.iconSize - 2, color = C.coffee },
-        theme.text { text = function() return w.sunrise end, size = config.fontSize - 2 } },
-      ui.Row { gap = S(8), align = "center", anchors = { right = true },
-        theme.icon { text = "󰖛", size = config.iconSize - 2, color = C.warn },
-        theme.text { text = function() return w.sunset end, size = config.fontSize - 2 } },
-    },
-    ui.Rect { width = W, height = 1, color = C.edge },
-    ui.Repeater { as = "row", gap = S(16), model = w.days, delegate = day },
-  }
+    kit.grid(W, 3, {
+      kit.stat(third, "Feels like", function() return w.feels end),
+      kit.stat(third, "Humidity", function() return w.humidity end),
+      kit.stat(third, "Wind", function() return w.wind end),
+    }),
+    kit.section("Next days"),
+    ui.Repeater { as = "column", gap = kit.GAP, model = w.days, delegate = day },
+  })
 end
 
 return page

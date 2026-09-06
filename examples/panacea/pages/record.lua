@@ -6,6 +6,7 @@ local ui = require("morf.ui")
 local io = require("morf.io")
 local config = require("config")
 local theme = require("theme")
+local kit = require("kit")
 local proc = require("proc")
 
 local S = theme.S
@@ -90,50 +91,32 @@ end
 
 function page.build(island)
   local W = theme.page_w()
-  local function row(label, node, wide)
-    return theme.setting_row { width = W, title = label, control = node, control_h = S(30), control_w = wide or S(200) }
-  end
-  local function switch(glyph, label, get, set)
-    return theme.switch_row { width = W, icon = glyph, title = label, on = get, set = set }
-  end
-  return ui.Column {
-    gap = S(8),
-    row("Frame rate", theme.chips({ 30, 60, 120 }, function() return state.fps end, function(v) state.fps = v end)),
-    row("Folder", theme.chips({
-      { label = "Videos", value = config.home .. "/Videos" },
-      { label = "Pictures", value = config.home .. "/Pictures" },
-      { label = "Desktop", value = config.home .. "/Desktop" },
-      { label = "Home", value = config.home },
-    }, function() return state.folder end, function(v) state.folder = v end), S(330)),
-    switch("󰕾", "System audio", function() return state.audio end, function(v) state.audio = v end),
-    switch("󰍬", "Microphone", function() return state.mic end, function(v) state.mic = v end),
-    theme.button {
-      width = W, height = S(46),
-      color = function() return state.running and C.card or C.crit_tint end,
-      hover_color = function() return state.running and C.card_hover or C.crit:alpha(0.32) end,
+  return kit.page(W, {
+    kit.choice_row { width = W, title = "Frame rate",
+      options = { 30, 60, 120 }, current = function() return state.fps end, choose = function(v) state.fps = v end },
+    kit.choice_row { width = W, title = "Folder",
+      options = {
+        { label = "Videos", value = config.home .. "/Videos" },
+        { label = "Pictures", value = config.home .. "/Pictures" },
+        { label = "Desktop", value = config.home .. "/Desktop" },
+        { label = "Home", value = config.home },
+      }, current = function() return state.folder end, choose = function(v) state.folder = v end },
+    kit.switch_row { width = W, icon = "󰕾", title = "System audio", subtitle = "What the speakers play",
+      on = function() return state.audio end, set = function(v) state.audio = v end },
+    kit.switch_row { width = W, icon = "󰍬", title = "Microphone", subtitle = "Your voice over it",
+      on = function() return state.mic end, set = function(v) state.mic = v end },
+    kit.action {
+      width = W, kind = "danger",
+      icon = function() return state.running and "󰓛" or "󰑊" end,
+      label = function() return state.running and "Stop recording" or "Start recording" end,
       on_click = function()
         if state.running then page.stop() else page.start() end
         island.close()
       end,
-      ui.Row {
-        gap = S(10), align = "center", height = S(46), anchors = { center_in = true },
-        ui.Rect { width = S(10), height = S(10), radius = S(5), color = C.crit },
-        theme.text { text = function() return state.running and "Stop recording" or "Start recording" end, font_weight = 700 },
-      },
     },
-    theme.button {
-      width = W, height = S(44),
-      on_click = function()
-        require("system").launch({ "xdg-open", state.folder })
-        island.close()
-      end,
-      ui.Row {
-        gap = S(10), align = "center", height = S(44), anchors = { center_in = true },
-        theme.icon { text = "󰉋", size = config.iconSize - 2 },
-        theme.text { text = "Open recordings folder", font_weight = 700, size = config.fontSize - 1 },
-      },
-    },
-  }
+    kit.action { width = W, icon = "󰉋", label = "Open recordings folder",
+      on_click = function() system.launch("xdg-open '" .. state.folder .. "'") end },
+  })
 end
 
 return page

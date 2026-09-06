@@ -5,6 +5,7 @@ local morf = require("morf")
 local ui = require("morf.ui")
 local config = require("config")
 local theme = require("theme")
+local kit = require("kit")
 local system = require("system")
 
 local S = theme.S
@@ -75,51 +76,26 @@ end
 
 function page.build(island)
   local W = theme.page_w()
-  local ROW = S(52)
   local function device_row(row)
-    return theme.button {
-      width = W, height = ROW,
-      color = function() return row.connected and C.on_tint or C.card end,
-      hover_color = function() return row.connected and C.on_tint or C.card_hover end,
-      border_width = 1,
-      border_color = function() return row.connected and C.on_edge or C.edge end,
+    return kit.row {
+      width = W,
+      icon = glyph_for(row.icon),
+      title = row.name,
+      subtitle = (row.connected and "Connected" or (row.paired and "Paired" or "Not paired"))
+        .. (row.battery and ("  ·  " .. row.battery .. "%") or ""),
+      active = function() return row.connected end,
       on_click = function()
         system.bluetooth_connect(row.path, not row.connected)
         morf.timer(2000, page.refresh, false)
       end,
-      ui.Row {
-        gap = S(12), align = "center", height = ROW,
-        anchors = { left = true, left_margin = S(12) },
-        theme.icon { text = glyph_for(row.icon), size = config.iconSize, color = row.connected and C.on or C.muted },
-        ui.Column {
-          gap = S(2),
-          theme.text { text = row.name, font_weight = 700, size = config.fontSize - 1, width = W - S(160), elide = "right" },
-          theme.text {
-            size = config.fontSize - 4, color = C.muted,
-            text = (row.connected and "Connected" or (row.paired and "Paired" or "Not paired"))
-              .. (row.battery and ("  ·  " .. row.battery .. "%") or ""),
-          },
-        },
-      },
-      ui.Item {
-        width = S(32), height = S(32),
-        anchors = { right = true, top = true, right_margin = S(8), top_margin = (ROW - S(32)) / 2 },
-        visible = row.paired,
-        theme.icon { text = "󰅖", size = config.iconSize - 3, color = C.muted, anchors = { center_in = true } },
-        ui.MouseArea {
-          anchors = { fill = true }, cursor = "pointer",
-          on_clicked = function()
-            system.bluetooth_forget(row.path)
-            morf.timer(600, page.refresh, false)
-          end,
-        },
-      },
+      right = row.paired and kit.cross(function()
+        system.bluetooth_forget(row.path)
+        morf.timer(600, page.refresh, false)
+      end) or nil,
     }
   end
-
-  return ui.Column {
-    gap = S(10),
-    theme.switch_row {
+  return kit.page(W, {
+    kit.switch_row {
       width = W, icon = "󰂯", title = "Bluetooth",
       subtitle = function()
         if not state.bluetooth.powered then return "Off" end
@@ -132,13 +108,11 @@ function page.build(island)
         morf.timer(800, page.refresh, false)
       end,
     },
-    ui.Repeater { as = "column", gap = S(6), model = page.devices, delegate = device_row },
-    theme.text {
-      text = function() return state.bluetooth.powered and "No devices" or "Bluetooth is off" end,
-      size = config.fontSize - 2, color = C.faint,
-      visible = function() return page.devices:len() == 0 end,
-    },
-  }
+    kit.section("Devices", function() return page.devices:len() > 0 end),
+    ui.Repeater { as = "column", gap = kit.GAP, model = page.devices, delegate = device_row },
+    kit.empty(function() return state.bluetooth.powered and "No devices" or "Bluetooth is off" end,
+      function() return page.devices:len() == 0 end),
+  })
 end
 
 return page

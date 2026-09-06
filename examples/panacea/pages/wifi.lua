@@ -5,6 +5,7 @@ local morf = require("morf")
 local ui = require("morf.ui")
 local config = require("config")
 local theme = require("theme")
+local kit = require("kit")
 local system = require("system")
 local proc = require("proc")
 local field = require("field")
@@ -195,71 +196,39 @@ end
 
 function page.build(island)
   local W = theme.page_w()
-  local ROW = S(52)
+  local tiles = require("tiles")
   local function network_row(row)
-    return theme.button {
-      width = W, height = ROW,
-      color = function() return row.connected and C.on_tint or C.card end,
-      hover_color = function() return row.connected and C.on_tint or C.card_hover end,
-      border_width = 1,
-      border_color = function() return row.connected and C.on_edge or C.edge end,
-      on_click = function()
-        if row.connected then disconnect() else connect(row.ssid) end
-      end,
-      ui.Row {
-        gap = S(12), align = "center", height = ROW,
-        anchors = { left = true, left_margin = S(12) },
-        theme.icon {
-          text = row.signal >= 75 and "󰤨" or row.signal >= 50 and "󰤥" or row.signal >= 25 and "󰤢" or "󰤟",
-          size = config.iconSize, color = row.connected and C.on or C.muted,
-        },
-        ui.Column {
-          gap = S(2),
-          theme.text { text = row.ssid, font_weight = 700, size = config.fontSize - 1, width = W - S(160), elide = "right" },
-          theme.text {
-            text = row.connected and "Connected" or (row.signal .. "%" .. (row.secured and "  ·  󰌾" or "")),
-            size = config.fontSize - 4, color = C.muted,
-          },
-        },
-      },
-      ui.Item {
-        width = S(32), height = S(32),
-        anchors = { right = true, top = true, right_margin = S(8), top_margin = (ROW - S(32)) / 2 },
-        visible = row.connected,
-        theme.icon { text = "󰅖", size = config.iconSize - 3, color = C.muted, anchors = { center_in = true } },
-        ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = function() forget(row.ssid) end },
-      },
+    return kit.row {
+      width = W,
+      icon = row.signal >= 75 and "󰤨" or row.signal >= 50 and "󰤥" or row.signal >= 25 and "󰤢" or "󰤟",
+      title = row.ssid,
+      subtitle = row.connected and "Connected" or (row.signal .. "%" .. (row.secured and "  ·  secured" or "  ·  open")),
+      active = function() return row.connected end,
+      on_click = function() if row.connected then disconnect() else connect(row.ssid) end end,
+      right = row.connected and kit.cross(function() forget(row.ssid) end) or nil,
     }
   end
-
-  -- The radio's switch, here and only here: a tap on the tile brings the
-  -- list, and turning Wi-Fi off is a deliberate second step.
-  local tiles = require("tiles")
-  local radio = theme.switch_row {
-    width = W, icon = "󰤨", title = "Wi-Fi",
-    subtitle = function()
-      if not tiles.state.wifi_radio then return "Off" end
-      return system.state.network.kind == "wifi" and ("Connected to " .. system.state.network.name) or "On"
-    end,
-    on = function() return tiles.state.wifi_radio end,
-    set = tiles.set_wifi_radio,
-  }
-  return ui.Flex {
-    direction = "column", width = W,
-    gap = S(10),
-    radio,
-    ui.Column {
-      gap = S(6),
+  return kit.page(W, {
+    kit.switch_row {
+      width = W, icon = "󰤨", title = "Wi-Fi",
+      subtitle = function()
+        if not tiles.state.wifi_radio then return "Off" end
+        return system.state.network.kind == "wifi" and ("Connected to " .. system.state.network.name) or "On"
+      end,
+      on = function() return tiles.state.wifi_radio end,
+      set = tiles.set_wifi_radio,
+    },
+    ui.Flex {
+      direction = "column", width = W, gap = S(6),
       visible = function() return page.asking:get() ~= "" end,
-      theme.text { text = function() return "Password for " .. page.asking:get() end, size = config.fontSize - 2, color = C.muted },
+      kit.section(function() return "Password for " .. page.asking:get() end),
       field.node(password, { width = W, height = S(44), radius = 12, color = C.card }),
     },
-    ui.Repeater { as = "column", gap = S(6), model = page.networks, delegate = network_row },
-    theme.text {
-      text = "No networks yet", size = config.fontSize - 2, color = C.faint,
-      visible = function() return page.networks:len() == 0 and not page.scanning:get() end,
-    },
-  }
+    kit.section("Networks", function() return page.networks:len() > 0 end),
+    ui.Repeater { as = "column", gap = kit.GAP, model = page.networks, delegate = network_row },
+    kit.empty("No networks yet", function() return page.networks:len() == 0 and not page.scanning:get() end),
+    kit.empty("Scanning…", function() return page.networks:len() == 0 and page.scanning:get() end),
+  })
 end
 
 return page

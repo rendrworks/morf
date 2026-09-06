@@ -5,6 +5,7 @@ local morf = require("morf")
 local ui = require("morf.ui")
 local config = require("config")
 local theme = require("theme")
+local kit = require("kit")
 local system = require("system")
 local proc = require("proc")
 
@@ -89,93 +90,53 @@ end
 
 function page.build(island)
   local W = theme.page_w()
-  local function slider_row(values)
-    local glyph, title, subtitle = values.glyph, values.title, values.subtitle
-    return theme.card {
-      width = W, height = S(64),
-      ui.Column {
-        gap = S(6),
-        anchors = { left = true, top = true, margins = S(12) },
-        ui.Item {
-          width = W - S(24), height = S(18),
-          theme.text { text = title, font_weight = 700, size = config.fontSize - 1, anchors = { left = true }, width = W - S(140), elide = "right" },
-          theme.text { text = subtitle, size = config.fontSize - 5, color = C.muted, anchors = { right = true } },
-        },
-        ui.Row {
-          gap = S(8), align = "center",
-          ui.Item {
-            width = S(22), height = S(22),
-            theme.icon { text = glyph, size = config.iconSize - 3, anchors = { center_in = true },
-              color = function() return values.muted() and C.muted or C.fg end },
-            ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = values.toggle },
-          },
-          theme.slider { width = W - S(100), height = S(20), track = S(8), knob = S(14), color = C.fg,
-            fraction = values.fraction, set = values.set },
-          theme.text { text = function() return string.format("%d%%", math.floor(values.fraction() * 100 + 0.5)) end,
-            size = config.fontSize - 4, color = C.muted },
-        },
-      },
-    }
-  end
   local function sink_row(row)
-    return theme.button {
-      width = W, height = S(40),
-      color = function() return row.default and C.on_tint or C.card end,
+    return kit.row {
+      width = W, icon = "󰓃", title = row.description, subtitle = row.default and "In use" or "Available",
+      active = function() return row.default end,
       on_click = function()
         proc.exec({ "pactl", "set-default-sink", row.name }, function() page.refresh() system.poll_volume() end)
       end,
-      ui.Row {
-        gap = S(10), align = "center", height = S(40), anchors = { left = true, left_margin = S(12) },
-        theme.icon { text = "󰓃", size = config.iconSize - 3, color = row.default and C.on or C.muted },
-        theme.text { text = row.description, size = config.fontSize - 2, width = W - S(60), elide = "right" },
-      },
     }
   end
   local function stream_row(row)
     local level = morf.signal("panacea.audio.stream." .. row.index, row.level)
-    return slider_row {
-      glyph = row.muted and "󰝟" or "󰕾",
-      title = row.app, subtitle = row.title,
-      muted = function() return row.muted end,
-      toggle = function() proc.exec({ "pactl", "set-sink-input-mute", row.index, "toggle" }, page.refresh) end,
+    return kit.slider_card {
+      width = W, title = row.app .. (row.title ~= "" and ("  ·  " .. row.title) or ""),
+      value = function() return string.format("%d%%", math.floor(level:get() * 100 + 0.5)) end,
+      icon = row.muted and "󰝟" or "󰕾", icon_color = row.muted and C.muted or C.fg,
+      on_icon = function() proc.exec({ "pactl", "set-sink-input-mute", row.index, "toggle" }, page.refresh) end,
       fraction = function() return level:get() end,
       set = function(value) level:set(value) set_stream(row.index, value) end,
     }
   end
-  return ui.Column {
-    gap = S(8),
-    slider_row {
-      glyph = function() return require("bar_glyphs").volume_glyph() end,
-      title = "Output", subtitle = function()
-        local n = page.sinks:len()
-        for i = 1, n do
-          local sink = page.sinks:get(i)
-          if sink and sink.default then return sink.description end
-        end
-        return ""
-      end,
-      muted = function() return state.volume.muted end,
-      toggle = system.toggle_mute,
-      fraction = function() return state.volume.level end,
-      set = system.set_volume,
+  return kit.page(W, {
+    kit.slider_card {
+      width = W, title = "Output",
+      value = function() return string.format("%d%%", math.floor(state.volume.level * 100 + 0.5)) end,
+      icon = function() return require("bar_glyphs").volume_glyph() end,
+      icon_color = function() return state.volume.muted and C.muted or C.fg end,
+      on_icon = system.toggle_mute,
+      fraction = function() return state.volume.level end, set = system.set_volume,
     },
-    slider_row {
-      glyph = function() return page.mic.muted and "󰍭" or "󰍬" end,
-      title = "Input", subtitle = function() return page.mic.name end,
-      muted = function() return page.mic.muted end,
-      toggle = function() proc.exec({ "pactl", "set-source-mute", "@DEFAULT_SOURCE@", "toggle" }, page.refresh) end,
+    kit.slider_card {
+      width = W, title = "Input",
+      value = function() return string.format("%d%%", math.floor(page.mic.level * 100 + 0.5)) end,
+      icon = function() return page.mic.muted and "󰍭" or "󰍬" end,
+      icon_color = function() return page.mic.muted and C.muted or C.fg end,
+      on_icon = function() proc.exec({ "pactl", "set-source-mute", "@DEFAULT_SOURCE@", "toggle" }, page.refresh) end,
       fraction = function() return page.mic.level end,
       set = function(value)
         page.mic.level = value
         proc.exec({ "pactl", "set-source-volume", "@DEFAULT_SOURCE@", string.format("%d%%", math.floor(value * 100 + 0.5)) })
       end,
     },
-    theme.label { text = "Outputs", visible = function() return page.sinks:len() > 1 end },
-    ui.Repeater { as = "column", gap = S(4), model = page.sinks, delegate = sink_row,
+    kit.section("Outputs", function() return page.sinks:len() > 1 end),
+    ui.Repeater { as = "column", gap = kit.GAP, model = page.sinks, delegate = sink_row,
       visible = function() return page.sinks:len() > 1 end },
-    theme.label { text = "Playing", visible = function() return page.streams:len() > 0 end },
-    ui.Repeater { as = "column", gap = S(6), model = page.streams, delegate = stream_row },
-  }
+    kit.section("Playing", function() return page.streams:len() > 0 end),
+    ui.Repeater { as = "column", gap = kit.GAP, model = page.streams, delegate = stream_row },
+  })
 end
 
 return page
