@@ -163,9 +163,10 @@ impl Runtime {
             if let Err(message) = self.run_handler(|ctx, limits| {
                 execute_handler_args(ctx, callback, std::slice::from_ref(&value), limits)
             }) {
-                self.reactive
-                    .borrow_mut()
-                    .log(LogLevel::Warn, format!("keyboard focus callback: {message}"));
+                self.reactive.borrow_mut().log(
+                    LogLevel::Warn,
+                    format!("keyboard focus callback: {message}"),
+                );
             }
         }
         !callbacks.is_empty()

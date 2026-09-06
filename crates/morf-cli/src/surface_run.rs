@@ -82,6 +82,7 @@ pub(crate) fn run_surface(
     let mut client = LayerClient::connect(runtime_bar_config(&layer_config, &name)?)
         .map_err(|error| error.to_string())?;
     open_reserve_layers(&mut client, &layer_config, &name)?;
+    open_backdrop_layer(&mut client, &layer_config, &name)?;
     // What the reservers were last built from. A reserver is a separate surface
     // per edge, so a thickness change is the one part of `morf.surface` that
     // still has to rebuild something, and it must not rebuild on every
