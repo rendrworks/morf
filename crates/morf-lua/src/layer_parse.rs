@@ -134,6 +134,17 @@ pub(crate) fn apply_layer_setting<'gc>(
             };
             Ok(assign_layer_setting(&mut config.opaque, value))
         }
+        "backdrop_dim" => {
+            let dim = match value {
+                LuaValue::Number(value) => value,
+                LuaValue::Integer(value) => value as f64,
+                _ => return Err("surface backdrop_dim must be a number".into()),
+            };
+            if !dim.is_finite() || !(0.0..=1.0).contains(&dim) {
+                return Err("surface backdrop_dim must be between 0 and 1".into());
+            }
+            Ok(assign_layer_setting(&mut config.backdrop_dim, dim))
+        }
         "backdrop" => {
             let LuaValue::Boolean(value) = value else {
                 return Err("surface backdrop must be a boolean".into());

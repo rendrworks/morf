@@ -279,7 +279,7 @@ tiles.all = {
 --- and no switch opens it from anywhere. With `slot`, the icon and the
 --- name are left empty for a piece of the strip to land on, registered
 --- in `slots`.
-function tiles.pill(entry, width, island, slots)
+function tiles.pill(entry, width, island, slots, stagger)
   local H = S(50)
   local on = entry.on or function() return false end
   local tint = entry.tint or C.on_tint
@@ -304,9 +304,16 @@ function tiles.pill(entry, width, island, slots)
     return theme.text { text = entry.title, font_weight = 700, size = config.fontSize - 1, width = room, elide = "right" }
   end
   local room = width - S(58) - ARROW
+  -- In a grid the pills cascade in: each one rises from a little further
+  -- down than the one before, so the page opening reads as a wave.
+  local function open_now() return island.page:get() ~= "" end
   return theme.button {
     width = width, height = H, radius = H / 2,
     visible = entry.available,
+    translate_y = stagger and function() return open_now() and 0 or S(18 + 7 * stagger) end or nil,
+    opacity = stagger and function() return open_now() and 1 or 0 end or nil,
+    behavior = { color = theme.motion.hover, scale = theme.motion.snappy,
+      translate_y = theme.motion.move, opacity = theme.motion.fade },
     color = function() return on() and tint or C.card end,
     hover_color = function() return on() and tint or C.card_hover end,
     border_width = 1,
@@ -361,7 +368,7 @@ function tiles.build(island, width, slots)
         last = {}
         pages[#pages + 1] = last
       end
-      last[#last + 1] = tiles.pill(entry, tile_w, island, slots)
+      last[#last + 1] = tiles.pill(entry, tile_w, island, slots, #last)
     end
   end
   if #pages <= 1 then

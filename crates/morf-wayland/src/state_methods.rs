@@ -18,6 +18,7 @@ impl LayerState {
         if !record.wants_blank || record.blank.is_some() || !record.configured {
             return;
         }
+        let color = record.blank_color;
         let Some(shm) = self.shm.as_ref() else {
             return;
         };
@@ -27,7 +28,7 @@ impl LayerState {
         let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888) else {
             return;
         };
-        canvas[..4].fill(0);
+        canvas[..4].copy_from_slice(&color);
         let Some(record) = self.layers.get_mut(&id) else {
             return;
         };

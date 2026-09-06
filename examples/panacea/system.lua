@@ -180,7 +180,7 @@ local function poll_network()
       local signal, ssid = wifi:match("^%*:(%d+):(.*)$")
       if kind == "wifi" then
         state.network.strength = tonumber(signal) or 0
-        if ssid and ssid ~= "" then name = ssid end
+        if ssid and proc.trim(ssid) ~= "" then name = proc.trim(ssid) end
       else
         state.network.strength = 0
       end

@@ -162,6 +162,9 @@ pub(crate) struct LayerRecord {
     /// only from the layer surfaces it actually arranges. Holding the pool and
     /// the buffer here keeps the mapping alive for as long as the surface is.
     pub(crate) blank: Option<(SlotPool, ShmBuffer)>,
+    /// The blank pixel's colour, premultiplied BGRA: transparent for a
+    /// reserver, a dim for a backdrop.
+    pub(crate) blank_color: [u8; 4],
 }
 
 impl Drop for LayerRecord {

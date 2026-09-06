@@ -57,6 +57,8 @@ morf.surface.exclusive_zone = -1
 -- while a page is open. It is a blank surface the compositor stretches
 -- over the output, never painted, so it costs nothing until then.
 morf.surface.backdrop = false
+-- Awake, it dims the screen behind the page, as a phone's shade does.
+morf.surface.backdrop_dim = 0.3
 if not config.pillOverlay then
   morf.surface.reserve = { top = S(config.pillH) + (config.notchMode and 0 or S(config.islandGap)) }
 end

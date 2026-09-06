@@ -92,6 +92,9 @@ pub struct LayerSurfaceConfig {
     /// configuration sets this at all, since its place in the layer is fixed
     /// at creation; `Some(false)` is made but inert.
     pub backdrop: Option<bool>,
+    /// How much the backdrop darkens what it covers while it is awake, 0 to
+    /// 1: a phone's shade dims the screen behind it.
+    pub backdrop_dim: f64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,6 +196,7 @@ impl Default for LayerSurfaceConfig {
             opaque: false,
             session_lock: false,
             backdrop: None,
+            backdrop_dim: 0.0,
         }
     }
 }

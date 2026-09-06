@@ -168,6 +168,7 @@ impl LayerClient {
                 height: config.height.max(1),
                 scale_120: 120,
                 wants_blank: false,
+                blank_color: [0; 4],
                 configured: false,
                 blank: None,
             },
@@ -221,6 +222,28 @@ impl LayerClient {
     /// requires the first commit to carry no buffer and the configure that
     /// follows to be acknowledged before one may be attached, so this records
     /// the intent and the configure handler completes it.
+    /// Colours a blank surface's one pixel black at `alpha`, so a backdrop
+    /// can dim what it covers; the compositor stretches it over the output.
+    pub fn set_layer_blank_color(&mut self, id: u64, alpha: u8) -> Result<(), WaylandError> {
+        let Some(record) = self.state.layers.get_mut(&id) else {
+            return Ok(());
+        };
+        let color = [0, 0, 0, alpha];
+        if record.blank_color == color {
+            return Ok(());
+        }
+        record.blank_color = color;
+        if record.blank.is_none() {
+            return Ok(());
+        }
+        // A new pixel: the old buffer goes, and the next attach makes one.
+        record.blank = None;
+        self.state.attach_blank_buffer(id);
+        self.connection
+            .flush()
+            .map_err(|error| WaylandError(format!("Wayland flush failed: {error}")))
+    }
+
     pub fn map_layer_blank(&mut self, id: u64) -> Result<(), WaylandError> {
         let Some(record) = self.state.layers.get_mut(&id) else {
             return Ok(());

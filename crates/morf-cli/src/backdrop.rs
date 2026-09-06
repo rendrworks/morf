@@ -86,7 +86,7 @@ fn primary_rect(client: &LayerClient, config: &LayerSurfaceConfig, out: (i32, i3
 }
 
 /// Brings the backdrop's input region up to date with `morf.surface.backdrop`.
-pub(crate) fn apply_backdrop(client: &LayerClient, config: &LayerSurfaceConfig, output: &str) {
+pub(crate) fn apply_backdrop(client: &mut LayerClient, config: &LayerSurfaceConfig, output: &str) {
     if client.layer_surface(BACKDROP_LAYER).is_none() {
         return;
     }
@@ -130,5 +130,11 @@ pub(crate) fn apply_backdrop(client: &LayerClient, config: &LayerSurfaceConfig, 
         _ => Vec::new(),
     };
     client.set_layer_input_region(BACKDROP_LAYER, Some(&regions));
+    let dim = if config.backdrop == Some(true) {
+        (config.backdrop_dim.clamp(0.0, 1.0) * 255.0) as u8
+    } else {
+        0
+    };
+    let _ = client.set_layer_blank_color(BACKDROP_LAYER, dim);
     client.commit_layer(BACKDROP_LAYER);
 }

@@ -116,6 +116,7 @@ fn layer_surface_settings_are_native_and_typed() {
             opaque: false,
             session_lock: false,
             backdrop: None,
+            backdrop_dim: 0.0,
         }
     );
 }

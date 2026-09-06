@@ -108,8 +108,14 @@ end
 --- The capsule and its flares, sized by `width` and `height` functions,
 --- around `content`.
 local function capsule(width, height, content)
+  local function open_now() return island.page:get() ~= "" end
   local body = ui.Rect {
-    color = C.bg,
+    -- Open, the capsule warms very slightly toward the accent and gets a
+    -- soft accent edge: depth on a dark ground comes from a glow, not a
+    -- shadow.
+    color = function() return open_now() and C.bg:mix(C.on, 0.07) or C.bg end,
+    border_width = 1,
+    border_color = function() return open_now() and C.on:alpha(0.35) or C.bg:alpha(0) end,
     width = width,
     height = height,
     top_left_radius = (NOTCH or PHONE) and 0 or RADIUS,
@@ -117,7 +123,8 @@ local function capsule(width, height, content)
     -- A phone's status bar is square; the sheet under it is not.
     bottom_left_radius = function() return (PHONE and island.page:get() == "") and 0 or RADIUS end,
     bottom_right_radius = function() return (PHONE and island.page:get() == "") and 0 or RADIUS end,
-    behavior = config.bench and {} or { width = motion.move, height = motion.move },
+    behavior = config.bench and {} or { width = motion.move, height = motion.move,
+      color = motion.fade, border_color = motion.fade },
     -- Clipped to the body, so a page still growing does not show past the
     -- capsule. A square clip: a rounded one would render through an
     -- offscreen layer every frame, and nothing reaches the corners anyway.
