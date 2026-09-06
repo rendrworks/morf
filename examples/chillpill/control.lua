@@ -561,7 +561,8 @@ local function wifi_panel()
     width = SIDE_WIDTH,
     pad = PAD,
     radius = 36,
-    from_x = S(28),
+    from_x = S(80),
+    from_scale = 0.9,
     ui.Flex {
       direction = "column", align = "start",
       gap = S(12),
@@ -668,7 +669,8 @@ local function bluetooth_panel()
     width = SIDE_WIDTH,
     pad = PAD,
     radius = 36,
-    from_x = -S(28),
+    from_x = -S(80),
+    from_scale = 0.9,
     ui.Flex {
       direction = "column", align = "start",
       gap = S(12),
@@ -748,8 +750,8 @@ function control.build(top)
     align = "start",
     anchors = { left = true, right = true, top = true, top_margin = top },
     ui.Item(theme.reveal(control.shown, {
-      from_y = -S(28),
-      from_scale = 0.96,
+      from_y = -S(60),
+      from_scale = 0.9,
       transform_origin_y = 0,
       row,
     })),

@@ -156,9 +156,11 @@ local query = field.new {
 
 local function row(item)
   local selected = function() return item.index == state.selected end
-  return ui.Rect {
-    width = INNER, height = ROW_HEIGHT, radius = S(14),
-    color = function() return selected() and C.hover or morf.color("transparent") end,
+  return ui.Item {
+    width = INNER, height = ROW_HEIGHT,
+    enter = { opacity = 0, translate_x = S(30) },
+    opacity = 1, translate_x = 0,
+    behavior = { opacity = theme.motion.fade, translate_x = theme.motion.spring },
     ui.Row {
       gap = S(14), align = "center", height = ROW_HEIGHT,
       anchors = { left = true, left_margin = S(18) },
@@ -212,6 +214,12 @@ window = morf.window.layer {
         field.node(query, { width = INNER, height = S(56), radius = 16 }),
         ui.Item {
           width = INNER, height = ROW_HEIGHT * ROWS,
+          ui.Rect {
+            width = INNER, height = ROW_HEIGHT, radius = S(14), color = C.hover,
+            visible = function() return state.count > 0 end,
+            translate_y = function() return (state.selected - state.first) * ROW_HEIGHT end,
+            behavior = { translate_y = theme.motion.spring },
+          },
           ui.Repeater { as = "column", model = shown, delegate = row },
           theme.text {
             size = 15, color = C.faint, anchors = { center_in = true },

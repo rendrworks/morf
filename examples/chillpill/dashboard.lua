@@ -273,7 +273,12 @@ local function fill_cells()
 end
 fill_cells()
 
+-- The grid slides in from the side the month came from.
+local month_slide = morf.signal("chillpill.dashboard.month_slide", 0)
+
 local function shift_month(by)
+  month_slide:set(by * S(60))
+  morf.timer(16, function() month_slide:set(0) end, false)
   local month = calendar.month + by
   local year = calendar.year
   if month < 1 then month, year = 12, year - 1 end
@@ -327,7 +332,7 @@ local function calendar_card(shown)
   return theme.padded(theme.reveal(shown, {
     radius = 32,
     pad = S(22),
-    from_y = -S(20),
+    from_y = -S(40),
     transform_origin_y = 0,
     ui.Column {
       gap = S(12),
@@ -341,10 +346,16 @@ local function calendar_card(shown)
         ui.Item { anchors = { right = true }, arrow("󰅂", 1) },
       },
       ui.Row { gap = S(8), table.unpack(header) },
-      ui.Repeater {
-        as = "grid", columns = 7, gap = S(8),
-        model = cells,
-        delegate = cell,
+      ui.Item {
+        width = CAL_WIDTH,
+        translate_x = function() return month_slide:get() end,
+        opacity = function() return month_slide:get() == 0 and 1 or 0 end,
+        behavior = { translate_x = theme.motion.spring, opacity = theme.motion.fade },
+        ui.Repeater {
+          as = "grid", columns = 7, gap = S(8),
+          model = cells,
+          delegate = cell,
+        },
       },
     },
   }))
@@ -388,7 +399,7 @@ local function weather_card(shown)
   return theme.padded(theme.reveal(shown, {
     radius = 32,
     pad = S(24),
-    from_y = -S(20),
+    from_y = -S(40),
     transform_origin_y = 0,
     ui.Column {
       gap = S(18),
@@ -482,7 +493,8 @@ function dashboard.build(top)
     gap = S(20),
     anchors = { left = true, right = true, top = true, top_margin = top },
     ui.Item(theme.reveal(dashboard.shown, {
-      from_y = -S(28),
+      from_y = -S(60),
+      from_scale = 0.9,
       transform_origin_y = 0,
       ui.Flex {
         direction = "column",

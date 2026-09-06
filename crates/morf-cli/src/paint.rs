@@ -15,7 +15,11 @@ pub(crate) fn paint(
     root: NodeHandle,
     cache: Option<&CachedLayout>,
 ) -> Result<CachedLayout, String> {
-    paint_layer(
+    // `MORF_FRAME_LOG=1` prints how long each frame of the primary surface
+    // took on the CPU side, submission included, so a configuration that
+    // feels slow can be read rather than guessed at.
+    let started = frame_log_wanted().then(std::time::Instant::now);
+    let painted = paint_layer(
         runtime,
         renderer,
         client,
@@ -23,7 +27,17 @@ pub(crate) fn paint(
         root,
         &runtime.layer_surface_config(),
         cache,
-    )
+    );
+    if let Some(started) = started {
+        eprintln!("frame {:.2} ms", started.elapsed().as_secs_f64() * 1000.0);
+    }
+    painted
+}
+
+fn frame_log_wanted() -> bool {
+    static WANTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WANTED
+        .get_or_init(|| std::env::var_os("MORF_FRAME_LOG").is_some_and(|value| !value.is_empty()))
 }
 
 /// Lays out, masks, and renders the scene subtree of one layer surface.

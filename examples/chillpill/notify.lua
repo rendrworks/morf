@@ -185,7 +185,7 @@ local function popup(row)
   local node = theme.box {
     radius = 24,
     width = POPUP_WIDTH,
-    enter = { opacity = 0, translate_y = -S(28), scale = 0.94 },
+    enter = { opacity = 0, translate_y = -S(60), scale = 0.9 },
     opacity = 1,
     translate_y = 0,
     scale = 1,

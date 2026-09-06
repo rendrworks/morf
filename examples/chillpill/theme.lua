@@ -145,8 +145,11 @@ function theme.button(values)
     if down:get() then return rest:mix(lit, 0.5) end
     return hovered:get() and lit or rest
   end
-  values.scale = function() return down:get() and 0.96 or 1 end
-  values.behavior = values.behavior or { color = { duration = 90 }, scale = theme.motion.snappy }
+  values.scale = function()
+    if down:get() then return 0.94 end
+    return hovered:get() and 1.03 or 1
+  end
+  values.behavior = values.behavior or { color = theme.motion.quick, scale = theme.motion.snappy }
   if values.radius then values.radius = S(values.radius) end
   values[#values + 1] = ui.MouseArea {
     anchors = { fill = true },
@@ -180,7 +183,7 @@ function theme.meter(values)
       local total = type(width) == "function" and width() or width
       return math.max(height, math.floor(math.max(0, math.min(1, value or 0)) * total))
     end,
-    behavior = { width = { duration = 160, easing = "out_cubic" } },
+    behavior = { width = theme.motion.spring },
   }
   return ui.Rect(values)
 end
@@ -189,12 +192,14 @@ end
 
 -- One vocabulary of movement, so every panel, button and pill moves the
 -- same way: a spring for position and size, a short ease for opacity.
+-- Underdamped on purpose: a panel overshoots a little and settles, which
+-- is what reads as fluid rather than switched.
 theme.motion = {
-  spring = { kind = "spring", stiffness = 280, damping = 26, mass = 1 },
-  soft = { kind = "spring", stiffness = 200, damping = 22, mass = 1 },
-  snappy = { kind = "spring", stiffness = 420, damping = 30, mass = 1 },
-  fade = { duration = 180, easing = "out_quad" },
-  quick = { duration = 110, easing = "out_quad" },
+  spring = { kind = "spring", stiffness = 160, damping = 17, mass = 1 },
+  soft = { kind = "spring", stiffness = 110, damping = 14, mass = 1 },
+  snappy = { kind = "spring", stiffness = 340, damping = 22, mass = 1 },
+  fade = { duration = 260, easing = "out_cubic" },
+  quick = { duration = 150, easing = "out_cubic" },
 }
 local motion = theme.motion
 
@@ -231,9 +236,9 @@ end
 function theme.reveal(shown, values)
   local from_y = values.from_y or 0
   local from_x = values.from_x or 0
-  local from_scale = values.from_scale or 0.96
+  local from_scale = values.from_scale or 0.9
   values.from_y, values.from_x, values.from_scale = nil, nil, nil
-  local mounted = theme.mounted(shown, values.delay or 260)
+  local mounted = theme.mounted(shown, values.delay or 480)
   values.delay = nil
   values.visible = function() return mounted:get() end
   values.opacity = function() return shown:get() and 1 or 0 end
@@ -251,7 +256,7 @@ end
 
 --- Opening and closing a surface of its own with motion: the root fades
 --- and grows in, shrinks and fades out, and the surface closes once that
---- has played. The root starts at `opacity = 0, scale = 0.96` with
+--- has played. The root starts at `opacity = 0, scale = 0.9` with
 --- behaviors on both.
 function theme.surface_motion(window, root)
   local closing = false
@@ -272,8 +277,8 @@ function theme.surface_motion(window, root)
     if closing then return end
     closing = true
     root.opacity = 0
-    root.scale = 0.96
-    morf.timer(170, function()
+    root.scale = 0.9
+    morf.timer(240, function()
       if closing then window:close() end
     end, false)
   end

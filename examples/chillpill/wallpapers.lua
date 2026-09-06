@@ -102,6 +102,10 @@ local function tile(item)
   local selected = function() return item.index == state.selected end
   return ui.Item {
     width = TILE_W, height = TILE_H,
+    scale = function() return selected() and 1.05 or 1 end,
+    enter = { opacity = 0, scale = 0.8 },
+    opacity = 1,
+    behavior = { scale = theme.motion.spring, opacity = theme.motion.fade },
     ui.ClipRect {
       anchors = { fill = true }, radius = S(14),
       color = C.card,
@@ -120,7 +124,8 @@ local function tile(item)
     theme.text {
       text = item.name, size = 14,
       anchors = { left = true, bottom = true, left_margin = S(14), bottom_margin = S(10) },
-      visible = selected,
+      opacity = function() return selected() and 1 or 0 end,
+      behavior = { opacity = theme.motion.quick },
     },
     ui.MouseArea {
       anchors = { fill = true }, cursor = "pointer",

@@ -175,14 +175,11 @@ local query = field.new {
 
 local function row(item)
   local selected = function() return item.index == state.selected end
-  local node = ui.Rect {
-    width = INNER, height = ROW_HEIGHT, radius = S(16),
-    color = function() return selected() and C.card or morf.color("transparent") end,
-    ui.Rect {
-      width = S(3), height = ROW_HEIGHT - S(24), radius = S(2), color = C.text,
-      anchors = { left = true, left_margin = S(14), top = true, top_margin = S(12) },
-      visible = selected,
-    },
+  local node = ui.Item {
+    width = INNER, height = ROW_HEIGHT,
+    enter = { opacity = 0, translate_x = S(30) },
+    opacity = 1, translate_x = 0,
+    behavior = { opacity = theme.motion.fade, translate_x = theme.motion.spring },
     ui.Row {
       gap = S(20), align = "center", height = ROW_HEIGHT,
       anchors = { left = true, left_margin = S(32) },
@@ -244,6 +241,17 @@ window = morf.window.layer {
         field.node(query, { width = INNER, height = S(56), radius = 16 }),
         ui.Item {
           width = INNER, height = ROW_HEIGHT * ROWS,
+          -- One highlight that slides to the picked row.
+          ui.Rect {
+            width = INNER, height = ROW_HEIGHT, radius = S(16), color = C.card,
+            visible = function() return state.count > 0 end,
+            translate_y = function() return (state.selected - state.first) * ROW_HEIGHT end,
+            behavior = { translate_y = theme.motion.spring },
+            ui.Rect {
+              width = S(3), height = ROW_HEIGHT - S(24), radius = S(2), color = C.text,
+              anchors = { left = true, left_margin = S(14), top = true, top_margin = S(12) },
+            },
+          },
           ui.Repeater { as = "column", model = shown, delegate = row },
           theme.text {
             text = "No matches", size = 15, color = C.faint, anchors = { center_in = true },

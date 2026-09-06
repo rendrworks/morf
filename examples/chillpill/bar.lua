@@ -120,8 +120,8 @@ local function module(values)
   -- No width of its own: the item is as wide as its row.
   return ui.Item {
     height = HEIGHT,
-    scale = function() return hovered:get() and 1.08 or 1 end,
-    behavior = { scale = theme.motion.spring },
+    scale = function() return hovered:get() and 1.12 or 1 end,
+    behavior = { scale = theme.motion.soft },
     row,
     ui.MouseArea {
       anchors = { fill = true },
@@ -199,15 +199,19 @@ local function clock_module()
   }
 end
 
---- One workspace: a number, on a disc when it has windows.
+local DISC_GAP = P(12)
+
+--- One workspace: a number, on a disc when it has windows. The active
+--- workspace's disc is not here: it is one disc under the row that slides
+--- to whichever number is active.
 local function workspace_disc(row)
   local disc = ui.Rect {
     width = DISC,
     height = DISC,
     radius = DISC / 2,
-    color = row.active and C.disc_active or (row.exists and C.disc or morf.color("transparent")),
-    scale = row.active and 1 or 0.86,
-    behavior = { color = { duration = 160 }, scale = theme.motion.spring },
+    color = row.exists and C.disc or morf.color("transparent"),
+    scale = row.exists and 1 or 0.7,
+    behavior = { color = theme.motion.fade, scale = theme.motion.spring },
   }
   local label = theme.text {
     text = row.label,
@@ -227,8 +231,8 @@ local function workspace_disc(row)
     },
   }
   return node, function(next)
-    disc.color = next.active and C.disc_active or (next.exists and C.disc or morf.color("transparent"))
-    disc.scale = next.active and 1 or 0.86
+    disc.color = next.exists and C.disc or morf.color("transparent")
+    disc.scale = next.exists and 1 or 0.7
     label.text = next.label
     label.color = next.urgent and C.red or C.text
   end
@@ -237,14 +241,35 @@ end
 local function workspaces_module()
   local repeater = ui.Repeater {
     as = "row",
-    gap = P(12),
+    gap = DISC_GAP,
     align = "center",
     height = HEIGHT,
     model = hypr.state.rows,
     delegate = workspace_disc,
   }
+  -- The active disc slides along the row on a spring.
+  local function active_index()
+    local rows = hypr.state.rows
+    local count = rows:len()
+    local active = hypr.state.active
+    for index = 1, count do
+      local row = rows:get(index)
+      if row and row.id == active then return index end
+    end
+    return 1
+  end
+  local slider = ui.Rect {
+    width = DISC,
+    height = DISC,
+    radius = DISC / 2,
+    color = C.disc_active,
+    y = (HEIGHT - DISC) / 2,
+    translate_x = function() return (active_index() - 1) * (DISC + DISC_GAP) end,
+    behavior = { translate_x = theme.motion.spring },
+  }
   return ui.Item {
     height = HEIGHT,
+    slider,
     repeater,
     ui.MouseArea {
       anchors = { fill = true },
@@ -320,8 +345,10 @@ function bar.build()
     translate_y = function()
       return (config.pillOnHover and not bar.hovered:get()) and -(HEIGHT + S(config.pillTopMargin) - S(4)) or 0
     end,
-    scale = function() return bar.hovered:get() and 1.02 or 1 end,
-    behavior = { translate_y = theme.motion.spring, scale = theme.motion.soft },
+    scale = function() return bar.hovered:get() and 1.04 or 1 end,
+    enter = { translate_y = -S(80), opacity = 0 },
+    opacity = 1,
+    behavior = { translate_y = theme.motion.soft, scale = theme.motion.soft, opacity = theme.motion.fade },
     row,
     ui.MouseArea {
       anchors = { fill = true },

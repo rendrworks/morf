@@ -39,13 +39,13 @@ local HEIGHT = S(150)
 local ART = S(90)
 
 function mediapopup.build(top)
-  local mounted = theme.mounted(mediapopup.shown, 300)
+  local mounted = theme.mounted(mediapopup.shown, 500)
   local bar_width = WIDTH - S(40) - ART - S(24) - S(90) - S(120)
   local pill = theme.box {
     width = WIDTH, height = HEIGHT, radius = 36,
     opacity = function() return mediapopup.shown:get() and 1 or 0 end,
-    translate_y = function() return mediapopup.shown:get() and 0 or -S(24) end,
-    scale = function() return mediapopup.shown:get() and 1 or 0.96 end,
+    translate_y = function() return mediapopup.shown:get() and 0 or -S(60) end,
+    scale = function() return mediapopup.shown:get() and 1 or 0.9 end,
     transform_origin_y = 0,
     behavior = { opacity = theme.motion.fade, translate_y = theme.motion.spring, scale = theme.motion.spring },
     ui.Row {

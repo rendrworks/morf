@@ -118,8 +118,8 @@ function osd.build()
     height = HEIGHT,
     radius = 36,
     opacity = function() return osd.shown:get() and 1 or 0 end,
-    translate_y = function() return osd.shown:get() and 0 or S(28) end,
-    scale = function() return osd.shown:get() and 1 or 0.94 end,
+    translate_y = function() return osd.shown:get() and 0 or S(60) end,
+    scale = function() return osd.shown:get() and 1 or 0.85 end,
     behavior = {
       opacity = theme.motion.fade,
       translate_y = theme.motion.spring,
