@@ -38,6 +38,10 @@
 --
 --     cage -- morf examples/greeter.lua -- lock window
 --
+-- The session the list opens on is the one `/etc/greetd/default-session`
+-- names, by desktop file name or title; the packaged entries are what
+-- `/usr/share/wayland-sessions` holds, and one of your own goes beside them.
+--
 -- Two things that bite. Under greetd it runs as user `greeter`, not as you —
 -- every font, asset and path here must be readable by that user, which is the
 -- usual way these fail. And `GREETD_SOCK` exists only in the environment
@@ -235,6 +239,7 @@ local function sessions()
           "XDG_CURRENT_DESKTOP=" .. table.concat(entry.desktop_names, ":")
       end
       found[#found + 1] = {
+        id = entry.id,
         name = entry.name,
         command = entry.command,
         environment = environment,
@@ -261,6 +266,21 @@ if LOCKING then
 end
 -- A lock starts no session, so there is no list of them to read.
 local available = LOCKING and {} or sessions()
+
+--- The session the machine wants started unless somebody says otherwise:
+--- `/etc/greetd/default-session` names it, by its desktop file's name or
+--- its title, and the list opens on it. Without the file the list opens on
+--- its first entry. The greeter's own user has nowhere to remember a choice,
+--- so the choice is the machine's to make, once, as root.
+local function default_session()
+  local path = "/etc/greetd/default-session"
+  if not io.file_view { path = path }:exists() then return 1 end
+  local wanted = ((io.file(path):read() or ""):match("^%s*(.-)%s*$") or ""):lower()
+  for index, entry in ipairs(available) do
+    if entry.id:lower() == wanted or entry.name:lower() == wanted then return index end
+  end
+  return 1
+end
 
 -- Two PAM services, because a lock has two doors and PAM walks one stack at
 -- a time. The password goes to the password stack — `morf-lock` when the
@@ -291,7 +311,7 @@ local FINGER_SERVICE = PASSWORD_SERVICE ~= "login"
 local password = ""
 
 local chosen_user = morf.signal("greeter.user", 1)
-local chosen_session = morf.signal("greeter.session", 1)
+local chosen_session = morf.signal("greeter.session", default_session())
 local typed = morf.signal("greeter.typed", 0)
 local working = morf.signal("greeter.working", false)
 local alarmed = morf.signal("greeter.alarmed", false)
