@@ -19,14 +19,13 @@ page.icon = "󰒓"
 page.section = morf.signal("panacea.settings.section", "island")
 page.saved = morf.signal("panacea.settings.saved", "")
 
-function page.width() return theme.panel_w(1.4) end
 
 local SECTIONS = {
-  { id = "island", glyph = "󰍹", label = "Bar & Island" },
-  { id = "clock", glyph = "󰥔", label = "Clock & Date" },
-  { id = "look", glyph = "󰏘", label = "Appearance" },
+  { id = "island", glyph = "󰍹", label = "Island" },
+  { id = "clock", glyph = "󰥔", label = "Clock" },
+  { id = "look", glyph = "󰏘", label = "Look" },
   { id = "motion", glyph = "󰑮", label = "Motion" },
-  { id = "notif", glyph = "󰂚", label = "Notifications" },
+  { id = "notif", glyph = "󰂚", label = "Alerts" },
   { id = "system", glyph = "󰒓", label = "System" },
 }
 
@@ -73,48 +72,34 @@ page.subtitle = function()
 end
 
 function page.build(island)
-  local W = page.width() - S(32)
-  local SIDE = S(56)
-  local BODY = W - SIDE - S(16)
+  local W = theme.page_w()
 
   local function slider_setting(label, key, min, max, unit, step)
-    return ui.Row {
-      gap = S(12), align = "center",
-      ui.Item { width = S(120), height = S(22), theme.text { text = label, size = config.fontSize - 2, anchors = { left = true, top = true, top_margin = S(2) } } },
-      theme.slider {
-        width = BODY - S(200), height = S(22), track = S(5), knob = S(14),
-        fraction = function() return (draft[key] - min) / (max - min) end,
-        set = function(fraction)
-          local value = min + fraction * (max - min)
-          if step then value = math.floor(value / step + 0.5) * step end
-          draft[key] = value
-        end,
-      },
-      ui.Item { width = S(60), height = S(22),
-        theme.text { text = function()
-          local value = draft[key]
-          if step and step < 1 then return string.format("%.2f%s", value, unit) end
-          return string.format("%d%s", value, unit)
-        end, size = config.fontSize - 3, color = C.muted, anchors = { right = true, top = true, top_margin = S(2) } } },
+    return theme.slider_row {
+      width = W, title = label,
+      value = function()
+        local value = draft[key]
+        if step and step < 1 then return string.format("%.2f%s", value, unit) end
+        return string.format("%d%s", value, unit)
+      end,
+      fraction = function() return (draft[key] - min) / (max - min) end,
+      set = function(fraction)
+        local value = min + fraction * (max - min)
+        if step then value = math.floor(value / step + 0.5) * step end
+        draft[key] = value
+      end,
     }
   end
   local function toggle_setting(label, key, hint)
-    return ui.Item {
-      width = BODY, height = hint and S(44) or S(30),
-      ui.Column {
-        gap = S(2), anchors = { left = true, top = true, top_margin = S(3) },
-        theme.text { text = label, size = config.fontSize - 2 },
-        hint and theme.text { text = hint, size = config.fontSize - 5, color = C.muted } or nil,
-      },
-      ui.Item { anchors = { right = true, top = true, top_margin = S(3) },
-        theme.toggle(function() return draft[key] end, function(on) draft[key] = on end) },
+    return theme.setting_row {
+      width = W, title = label, hint = hint,
+      control = theme.toggle(function() return draft[key] end, function(on) draft[key] = on end),
     }
   end
   local function pick_setting(label, key, options)
-    return ui.Row {
-      gap = S(12), align = "center",
-      ui.Item { width = S(120), height = S(30), theme.text { text = label, size = config.fontSize - 2, anchors = { left = true, top = true, top_margin = S(6) } } },
-      theme.chips(options, function() return draft[key] end, function(v) draft[key] = v end),
+    local chips = theme.chips(options, function() return draft[key] end, function(v) draft[key] = v end)
+    return theme.setting_row {
+      width = W, title = label, control = chips, control_h = S(30), control_w = S(200),
     }
   end
   local function swatches(label, key, colours)
@@ -127,109 +112,86 @@ function page.build(island)
         ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = function() draft[key] = colour end },
       }
     end
-    return ui.Row {
-      gap = S(12), align = "center",
-      ui.Item { width = S(120), height = S(24), theme.text { text = label, size = config.fontSize - 2, anchors = { left = true, top = true, top_margin = S(3) } } },
-      ui.Row { gap = S(8), table.unpack(dots) },
+    return theme.setting_row {
+      width = W, title = label, control = ui.Row { gap = S(8), table.unpack(dots) }, control_w = S(220),
     }
   end
 
   local sections = {
-    island = ui.Column {
-      gap = S(12),
-      theme.label { text = "Sizes" },
+    island = {
       slider_setting("Pill height", "pillH", 28, 56, "px", 1),
       slider_setting("Panel width", "panelW", 400, 900, "px", 10),
       slider_setting("Collapsed width", "collapsedW", 180, 520, "px", 10),
       slider_setting("Corner radius", "cornerR", 0, 28, "px", 1),
       slider_setting("Notch flare", "notchFlare", 0, 24, "px", 1),
-      theme.label { text = "Edge" },
-      toggle_setting("Notch mode", "notchMode", "Hugs the screen edge with concave corners; off is a capsule with a gap."),
-      toggle_setting("Float over windows", "pillOverlay", "Off reserves the pill's strip so windows stay below it."),
+      toggle_setting("Notch mode", "notchMode", "Hugs the screen edge with concave corners"),
+      toggle_setting("Float over windows", "pillOverlay", "Off reserves the strip so windows stay below"),
     },
-    clock = ui.Column {
-      gap = S(12),
-      theme.label { text = "Clock" },
-      pick_setting("Format", "clock12", { { label = "24-hour", value = false }, { label = "12-hour", value = true } }),
+    clock = {
+      pick_setting("Format", "clock12", { { label = "24h", value = false }, { label = "12h", value = true } }),
       toggle_setting("Seconds", "clockSeconds"),
       toggle_setting("Weekday on the pill", "clockWeekday"),
     },
-    look = ui.Column {
-      gap = S(12),
-      theme.label { text = "Theme" },
+    look = {
       pick_setting("Theme", "themeId", { { label = "Default", value = "default" }, { label = "Nothing", value = "nothing" } }),
-      theme.label { text = "Font" },
       slider_setting("Text size", "fontSize", 11, 20, "", 1),
       slider_setting("Icon size", "iconSize", 12, 24, "", 1),
-      theme.label { text = "Colours" },
       swatches("Text", "colFg", { "#ffffff", "#d4d4d8", "#fde68a", "#86efac", "#93c5fd", "#f9a8d4" }),
       swatches("Accent", "colOn", { "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6" }),
       slider_setting("Dimming", "mutedAlpha", 0.2, 0.8, "", 0.05),
     },
-    motion = ui.Column {
-      gap = S(12),
-      theme.label { text = "Motion" },
+    motion = {
       slider_setting("Speed", "animMove", 80, 600, "ms", 10),
       slider_setting("Bounce", "animBounce", 0, 100, "%", 1),
-      toggle_setting("Reduce motion", "reduceMotion", "Every move lands at once."),
+      toggle_setting("Reduce motion", "reduceMotion", "Every move lands at once"),
     },
-    notif = ui.Column {
-      gap = S(12),
-      theme.label { text = "Notifications" },
+    notif = {
       slider_setting("Shown for", "notifTimeout", 1000, 15000, "ms", 500),
       toggle_setting("Do not disturb", "notifDnd"),
     },
-    system = ui.Column {
-      gap = S(12),
-      theme.label { text = "Programs" },
-      pick_setting("Terminal", "terminal", { "foot", "footclient", "kitty", "alacritty", "wezterm" }),
-      theme.label { text = "About" },
-      theme.text { text = "Panacea on morf. Settings live in " .. config.path, size = config.fontSize - 4, color = C.muted,
-        width = BODY, wrap = true, max_lines = 2 },
+    system = {
+      pick_setting("Terminal", "terminal", { "foot", "kitty", "alacritty", "wezterm" }),
+      theme.card {
+        width = W, height = S(50), border_width = 1, border_color = C.edge,
+        theme.text { text = "Settings live in " .. config.path, size = config.fontSize - 4, color = C.muted,
+          width = W - S(28), elide = "middle", anchors = { left = true, left_margin = S(14), top = true, top_margin = S(17) } },
+      },
     },
   }
 
-  local side = {}
+  -- One section shown at a time, chosen from the chips under the header;
+  -- the bodies are laid out in the same place and the chosen one reveals.
+  local tabs = {}
   for _, section in ipairs(SECTIONS) do
-    side[#side + 1] = theme.button {
-      width = S(40), height = S(40), radius = 12,
-      color = function() return page.section:get() == section.id and C.on_tint or morf.color("transparent") end,
-      on_click = function() page.section:set(section.id) end,
-      theme.icon { text = section.glyph, size = config.iconSize - 1, anchors = { center_in = true },
-        color = function() return page.section:get() == section.id and C.fg or C.muted end },
-    }
+    tabs[#tabs + 1] = { label = section.label, value = section.id }
   end
-
   local bodies = {}
   for _, section in ipairs(SECTIONS) do
-    local node = sections[section.id]
-    bodies[#bodies + 1] = ui.Item(theme.reveal(
-      (function()
-        local shown = morf.signal("panacea.settings.shown." .. section.id, page.section:get() == section.id)
-        theme.tick(function() shown:set(page.section:get() == section.id) end)
-        return shown
-      end)(),
-      { anchors = { left = true, top = true }, from_y = S(8), node }))
+    local shown = morf.signal("panacea.settings.shown." .. section.id, page.section:get() == section.id)
+    theme.tick(function() shown:set(page.section:get() == section.id) end)
+    bodies[#bodies + 1] = ui.Item(theme.reveal(shown, {
+      anchors = { left = true, top = true }, from_y = S(8),
+      ui.Column { gap = S(8), table.unpack(sections[section.id]) },
+    }))
   end
 
-  return ui.Row {
-    gap = S(16), align = "start",
-    ui.Column { gap = S(4), table.unpack(side) },
-    ui.Column {
-      gap = S(12),
-      ui.Item {
-        width = BODY, height = S(30),
-        ui.Row {
-          gap = S(8), anchors = { right = true },
-          theme.button { width = S(80), height = S(30), radius = 10, color = C.on_tint, on_click = apply,
-            theme.text { text = "Apply", size = config.fontSize - 3, font_weight = 700, anchors = { center_in = true } } },
-          theme.button { width = S(80), height = S(30), radius = 10, on_click = reset,
-            theme.text { text = "Reset", size = config.fontSize - 3, anchors = { center_in = true } } },
-        },
-      },
+  return ui.Flex {
+    direction = "column", width = W, gap = S(10),
+    theme.chips(tabs, function() return page.section:get() end, function(id) page.section:set(id) end),
+    ui.Item { width = W, height = S(7 * 66), table.unpack(bodies) },
+    ui.Item {
+      width = W, height = S(36),
       theme.text { text = function() return page.saved:get() end, size = config.fontSize - 4, color = C.muted,
+        anchors = { left = true, left_margin = S(4), top = true, top_margin = S(10) },
         visible = function() return page.saved:get() ~= "" end },
-      ui.Item { width = BODY, height = S(300), table.unpack(bodies) },
+      ui.Row {
+        gap = S(8), anchors = { right = true },
+        theme.button { width = S(90), height = S(36), radius = 18, on_click = reset,
+          theme.text { text = "Reset", size = config.fontSize - 3, anchors = { center_in = true } } },
+        theme.button { width = S(90), height = S(36), radius = 18, color = C.on_tint, on_click = apply,
+          border_width = 1, border_color = C.on_edge,
+          theme.text { text = "Apply", size = config.fontSize - 3, font_weight = 700, anchors = { center_in = true } } },
+      },
     },
   }
 end

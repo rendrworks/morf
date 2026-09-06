@@ -157,8 +157,7 @@ local function poll_network()
     "ip -o -4 addr show scope global 2>/dev/null",
     function(output, success)
       if not success then return end
-      local sections = {}
-      for part in (output .. "\n--\n"):gmatch("(.-)\n%-%-\n") do sections[#sections + 1] = part end
+      local sections = proc.sections(output)
       local connections, wifi, addresses = sections[1] or "", sections[2] or "", sections[3] or ""
 
       local ips = {}

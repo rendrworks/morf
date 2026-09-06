@@ -16,7 +16,7 @@ local page = {}
 page.title = "Bluetooth"
 page.icon = "󰂯"
 page.subtitle = function()
-  if not state.bluetooth.present then return "No adapter" end
+  if not state.bluetooth.present and state.bluetooth.adapter_name == "" and not state.bluetooth.powered then return "No adapter" end
   if not state.bluetooth.powered then return "Off" end
   if page.scanning:get() then return "Looking for devices…" end
   return "Visible as " .. state.bluetooth.adapter_name
@@ -116,20 +116,23 @@ function page.build(island)
 
   return ui.Column {
     gap = S(10),
-    ui.Item {
-      width = W, height = S(26),
-      theme.text { text = "Adapter", size = config.fontSize - 3, color = C.muted, anchors = { left = true, top = true, top_margin = S(4) } },
-      ui.Item {
-        anchors = { right = true },
-        theme.toggle(function() return state.bluetooth.powered end, function(on)
-          system.set_bluetooth_power(on)
-          morf.timer(800, page.refresh, false)
-        end),
-      },
+    theme.switch_row {
+      width = W, icon = "󰂯", title = "Bluetooth",
+      subtitle = function()
+        if not state.bluetooth.powered then return "Off" end
+        if state.bluetooth.connected ~= "" then return "Connected to " .. state.bluetooth.connected end
+        return state.bluetooth.adapter_name ~= "" and state.bluetooth.adapter_name or "On"
+      end,
+      on = function() return state.bluetooth.powered end,
+      set = function(on)
+        system.set_bluetooth_power(on)
+        morf.timer(800, page.refresh, false)
+      end,
     },
     ui.Repeater { as = "column", gap = S(6), model = page.devices, delegate = device_row },
     theme.text {
-      text = "No devices", size = config.fontSize - 2, color = C.faint,
+      text = function() return state.bluetooth.powered and "No devices" or "Bluetooth is off" end,
+      size = config.fontSize - 2, color = C.faint,
       visible = function() return page.devices:len() == 0 end,
     },
   }

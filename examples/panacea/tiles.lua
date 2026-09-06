@@ -36,8 +36,7 @@ local function poll()
     .. "for t in hyprsunset wlsunset gammastep; do command -v $t >/dev/null && { echo $t; pgrep -x $t >/dev/null && echo running; break; }; done",
     function(output, success)
       if not success then return end
-      local parts = {}
-      for part in (output .. "\n--\n"):gmatch("(.-)\n%-%-\n") do parts[#parts + 1] = part end
+      local parts = proc.sections(output)
       own.wifi_radio = (parts[1] or ""):find("enabled") ~= nil
       local devices, blocked = 0, 0
       for line in (parts[2] or ""):gmatch("[^\n]+") do

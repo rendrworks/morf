@@ -235,17 +235,14 @@ function page.build(island)
   -- The radio's switch, here and only here: a tap on the tile brings the
   -- list, and turning Wi-Fi off is a deliberate second step.
   local tiles = require("tiles")
-  local radio = theme.card {
-    width = W, height = S(48),
-    theme.text { text = "Wi-Fi", font_weight = 700, anchors = { left = true, left_margin = S(14) } },
-    theme.text { text = function() return tiles.state.wifi_radio and "On" or "Off" end, size = config.fontSize - 3,
-      color = C.muted, anchors = { right = true, right_margin = S(70) } },
-    ui.Item {
-      anchors = { right = true, top = true, right_margin = S(12), top_margin = S(12) },
-      theme.toggle(function() return tiles.state.wifi_radio end, function(on)
-        tiles.set_wifi_radio(on)
-      end),
-    },
+  local radio = theme.switch_row {
+    width = W, icon = "󰤨", title = "Wi-Fi",
+    subtitle = function()
+      if not tiles.state.wifi_radio then return "Off" end
+      return system.state.network.kind == "wifi" and ("Connected to " .. system.state.network.name) or "On"
+    end,
+    on = function() return tiles.state.wifi_radio end,
+    set = tiles.set_wifi_radio,
   }
   return ui.Flex {
     direction = "column", width = W,

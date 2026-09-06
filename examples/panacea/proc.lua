@@ -148,6 +148,23 @@ function proc.tick()
   for _, stream in ipairs(streams) do drain_stream(stream) end
 end
 
+--- Splits a child's output on lines that are exactly `--`, the marker the
+--- shell scripts here echo between commands. Every section is kept, an
+--- empty one included: a pattern that needed a newline before the marker
+--- merged an empty section with the next, and the microphone was named
+--- after its own volume.
+function proc.sections(output)
+  local parts = { "" }
+  for line in (tostring(output or "") .. "\n"):gmatch("([^\n]*)\n") do
+    if line == "--" then
+      parts[#parts + 1] = ""
+    else
+      parts[#parts] = parts[#parts] .. line .. "\n"
+    end
+  end
+  return parts
+end
+
 --- Whitespace off both ends.
 function proc.trim(text)
   return (tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", ""))

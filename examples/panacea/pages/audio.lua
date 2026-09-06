@@ -39,8 +39,7 @@ function page.refresh()
     "pactl get-default-source; echo --; pactl get-source-volume @DEFAULT_SOURCE@; pactl get-source-mute @DEFAULT_SOURCE@",
     function(output, success)
       if not success then return end
-      local parts = {}
-      for part in (output .. "\n--\n"):gmatch("(.-)\n%-%-\n") do parts[#parts + 1] = part end
+      local parts = proc.sections(output)
       local default_sink = proc.trim(parts[1] or "")
       -- Sinks.
       local sinks = {}

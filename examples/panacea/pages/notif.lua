@@ -64,34 +64,24 @@ function page.build(island)
     end
   end
 
-  return ui.Column {
-    gap = S(10),
+  return ui.Flex {
+    direction = "column", width = W, gap = S(10),
+    theme.switch_row {
+      width = W, icon = "󰂛", title = "Do not disturb",
+      subtitle = function() return notify.silent:get() and "Only urgent ones come through" or "Off" end,
+      on = function() return notify.silent:get() end,
+      set = function(on) notify.silent:set(on) end,
+    },
     ui.Item {
-      width = W, height = S(32),
-      ui.Row {
-        gap = S(8), align = "center", anchors = { right = true },
-        theme.button {
-          height = S(32), radius = 10,
-          color = function() return notify.silent:get() and C.on_tint or C.card end,
-          on_click = function() notify.silent:set(not notify.silent:get()) end,
-          ui.Row {
-            gap = S(8), align = "center", height = S(32),
-            ui.Item { width = S(10), height = 1 },
-            theme.icon { text = function() return notify.silent:get() and "󰂛" or "󰂚" end, size = config.iconSize - 3 },
-            theme.text { text = "Do not disturb", size = config.fontSize - 3 },
-            ui.Item { width = S(10), height = 1 },
-          },
-        },
-        theme.button {
-          height = S(32), radius = 10,
-          on_click = notify.clear,
-          ui.Row {
-            gap = S(8), align = "center", height = S(32),
-            ui.Item { width = S(10), height = 1 },
-            theme.text { text = "Clear", size = config.fontSize - 3 },
-            ui.Item { width = S(10), height = 1 },
-          },
-        },
+      width = W, height = S(28),
+      visible = function() return notify.count:get() > 0 end,
+      theme.label { text = function() return notify.count:get() .. " notifications" end,
+        anchors = { left = true, left_margin = S(4), top = true, top_margin = S(8) } },
+      theme.button {
+        width = S(64), height = S(26), radius = 13, color = "transparent",
+        anchors = { right = true },
+        on_click = notify.clear,
+        theme.text { text = "Clear", size = config.fontSize - 4, color = C.muted, anchors = { center_in = true } },
       },
     },
     ui.Repeater { as = "column", gap = S(6), model = notify.history, delegate = row },

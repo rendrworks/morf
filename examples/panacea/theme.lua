@@ -251,6 +251,72 @@ function theme.button(values)
   return ui.Rect(values)
 end
 
+--- A row with a switch at its right: an icon, a name, a line of state,
+--- the switch. What a page puts first for the thing it is about -- the
+--- Wi-Fi radio, the adapter, do not disturb -- so every page starts alike.
+function theme.switch_row(values)
+  local W, H = values.width, S(56)
+  return theme.card {
+    width = W, height = H,
+    border_width = 1, border_color = C.edge,
+    ui.Row {
+      gap = S(12), align = "center", height = H,
+      anchors = { left = true, left_margin = S(14) },
+      theme.icon { text = values.icon, size = config.iconSize, color = function() return values.on() and C.on or C.muted end },
+      ui.Column {
+        gap = S(2),
+        theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1 },
+        values.subtitle and theme.text { text = values.subtitle, size = config.fontSize - 4, color = C.muted,
+          width = W - S(140), elide = "right" } or nil,
+      },
+    },
+    ui.Item {
+      anchors = { right = true, top = true, right_margin = S(12), top_margin = (H - S(24)) / 2 },
+      theme.toggle(values.on, values.set),
+    },
+  }
+end
+
+--- A card row with a title and a hint at its left and `control` at its
+--- right, `width` wide: the shape every setting takes.
+function theme.setting_row(values)
+  local W = values.width
+  local H = values.hint and S(58) or S(50)
+  return theme.card {
+    width = W, height = H,
+    border_width = 1, border_color = C.edge,
+    ui.Column {
+      gap = S(2),
+      anchors = { left = true, top = true, left_margin = S(14), top_margin = values.hint and S(11) or S(15) },
+      theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1 },
+      values.hint and theme.text { text = values.hint, size = config.fontSize - 5, color = C.muted,
+        width = W - (values.control_w or S(80)) - S(40), elide = "right" } or nil,
+    },
+    ui.Item {
+      anchors = { right = true, top = true, right_margin = S(12), top_margin = (H - (values.control_h or S(24))) / 2 },
+      values.control,
+    },
+  }
+end
+
+--- A card with a title, a figure at the right and a slider under them.
+function theme.slider_row(values)
+  local W = values.width
+  return theme.card {
+    width = W, height = S(64),
+    border_width = 1, border_color = C.edge,
+    theme.text { text = values.title, font_weight = 700, size = config.fontSize - 1,
+      anchors = { left = true, top = true, left_margin = S(14), top_margin = S(10) } },
+    theme.text { text = values.value, size = config.fontSize - 4, color = C.muted,
+      anchors = { right = true, top = true, right_margin = S(14), top_margin = S(12) } },
+    ui.Item {
+      anchors = { left = true, bottom = true, left_margin = S(14), bottom_margin = S(8) },
+      theme.slider { width = W - S(28), height = S(20), track = S(8), knob = S(14), color = C.on,
+        fraction = values.fraction, set = values.set },
+    },
+  }
+end
+
 --- The pill switch: a track with a knob that slides to the right when on.
 function theme.toggle(on, set)
   local W, H = S(44), S(24)
