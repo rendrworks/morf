@@ -4,7 +4,7 @@ use morf_render::{RenderEngine, WgpuBackend};
 use morf_wayland::{LayerClient, LayerEvent, PRIMARY_LAYER, SurfaceRole, physical_size};
 use std::sync::mpsc;
 
-use crate::{capture::*, lock::*, paint::*, surface_layers::*, surface_touch::*, surfaces::*};
+use crate::{backdrop::*, capture::*, lock::*, paint::*, surface_layers::*, surface_touch::*, surfaces::*};
 
 pub(crate) fn handle_surface_event(
     runtime: &mut Runtime,
@@ -113,6 +113,7 @@ pub(crate) fn handle_surface_event(
         LayerEvent::Clipboard { text } => {
             repaint |= runtime.dispatch_clipboard(text);
         }
+        LayerEvent::KeyboardFocus { active } => repaint |= runtime.dispatch_keyboard_focus(active),
         // Already taken above; named so a new event cannot slip past unmatched.
         LayerEvent::Screencopy { .. } | LayerEvent::CaptureOffer { .. } => {}
         LayerEvent::InputMethod(state) => {
@@ -137,6 +138,9 @@ pub(crate) fn handle_surface_event(
             );
         }
         LayerEvent::PointerMotion { surface, x, y } => {
+            if surface == SurfaceRole::Layer(BACKDROP_LAYER) {
+                client.set_cursor_shape("default");
+            }
             let Some(hit_layout) = surface_layout(
                 surface,
                 &state.layout,
@@ -243,6 +247,9 @@ pub(crate) fn handle_surface_event(
                     (horizontal_steps, vertical_steps),
                 );
             }
+        }
+        LayerEvent::PointerButton { surface: SurfaceRole::Layer(BACKDROP_LAYER), pressed: true, .. } => {
+            repaint |= runtime.dispatch_backdrop_click();
         }
         LayerEvent::PointerButton {
             surface,

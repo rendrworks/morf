@@ -46,18 +46,6 @@ local C = theme.color
 -- floats over the windows; otherwise the pill's strip is reserved.
 local SURFACE_W = math.min(theme.WIDTH, S(config.panelW * 1.6) + S(80))
 local SURFACE_H = math.min(theme.HEIGHT, S(config.expandedH) + S(160))
-local surface_w = morf.signal("panacea.surface.w", SURFACE_W)
-local surface_h = morf.signal("panacea.surface.h", SURFACE_H)
-local function size_surface(full)
-  local width = full and theme.WIDTH or SURFACE_W
-  local height = full and theme.HEIGHT or SURFACE_H
-  if width == surface_w:get() and height == surface_h:get() then return end
-  morf.surface.width = width
-  morf.surface.height = height
-  morf.surface.anchors = full and { top = true, left = true, right = true, bottom = true } or { top = true }
-  surface_w:set(width)
-  surface_h:set(height)
-end
 morf.surface.namespace = "panacea"
 morf.surface.width = SURFACE_W
 morf.surface.height = SURFACE_H
@@ -65,6 +53,10 @@ morf.surface.anchors = { top = true }
 morf.surface.layer = "top"
 morf.surface.keyboard_focus = "none"
 morf.surface.exclusive_zone = -1
+-- Declared here, inert: the backdrop is what hears a click anywhere else
+-- while a page is open. It is a blank surface the compositor stretches
+-- over the output, never painted, so it costs nothing until then.
+morf.surface.backdrop = false
 if not config.pillOverlay then
   morf.surface.reserve = { top = S(config.pillH) + (config.notchMode and 0 or S(config.islandGap)) }
 end
@@ -154,10 +146,10 @@ local open_at_start = core.env("PANACEA_OPEN") or ""
 local function open() return island.page:get() ~= "" end
 
 ui.Item {
-  width = function() return surface_w:get() end,
-  height = function() return surface_h:get() end,
+  width = SURFACE_W,
+  height = SURFACE_H,
   -- While a page is open, every key goes to the page, Escape closes, and
-  -- a click anywhere outside the island closes too.
+  -- a click beside the island closes too.
   ui.MouseArea {
     anchors = { fill = true },
     z = -10,
@@ -181,18 +173,15 @@ ui.Item {
 -- The keyboard is the shell surface's own: it asks for exclusive focus
 -- while a page is open and gives it back after. The compositor re-reads
 -- the policy on the commit, so a page is one spring away, never a surface
--- away. The surface grows to the screen once the page has settled, and
--- shrinks the moment it starts to close.
-local SETTLED_MS = math.max(300, config.animMove * 2.5)
+-- away. The backdrop wakes with the page, and a click on it closes.
 island.surface.open = function()
   morf.surface.keyboard_focus = "exclusive"
-  morf.timer(SETTLED_MS, function()
-    if island.page:get() ~= "" then size_surface(true) end
-  end, false)
+  morf.surface.backdrop = true
 end
 island.surface.close = function()
   morf.surface.keyboard_focus = "none"
-  size_surface(false)
+  morf.surface.backdrop = false
 end
+morf.on_backdrop_click(function() island.close() end)
 
 if open_at_start ~= "" then island.open(open_at_start) end

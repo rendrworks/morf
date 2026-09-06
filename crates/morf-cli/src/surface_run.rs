@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::{
-    capture::*, config::*, lock::*, pacing::*, paint::*, services::*, supervisor::*,
+    backdrop::*, capture::*, config::*, lock::*, pacing::*, paint::*, services::*, supervisor::*,
     surface_actions::*, surface_events::*, surface_layers::*, surfaces::*, workers::*,
 };
 
@@ -133,6 +133,7 @@ pub(crate) fn run_surface(
                 | LayerEvent::ShortcutsInhibited { .. }
                 | LayerEvent::Idle { .. }
                 | LayerEvent::Clipboard { .. }
+                | LayerEvent::KeyboardFocus { .. }
                 | LayerEvent::InputMethod(_)
                 | LayerEvent::TextInput(_)
                 | LayerEvent::Frame { .. }
@@ -186,6 +187,7 @@ pub(crate) fn run_surface(
     let mut layer_surfaces = HashMap::new();
     runtime.take_window_surface_change();
     runtime.take_layer_surface_change();
+    apply_backdrop(&client, &runtime.layer_surface_config(), &name);
     let _ = sync_window_surfaces(
         &runtime,
         &mut client,
@@ -299,6 +301,7 @@ pub(crate) fn run_surface(
                 open_reserve_layers(&mut client, &config, &name)?;
             }
             apply_primary_opaque(&runtime, &client);
+            apply_backdrop(&client, &config, &name);
             // The mask lives in the same configuration and is re-derived when
             // the surface paints, so the new geometry owes one frame even when
             // the compositor has no configure to send back.

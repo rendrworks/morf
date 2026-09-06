@@ -128,7 +128,9 @@ pub(crate) fn run_lock(mut runtime: Runtime) -> Result<(), String> {
             match event {
                 // A lock client has only lock surfaces, and those are not
                 // popups or floating windows.
-                LayerEvent::AuxScale { .. } | LayerEvent::ShortcutsInhibited { .. } => {}
+                LayerEvent::AuxScale { .. }
+                | LayerEvent::ShortcutsInhibited { .. }
+                | LayerEvent::KeyboardFocus { .. } => {}
                 LayerEvent::SessionLocked => locked = true,
                 LayerEvent::Screens(_) => {}
                 LayerEvent::SessionLockConfigure { index, .. } => {

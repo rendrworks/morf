@@ -150,7 +150,7 @@ pub(crate) fn window_layer_id(id: u64) -> u64 {
 
 /// Inverse of [`window_layer_id`], or `None` for engine-owned surfaces.
 pub(crate) fn window_surface_id(layer: u64) -> Option<u64> {
-    (layer != PRIMARY_LAYER && layer < RESERVE_LAYER_BASE).then(|| layer - 1)
+    (layer != PRIMARY_LAYER && layer < crate::backdrop::BACKDROP_LAYER).then(|| layer - 1)
 }
 
 /// Builds the configuration for one single-edge reserver surface.

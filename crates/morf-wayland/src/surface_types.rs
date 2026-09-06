@@ -218,6 +218,12 @@ pub enum LayerEvent {
     },
     /// The compositor clipboard selection changed.
     Clipboard { text: Option<String> },
+    /// The keyboard came to the primary surface, or left it for elsewhere.
+    ///
+    /// With on-demand focus, a click anywhere else takes the keyboard away,
+    /// which is how a shell learns that the user has moved on without
+    /// covering the screen to hear the click.
+    KeyboardFocus { active: bool },
     /// A capture asked for on the GPU has been described by its session.
     ///
     /// The compositor has said what size it will produce, which device the

@@ -96,6 +96,33 @@ pub(crate) fn install_host_service_api<'gc>(
     clipboard.set_field(ctx, "set", clipboard_set);
     clipboard.set_field(ctx, "subscribe", clipboard_subscribe);
     morf.set_field(ctx, "clipboard", clipboard);
+    // `morf.on_keyboard_focus(function(active) end)`: the keyboard came to
+    // the shell's surface, or left it. With `keyboard_focus = "on_demand"`
+    // a click anywhere else is what takes it away.
+    let keyboard_focus_state = Rc::clone(&state);
+    let on_keyboard_focus = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let callback: Closure = stack.consume(ctx)?;
+        let mut state = keyboard_focus_state.borrow_mut();
+        if state.keyboard_focus_callbacks.len() >= 64 {
+            return Err(HostError("keyboard focus callback limit reached".into()).into());
+        }
+        state.keyboard_focus_callbacks.push(ctx.stash(callback));
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "on_keyboard_focus", on_keyboard_focus);
+    // `morf.on_backdrop_click(function() end)`: a click anywhere on the
+    // output but the shell's surface, while `morf.surface.backdrop` is true.
+    let backdrop_state = Rc::clone(&state);
+    let on_backdrop_click = Callback::from_fn(&ctx, move |ctx, _, mut stack| {
+        let callback: Closure = stack.consume(ctx)?;
+        let mut state = backdrop_state.borrow_mut();
+        if state.backdrop_callbacks.len() >= 64 {
+            return Err(HostError("backdrop callback limit reached".into()).into());
+        }
+        state.backdrop_callbacks.push(ctx.stash(callback));
+        Ok(CallbackReturn::Return)
+    });
+    morf.set_field(ctx, "on_backdrop_click", on_backdrop_click);
     crate::api_screencopy::install_screencopy_api(ctx, Rc::clone(&state), morf);
     let virtual_key_state = Rc::clone(&state);
     let virtual_key = Callback::from_fn(&ctx, move |ctx, _, mut stack| {

@@ -263,6 +263,10 @@ impl KeyboardHandler for LayerState {
         _keysyms: &[Keysym],
     ) {
         self.keyboard_surface = self.surface_role(surface);
+        if self.keyboard_surface == Some(SurfaceRole::Layer(crate::PRIMARY_LAYER)) {
+            self.events
+                .push_back(LayerEvent::KeyboardFocus { active: true });
+        }
     }
 
     fn leave(
@@ -273,8 +277,13 @@ impl KeyboardHandler for LayerState {
         surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
-        if self.surface_role(surface) == self.keyboard_surface {
+        let role = self.surface_role(surface);
+        if role == self.keyboard_surface {
             self.keyboard_surface = None;
+        }
+        if role == Some(SurfaceRole::Layer(crate::PRIMARY_LAYER)) {
+            self.events
+                .push_back(LayerEvent::KeyboardFocus { active: false });
         }
     }
 

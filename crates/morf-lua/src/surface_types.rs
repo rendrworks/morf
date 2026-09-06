@@ -86,6 +86,12 @@ pub struct LayerSurfaceConfig {
     /// configuration itself — `morf.surface.session_lock = true` — because
     /// what a file is for is the file's to say, not the command line's.
     pub session_lock: bool,
+    /// Whether a click anywhere else on the output should reach the
+    /// configuration, through a blank surface under this one that covers
+    /// the output. `None` never asked: the surface is only made when the
+    /// configuration sets this at all, since its place in the layer is fixed
+    /// at creation; `Some(false)` is made but inert.
+    pub backdrop: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -186,6 +192,7 @@ impl Default for LayerSurfaceConfig {
             exclusive_auto: false,
             opaque: false,
             session_lock: false,
+            backdrop: None,
         }
     }
 }

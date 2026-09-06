@@ -408,6 +408,7 @@ pub(crate) fn connect_runtime_surface(
     let mut client =
         LayerClient::connect(runtime_bar_config(&config, output)?).map_err(|e| e.to_string())?;
     open_reserve_layers(&mut client, &config, output)?;
+    crate::backdrop::open_backdrop_layer(&mut client, &config, output)?;
     loop {
         client.dispatch().map_err(|error| error.to_string())?;
         while let Some(event) = client.next_event() {

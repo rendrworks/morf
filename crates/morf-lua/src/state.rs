@@ -200,6 +200,8 @@ pub(crate) struct ReactiveState {
     pub(crate) output_power_requests: Vec<bool>,
     pub(crate) clipboard_requests: Vec<String>,
     pub(crate) clipboard_callbacks: Vec<StashedClosure>,
+    pub(crate) keyboard_focus_callbacks: Vec<StashedClosure>,
+    pub(crate) backdrop_callbacks: Vec<StashedClosure>,
     pub(crate) screencopy_requests: Vec<ScreencopyRequest>,
     pub(crate) screencopy_callbacks: HashMap<u64, StashedClosure>,
     /// The chosen name of each capture in flight, by request.
@@ -339,6 +341,8 @@ impl ReactiveState {
             output_power_requests: Vec::new(),
             clipboard_requests: Vec::new(),
             clipboard_callbacks: Vec::new(),
+            keyboard_focus_callbacks: Vec::new(),
+            backdrop_callbacks: Vec::new(),
             screencopy_requests: Vec::new(),
             screencopy_callbacks: HashMap::new(),
             screencopy_names: HashMap::new(),

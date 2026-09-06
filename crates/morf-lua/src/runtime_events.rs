@@ -155,6 +155,37 @@ impl Runtime {
         !callbacks.is_empty()
     }
 
+    /// Tells the configuration the keyboard came to its surface, or left it.
+    pub fn dispatch_keyboard_focus(&mut self, active: bool) -> bool {
+        let callbacks = self.reactive.borrow().keyboard_focus_callbacks.clone();
+        let value = IpcValue::Boolean(active);
+        for callback in &callbacks {
+            if let Err(message) = self.run_handler(|ctx, limits| {
+                execute_handler_args(ctx, callback, std::slice::from_ref(&value), limits)
+            }) {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("keyboard focus callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
+    /// Tells the configuration the backdrop was clicked: somewhere else.
+    pub fn dispatch_backdrop_click(&mut self) -> bool {
+        let callbacks = self.reactive.borrow().backdrop_callbacks.clone();
+        for callback in &callbacks {
+            if let Err(message) =
+                self.run_handler(|ctx, limits| execute_handler_args(ctx, callback, &[], limits))
+            {
+                self.reactive
+                    .borrow_mut()
+                    .log(LogLevel::Warn, format!("backdrop callback: {message}"));
+            }
+        }
+        !callbacks.is_empty()
+    }
+
     /// Takes pending output-capture requests.
     pub fn take_screencopy_requests(&mut self) -> Vec<ScreencopyRequest> {
         std::mem::take(&mut self.reactive.borrow_mut().screencopy_requests)

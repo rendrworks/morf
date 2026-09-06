@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 1890 560"
+   role="img"
+   aria-labelledby="title desc"
+   version="1.1"
+   id="svg8"
+   sodipodi:docname="logo-dark.svg"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     id="namedview8"
+     pagecolor="#ffffff"
+     bordercolor="#999999"
+     borderopacity="1"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.2219104"
+     inkscape:cx="962.83652"
+     inkscape:cy="330.2206"
+     inkscape:window-width="3430"
+     inkscape:window-height="2134"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg8" />
+  <title
+     id="title">MORF logo</title>
+  <desc
+     id="desc">A fluid infinity-shaped SDF emblem used as the M, followed by custom vector letters O, R, and F.</desc>
+  <defs
+     id="defs2">
+    <linearGradient
+       id="v"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#7D35FF"
+         id="stop1" />
+      <stop
+         offset="1"
+         stop-color="#6422FF"
+         id="stop2" />
+    </linearGradient>
+    <linearGradient
+       id="violet"
+       x1="41.173542"
+       y1="169.92952"
+       x2="464.54495"
+       y2="593.3009"
+       gradientTransform="matrix(1.6320053,0,0,0.77366977,-320.00802,-433.83305)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#7D35FF"
+         id="stop1-3" />
+      <stop
+         offset="1"
+         stop-color="#6422FF"
+         id="stop2-6" />
+    </linearGradient>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#v"
+       id="linearGradient8"
+       x1="826.66132"
+       y1="78.223086"
+       x2="1018.2416"
+       y2="269.80336"
+       gradientTransform="matrix(0.97732658,0,0,1.7207327,-188.596,-20.897057)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#v"
+       id="linearGradient9"
+       x1="35.973481"
+       y1="210.47383"
+       x2="438.53784"
+       y2="613.03819"
+       gradientTransform="matrix(1.6563833,0,0,0.71532807,39.157919,0.3674475)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#v"
+       id="linearGradient10"
+       x1="50.421537"
+       y1="139.4639"
+       x2="487.90285"
+       y2="576.94521"
+       gradientTransform="matrix(1.4276456,0,0,0.82993815,39.157919,0.3674475)"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <path
+     d="m 619.32212,113.70397 h 160.69904 c 14.65624,0 26.53745,9.19264 26.53745,20.53235 v 148.28926 c 0,80.98875 -59.959,170.26659 -152.84009,186.2362 36.85758,-17.1103 58.48469,-64.18273 77.65063,-92.69989 26.53746,-38.78335 33.90898,-70.72257 33.90898,-109.50592 v -58.17501 c 0,-41.06473 -50.12631,-60.4564 -116.46995,-60.4564 z"
+     fill="url(#v)"
+     id="path2"
+     sodipodi:nodetypes="csssccsscc"
+     style="fill:url(#linearGradient8);stroke-width:1.29682" />
+  <path
+     d="m 387.48164,302.97367 c -82.72688,72.93028 -155.65716,116.47074 -227.49893,80.54986 -85.992419,-42.45195 -67.487722,-169.80781 8.7081,-211.17125 78.37283,-42.45196 141.50651,14.15065 204.64018,87.08093 l 97.96604,107.76265 c 67.48772,72.93027 166.54228,92.52348 236.20702,29.38981 66.39921,-59.86814 76.19582,-170.89632 1.08852,-218.79083 -70.75326,-44.62898 -148.03758,-18.5047 -217.70233,39.18641 z"
+     fill="none"
+     stroke="#0b0d14"
+     stroke-width="82.7269"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="path3" />
+  <path
+     d="m 387.48164,302.97367 c -82.72688,72.93028 -155.65716,116.47074 -227.49893,80.54986 -85.992419,-42.45195 -67.487722,-169.80781 8.7081,-211.17125 78.37283,-42.45196 141.50651,14.15065 204.64018,87.08093 l 97.96604,107.76265 c 67.48772,72.93027 166.54228,92.52348 236.20702,29.38981 66.39921,-59.86814 76.19582,-170.89632 1.08852,-218.79083 -70.75326,-44.62898 -148.03758,-18.5047 -217.70233,39.18641 z"
+     fill="none"
+     stroke="url(#v)"
+     stroke-width="8.70809"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="path4"
+     style="stroke:url(#linearGradient9)" />
+  <path
+     d="m 130.88018,147.43783 c 69.66475,-51.160046 148.38021,-35.66659 209.33686,17.67048 105.59316,91.19409 192.99982,264.1388 300.53653,280.82553 27.21279,4.35405 71.97987,0.48405 96.43,-16.50505 C 518.58319,589.67622 356.30435,323.08849 287.43866,227.06813 241.72117,173.73106 186.61421,114.41946 111.55194,168.46217 c -3.26553,-6.53107 13.88569,-15.58179 19.32824,-21.02434 z"
+     fill="url(#v)"
+     id="path5"
+     sodipodi:nodetypes="ccccccc"
+     style="fill:url(#linearGradient10);stroke-width:1.08851" />
+  <g
+     fill="#0b0d14"
+     fill-rule="evenodd"
+     transform="matrix(0.92455101,0,0,0.92455101,245.5325,35.463765)"
+     id="g8">
+    <path
+       d="m 760,135 h 140 c 74,0 118,46 118,115 v 60 c 0,69 -44,115 -118,115 H 760 C 686,425 642,379 642,310 v -60 c 0,-69 44,-115 118,-115 z m 22,75 c -36,0 -52,18 -52,50 v 40 c 0,32 16,50 52,50 h 96 c 36,0 52,-18 52,-50 v -40 c 0,-32 -16,-50 -52,-50 z"
+       id="path6" />
+    <path
+       d="m 1055,135 h 185 c 71,0 110,40 110,105 v 18 c 0,49 -23,83 -67,98 l 89,69 h -121 l -79,-66 h -29 v 66 h -88 z m 88,72 v 80 h 76 c 29,0 43,-12 43,-37 v -6 c 0,-25 -14,-37 -43,-37 z"
+       id="path7" />
+    <path
+       d="m 1405,135 h 300 v 78 h -210 v 44 h 184 v 76 h -184 v 92 h -90 z"
+       id="path8" />
+  </g>
+  <metadata
+     id="metadata12">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>MORF logo</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>
