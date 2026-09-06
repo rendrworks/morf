@@ -68,8 +68,10 @@ local config = {
   -- nightlight, record, screenshot, battery, powersaver.
   -- Airplane and hotspot exist but are not here by default: one click on
   -- either changes the machine's radios.
-  tiles = { "wifi", "bluetooth", "dnd", "caffeine", "vpn", "mic", "nightlight", "powersaver", "record" },
+  tiles = { "wifi", "bluetooth", "vpn", "dnd", "sound", "mic", "caffeine", "record", "nightlight", "powersaver",
+    "hotspot", "screenshot" },
   tileColumns = 2,
+  tileRows = 3,
   -- The strip's status icons, left to right: any of cellular, vpn, wifi,
   -- bluetooth, dnd, mic, volume, caffeine, airplane, hotspot.
   statusIcons = { "caffeine", "dnd", "mic", "vpn", "cellular", "wifi", "bluetooth" },

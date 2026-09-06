@@ -324,8 +324,10 @@ function tiles.pill(entry, width, island, slots)
           width = room, elide = "right" } or nil,
       },
     },
+    -- Above the pill's own click area, or the switch would take the tap
+    -- meant for the chevron.
     entry.page and ui.Item {
-      width = ARROW, height = H,
+      width = ARROW, height = H, z = 2,
       anchors = { right = true },
       ui.Rect { width = 1, height = H - S(22), y = S(11), color = C.edge, visible = entry.toggle ~= nil },
       theme.icon { text = "󰅂", size = config.iconSize - 2, anchors = { center_in = true }, color = C.muted },
@@ -339,19 +341,74 @@ function tiles.pill(entry, width, island, slots)
   }
 end
 
---- The grid, `width` wide, in the settings' order and column count. One
---- wrapping row: a tile that hides -- no modem, no night light installed
---- -- leaves no hole, the rest flow up.
+--- The grid, `width` wide, in the settings' order: `tileColumns` to a
+--- row, `tileRows` rows to a page, and as many pages as it takes, side by
+--- side, one in view. The wheel, or a dot under the grid, turns the page,
+--- and the pages slide. A tile that hides -- no modem, no night light
+--- installed -- leaves no hole on its page, the rest flow up.
 function tiles.build(island, width, slots)
   local columns = math.max(1, math.floor(tonumber(config.tileColumns) or 2))
+  local rows = math.max(1, math.floor(tonumber(config.tileRows) or 3))
   local GAP = S(8)
+  local H = S(50)
   local tile_w = math.floor((width - GAP * (columns - 1)) / columns)
-  local nodes = {}
+  local per_page = columns * rows
+  local pages = {}
   for _, name in ipairs(config.tiles or {}) do
     local entry = tiles.all[name]
-    if entry then nodes[#nodes + 1] = tiles.pill(entry, tile_w, island, slots) end
+    if entry then
+      local last = pages[#pages]
+      if not last or #last == per_page then
+        last = {}
+        pages[#pages + 1] = last
+      end
+      last[#last + 1] = tiles.pill(entry, tile_w, island, slots)
+    end
   end
-  return ui.Flex { direction = "row", wrap = true, gap = GAP, width = width, table.unpack(nodes) }
+  if #pages <= 1 then
+    return ui.Flex { direction = "row", wrap = true, gap = GAP, width = width, table.unpack(pages[1] or {}) }
+  end
+  local page = morf.signal("panacea.tiles.page", 0)
+  local function turn(by) page:set(math.max(0, math.min(#pages - 1, page:get() + by))) end
+  local strip = {}
+  for index, nodes in ipairs(pages) do
+    strip[index] = ui.Flex { direction = "row", wrap = true, gap = GAP, width = width, table.unpack(nodes) }
+  end
+  local dots = {}
+  for index = 1, #pages do
+    dots[index] = ui.Item {
+      width = S(16), height = S(16),
+      ui.Rect {
+        width = S(6), height = S(6), radius = S(3), anchors = { center_in = true },
+        color = function() return page:get() == index - 1 and C.on or C.faint end,
+        behavior = { color = theme.motion.fade },
+      },
+      ui.MouseArea { anchors = { fill = true }, cursor = "pointer", on_clicked = function() page:set(index - 1) end },
+    }
+  end
+  return ui.Column {
+    gap = S(4),
+    ui.ClipRect {
+      width = width, height = rows * H + (rows - 1) * GAP, color = "transparent",
+      ui.Row {
+        gap = GAP,
+        x = function() return -page:get() * (width + GAP) end,
+        behavior = { x = theme.motion.move },
+        table.unpack(strip),
+      },
+      ui.MouseArea {
+        anchors = { fill = true }, z = -1,
+        on_wheel = function(_, _, _, _, steps_x, steps_y)
+          local by = steps_y ~= 0 and steps_y or steps_x
+          if by ~= 0 then turn(by > 0 and 1 or -1) end
+        end,
+      },
+    },
+    ui.Item {
+      width = width, height = S(16),
+      ui.Row { gap = 0, anchors = { horizontal_center = true }, table.unpack(dots) },
+    },
+  }
 end
 
 return tiles

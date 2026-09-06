@@ -75,24 +75,30 @@ status.icons = {
   },
 }
 
---- The row of icons, `size` tall, in the settings' order; `values` are
---- the row's own properties (where it sits, how it moves).
-function status.build(size, values)
+--- The row of icons, `size` tall, `gap` apart, in the settings' order;
+--- `values` are the row's own properties (where it sits, how it moves).
+--- Every icon sits centred in a slot of the same width, so the row reads
+--- as a row whatever the glyphs' own widths are.
+function status.build(size, gap, values)
+  local SLOT = size + S(6)
   local nodes = {}
   for _, name in ipairs(config.statusIcons or {}) do
     local icon = status.icons[name]
     if icon then
       nodes[#nodes + 1] = ui.Row {
-        gap = S(3), align = "center",
+        gap = S(2), align = "center",
         visible = icon.visible,
-        theme.icon { text = icon.glyph, size = size, color = icon.color },
+        ui.Item {
+          width = SLOT, height = SLOT,
+          theme.icon { text = icon.glyph, size = size, color = icon.color, anchors = { center_in = true } },
+        },
         icon.text and theme.text { text = icon.text, size = config.fontSize - 6, font_weight = 700, color = icon.color,
           visible = function() return icon.text() ~= "" end } or nil,
       }
     end
   end
   values = values or {}
-  values.direction, values.align, values.gap = "row", "center", S(7)
+  values.direction, values.align, values.gap = "row", "center", gap
   for _, node in ipairs(nodes) do values[#values + 1] = node end
   return ui.Flex(values)
 end

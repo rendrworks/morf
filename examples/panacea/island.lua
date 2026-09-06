@@ -366,7 +366,10 @@ function island.build()
   -- keeps the right edge like a status bar.
   local function start_x() return PHONE and PAD or (island_width() - strip_total()) / 2 end
   local function centred_y(node, name) return (PILL_H - h(node, name)) / 2 end
-  local function title_x() return PAD + (has_icon() and (ICON + S(8)) or 0) end
+  -- The title moves right to make room for the back button when there is
+  -- one, and the icon sits between.
+  local function back_w() return (open() and island.depth:get() > 0) and S(36) or 0 end
+  local function title_x() return PAD + back_w() + (has_icon() and (ICON + S(8)) or 0) end
   local function title_h() return S((big() and 26 or config.fontSize + 1) * 1.25) end
   local function gathered_x() return title_x() + w(clock, "clock") + S(8) end
   local function gathered_y() return PAD + S(4) end
@@ -385,7 +388,7 @@ function island.build()
       return island_width() - PAD - w(battery_text, "battery")
     end
     glyph_x = function()
-      if open() then return slot_x("battery_glyph") or (has_icon() and PAD or gathered_x()) end
+      if open() then return slot_x("battery_glyph") or (has_icon() and (PAD + back_w()) or gathered_x()) end
       return battery_x() - S(4) - ICON
     end
     status_x = function()
@@ -395,7 +398,7 @@ function island.build()
   else
     status_x = function() return open() and gathered_x() or layout_x() + w(layout_text, "layout") + GAP end
     glyph_x = function()
-      if open() then return slot_x("battery_glyph") or (has_icon() and PAD or gathered_x()) end
+      if open() then return slot_x("battery_glyph") or (has_icon() and (PAD + back_w()) or gathered_x()) end
       return status_x() + status_w()
     end
     battery_x = function()
@@ -471,7 +474,7 @@ function island.build()
   })
   -- The phone's status icons, between the layout and the battery; they
   -- gather into the title with the rest when a page opens.
-  status_row = require("status").build(ICON - S(2), {
+  status_row = require("status").build(ICON - S(2), GAP, {
     transform_origin_x = 0, transform_origin_y = 0,
     x = status_x,
     y = function() return open() and gathered_y() or centred_y(status_row, "status") end,
@@ -551,11 +554,12 @@ function island.build()
     end
   end, true) end
   island.keep = function() opened_by_hover = false end
-  -- Back, at the top right, when the page was reached from another.
+  -- Back, at the top left where a phone keeps it, when the page was
+  -- reached from another; the title steps aside for it.
   local back = theme.button {
-    width = S(32), height = S(32), radius = 10,
+    width = S(30), height = S(30), radius = 15,
     color = "transparent",
-    anchors = { right = true, top = true, right_margin = PAD - S(4), top_margin = PAD - S(4) },
+    anchors = { left = true, top = true, left_margin = PAD - S(4), top_margin = PAD - S(2) },
     visible = function() return open() and island.depth:get() > 0 end,
     on_click = function() island.back() end,
     theme.icon { text = "󰅁", size = config.iconSize, anchors = { center_in = true }, color = C.muted },
