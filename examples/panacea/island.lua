@@ -494,14 +494,15 @@ function island.build()
     return math.min(S(config.expandedH), wanted + entry.top + PAD)
   end
 
-  -- Hovering the strip opens it too: the player if something plays, quick
-  -- settings otherwise, after a moment, and it goes again once the pointer
-  -- has left the island for a while. A page opened by a click or a key
-  -- stays.
+  -- With `pillHover`, hovering the strip opens it too: the player if
+  -- something plays, quick settings otherwise, after a moment, and it goes
+  -- again once the pointer has left the island for a while. A page opened
+  -- by a click or a key stays. Off by default.
   local hover_clock = morf.elapsed_timer()
   local hovering = false
   local opened_by_hover = false
   morf.timer(80, function()
+    if not config.pillHover then return end
     if hovering and not open() and hover_clock:elapsed_ms() > 260 then
       local media = require("media")
       opened_by_hover = true

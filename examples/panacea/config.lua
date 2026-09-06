@@ -31,6 +31,9 @@ local config = {
   -- Floating over the windows, or reserving its strip.
   pillOverlay = true,
   pillAutoHide = false,
+  -- Hovering the strip opens it, as the original does. Off: only a click
+  -- or a key opens a page.
+  pillHover = false,
   -- Clock.
   clock12 = false,
   clockSeconds = false,

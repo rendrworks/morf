@@ -39,8 +39,9 @@ EXAMPLE=examples/panacea/init.lua oslo make run
 
 `morf ipc call <verb>` toggles a page, as `qs ipc call pill <verb>` does in
 the original; `dnd`, `recordToggle`, `smartClose` and `close` are there
-too. Every page closes with Escape or a click outside; a click or a hover
-on the pill opens quick settings, or the player when something plays.
+too. Every page closes with Escape or a click outside; a click on the
+pill opens quick settings. `pillHover` in the settings makes a hover open
+it too, as the original does; it is off by default.
 
 ## Settings
 
@@ -75,9 +76,10 @@ Each piece is set in type once, at the largest size it takes, and scaled
 from there: a scale is a transform the GPU applies for nothing, where a
 font size that moves re-shapes the letters every frame.
 
-Hovering the strip opens it too -- the player if something plays, quick
-settings otherwise -- and it goes when the pointer has left. A page opened
-by a click or a key stays until Escape or a click outside.
+With `pillHover` on, hovering the strip opens it too -- the player if
+something plays, quick settings otherwise -- and it goes when the pointer
+has left. A page opened by a click or a key stays until Escape or a click
+outside.
 
 The equaliser is cava when it is installed, a real spectrum; otherwise the
 loudness from pw-record on the output's monitor, normalised against the
