@@ -68,7 +68,14 @@ end
 for _, name in ipairs { "main", "shade", "power", "battery", "record", "wifi", "bt", "notif", "clip",
   "launcher", "cal", "audio", "settings", "shortcuts", "overview", "media", "wallpapers", "weather" } do
   local ok, page = pcall(require, "pages." .. name)
-  if ok and type(page) == "table" then island.register(name, page) end
+  if ok and type(page) == "table" then
+    island.register(name, page)
+  else
+    -- A page that fails to load is remembered, and `morf ipc call pages`
+    -- says which and why, rather than the page being quietly absent.
+    island.failed = island.failed or {}
+    island.failed[name] = tostring(page)
+  end
 end
 
 --- Locks the screen with what the config names, else with the login
@@ -140,6 +147,15 @@ morf.ipc.smartClose = function()
 end
 morf.ipc.close = function() island.close() return "closed" end
 morf.ipc.page = function() return island.page:get() end
+morf.ipc.trace = function() return table.concat(island.trace, " ") end
+morf.ipc.pages = function()
+  local out = {}
+  for name in pairs(island.pages) do out[#out + 1] = name end
+  table.sort(out)
+  local failed = {}
+  for name, why in pairs(island.failed or {}) do failed[#failed + 1] = name .. ": " .. why end
+  return table.concat(out, " ") .. (#failed > 0 and ("  FAILED " .. table.concat(failed, " | ")) or "")
+end
 
 -- ------------------------------------------------------------------- scene --
 

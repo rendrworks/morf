@@ -204,6 +204,7 @@ function page.build(island)
       title = row.ssid,
       subtitle = row.connected and "Connected" or (row.signal .. "%" .. (row.secured and "  ·  secured" or "  ·  open")),
       active = function() return row.connected end,
+      hover_icon = row.connected and "󰌙" or "󰌘",
       on_click = function() if row.connected then disconnect() else connect(row.ssid) end end,
       right = row.connected and kit.cross(function() forget(row.ssid) end) or nil,
     }

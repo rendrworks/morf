@@ -292,6 +292,7 @@ function tiles.pill(entry, width, island, slots, stagger)
     active = on, accent = entry.icon_color, tint = entry.tint, edge = entry.edge,
     on_click = entry.toggle or open_page,
     on_right_click = entry.page and open_page or nil,
+    hover_icon = entry.toggle and "󰄬" or (entry.page and "󰅂" or nil),
     translate_y = stagger and function() return open_now() and 0 or S(18 + 7 * stagger) end or nil,
     opacity = stagger and function() return open_now() and 1 or 0 end or nil,
     on_wheel = function(sx, sy, px, py, steps_x, steps_y)

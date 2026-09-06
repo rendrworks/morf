@@ -84,6 +84,7 @@ function page.build(island)
       subtitle = (row.connected and "Connected" or (row.paired and "Paired" or "Not paired"))
         .. (row.battery and ("  ·  " .. row.battery .. "%") or ""),
       active = function() return row.connected end,
+      hover_icon = row.connected and "󰌙" or "󰌘",
       on_click = function()
         system.bluetooth_connect(row.path, not row.connected)
         morf.timer(2000, page.refresh, false)

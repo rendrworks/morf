@@ -236,12 +236,12 @@ function theme.button(values)
     if down:get() then return rest:mix(lit, 0.6) end
     return hovered:get() and lit or rest
   end
-  -- Under the pointer a button grows a little and lifts; pressed it sinks.
-  values.scale = function() return down:get() and 0.96 or (hovered:get() and 1.05 or 1) end
-  values.translate_y = values.translate_y or function() return hovered:get() and -S(3) or 0 end
+  -- Pressed, a button sinks. It does not grow under the pointer: a button
+  -- lives inside clips -- the tile pager, the page -- and one that grew
+  -- was cut off at their edges. What it holds moves instead.
+  values.scale = function() return down:get() and 0.96 or 1 end
   values.behavior = values.behavior or { color = motion.hover, scale = motion.snappy }
   values.behavior.scale = values.behavior.scale or motion.snappy
-  values.behavior.translate_y = values.behavior.translate_y or motion.snappy
   local on_hover = values.on_hover
   values.on_hover = nil
   values.radius = S(values.radius or config.cornerR)

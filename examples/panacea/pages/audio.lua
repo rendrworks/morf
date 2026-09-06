@@ -94,6 +94,7 @@ function page.build(island)
     return kit.row {
       width = W, icon = "󰓃", title = row.description, subtitle = row.default and "In use" or "Available",
       active = function() return row.default end,
+      hover_icon = "󰄬",
       on_click = function()
         proc.exec({ "pactl", "set-default-sink", row.name }, function() page.refresh() system.poll_volume() end)
       end,

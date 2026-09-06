@@ -604,7 +604,7 @@ function island.build()
       visible = function() return not open() end,
       on_entered = function() hovering = true hover_clock:restart() end,
       on_exited = function() hovering = false hover_clock:restart() end,
-      on_clicked = function() island.keep() island.open(island.first_page()) end,
+      on_clicked = function() island.keep() island.open(island.first_page(), false, "tap") end,
       on_pressed = function() island.pull = 0 end,
       on_dragged = function(_, _, _, dy)
         if not island.pull then return end
@@ -612,7 +612,7 @@ function island.build()
         if island.pull > S(36) then
           island.pull = nil
           island.keep()
-          island.open(island.first_page())
+          island.open(island.first_page(), false, "pull")
         end
       end,
       on_released = function() island.pull = nil end,
@@ -686,7 +686,7 @@ theme.drag = function(dx, dy)
     local at_top = entry.scroll:get() <= 0
     if PHONE and at_top and drag.y > S(70) then
       drag.done = true
-      if name == "shade" then island.open("main") end
+      if name == "shade" then island.open("main", false, "pull-shade") end
       return
     end
     if PHONE and at_top and drag.y < -S(70) and most == 0 then
@@ -702,8 +702,16 @@ theme.drag = function(dx, dy)
   end
 end
 
-function island.open(name, going_back)
+-- Who opened what, for `morf ipc call trace`.
+island.trace = {}
+local function traced(name, why)
+  island.trace[#island.trace + 1] = tostring(why or "?") .. ">" .. name
+  if #island.trace > 12 then table.remove(island.trace, 1) end
+end
+
+function island.open(name, going_back, why)
   if not island.pages[name] then return false end
+  traced(name, why)
   local current = island.page:get()
   if current == name then
     island.close()
@@ -759,7 +767,7 @@ end
 
 function island.toggle(name)
   if island.keep then island.keep() end
-  if island.page:get() == name then island.close() else island.open(name) end
+  if island.page:get() == name then island.close() else island.open(name, false, "verb") end
   return island.page:get()
 end
 

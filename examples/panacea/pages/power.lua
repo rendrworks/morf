@@ -77,6 +77,7 @@ function page.build(island)
       subtitle = function() return page.armed:get() == index and "Once more to confirm" or action.hint end,
       active = function() return page.armed:get() == index end,
       spin = true,
+      hover_icon = "󰅂",
       on_click = function() trigger(index, island) end,
     }
   end

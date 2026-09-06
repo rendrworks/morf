@@ -35,7 +35,10 @@ end
 --- em's margin, and a morphing icon reads the size of a written one.
 kit.GLYPH_FIT = 0.8
 local glyph_count = 0
-function kit.glyph(size, glyph, color)
+--- With `hover` (a signal) and `hover_glyph`, the glyph morphs into
+--- `hover_glyph` while the pointer is over it and back when it leaves:
+--- the icon becomes what a tap will do.
+function kit.glyph(size, glyph, color, hover, hover_glyph)
   size = size * kit.GLYPH_FIT
   glyph_count = glyph_count + 1
   local progress = morf.signal("panacea.kit.glyph." .. glyph_count, 0)
@@ -66,9 +69,9 @@ function kit.glyph(size, glyph, color)
     },
     shape,
   }
-  if type(glyph) == "function" then
+  if type(glyph) == "function" or hover then
     theme.tick(function()
-      local want = glyph()
+      local want = (hover and hover_glyph and hover:get()) and hover_glyph or call(glyph)
       if want == nil or want == "" or want == current then return end
       current = want
       if progress:get() > 0 then pending = want return end
@@ -113,16 +116,17 @@ function kit.row(values)
     circle = ui.Rect {
       width = kit.CIRCLE, height = kit.CIRCLE, radius = kit.CIRCLE / 2,
       color = function() return active() and accent or C.card_hover end,
-      -- The circle grows and tilts under the pointer, pops as the row
-      -- turns, and with `spin` turns over as the row turns on.
+      -- Under the pointer the circle grows and makes a full turn with an
+      -- overshoot while its glyph morphs into what a tap does; it pops
+      -- as the row turns, and with `spin` turns over as the row turns on.
       scale = function() return pop:get() and 1.3 or (hovered:get() and 1.25 or 1) end,
       rotation = function()
-        local turn = (values.spin and active()) and 360 or 0
-        return turn + (hovered:get() and -15 or 0)
+        return ((values.spin and active()) and 360 or 0) + (hovered:get() and 360 or 0)
       end,
       behavior = { color = motion.fade, scale = motion.snappy,
-        rotation = { duration = config.reduceMotion and 1 or 520, easing = "out_back" } },
-      type(values.icon) == "function" and kit.glyph(S(config.iconSize), values.icon, ink)
+        rotation = { duration = config.reduceMotion and 1 or 640, easing = "out_back" } },
+      (type(values.icon) == "function" or values.hover_icon)
+        and kit.glyph(S(config.iconSize), values.icon, ink, hovered, values.hover_icon)
         or theme.icon { text = values.icon, size = config.iconSize - 1, anchors = { center_in = true }, color = ink },
     }
   end
@@ -231,6 +235,7 @@ function kit.switch_row(values)
     width = S(56), height = kit.ROW,
     ui.Item { anchors = { center_in = true }, theme.toggle(values.on, values.set) },
   }
+  values.hover_icon = values.hover_icon or "󰄬"
   values.active = values.active or values.on
   values.on_click = values.on_click or function() values.set(not values.on()) end
   return kit.row(values)
@@ -239,6 +244,7 @@ end
 --- A row whose tap opens something; the chevron says so.
 function kit.nav_row(values)
   values.right = kit.chevron(values.on_click, false)
+  values.hover_icon = values.hover_icon or "󰅂"
   return kit.row(values)
 end
 
@@ -354,13 +360,14 @@ function kit.icon_button(glyph, on_click, lit)
     border_width = 1, border_color = function() return lit and lit() and C.on_edge or C.edge end,
     on_click = on_click,
     on_hover = function(over) hovered:set(over) end,
-    -- The glyph tilts and grows under the pointer, and springs back.
+    -- The glyph grows and makes a full turn under the pointer, with an
+    -- overshoot, and springs back.
     theme.icon { text = glyph, size = config.iconSize - 2, anchors = { center_in = true },
       color = function() return (lit and lit()) and C.on or (hovered:get() and C.fg or C.muted) end,
       scale = function() return hovered:get() and 1.35 or 1 end,
-      rotation = function() return hovered:get() and 20 or 0 end,
+      rotation = function() return hovered:get() and 360 or 0 end,
       behavior = { color = motion.hover, scale = motion.snappy,
-        rotation = { duration = config.reduceMotion and 1 or 380, easing = "out_back" } } },
+        rotation = { duration = config.reduceMotion and 1 or 640, easing = "out_back" } } },
   }
 end
 
